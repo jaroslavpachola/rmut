@@ -59,10 +59,36 @@ explicitly post-1.0.
       pty e2e suite in tests/e2e/run.py (`just e2e`, part of
       `just check`)
 
+## R5 — IMAP and SMTP (post-1.0)
+
+- [ ] Account config in config.toml: `[[accounts]]` with imap
+      host/port/tls, username, `password_command` (pass(1)-style, never
+      a plaintext password), smtp host/port
+- [ ] IMAP connection over TLS (rustls); LIST folders into the folder
+      browser `y`, SELECT + FETCH envelopes/flags to build the index
+- [ ] Body fetch on view, with a local header/body cache so the index
+      stays fast and re-opening a message is free
+- [ ] Sync `$` maps index ops to IMAP: flags via STORE (Seen/Flagged/
+      Answered/Deleted), delete via EXPUNGE
+- [ ] New-mail polling per account (reuse poll_seconds; IDLE later)
+- [ ] SMTP send as an alternative to sendmail(1): submission with
+      STARTTLS or implicit TLS, AUTH PLAIN/LOGIN; Fcc via IMAP APPEND
+      to the Sent folder
+
+## R6 — PGP/GPG (post-1.0)
+
+- [ ] Decrypt on view: PGP/MIME (multipart/encrypted) and inline PGP
+      via gpg(1), decrypted body shown in the pager
+- [ ] Verify signatures (multipart/signed + inline), good/bad/unknown
+      status line in the pager
+- [ ] Compose: sign, encrypt, or both from the send prompt (mutt-style
+      security menu), recipient key lookup by address, encrypt-to-self
+- [ ] Config: `[pgp]` section — gpg command, default signing key,
+      sign_by_default / encrypt_by_default
+
 ## Post-1.0 candidates
 
-- IMAP and SMTP accounts, OAuth2
+- OAuth2 (XOAUTH2) for IMAP/SMTP accounts
 - mbox format support
-- PGP/GPG signing and encryption
 - HTML part rendering (w3m-style dump)
 - Sidebar, notmuch/xapian search
