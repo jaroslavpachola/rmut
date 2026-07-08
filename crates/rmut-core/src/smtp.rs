@@ -219,8 +219,8 @@ mod tests {
         let (port, handle, _log) = testserver::smtp(vec![
             Expect::new("EHLO", "250-fake\r\n250 AUTH LOGIN\r\n".into()),
             Expect::new("AUTH LOGIN", "334 VXNlcm5hbWU6\r\n".into()),
-            Expect::new(&b64_static(b"jane"), "334 UGFzc3dvcmQ6\r\n".into()),
-            Expect::new(&b64_static(b"secret"), "235 ok\r\n".into()),
+            Expect::new(b64_static(b"jane"), "334 UGFzc3dvcmQ6\r\n".into()),
+            Expect::new(b64_static(b"secret"), "235 ok\r\n".into()),
             Expect::new("MAIL FROM", "250 ok\r\n".into()),
             Expect::new("RCPT TO", "250 ok\r\n".into()),
             Expect::new("DATA", "354 go\r\n".into()),
