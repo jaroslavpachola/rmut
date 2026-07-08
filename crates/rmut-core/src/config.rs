@@ -24,11 +24,20 @@
 //!
 //! [keys.index]        # action = key, e.g. sync = "w", delete = "ctrl+d"
 //! [keys.pager]
+//!
+//! [[accounts]]        # remote account, opened as imap:name/FOLDER
+//! name = "work"
+//! user = "jane@example.com"
+//! password_command = "pass show mail/work"
+//! imap_host = "imap.example.com"   # imap_port = 993, imap_tls = true
+//! smtp_host = "smtp.example.com"   # smtp_port = 587, smtp_tls = true
+//! sent_folder = "Sent"             # Fcc target via IMAP APPEND
 //! ```
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -40,6 +49,7 @@ pub struct Config {
     pub ui: Ui,
     pub colors: HashMap<String, String>,
     pub keys: Keys,
+    pub accounts: Vec<Account>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -77,6 +87,82 @@ pub struct Ui {
 pub struct Keys {
     pub index: HashMap<String, String>,
     pub pager: HashMap<String, String>,
+}
+
+/// One remote account: IMAP for reading, SMTP for sending. The
+/// password comes from running `password_command` through the shell —
+/// never from the config file itself.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Account {
+    pub name: String,
+    pub user: String,
+    pub password_command: String,
+    pub imap_host: Option<String>,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    /// TLS from the first byte (default). Disabling is for tests only.
+    #[serde(default = "default_true")]
+    pub imap_tls: bool,
+    pub smtp_host: Option<String>,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    /// Encrypt SMTP (default): implicit TLS on port 465, STARTTLS
+    /// otherwise. Disabling is for tests only.
+    #[serde(default = "default_true")]
+    pub smtp_tls: bool,
+    /// IMAP folder that receives the Fcc copy of sent mail.
+    #[serde(default = "default_sent_folder")]
+    pub sent_folder: String,
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_sent_folder() -> String {
+    "Sent".into()
+}
+
+impl Account {
+    /// First stdout line of `password_command`.
+    pub fn password(&self) -> Result<String> {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&self.password_command)
+            .output()
+            .with_context(|| format!("running password command for account {}", self.name))?;
+        ensure!(
+            out.status.success(),
+            "password command for account {} exited with {}",
+            self.name,
+            out.status
+        );
+        let pass = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        ensure!(
+            !pass.is_empty(),
+            "password command for account {} printed nothing",
+            self.name
+        );
+        Ok(pass)
+    }
+}
+
+impl Config {
+    pub fn account(&self, name: &str) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.name == name)
+    }
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -157,5 +243,69 @@ mod tests {
         assert!(cfg.identity.from_line().is_none());
         let cfg: Config = toml::from_str("[future]\nx = 1\n").unwrap();
         assert!(cfg.mail.mailboxes.is_empty());
+        assert!(cfg.accounts.is_empty());
+    }
+
+    #[test]
+    fn parses_accounts_with_defaults() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [[accounts]]
+            name = "work"
+            user = "jane@example.com"
+            password_command = "pass show mail/work"
+            imap_host = "imap.example.com"
+            smtp_host = "smtp.example.com"
+
+            [[accounts]]
+            name = "test"
+            user = "u"
+            password_command = "true"
+            imap_host = "localhost"
+            imap_port = 10143
+            imap_tls = false
+            smtp_port = 465
+            sent_folder = "INBOX/Sent"
+            "#,
+        )
+        .unwrap();
+        let work = cfg.account("work").unwrap();
+        assert_eq!(work.imap_port, 993);
+        assert_eq!(work.smtp_port, 587);
+        assert!(work.imap_tls && work.smtp_tls);
+        assert_eq!(work.sent_folder, "Sent");
+        let test = cfg.account("test").unwrap();
+        assert_eq!(test.imap_port, 10143);
+        assert!(!test.imap_tls);
+        assert!(test.smtp_host.is_none());
+        assert_eq!(test.sent_folder, "INBOX/Sent");
+        assert!(cfg.account("nope").is_none());
+    }
+
+    #[test]
+    fn account_missing_required_field_fails_parse() {
+        assert!(toml::from_str::<Config>("[[accounts]]\nname = \"x\"\n").is_err());
+    }
+
+    #[test]
+    fn password_command_takes_first_line() {
+        let account = |cmd: &str| Account {
+            name: "t".into(),
+            user: "u".into(),
+            password_command: cmd.into(),
+            imap_host: None,
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_tls: true,
+            sent_folder: "Sent".into(),
+        };
+        assert_eq!(
+            account("printf 'secret\\nrest\\n'").password().unwrap(),
+            "secret"
+        );
+        assert!(account("false").password().is_err());
+        assert!(account("true").password().is_err()); // empty output
     }
 }
