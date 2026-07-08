@@ -1,0 +1,131 @@
+//! Scripted IMAP and SMTP servers on a localhost port, for client
+//! tests. Each `Expect` matches one incoming command by substring and
+//! plays back a canned reply; a mismatch panics in the server thread
+//! and surfaces when the test joins the handle.
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
+pub(crate) struct Expect {
+    /// Required substring of the received command line.
+    cmd: &'static str,
+    /// Extra response data sent verbatim before the tagged/final reply
+    /// (IMAP untagged lines, with explicit `\r\n`).
+    reply: String,
+    /// IMAP: complete the command with NO instead of OK.
+    fail: Option<&'static str>,
+}
+
+impl Expect {
+    pub(crate) fn new(cmd: &'static str, reply: String) -> Expect {
+        Expect {
+            cmd,
+            reply,
+            fail: None,
+        }
+    }
+
+    pub(crate) fn fail(cmd: &'static str, status: &'static str) -> Expect {
+        Expect {
+            cmd,
+            reply: String::new(),
+            fail: Some(status),
+        }
+    }
+}
+
+/// IMAP server; returns the port and the thread to join at test end.
+pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut stream = stream;
+        stream.write_all(b"* OK rmut test server\r\n").unwrap();
+        for step in script {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                panic!("client hung up; still expected {:?}", step.cmd);
+            }
+            let mut line = line.trim_end().to_string();
+            // Client literals: answer the continuation, swallow the
+            // bytes, and keep reading the same logical command.
+            while let Some(n) = client_literal_len(&line) {
+                stream.write_all(b"+ go ahead\r\n").unwrap();
+                let mut lit = vec![0u8; n];
+                reader.read_exact(&mut lit).unwrap();
+                let mut rest = String::new();
+                reader.read_line(&mut rest).unwrap();
+                line.push_str(String::from_utf8_lossy(&lit).trim_end());
+                line.push_str(rest.trim_end());
+            }
+            assert!(
+                line.contains(step.cmd),
+                "server expected {:?}, got {line:?}",
+                step.cmd
+            );
+            let tag = line.split(' ').next().unwrap_or("*").to_string();
+            stream.write_all(step.reply.as_bytes()).unwrap();
+            match step.fail {
+                Some(status) => stream
+                    .write_all(format!("{tag} {status}\r\n").as_bytes())
+                    .unwrap(),
+                None => stream
+                    .write_all(format!("{tag} OK done\r\n").as_bytes())
+                    .unwrap(),
+            }
+        }
+    });
+    (port, handle)
+}
+
+fn client_literal_len(line: &str) -> Option<usize> {
+    let rest = line.strip_suffix('}')?;
+    let open = rest.rfind('{')?;
+    rest[open + 1..].parse().ok()
+}
+/// SMTP server; `log` collects every received command line and, after
+/// DATA, the dot-stuffed message payload.
+pub(crate) fn smtp(script: Vec<Expect>) -> (u16, JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let thread_log = Arc::clone(&log);
+    let handle = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut stream = stream;
+        stream.write_all(b"220 rmut test server\r\n").unwrap();
+        for step in script {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                panic!("client hung up; still expected {:?}", step.cmd);
+            }
+            let line = line.trim_end().to_string();
+            assert!(
+                line.contains(step.cmd),
+                "server expected {:?}, got {line:?}",
+                step.cmd
+            );
+            thread_log.lock().unwrap().push(line.clone());
+            stream.write_all(step.reply.as_bytes()).unwrap();
+            if line.eq_ignore_ascii_case("DATA") {
+                let mut payload = String::new();
+                loop {
+                    let mut data_line = String::new();
+                    reader.read_line(&mut data_line).unwrap();
+                    if data_line.trim_end() == "." {
+                        break;
+                    }
+                    payload.push_str(&data_line);
+                }
+                thread_log.lock().unwrap().push(payload);
+                stream.write_all(b"250 accepted\r\n").unwrap();
+            }
+        }
+    });
+    (port, handle, log)
+}

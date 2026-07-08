@@ -14,3 +14,5 @@ chrono = "0.4"
 mailparse = "0.16"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+webpki-roots = "0.26"

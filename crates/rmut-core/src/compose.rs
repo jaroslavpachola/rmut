@@ -125,6 +125,70 @@ pub fn finalize(draft: &str, from: &str, msg_id: &str, date: &str) -> Result<Str
     Ok(format!("{head}\n\n{body}"))
 }
 
+/// First address in an RFC 5322 address field, without display name —
+/// e.g. the SMTP envelope sender from a From line.
+pub fn bare_address(field: &str) -> Option<String> {
+    match mailparse::addrparse(field)
+        .ok()?
+        .into_inner()
+        .into_iter()
+        .next()?
+    {
+        mailparse::MailAddr::Single(single) => Some(single.addr),
+        mailparse::MailAddr::Group(group) => group.addrs.first().map(|a| a.addr.clone()),
+    }
+}
+
+fn field_addresses(value: &str, out: &mut Vec<String>) {
+    let Ok(list) = mailparse::addrparse(value) else {
+        return;
+    };
+    for addr in list.iter() {
+        match addr {
+            mailparse::MailAddr::Single(single) => out.push(single.addr.clone()),
+            mailparse::MailAddr::Group(group) => {
+                out.extend(group.addrs.iter().map(|a| a.addr.clone()));
+            }
+        }
+    }
+}
+
+/// SMTP envelope for a finalized draft: every To/Cc/Bcc address, and
+/// the text with Bcc headers removed (they must not go on the wire).
+pub fn smtp_envelope(text: &str) -> Result<(Vec<String>, String)> {
+    let mail = mailparse::parse_mail(text.as_bytes())?;
+    let mut rcpts = Vec::new();
+    for header in &mail.headers {
+        let key = header.get_key();
+        if ["to", "cc", "bcc"].contains(&key.to_lowercase().as_str()) {
+            field_addresses(&header.get_value(), &mut rcpts);
+        }
+    }
+    rcpts.dedup();
+    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in head.lines() {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            // Folded continuation belongs to the previous header.
+            if skipping {
+                continue;
+            }
+        } else {
+            skipping = line
+                .split_once(':')
+                .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("bcc"));
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    out.push_str(body);
+    Ok((rcpts, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +244,38 @@ mod tests {
         assert!(finalize("Subject: s\n\nbody", "f", "<i>", "d").is_err());
         assert!(finalize("To:   \nSubject: s\n\nbody", "f", "<i>", "d").is_err());
         assert!(finalize("Bcc: a@x\n\nbody", "f", "<i>", "d").is_ok());
+    }
+
+    #[test]
+    fn bare_address_drops_display_name() {
+        assert_eq!(
+            bare_address("Jane <jane@x.org>").as_deref(),
+            Some("jane@x.org")
+        );
+        assert_eq!(bare_address("jane@x.org").as_deref(), Some("jane@x.org"));
+        assert_eq!(bare_address(""), None);
+    }
+
+    #[test]
+    fn smtp_envelope_collects_rcpts_and_strips_bcc() {
+        let text =
+            "To: Alice <a@x>, b@y\nCc: c@z\nBcc: hidden@q,\n also-hidden@q\nSubject: s\n\nbody\n";
+        let (rcpts, out) = smtp_envelope(text).unwrap();
+        assert_eq!(
+            rcpts,
+            vec!["a@x", "b@y", "c@z", "hidden@q", "also-hidden@q"]
+        );
+        assert!(!out.to_lowercase().contains("bcc"));
+        assert!(!out.contains("hidden@q"));
+        assert!(out.contains("To: Alice <a@x>, b@y\n"));
+        assert!(out.ends_with("\n\nbody\n"));
+    }
+
+    #[test]
+    fn smtp_envelope_without_bcc_is_unchanged() {
+        let text = "To: a@x\nSubject: s\n\nbody\n";
+        let (rcpts, out) = smtp_envelope(text).unwrap();
+        assert_eq!(rcpts, vec!["a@x"]);
+        assert_eq!(out, text);
     }
 }
