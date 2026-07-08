@@ -251,11 +251,11 @@ fn draw_attach(frame: &mut Frame, area: Rect, parts: &[Part], sel: usize) {
 
 // ---- folders ----
 
-fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[std::path::PathBuf], sel: usize) {
+fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[String], sel: usize) {
     let width = area.width as usize;
     let mut lines = Vec::new();
     for (i, dir) in dirs.iter().enumerate().take(area.height as usize) {
-        let text = format!("{:>3} {}", i + 1, dir.display());
+        let text = format!("{:>3} {}", i + 1, dir);
         let text = format!("{text:<width$}");
         let mut style = Style::new();
         if i == sel {
@@ -292,7 +292,7 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
 }
 
 fn index_status(app: &App) -> String {
-    let mut text = format!("---rmut: {} [Msgs:{}", app.dir.display(), app.visible.len());
+    let mut text = format!("---rmut: {} [Msgs:{}", app.title, app.visible.len());
     if app.visible.len() != app.msgs.len() {
         text += &format!("/{}", app.msgs.len());
     }

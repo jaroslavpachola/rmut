@@ -12,11 +12,13 @@ import pty
 import re
 import select
 import shutil
+import socket
 import struct
 import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import fcntl
 import time
 
@@ -360,6 +362,250 @@ editor = "{editor}"
     r.close()
 
 
+class FakeImap(threading.Thread):
+    """Stateful IMAP server: enough of RFC 3501 for rmut's client.
+    Accepts sequential connections (mailbox switches reconnect)."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        self.msgs = {}  # uid -> [set(flags), bytes]
+        self.commands = []
+        self.appended = []
+        self.announce = False
+        self.lock = threading.Lock()
+
+    def add(self, uid, flags, content):
+        with self.lock:
+            self.msgs[uid] = [set(flags), content.encode()]
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            try:
+                self.serve(conn)
+            except (ConnectionError, OSError):
+                pass
+            finally:
+                conn.close()
+
+    def serve(self, conn):
+        rfile = conn.makefile("rb")
+        conn.sendall(b"* OK fake ready\r\n")
+        while True:
+            raw = rfile.readline()
+            if not raw:
+                return
+            line = raw.decode().rstrip("\r\n")
+            m = re.search(r"\{(\d+)\}$", line)
+            if m:  # client literal (APPEND)
+                conn.sendall(b"+ go\r\n")
+                lit = rfile.read(int(m.group(1)))
+                rfile.readline()  # trailing CRLF
+                self.appended.append(lit.decode())
+            self.commands.append(line)
+            tag, _, cmd = line.partition(" ")
+            up = cmd.upper()
+            with self.lock:
+                if up.startswith("LOGIN"):
+                    pass
+                elif up.startswith("SELECT"):
+                    conn.sendall(
+                        f"* {len(self.msgs)} EXISTS\r\n"
+                        f"* OK [UIDVALIDITY 7] ok\r\n".encode()
+                    )
+                elif up.startswith("LIST"):
+                    conn.sendall(b'* LIST () "/" "INBOX"\r\n* LIST () "/" "Sent"\r\n')
+                elif up.startswith("UID FETCH"):
+                    m = re.match(r"UID FETCH ([\d,:*]+) \((.*)\)", cmd, re.I)
+                    uids = (
+                        sorted(self.msgs)
+                        if m.group(1) == "1:*"
+                        else [int(u) for u in m.group(1).split(",")]
+                    )
+                    for seq, uid in enumerate(uids, 1):
+                        if uid not in self.msgs:
+                            continue
+                        flags, content = self.msgs[uid]
+                        fl = " ".join(sorted(flags))
+                        attrs = f"UID {uid} FLAGS ({fl})"
+                        body = None
+                        if "RFC822.SIZE" in m.group(2).upper():
+                            attrs += f" RFC822.SIZE {len(content)}"
+                        if "BODY.PEEK[HEADER]" in m.group(2).upper():
+                            body = content.split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n"
+                            attrs += " BODY[HEADER]"
+                        elif "BODY.PEEK[]" in m.group(2).upper():
+                            body = content
+                            attrs += " BODY[]"
+                        if body is None:
+                            conn.sendall(f"* {seq} FETCH ({attrs})\r\n".encode())
+                        else:
+                            conn.sendall(
+                                f"* {seq} FETCH ({attrs} {{{len(body)}}}\r\n".encode()
+                                + body
+                                + b")\r\n"
+                            )
+                elif up.startswith("UID STORE"):
+                    m = re.match(r"UID STORE ([\d,]+) (\+?)FLAGS\.SILENT \((.*)\)", cmd, re.I)
+                    flags = set(m.group(3).split())
+                    for uid in (int(u) for u in m.group(1).split(",")):
+                        if uid in self.msgs:
+                            if m.group(2) == "+":
+                                self.msgs[uid][0] |= flags
+                            else:
+                                self.msgs[uid][0] = set(flags)
+                elif up.startswith("EXPUNGE"):
+                    for uid in [u for u, v in self.msgs.items() if "\\Deleted" in v[0]]:
+                        del self.msgs[uid]
+                elif up.startswith("NOOP"):
+                    if self.announce:
+                        self.announce = False
+                        conn.sendall(f"* {len(self.msgs)} EXISTS\r\n".encode())
+                elif up.startswith("LOGOUT"):
+                    conn.sendall(f"* BYE\r\n{tag} OK bye\r\n".encode())
+                    return
+            conn.sendall(f"{tag} OK done\r\n".encode())
+
+
+class FakeSmtp(threading.Thread):
+    """One-shot SMTP submission server; records the DATA payload."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(1)
+        self.port = self.sock.getsockname()[1]
+        self.message = None
+        self.commands = []
+
+    def run(self):
+        conn, _ = self.sock.accept()
+        rfile = conn.makefile("rb")
+        conn.sendall(b"220 fake smtp\r\n")
+        while True:
+            raw = rfile.readline()
+            if not raw:
+                return
+            line = raw.decode().rstrip("\r\n")
+            self.commands.append(line)
+            up = line.upper()
+            if up.startswith("EHLO"):
+                conn.sendall(b"250-fake\r\n250 AUTH PLAIN\r\n")
+            elif up.startswith("AUTH"):
+                conn.sendall(b"235 ok\r\n")
+            elif up.startswith("MAIL") or up.startswith("RCPT"):
+                conn.sendall(b"250 ok\r\n")
+            elif up.startswith("DATA"):
+                conn.sendall(b"354 go\r\n")
+                payload = []
+                while True:
+                    data_line = rfile.readline().decode()
+                    if data_line.rstrip("\r\n") == ".":
+                        break
+                    payload.append(data_line)
+                self.message = "".join(payload)
+                conn.sendall(b"250 accepted\r\n")
+            elif up.startswith("QUIT"):
+                conn.sendall(b"221 bye\r\n")
+                return
+
+
+IMAP_MSG = (
+    "From: {sender}\r\nTo: jarda@example.com\r\nSubject: {subject}\r\n"
+    "Date: {date}\r\nMessage-ID: <{mid}@remote>\r\n\r\n{body}\r\n"
+)
+
+
+def scenario_imap(tmp):
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="remote one",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="r1", body="body one"))
+    imap.add(2, set(), IMAP_MSG.format(
+        sender="two@remote.example", subject="remote two",
+        date="Tue, 7 Jul 2026 10:00:00 +0200", mid="r2", body="full body two"))
+    imap.start()
+    smtp = FakeSmtp()
+    smtp.start()
+    editor = os.path.join(tmp, "editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "smtp body line\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "imap-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            f"""
+[identity]
+name = "Jarda"
+email = "jarda@example.com"
+[mail]
+poll_seconds = 1
+editor = "{editor}"
+[[accounts]]
+name = "test"
+user = "jane"
+password_command = "echo pw"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+smtp_host = "127.0.0.1"
+smtp_port = {smtp.port}
+smtp_tls = false
+"""
+        )
+    env = base_env(tmp, {
+        "RMUT_CONFIG": cfg,
+        "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+    })
+    r = Rmut("imap:test", env)
+    # Index built from header-only cache files.
+    r.expect("imap:test/INBOX", "Msgs:2", "New:1", "remote one", "remote two")
+    r.keys(b"\r")  # newest = uid 2: body fetched from the server on view
+    r.expect("full body two")
+    r.keys(b"i$")  # back, sync: the read-mark goes to the server
+    r.expect("synced: 0 deleted, 1 updated")
+    wait_for(
+        lambda: any("UID STORE 2 FLAGS.SILENT (\\Seen)" in c for c in imap.commands),
+        desc="read-mark pushed via UID STORE",
+    )
+    assert "\\Seen" in imap.msgs[2][0]
+    r.keys(b"=d$")  # first = uid 1: delete and sync -> STORE + EXPUNGE
+    r.expect("synced: 1 deleted")
+    wait_for(lambda: 1 not in imap.msgs, desc="message expunged on the server")
+    # New mail arrives server-side; the NOOP poll picks it up.
+    imap.add(3, set(), IMAP_MSG.format(
+        sender="three@remote.example", subject="remote three",
+        date="Wed, 8 Jul 2026 10:00:00 +0200", mid="r3", body="body three"))
+    imap.announce = True
+    r.expect("remote three", "Msgs:2", timeout=8)
+    # Compose: SMTP submission plus Fcc via APPEND to Sent.
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rimap send\ry")
+    r.expect("message sent, copy in Sent")
+    wait_for(lambda: smtp.message is not None, desc="message on the SMTP server")
+    assert "Subject: imap send" in smtp.message
+    assert "smtp body line" in smtp.message
+    assert any("MAIL FROM:<jarda@example.com>" in c for c in smtp.commands)
+    assert any("RCPT TO:<bob@example.org>" in c for c in smtp.commands)
+    wait_for(lambda: imap.appended, desc="Fcc APPEND on the IMAP server")
+    assert "Subject: imap send" in imap.appended[0]
+    # Folder browser lists the account's folders.
+    r.keys(b"y")
+    r.expect("imap:test/Sent")
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -367,6 +613,7 @@ SCENARIOS = [
     scenario_compose_send_postpone,
     scenario_config,
     scenario_send_via_config_sendmail,
+    scenario_imap,
 ]
 
 

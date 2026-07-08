@@ -1,17 +1,19 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use rmut_core::config::Config;
+use rmut_core::config::{Account, Config};
 use rmut_core::message::Envelope;
 use rmut_core::pattern::{self, Pattern};
-use rmut_core::{alias, compose, maildir, message, thread};
+use rmut_core::remote::{self, Remote};
+use rmut_core::{alias, compose, maildir, message, smtp, thread};
 
 use crate::keymap::{IndexAction, Keymap, PagerAction};
 use crate::theme::Theme;
@@ -45,7 +47,8 @@ pub enum Mode {
         back: Option<Pager>,
     },
     Folders {
-        dirs: Vec<PathBuf>,
+        /// Paths or `imap:` specs, ready for `open_mailbox_spec`.
+        dirs: Vec<String>,
         sel: usize,
     },
     Help {
@@ -144,6 +147,11 @@ const SEND_PROMPT: &str = "Send message? (y)es (e)dit (p)ostpone (q)discard: ";
 
 pub struct App {
     pub dir: PathBuf,
+    /// What the status line calls this mailbox: the path for local
+    /// maildirs, the `imap:account/folder` spec for remote ones.
+    pub title: String,
+    /// Set when `dir` is the cache maildir of an IMAP folder.
+    remote: Option<Remote>,
     pub msgs: Vec<Msg>,
     /// Indices into `msgs` after applying limit and thread folding.
     pub visible: Vec<usize>,
@@ -203,6 +211,8 @@ impl App {
         let count = msgs.len();
         Ok(App {
             dir: dir.to_path_buf(),
+            title: dir.display().to_string(),
+            remote: None,
             msgs,
             visible,
             sel,
@@ -226,6 +236,27 @@ impl App {
             pending_editor: None,
             quit: false,
         })
+    }
+
+    /// Open a mailbox by spec: an `imap:account[/folder]` string (the
+    /// folder is mirrored into a cache maildir) or a local path.
+    pub fn open_spec(spec: &str, config: Config) -> Result<Self> {
+        match remote::parse_spec(spec) {
+            Some((account_name, mailbox)) => {
+                let account = config
+                    .account(account_name)
+                    .with_context(|| format!("no account {account_name} in config"))?
+                    .clone();
+                let password = account_password(&account)?;
+                let remote = Remote::open(&account, mailbox, &password)?;
+                let cache = remote.cache.clone();
+                let mut app = App::open(&cache, config)?;
+                app.title = remote.spec.clone();
+                app.remote = Some(remote);
+                Ok(app)
+            }
+            None => App::open(&expand_tilde(spec), config),
+        }
     }
 
     pub fn new_count(&self) -> usize {
@@ -308,6 +339,13 @@ impl App {
     // ---- new-mail detection ----
 
     fn check_new_mail(&mut self) {
+        if let Some(remote) = &mut self.remote {
+            // NOOP + cache refresh; arrivals land in the cache maildir
+            // and are picked up by the mtime rescan below.
+            if let Err(err) = remote.check_new() {
+                self.status = Some(format!("imap: {err:#}"));
+            }
+        }
         let current = dir_mtimes(&self.dir);
         if current == self.dir_mtimes {
             return;
@@ -349,7 +387,7 @@ impl App {
         self.dir_mtimes = dir_mtimes(&self.dir);
         self.resort(keep);
         if arrived > 0 {
-            self.status = Some(format!("new mail in {} (+{arrived})", self.dir.display()));
+            self.status = Some(format!("new mail in {} (+{arrived})", self.title));
         }
     }
 
@@ -487,7 +525,7 @@ impl App {
                 }
                 self.search_next();
             }
-            LineKind::ChangeDir => self.open_mailbox(&expand_tilde(input)),
+            LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::SavePart => self.save_part(input),
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.finish_compose_setup(input),
@@ -826,12 +864,12 @@ impl App {
             }
             KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
             KeyCode::Enter => {
-                let dir = match &self.mode {
+                let spec = match &self.mode {
                     Mode::Folders { dirs, sel } => dirs.get(*sel).cloned(),
                     _ => None,
                 };
-                if let Some(dir) = dir {
-                    self.open_mailbox(&dir);
+                if let Some(spec) = spec {
+                    self.open_mailbox_spec(&spec);
                 }
             }
             _ => {}
@@ -843,29 +881,48 @@ impl App {
             self.status = Some("pending changes — sync with $ first".into());
             return;
         }
-        let mut dirs: Vec<PathBuf> = self
+        let mut dirs: Vec<String> = self
             .config
             .mail
             .mailboxes
             .iter()
-            .map(|m| expand_tilde(m))
-            .filter(|p| p.join("cur").is_dir())
+            .filter(|m| m.starts_with("imap:") || expand_tilde(m).join("cur").is_dir())
+            .cloned()
             .collect();
-        dirs.extend(maildir::discover(&self.dir));
+        match &mut self.remote {
+            Some(remote) => match remote.folders() {
+                Ok(folders) => {
+                    let account = remote.account.name.clone();
+                    dirs.extend(folders.into_iter().map(|f| format!("imap:{account}/{f}")));
+                }
+                Err(err) => {
+                    self.status = Some(format!("cannot list folders: {err:#}"));
+                    return;
+                }
+            },
+            None => dirs.extend(
+                maildir::discover(&self.dir)
+                    .iter()
+                    .map(|p| p.display().to_string()),
+            ),
+        }
         dirs.sort();
         dirs.dedup();
         if dirs.is_empty() {
             self.status = Some("no maildirs found next to this one".into());
             return;
         }
-        let sel = dirs.iter().position(|d| *d == self.dir).unwrap_or(0);
+        let sel = dirs
+            .iter()
+            .position(|d| *d == self.title || expand_tilde(d) == self.dir)
+            .unwrap_or(0);
         self.mode = Mode::Folders { dirs, sel };
     }
 
-    fn open_mailbox(&mut self, dir: &Path) {
-        match App::open(dir, self.config.clone()) {
+    fn open_mailbox_spec(&mut self, spec: &str) {
+        match App::open_spec(spec, self.config.clone()) {
             Ok(app) => *self = app,
-            Err(err) => self.status = Some(format!("cannot open {}: {err:#}", dir.display())),
+            Err(err) => self.status = Some(format!("cannot open {spec}: {err:#}")),
         }
     }
 
@@ -1097,29 +1154,42 @@ impl App {
                 return;
             }
         };
-        match run_sendmail(final_text.as_bytes(), self.config.mail.sendmail.as_deref()) {
+        let send_result = match self.smtp_account() {
+            Some(account) => send_via_smtp(&account, &final_text),
+            None => run_sendmail(final_text.as_bytes(), self.config.mail.sendmail.as_deref()),
+        };
+        match send_result {
             Ok(()) => {
                 let mut note = String::from("message sent");
-                let sent_dir = self
-                    .config
-                    .mail
-                    .sent
-                    .as_deref()
-                    .map(expand_tilde)
-                    .filter(|p| p.join("cur").is_dir())
-                    .or_else(|| maildir::find_special(&self.dir, &["sent", "sent-mail"]));
-                match sent_dir {
-                    Some(sent) => {
-                        let flags = maildir::Flags {
-                            seen: true,
-                            ..Default::default()
-                        };
-                        match maildir::deliver(&sent, final_text.as_bytes(), flags) {
-                            Ok(_) => note += ", copy in Sent",
-                            Err(_) => note += ", Fcc to Sent failed",
+                match &mut self.remote {
+                    // Fcc goes to the account's Sent folder on the server.
+                    Some(remote) => match remote.append_sent(final_text.as_bytes()) {
+                        Ok(folder) => note += &format!(", copy in {folder}"),
+                        Err(_) => note += ", Fcc to Sent failed",
+                    },
+                    None => {
+                        let sent_dir = self
+                            .config
+                            .mail
+                            .sent
+                            .as_deref()
+                            .map(expand_tilde)
+                            .filter(|p| p.join("cur").is_dir())
+                            .or_else(|| maildir::find_special(&self.dir, &["sent", "sent-mail"]));
+                        match sent_dir {
+                            Some(sent) => {
+                                let flags = maildir::Flags {
+                                    seen: true,
+                                    ..Default::default()
+                                };
+                                match maildir::deliver(&sent, final_text.as_bytes(), flags) {
+                                    Ok(_) => note += ", copy in Sent",
+                                    Err(_) => note += ", Fcc to Sent failed",
+                                }
+                            }
+                            None => note += " (no Sent maildir, no copy kept)",
                         }
                     }
-                    None => note += " (no Sent maildir, no copy kept)",
                 }
                 let _ = std::fs::remove_file(&compose_state.path);
                 if let Some(src) = &compose_state.recall_source {
@@ -1133,6 +1203,25 @@ impl App {
                 self.reprompt_send();
             }
         }
+    }
+
+    /// Which account to submit outgoing mail through. Explicit sendmail
+    /// configuration ($RMUT_SENDMAIL or mail.sendmail) wins; otherwise
+    /// the open mailbox's account, or the first one with an smtp_host.
+    fn smtp_account(&self) -> Option<Account> {
+        if std::env::var("RMUT_SENDMAIL").is_ok() || self.config.mail.sendmail.is_some() {
+            return None;
+        }
+        if let Some(remote) = &self.remote
+            && remote.account.smtp_host.is_some()
+        {
+            return Some(remote.account.clone());
+        }
+        self.config
+            .accounts
+            .iter()
+            .find(|a| a.smtp_host.is_some())
+            .cloned()
     }
 
     fn postponed_dir(&self) -> Option<PathBuf> {
@@ -1251,6 +1340,14 @@ impl App {
             return;
         };
         let path = self.msgs[i].env.file.path.clone();
+        // Cached IMAP messages start header-only; get the body now.
+        if let Some(remote) = &mut self.remote
+            && remote::is_partial(&path)
+            && let Err(err) = remote.fetch_body(&path)
+        {
+            self.status = Some(format!("cannot fetch message: {err:#}"));
+            return;
+        }
         match message::load(&path) {
             Ok(view) => {
                 self.mode = Mode::Pager(Pager {
@@ -1400,7 +1497,35 @@ impl App {
 
     /// Write all pending changes to the maildir: T-flagged messages are
     /// removed, other dirty messages are renamed with their new flags.
+    /// For an IMAP mailbox the changes go to the server first (UID
+    /// STORE / EXPUNGE); the local pass then updates the cache to match.
     fn sync(&mut self) {
+        if let Some(remote) = &mut self.remote {
+            let mut deletes: Vec<PathBuf> = Vec::new();
+            let mut flag_pushes: Vec<(PathBuf, maildir::Flags)> = Vec::new();
+            for m in &self.msgs {
+                if m.env.file.flags.deleted {
+                    deletes.push(m.env.file.path.clone());
+                } else if m.dirty {
+                    flag_pushes.push((m.env.file.path.clone(), m.env.file.flags));
+                }
+            }
+            let result = flag_pushes
+                .iter()
+                .try_for_each(|(path, flags)| remote.push_flags(path, *flags))
+                .and_then(|()| {
+                    if deletes.is_empty() {
+                        Ok(())
+                    } else {
+                        remote.delete(&deletes)
+                    }
+                });
+            if let Err(err) = result {
+                // Nothing applied locally: everything stays pending.
+                self.status = Some(format!("sync failed: {err:#}"));
+                return;
+            }
+        }
         let keep = self.selected_path();
         let mut removed = 0usize;
         let mut saved = 0usize;
@@ -1490,6 +1615,27 @@ fn default_from(hostname: &str) -> String {
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     format!("{user}@{hostname}")
+}
+
+/// Run the account's password command once per session.
+fn account_password(account: &Account) -> Result<String> {
+    static CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    let map = cache.get_or_insert_with(HashMap::new);
+    if let Some(password) = map.get(&account.name) {
+        return Ok(password.clone());
+    }
+    let password = account.password()?;
+    map.insert(account.name.clone(), password.clone());
+    Ok(password)
+}
+
+fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
+    let from = compose::from_address(text).context("cannot parse the From address")?;
+    let (rcpts, text) = compose::smtp_envelope(text)?;
+    anyhow::ensure!(!rcpts.is_empty(), "no recipient addresses");
+    let password = account_password(account)?;
+    smtp::send(account, &password, &from, &rcpts, text.as_bytes())
 }
 
 fn run_sendmail(bytes: &[u8], configured: Option<&str>) -> Result<()> {

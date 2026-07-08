@@ -10,9 +10,11 @@ use anyhow::{Result, bail};
 
 use crate::app::App;
 
-const USAGE: &str = "usage: rmut [MAILDIR]   (-V version, -h help)
+const USAGE: &str = "usage: rmut [MAILDIR | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
 
-Opens MAILDIR, the first configured mailbox, $MAIL, or ~/Maildir.
+Opens the given maildir or IMAP folder (INBOX when FOLDER is omitted;
+the account comes from [[accounts]] in the config), or falls back to
+the first configured mailbox, $MAIL, or ~/Maildir.
 Config: $RMUT_CONFIG or ~/.config/rmut/config.toml.";
 
 fn main() -> ExitCode {
@@ -26,7 +28,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode> {
-    let mut dir: Option<PathBuf> = None;
+    let mut spec: Option<String> = None;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -38,17 +40,17 @@ fn run() -> Result<ExitCode> {
                 return Ok(ExitCode::SUCCESS);
             }
             _ if arg.starts_with('-') => bail!("unknown option {arg}\n{USAGE}"),
-            _ if dir.is_none() => dir = Some(PathBuf::from(arg)),
+            _ if spec.is_none() => spec = Some(arg),
             _ => bail!("too many arguments\n{USAGE}"),
         }
     }
     let (config, config_warning) = rmut_core::config::load_default();
-    let dir = match dir {
-        Some(d) => d,
-        None => default_maildir(&config)?,
+    let spec = match spec {
+        Some(s) => s,
+        None => default_mailbox(&config)?,
     };
 
-    let mut app = App::open(&dir, config)?;
+    let mut app = App::open_spec(&spec, config)?;
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }
@@ -67,23 +69,21 @@ fn expand_tilde(input: &str) -> PathBuf {
     PathBuf::from(input)
 }
 
-fn default_maildir(config: &rmut_core::config::Config) -> Result<PathBuf> {
+fn default_mailbox(config: &rmut_core::config::Config) -> Result<String> {
     for mailbox in &config.mail.mailboxes {
-        let p = expand_tilde(mailbox);
-        if p.join("cur").is_dir() {
-            return Ok(p);
+        if mailbox.starts_with("imap:") || expand_tilde(mailbox).join("cur").is_dir() {
+            return Ok(mailbox.clone());
         }
     }
-    if let Ok(mail) = std::env::var("MAIL") {
-        let p = PathBuf::from(mail);
-        if p.join("cur").is_dir() {
-            return Ok(p);
-        }
+    if let Ok(mail) = std::env::var("MAIL")
+        && PathBuf::from(&mail).join("cur").is_dir()
+    {
+        return Ok(mail);
     }
     if let Ok(home) = std::env::var("HOME") {
         let p = PathBuf::from(home).join("Maildir");
         if p.join("cur").is_dir() {
-            return Ok(p);
+            return Ok(p.display().to_string());
         }
     }
     bail!("no maildir given and no configured mailbox, $MAIL, or ~/Maildir found\n{USAGE}");

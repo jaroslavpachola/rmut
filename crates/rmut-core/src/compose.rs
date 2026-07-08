@@ -139,6 +139,13 @@ pub fn bare_address(field: &str) -> Option<String> {
     }
 }
 
+/// The SMTP envelope sender: the bare address of the From header.
+pub fn from_address(text: &str) -> Option<String> {
+    use mailparse::MailHeaderMap;
+    let mail = mailparse::parse_mail(text.as_bytes()).ok()?;
+    bare_address(&mail.get_headers().get_first_value("From")?)
+}
+
 fn field_addresses(value: &str, out: &mut Vec<String>) {
     let Ok(list) = mailparse::addrparse(value) else {
         return;
