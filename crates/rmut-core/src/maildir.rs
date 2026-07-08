@@ -104,7 +104,7 @@ pub fn scan(dir: &Path) -> Result<Vec<MailFile>> {
                 path: entry.path(),
                 is_new,
                 flags: Flags::from_filename(&name),
-                size: entry.metadata()?.len(),
+                size: size_from_name(&name).unwrap_or(entry.metadata()?.len()),
             });
         }
     }
@@ -114,6 +114,17 @@ pub fn scan(dir: &Path) -> Result<Vec<MailFile>> {
 /// Filename without the `:2,` info suffix.
 fn base_name(name: &str) -> &str {
     name.rsplit_once(":2,").map_or(name, |(base, _)| base)
+}
+
+/// The `,S=<bytes>` message size some tools (and our IMAP cache) put in
+/// the base name — authoritative when present, since a cached file may
+/// hold only the headers.
+fn size_from_name(name: &str) -> Option<u64> {
+    let rest = base_name(name).rsplit_once(",S=")?.1;
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 /// Write the file's current flags to disk by renaming it into `cur/`
@@ -250,6 +261,18 @@ mod tests {
         };
         assert_eq!(f.to_info(), ":2,FST");
         assert_eq!(Flags::from_filename(&format!("x{}", f.to_info())), f);
+    }
+
+    #[test]
+    fn size_comes_from_name_when_present() {
+        assert_eq!(size_from_name("12.rmut,S=345:2,S"), Some(345));
+        assert_eq!(size_from_name("12.rmut,S=345"), Some(345));
+        assert_eq!(size_from_name("1234.abc.host:2,S"), None);
+        let tmp = tempfile::tempdir().unwrap();
+        make_maildir(tmp.path());
+        fs::write(tmp.path().join("cur/9.rmut,S=777:2,S"), "tiny").unwrap();
+        let files = scan(tmp.path()).unwrap();
+        assert_eq!(files[0].size, 777);
     }
 
     #[test]

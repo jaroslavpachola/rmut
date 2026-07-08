@@ -37,45 +37,53 @@ impl Expect {
 }
 
 /// IMAP server; returns the port and the thread to join at test end.
+/// When the client disconnects with script steps left, the server
+/// accepts a fresh connection (reconnect tests). Writes are
+/// best-effort — a LOGOUT reply may race the client's close.
 pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let handle = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut stream = stream;
-        stream.write_all(b"* OK rmut test server\r\n").unwrap();
-        for step in script {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                panic!("client hung up; still expected {:?}", step.cmd);
-            }
-            let mut line = line.trim_end().to_string();
-            // Client literals: answer the continuation, swallow the
-            // bytes, and keep reading the same logical command.
-            while let Some(n) = client_literal_len(&line) {
-                stream.write_all(b"+ go ahead\r\n").unwrap();
-                let mut lit = vec![0u8; n];
-                reader.read_exact(&mut lit).unwrap();
-                let mut rest = String::new();
-                reader.read_line(&mut rest).unwrap();
-                line.push_str(String::from_utf8_lossy(&lit).trim_end());
-                line.push_str(rest.trim_end());
-            }
-            assert!(
-                line.contains(step.cmd),
-                "server expected {:?}, got {line:?}",
-                step.cmd
-            );
-            let tag = line.split(' ').next().unwrap_or("*").to_string();
-            stream.write_all(step.reply.as_bytes()).unwrap();
-            match step.fail {
-                Some(status) => stream
-                    .write_all(format!("{tag} {status}\r\n").as_bytes())
-                    .unwrap(),
-                None => stream
-                    .write_all(format!("{tag} OK done\r\n").as_bytes())
-                    .unwrap(),
+        let mut steps = script.into_iter().peekable();
+        while steps.peek().is_some() {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut stream = stream;
+            let _ = stream.write_all(b"* OK rmut test server\r\n");
+            while steps.peek().is_some() {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break; // client gone; next connection continues
+                }
+                let mut line = line.trim_end().to_string();
+                // Client literals: answer the continuation, swallow the
+                // bytes, and keep reading the same logical command.
+                while let Some(n) = client_literal_len(&line) {
+                    let _ = stream.write_all(b"+ go ahead\r\n");
+                    let mut lit = vec![0u8; n];
+                    reader.read_exact(&mut lit).unwrap();
+                    let mut rest = String::new();
+                    reader.read_line(&mut rest).unwrap();
+                    line.push_str(String::from_utf8_lossy(&lit).trim_end());
+                    line.push_str(rest.trim_end());
+                }
+                if line.contains("LOGOUT") && steps.peek().is_none_or(|s| s.cmd != "LOGOUT") {
+                    // Unscripted logout from a dropped client.
+                    break;
+                }
+                let step = steps.next().unwrap();
+                assert!(
+                    line.contains(step.cmd),
+                    "server expected {:?}, got {line:?}",
+                    step.cmd
+                );
+                let tag = line.split(' ').next().unwrap_or("*").to_string();
+                let _ = stream.write_all(step.reply.as_bytes());
+                let status = step.fail.unwrap_or("OK done");
+                let _ = stream.write_all(format!("{tag} {status}\r\n").as_bytes());
+                if line.contains("LOGOUT") {
+                    break;
+                }
             }
         }
     });
