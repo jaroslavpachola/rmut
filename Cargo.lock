@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-tui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "ratatui",

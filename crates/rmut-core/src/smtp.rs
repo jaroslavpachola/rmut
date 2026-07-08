@@ -27,15 +27,14 @@ pub fn send(
     let implicit_tls = account.smtp_tls && account.smtp_port == 465;
     let mut conn = Conn::new(net::connect(host, account.smtp_port, implicit_tls)?);
     expect(&mut conn, 220).context("SMTP greeting")?;
-    ehlo(&mut conn)?;
+    let mut caps = ehlo(&mut conn)?;
     if account.smtp_tls && !implicit_tls {
         command(&mut conn, "STARTTLS", 220)?;
         let tcp = conn.into_stream().into_tcp()?;
         conn = Conn::new(net::wrap_tls(tcp, host)?);
-        ehlo(&mut conn)?;
+        caps = ehlo(&mut conn)?;
     }
-    let auth = b64(format!("\0{}\0{}", account.user, password).as_bytes());
-    command(&mut conn, &format!("AUTH PLAIN {auth}"), 235).context("SMTP authentication")?;
+    authenticate(&mut conn, &caps, &account.user, password).context("SMTP authentication")?;
     command(&mut conn, &format!("MAIL FROM:<{from}>"), 250)?;
     for rcpt in rcpts {
         command(&mut conn, &format!("RCPT TO:<{rcpt}>"), 250)
@@ -50,6 +49,27 @@ pub fn send(
 
 fn ehlo(conn: &mut Conn) -> Result<String> {
     command(conn, &format!("EHLO {}", maildir::hostname()), 250)
+}
+
+/// AUTH PLAIN, unless the server's EHLO offered only LOGIN.
+fn authenticate(conn: &mut Conn, caps: &str, user: &str, password: &str) -> Result<()> {
+    // `caps` is the EHLO reply with its lines joined by "; ", each
+    // starting with the "250-"/"250 " code.
+    let caps = caps.to_ascii_uppercase();
+    let mechanisms = caps
+        .split("; ")
+        .filter_map(|line| line.get(4..))
+        .find_map(|line| line.trim_start().strip_prefix("AUTH "));
+    let login_only = mechanisms.is_some_and(|m| m.contains("LOGIN") && !m.contains("PLAIN"));
+    if login_only {
+        command(conn, "AUTH LOGIN", 334)?;
+        command(conn, &b64(user.as_bytes()), 334)?;
+        command(conn, &b64(password.as_bytes()), 235)?;
+    } else {
+        let token = b64(format!("\0{user}\0{password}").as_bytes());
+        command(conn, &format!("AUTH PLAIN {token}"), 235)?;
+    }
+    Ok(())
 }
 
 fn command(conn: &mut Conn, cmd: &str, want: u16) -> Result<String> {
@@ -192,6 +212,39 @@ mod tests {
         let log = log.lock().unwrap();
         let payload = log.iter().find(|l| l.contains("Subject")).unwrap();
         assert!(payload.contains("..leading dot"));
+    }
+
+    #[test]
+    fn falls_back_to_auth_login() {
+        let (port, handle, _log) = testserver::smtp(vec![
+            Expect::new("EHLO", "250-fake\r\n250 AUTH LOGIN\r\n".into()),
+            Expect::new("AUTH LOGIN", "334 VXNlcm5hbWU6\r\n".into()),
+            Expect::new(&b64_static(b"jane"), "334 UGFzc3dvcmQ6\r\n".into()),
+            Expect::new(&b64_static(b"secret"), "235 ok\r\n".into()),
+            Expect::new("MAIL FROM", "250 ok\r\n".into()),
+            Expect::new("RCPT TO", "250 ok\r\n".into()),
+            Expect::new("DATA", "354 go\r\n".into()),
+            Expect::new("QUIT", "221 bye\r\n".into()),
+        ]);
+        let account = crate::config::Account {
+            name: "t".into(),
+            user: "jane".into(),
+            password_command: "unused".into(),
+            imap_host: None,
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: Some("127.0.0.1".into()),
+            smtp_port: port,
+            smtp_tls: false,
+            sent_folder: "Sent".into(),
+        };
+        send(&account, "secret", "jane@x", &["bob@y".into()], b"hi\n").unwrap();
+        handle.join().unwrap();
+    }
+
+    // Leak a b64 value so Expect's &'static str signature is satisfied.
+    fn b64_static(input: &[u8]) -> &'static str {
+        Box::leak(b64(input).into_boxed_str())
     }
 
     #[test]

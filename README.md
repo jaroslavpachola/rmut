@@ -5,17 +5,19 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**0.4** — the 1.0 roadmap is feature-complete: mutt-style index with
-delete/flag/read toggles and real maildir sync, sort orders,
+**0.5** — everything from the 1.0 roadmap plus R5: mutt-style index
+with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
 Alt+v/Alt+V to fold), **compose/reply/forward** via `$EDITOR` +
-sendmail(1) with postpone/recall, Fcc, and aliases, and now
-**configuration**: a TOML config file with identity, mailboxes,
-sendmail/editor, index format string, themes and color overrides, and
-key remapping; **new-mail detection** while running; and a `?` help
-screen generated from the active keymap. A pty-driven e2e suite lives
-in `tests/e2e/`.
+sendmail(1) with postpone/recall, Fcc, and aliases, **configuration**
+(TOML: identity, mailboxes, sendmail/editor, index format string,
+themes/colors, key remapping), **new-mail detection**, a `?` help
+screen generated from the active keymap, and now **IMAP and SMTP
+accounts**: open `imap:account/FOLDER` mailboxes over TLS, with local
+caching, `$` sync mapped to the server, and sending via SMTP
+submission with an IMAP Fcc. A pty-driven e2e suite (including fake
+IMAP/SMTP servers) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -26,10 +28,11 @@ cargo run -p rmut-tui -- ~/Maildir     # or: just run ~/Maildir
 ```
 
 ```
-usage: rmut [MAILDIR]   (-V version, -h help)
+usage: rmut [MAILDIR | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
 ```
 
-Without an argument, rmut opens `$MAIL` or `~/Maildir`.
+Without an argument, rmut opens the first configured mailbox, `$MAIL`,
+or `~/Maildir`.
 
 ## Keys
 
@@ -52,16 +55,33 @@ Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread; a bare word matches
 subject or from; several terms AND together.
 
+## IMAP
+
+`rmut imap:work` (or `imap:work/Archive`) opens an account folder;
+`c` and the folder browser `y` take the same specs, and `y` lists the
+account's folders via LIST. Messages are mirrored into a cache maildir
+under `~/.cache/rmut/imap/` — headers up front, full bodies fetched on
+first view — so the index is fast and old mail reopens offline. `$`
+pushes your changes to the server (flags via UID STORE, deletes via
+EXPUNGE) and new mail is picked up by polling (`poll_seconds`). The
+password comes from `password_command` (e.g. `pass show mail/work`),
+once per session.
+
 ## Sending mail
 
-Drafts open in `$VISUAL`/`$EDITOR` (default `vi`) and are handed to
-`sendmail -t -oi` (`$RMUT_SENDMAIL` overrides the command). `From:`
+Drafts open in `$VISUAL`/`$EDITOR` (default `vi`). If an account with
+`smtp_host` applies (the open mailbox's account, or the first one
+configured), the message goes out via SMTP submission — STARTTLS on
+587, implicit TLS on 465, AUTH PLAIN/LOGIN, Bcc stripped from the wire
+copy — and the Fcc lands in the account's `sent_folder` by IMAP
+APPEND. Otherwise it is handed to `sendmail -t -oi`; setting
+`$RMUT_SENDMAIL` or `mail.sendmail` forces the sendmail path. `From:`
 defaults to `$EMAIL` or `user@hostname` unless the draft sets one. At
 the send prompt, `p` postpones the draft into a nearby Drafts maildir
 (or `.rmut-postponed`); the next `m` offers to recall it. Sent mail is
-copied to a nearby Sent maildir when one exists. Aliases are read from
-`$RMUT_ALIASES` or `~/.config/rmut/aliases`, one mutt-style
-`alias nick address...` per line.
+copied to a nearby Sent maildir when one exists (local mailboxes).
+Aliases are read from `$RMUT_ALIASES` or `~/.config/rmut/aliases`, one
+mutt-style `alias nick address...` per line.
 
 ## Configuration
 
@@ -93,6 +113,14 @@ deleted = "red"
 [keys.index]                 # remap: action = "key" (see ? for actions)
 sync = "w"
 [keys.pager]
+
+[[accounts]]                 # remote account: open with `rmut imap:work`
+name = "work"
+user = "jane@example.com"
+password_command = "pass show mail/work"   # first stdout line; never a plaintext password
+imap_host = "imap.example.com"             # imap_port = 993, imap_tls = true
+smtp_host = "smtp.example.com"             # smtp_port = 587 (STARTTLS; 465 = implicit TLS)
+sent_folder = "Sent"                       # Fcc target via IMAP APPEND
 ```
 
 Key syntax: a character, `ctrl+x`, `alt+x`, or enter/esc/space/tab/
