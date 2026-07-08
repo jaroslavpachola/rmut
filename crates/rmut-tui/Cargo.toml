@@ -1,0 +1,18 @@
+[package]
+name = "rmut-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "rmut: a mutt-like mail client in Rust"
+
+[[bin]]
+name = "rmut"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+rmut-core = { path = "../rmut-core" }
+
+[dev-dependencies]
+toml = { workspace = true }
