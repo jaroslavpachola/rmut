@@ -44,7 +44,16 @@ pub fn parse_spec(spec: &str) -> Option<(&str, &str)> {
 
 /// Tidy a mailbox name: collapse `//` runs and trim `/` from the ends
 /// (servers reject "adjacent hierarchy separators"); empty → INBOX.
+/// A mutt-style imap[s]:// URL (from an unconverted config) means the
+/// mailbox in its path.
 pub fn clean_mailbox(name: &str) -> String {
+    let name = match name
+        .strip_prefix("imap://")
+        .or_else(|| name.strip_prefix("imaps://"))
+    {
+        Some(rest) => rest.split_once('/').map_or("", |(_, path)| path),
+        None => name,
+    };
     let cleaned = name
         .split('/')
         .filter(|s| !s.is_empty())
@@ -283,6 +292,13 @@ mod tests {
         assert_eq!(clean_mailbox("INBOX/"), "INBOX");
         assert_eq!(clean_mailbox("//"), "INBOX");
         assert_eq!(clean_mailbox(""), "INBOX");
+        // Stale mutt-style URLs name the mailbox in their path.
+        assert_eq!(
+            clean_mailbox("imap://jane@mail.example.com:/INBOX"),
+            "INBOX"
+        );
+        assert_eq!(clean_mailbox("imaps://host/Work/Reports/"), "Work/Reports");
+        assert_eq!(clean_mailbox("imaps://host"), "INBOX");
     }
 
     fn account(port: u16) -> Account {

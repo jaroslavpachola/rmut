@@ -536,9 +536,15 @@ impl State {
 
     fn account_toml(&self, folder_url: Option<&str>, skipped: &mut Vec<String>) -> String {
         let mut out = format!("\n[[accounts]]\nname = {}\n", quote(ACCOUNT));
+        // imap_user wins; then the user@ part of the folder/smtp URL.
+        let url_user = folder_url
+            .into_iter()
+            .chain(self.smtp_url.as_deref())
+            .find_map(|url| split_url(url).0.map(str::to_string));
         let user = self
             .imap_user
             .clone()
+            .or(url_user)
             .or_else(|| self.email.clone())
             .unwrap_or_else(|| "TODO".into());
         out += &format!("user = {}\n", quote(&user));
@@ -563,7 +569,7 @@ impl State {
             }
         }
         if let Some(url) = folder_url {
-            let (host, port, tls) = split_url(url);
+            let (_, host, port, tls) = split_url(url);
             out += &format!("imap_host = {}\n", quote(host));
             // imap:// means the standard port with STARTTLS (rmut
             // upgrades any non-993 port), never a plaintext connection.
@@ -574,8 +580,7 @@ impl State {
             }
         }
         if let Some(smtp) = &self.smtp_url {
-            let (host, port, tls) = split_url(smtp);
-            let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+            let (_, host, port, tls) = split_url(smtp);
             out += &format!("smtp_host = {}\n", quote(host));
             match (port, tls) {
                 (Some(p), _) => out += &format!("smtp_port = {p}\n"),
@@ -602,19 +607,22 @@ fn is_imap_url(value: &str) -> bool {
     value.starts_with("imap://") || value.starts_with("imaps://")
 }
 
-/// host, explicit port, and whether the scheme implies TLS. Any
-/// mailbox path in the URL is ignored here (see `url_mailbox`).
-fn split_url(url: &str) -> (&str, Option<u16>, bool) {
+/// userinfo, host, explicit port, and whether the scheme implies TLS.
+/// Tolerates a trailing empty port ("host:"); any mailbox path in the
+/// URL is ignored here (see `url_mailbox`).
+fn split_url(url: &str) -> (Option<&str>, &str, Option<u16>, bool) {
     let (tls, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (scheme.ends_with('s'), rest),
         None => (true, url),
     };
     let rest = rest.split('/').next().unwrap_or(rest);
+    let (user, rest) = match rest.rsplit_once('@') {
+        Some((u, r)) if !u.is_empty() => (Some(u), r),
+        _ => (None, rest),
+    };
     match rest.rsplit_once(':') {
-        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => {
-            (host, port.parse().ok(), tls)
-        }
-        _ => (rest, None, tls),
+        Some((host, port)) if !host.is_empty() => (user, host, port.parse().ok(), tls),
+        _ => (user, rest, None, tls),
     }
 }
 
@@ -932,6 +940,25 @@ mod tests {
             vec!["imap:mutt/INBOX", "imap:mutt/Archive"]
         );
         assert!(!toml.contains("//INBOX"), "no doubled separators:\n{toml}");
+    }
+
+    #[test]
+    fn url_with_userinfo_and_empty_port() {
+        // Seen in the wild: user@ in the URL and a dangling colon.
+        let (cfg, toml) = to_config(concat!(
+            "set folder = \"imap://jane@mail.example.com:/\"\n",
+            "set spoolfile = \"imap://jane@mail.example.com:/INBOX\"\n",
+        ));
+        let acct = cfg.account("mutt").unwrap();
+        assert_eq!(acct.user, "jane");
+        assert_eq!(acct.imap_host, Some("mail.example.com".into()));
+        assert_eq!(acct.imap_port, 143);
+        assert!(acct.imap_tls, "imap:// means STARTTLS, not plaintext");
+        assert_eq!(cfg.mail.mailboxes, vec!["imap:mutt/INBOX"]);
+        assert!(
+            !toml.contains("jane@mail.example.com"),
+            "no URLs in specs:\n{toml}"
+        );
     }
 
     #[test]
