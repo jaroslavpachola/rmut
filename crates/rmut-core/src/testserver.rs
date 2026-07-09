@@ -16,6 +16,9 @@ pub(crate) struct Expect {
     reply: String,
     /// IMAP: complete the command with NO instead of OK.
     fail: Option<&'static str>,
+    /// IMAP: send only `reply`, no tagged completion — for IDLE, which
+    /// is completed by a later DONE step.
+    untagged: bool,
 }
 
 impl Expect {
@@ -24,6 +27,7 @@ impl Expect {
             cmd,
             reply,
             fail: None,
+            untagged: false,
         }
     }
 
@@ -32,6 +36,16 @@ impl Expect {
             cmd,
             reply: String::new(),
             fail: Some(status),
+            untagged: false,
+        }
+    }
+
+    pub(crate) fn untagged(cmd: &'static str, reply: String) -> Expect {
+        Expect {
+            cmd,
+            reply,
+            fail: None,
+            untagged: true,
         }
     }
 }
@@ -45,6 +59,7 @@ pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
     let port = listener.local_addr().unwrap().port();
     let handle = std::thread::spawn(move || {
         let mut steps = script.into_iter().peekable();
+        let mut last_tag = String::from("*");
         while steps.peek().is_some() {
             let (stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -77,10 +92,20 @@ pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
                     "server expected {:?}, got {line:?}",
                     step.cmd
                 );
-                let tag = line.split(' ').next().unwrap_or("*").to_string();
+                // IDLE is terminated by a bare DONE; complete it with
+                // the tag remembered from the IDLE command itself.
+                let tag = match line.split(' ').next().unwrap_or("*") {
+                    "DONE" => last_tag.clone(),
+                    t => {
+                        last_tag = t.to_string();
+                        last_tag.clone()
+                    }
+                };
                 let _ = stream.write_all(step.reply.as_bytes());
-                let status = step.fail.unwrap_or("OK done");
-                let _ = stream.write_all(format!("{tag} {status}\r\n").as_bytes());
+                if !step.untagged {
+                    let status = step.fail.unwrap_or("OK done");
+                    let _ = stream.write_all(format!("{tag} {status}\r\n").as_bytes());
+                }
                 if line.contains("LOGOUT") {
                     break;
                 }

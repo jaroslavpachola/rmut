@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, ensure};
 
@@ -239,15 +241,28 @@ impl Remote {
         self.client.expunge()
     }
 
-    /// Selectable folders, for the folder browser.
-    pub fn folders(&mut self) -> Result<Vec<String>> {
-        Ok(self
+    /// Selectable folders with their UNSEEN counts, for the folder
+    /// browser. The open folder's count comes from the local cache
+    /// (STATUS must not target the selected mailbox); a failing STATUS
+    /// just shows as 0.
+    pub fn folders(&mut self) -> Result<Vec<(String, usize)>> {
+        let names: Vec<String> = self
             .client
             .list()?
             .into_iter()
             .filter(|f| !f.no_select)
             .map(|f| f.name)
-            .collect())
+            .collect();
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            let unseen = if name == self.mailbox {
+                maildir::new_count(&self.cache)
+            } else {
+                self.client.status_unseen(&name).unwrap_or(0) as usize
+            };
+            out.push((name, unseen));
+        }
+        Ok(out)
     }
 
     /// Fcc: file the sent message into the account's Sent folder.
@@ -283,6 +298,61 @@ impl Drop for Remote {
     fn drop(&mut self) {
         self.client.logout();
     }
+}
+
+/// Handle to a background IDLE watcher. Dropping it sets the stop
+/// flag; the thread notices within the socket's 60 s read timeout and
+/// logs out.
+pub struct IdleWatch {
+    changed: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl IdleWatch {
+    /// True once since the server last announced changes.
+    pub fn take_changed(&self) -> bool {
+        self.changed.swap(false, Ordering::Relaxed)
+    }
+}
+
+impl Drop for IdleWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Watch `mailbox` with IDLE on a dedicated connection, setting the
+/// handle's flag whenever the server announces changes. Best-effort:
+/// when the server lacks IDLE (or anything fails) the thread just
+/// ends and the caller's NOOP polling carries on as before.
+pub fn idle_watch(account: &Account, mailbox: &str, password: &str) -> IdleWatch {
+    let changed = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (account, mailbox, password) = (account.clone(), mailbox.to_string(), password.to_string());
+    let (thread_changed, thread_stop) = (Arc::clone(&changed), Arc::clone(&stop));
+    std::thread::spawn(move || {
+        let Some(host) = account.imap_host.as_deref() else {
+            return;
+        };
+        let Ok(mut client) = Client::connect(host, account.imap_port, account.imap_tls) else {
+            return;
+        };
+        if client.login(&account.user, &password).is_err()
+            || !client.supports_idle().unwrap_or(false)
+            || client.select(&mailbox).is_err()
+        {
+            return;
+        }
+        while !thread_stop.load(Ordering::Relaxed) {
+            match client.idle(&thread_stop) {
+                Ok(true) => thread_changed.store(true, Ordering::Relaxed),
+                Ok(false) => {}
+                Err(_) => return,
+            }
+        }
+        client.logout();
+    });
+    IdleWatch { changed, stop }
 }
 
 #[cfg(test)]
@@ -497,6 +567,52 @@ mod tests {
                 "Sent"
             );
         });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn folders_carry_unseen_counts() {
+        let mut script = open_script();
+        script.push(Expect::new(
+            "LIST \"\" \"*\"",
+            "* LIST () \"/\" \"INBOX\"\r\n* LIST () \"/\" \"Archive\"\r\n".into(),
+        ));
+        script.push(Expect::new(
+            "STATUS \"Archive\" (UNSEEN)",
+            "* STATUS \"Archive\" (UNSEEN 5)\r\n".into(),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let folders = remote.folders().unwrap();
+            // INBOX (selected) counts its cache maildir: UID 11 is new.
+            assert_eq!(folders, vec![("INBOX".into(), 1), ("Archive".into(), 5)]);
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn idle_watch_flags_server_changes() {
+        let script = vec![
+            Expect::new("LOGIN", String::new()),
+            Expect::new("CAPABILITY", "* CAPABILITY IMAP4rev1 IDLE\r\n".into()),
+            Expect::new("SELECT \"INBOX\"", "* 1 EXISTS\r\n".into()),
+            Expect::untagged("IDLE", "+ idling\r\n* 2 EXISTS\r\n".into()),
+            Expect::new("DONE", String::new()),
+            // The watcher re-idles; the script then runs out and the
+            // dropped connection ends the thread.
+            Expect::untagged("IDLE", "+ idling\r\n".into()),
+        ];
+        let (port, handle) = testserver::imap(script);
+        let watch = idle_watch(&account(port), "INBOX", "pw");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !watch.take_changed() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "idle watcher never flagged the change"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         handle.join().unwrap();
     }
 

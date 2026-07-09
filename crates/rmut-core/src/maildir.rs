@@ -197,6 +197,20 @@ pub fn deliver(dir: &Path, content: &[u8], flags: Flags) -> Result<PathBuf> {
     Ok(target)
 }
 
+/// Messages waiting in `new/` — the cheap new-mail count for the
+/// folder browser and the cross-mailbox poll. 0 for non-maildirs.
+pub fn new_count(dir: &Path) -> usize {
+    dir.join("new")
+        .read_dir()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// Find a nearby maildir whose name (ignoring a leading dot) matches one
 /// of `names` case-insensitively — e.g. Sent/.Sent or Drafts.
 pub fn find_special(dir: &Path, names: &[&str]) -> Option<PathBuf> {

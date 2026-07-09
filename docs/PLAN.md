@@ -160,15 +160,17 @@ per recipient via folder-hook/send-hook.
 - [x] String arguments are case-insensitive regexes (regex-lite); an
       invalid regex degrades to the old substring match
 
-## R11 — new-mail awareness and IDLE (1.10)
+## R11 — new-mail awareness and IDLE (done, 1.10)
 
-- [ ] Track new mail across all configured mailboxes (mutt's
-      `mailboxes` notion), not just the open one: mark folders with
-      new mail in the browser `y` and hint in the status line
-- [ ] Unread counts in the folder browser (local: scan `new/`; IMAP:
-      STATUS UNSEEN)
-- [ ] IMAP IDLE on the open folder, falling back to NOOP polling when
-      the server lacks it
+- [x] Track new mail across the configured local mailboxes (mutt's
+      `mailboxes` notion): the poll watches their new/ and hints
+      "new mail in ..." in the status line when one grows
+- [x] Counts in the folder browser `y` (local: scan `new/`; IMAP:
+      STATUS UNSEEN, the open folder from its cache); folders with
+      new mail show bold
+- [x] IMAP IDLE on the open folder (RFC 2177, dedicated connection,
+      re-issued before the half-hour limit, stops on mailbox switch);
+      NOOP polling stays as the fallback when the server lacks it
 
 ## R12 — address completion (1.11)
 

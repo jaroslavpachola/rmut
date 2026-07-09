@@ -5,7 +5,8 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.9** — everything from the 1.0 roadmap plus R5–R10: mutt-style index
+**1.10** — everything from the 1.0 roadmap plus R5–R11: mutt-style
+index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -21,10 +22,12 @@ view, sign/encrypt from the send prompt, **attachments and message
 commands** (R8): `Attach:` pseudo-headers in the draft, copy/pipe/
 bounce/resend on `C`/`|`/`b`/`e`, **identities** (R9): per-account
 From, `[[identities]]` folder/recipient rules (the minimal folder-/
-send-hook), and mutt's reverse_name, and **patterns v2** (R10):
-`!`/`|`/`()`, regexes, `~t`/`~c`/`~C`/`~e`/`~p`, `~d` date ranges. A
-pty-driven e2e suite (including fake IMAP/SMTP servers and a stub gpg)
-lives in `tests/e2e/`.
+send-hook), and mutt's reverse_name, **patterns v2** (R10):
+`!`/`|`/`()`, regexes, `~t`/`~c`/`~C`/`~e`/`~p`, `~d` date ranges, and
+**new-mail awareness** (R11): counts in the folder browser, watching
+the other configured mailboxes, IMAP IDLE. A pty-driven e2e suite
+(including fake IMAP/SMTP servers and a stub gpg) lives in
+`tests/e2e/`.
 
 ## Install & run
 
@@ -51,7 +54,8 @@ read, `t` tag + `;` apply the next d/u/F/N to all tagged, `s` save
 before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
 Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
-+ `n` next, `c` open mailbox by path, `y` folder browser, `G` check
++ `n` next, `c` open mailbox by path, `y` folder browser (with
+new/unseen counts; folders holding new mail show bold), `G` check
 for new mail now, `v` attachments, `m` compose, `r` reply, `g` group
 reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
 the raw message to a shell command, `b` bounce (resend as-is to new
@@ -86,7 +90,10 @@ account's folders via LIST. Messages are mirrored into a cache maildir
 under `~/.cache/rmut/imap/` — headers up front, full bodies fetched on
 first view — so the index is fast and old mail reopens offline. `$`
 pushes your changes to the server (flags via UID STORE, deletes via
-EXPUNGE) and new mail is picked up by polling (`poll_seconds`). The
+EXPUNGE). New mail is announced by **IDLE** (RFC 2177, on a second
+connection) and shows up within a second; when the server doesn't
+support IDLE, the NOOP poll (`poll_seconds`) picks it up as before.
+The folder browser asks the server for UNSEEN counts (STATUS). The
 password comes from `password_command` (e.g. `pass show mail/work`),
 run once per session — or from a stored `password`, if you accept a
 secret sitting in the config file (keep it chmod 600).
@@ -160,7 +167,9 @@ name = "Jane Work"           # matching rules overlay [identity] in
 email = "jane@work.example.com"    # order, unset fields fall through
 
 [mail]
-mailboxes = ["~/Maildir"]    # default mailbox + folder browser entries
+mailboxes = ["~/Maildir"]    # default mailbox + folder browser entries;
+                             # local ones are watched for new mail
+                             # ("new mail in ..." in the status line)
 sent = "~/Maildir/.Sent"     # Fcc target (else a nearby Sent is used)
 postponed = "~/Maildir/.Drafts"
 sendmail = "/usr/sbin/sendmail"

@@ -47,8 +47,9 @@ pub enum Mode {
         back: Option<Pager>,
     },
     Folders {
-        /// Paths or `imap:` specs, ready for `open_mailbox_spec`.
-        dirs: Vec<String>,
+        /// Paths or `imap:` specs (ready for `open_mailbox_spec`) with
+        /// their new/unseen counts.
+        dirs: Vec<(String, usize)>,
         sel: usize,
     },
     Help {
@@ -217,6 +218,11 @@ pub struct App {
     pending_editor: Option<Compose>,
     /// Recipients waiting for the bounce confirmation.
     bounce_to: Option<String>,
+    /// Background IDLE watcher for the open IMAP folder.
+    idle: Option<remote::IdleWatch>,
+    /// New-mail counts of the other configured mailboxes at the last
+    /// poll, to notice growth (mutt's `mailboxes` awareness).
+    mailbox_new: HashMap<String, usize>,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
@@ -295,6 +301,8 @@ impl App {
             compose: None,
             pending_editor: None,
             bounce_to: None,
+            idle: None,
+            mailbox_new: HashMap::new(),
             tag_next: false,
             quit: false,
         };
@@ -331,6 +339,9 @@ impl App {
                 let cache = remote.cache.clone();
                 let mut app = App::open(&cache, config)?;
                 app.title = remote.spec.clone();
+                // IDLE on a second connection; NOOP polling stays as
+                // the fallback when the server doesn't support it.
+                app.idle = Some(remote::idle_watch(&account, &remote.mailbox, &password));
                 app.remote = Some(remote);
                 Ok(app)
             }
@@ -386,7 +397,10 @@ impl App {
                 self.status = None;
                 self.handle_key(key, size.width as usize, size.height as usize);
             }
-            if last_poll.elapsed() >= poll_every {
+            // The IDLE watcher makes server changes show up within a
+            // loop tick instead of waiting out the poll interval.
+            let idle_kick = self.idle.as_ref().is_some_and(|w| w.take_changed());
+            if idle_kick || last_poll.elapsed() >= poll_every {
                 last_poll = Instant::now();
                 self.check_new_mail();
             }
@@ -425,11 +439,36 @@ impl App {
                 self.status = Some(format!("imap: {err:#}"));
             }
         }
+        self.check_other_mailboxes();
         let current = dir_mtimes(&self.dir);
         if current == self.dir_mtimes {
             return;
         }
         self.rescan();
+    }
+
+    /// Watch the other configured local mailboxes for growth in their
+    /// new/ (mutt's `mailboxes`); the first poll only sets a baseline.
+    fn check_other_mailboxes(&mut self) {
+        let mut grew: Vec<String> = Vec::new();
+        for spec in self.config.mail.mailboxes.clone() {
+            if spec.starts_with("imap:") || spec == self.title {
+                continue; // other accounts are not worth a connection
+            }
+            let dir = expand_tilde(&spec);
+            if dir == self.dir || !dir.join("new").is_dir() {
+                continue;
+            }
+            let count = maildir::new_count(&dir);
+            let prev = self.mailbox_new.insert(spec.clone(), count);
+            if prev.is_some_and(|p| count > p) {
+                grew.push(spec);
+            }
+        }
+        // The open mailbox's own announcement (from the rescan) wins.
+        if !grew.is_empty() && self.status.is_none() {
+            self.status = Some(format!("new mail in {}", grew.join(", ")));
+        }
     }
 
     /// Re-read the maildir, keeping unsynced flag changes and deletion
@@ -1092,7 +1131,7 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
             KeyCode::Enter => {
                 let spec = match &self.mode {
-                    Mode::Folders { dirs, sel } => dirs.get(*sel).cloned(),
+                    Mode::Folders { dirs, sel } => dirs.get(*sel).map(|d| d.0.clone()),
                     _ => None,
                 };
                 if let Some(spec) = spec {
@@ -1108,19 +1147,32 @@ impl App {
             self.status = Some("pending changes — sync with $ first".into());
             return;
         }
-        let mut dirs: Vec<String> = self
+        // Local entries carry their new/ count; imap: specs of other
+        // accounts show without one (no connection just for a count).
+        let mut dirs: Vec<(String, usize)> = self
             .config
             .mail
             .mailboxes
             .iter()
             .filter(|m| m.starts_with("imap:") || expand_tilde(m).join("cur").is_dir())
-            .cloned()
+            .map(|m| {
+                let count = if m.starts_with("imap:") {
+                    0
+                } else {
+                    maildir::new_count(&expand_tilde(m))
+                };
+                (m.clone(), count)
+            })
             .collect();
         match &mut self.remote {
             Some(remote) => match remote.folders() {
                 Ok(folders) => {
                     let account = remote.account.name.clone();
-                    dirs.extend(folders.into_iter().map(|f| format!("imap:{account}/{f}")));
+                    dirs.extend(
+                        folders
+                            .into_iter()
+                            .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
+                    );
                 }
                 Err(err) => {
                     self.status = Some(format!("cannot list folders: {err:#}"));
@@ -1130,18 +1182,25 @@ impl App {
             None => dirs.extend(
                 maildir::discover(&self.dir)
                     .iter()
-                    .map(|p| p.display().to_string()),
+                    .map(|p| (p.display().to_string(), maildir::new_count(p))),
             ),
         }
         dirs.sort();
-        dirs.dedup();
+        dirs.dedup_by(|a, b| {
+            if a.0 == b.0 {
+                b.1 = b.1.max(a.1);
+                true
+            } else {
+                false
+            }
+        });
         if dirs.is_empty() {
             self.status = Some("no maildirs found next to this one".into());
             return;
         }
         let sel = dirs
             .iter()
-            .position(|d| *d == self.title || expand_tilde(d) == self.dir)
+            .position(|d| d.0 == self.title || expand_tilde(&d.0) == self.dir)
             .unwrap_or(0);
         self.mode = Mode::Folders { dirs, sel };
     }

@@ -295,15 +295,21 @@ fn draw_attach(frame: &mut Frame, area: Rect, parts: &[Part], sel: usize) {
 
 // ---- folders ----
 
-fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[String], sel: usize) {
+fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[(String, usize)], sel: usize) {
     let width = area.width as usize;
     let mut lines = Vec::new();
-    for (i, dir) in dirs.iter().enumerate().take(area.height as usize) {
-        let text = format!("{:>3} {}", i + 1, dir);
+    for (i, (dir, new)) in dirs.iter().enumerate().take(area.height as usize) {
+        let mut text = format!("{:>3} {}", i + 1, dir);
+        if *new > 0 {
+            text += &format!(" ({new} new)");
+        }
         let text = format!("{text:<width$}");
         let mut style = Style::new();
         if i == sel {
             style = style.add_modifier(Modifier::REVERSED);
+        }
+        if *new > 0 {
+            style = style.add_modifier(Modifier::BOLD);
         }
         lines.push(Line::from(Span::styled(text, style)));
     }

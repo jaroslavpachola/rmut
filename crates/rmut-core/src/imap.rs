@@ -186,6 +186,54 @@ impl Client {
         Ok(!self.command("NOOP")?.is_empty())
     }
 
+    /// True when the server advertises IDLE (RFC 2177).
+    pub fn supports_idle(&mut self) -> Result<bool> {
+        let lines = self.command("CAPABILITY")?;
+        Ok(lines.iter().any(|l| {
+            l.text
+                .to_ascii_uppercase()
+                .split_whitespace()
+                .any(|word| word == "IDLE")
+        }))
+    }
+
+    /// UNSEEN count of a mailbox (STATUS must not target the currently
+    /// selected one).
+    pub fn status_unseen(&mut self, mailbox: &str) -> Result<u32> {
+        let lines = self.command(&format!("STATUS {} (UNSEEN)", mailbox_arg(mailbox)?))?;
+        Ok(lines
+            .iter()
+            .find_map(|l| number_after(&l.text, "UNSEEN "))
+            .unwrap_or(0) as u32)
+    }
+
+    /// RFC 2177 IDLE: block until the server announces a change, `stop`
+    /// is set (checked whenever the socket's 60 s read timeout fires),
+    /// or ~25 minutes pass — re-issue before the server's half-hour
+    /// limit. True = the mailbox changed.
+    pub fn idle(&mut self, stop: &std::sync::atomic::AtomicBool) -> Result<bool> {
+        use std::sync::atomic::Ordering;
+        let tag = self.next_tag();
+        self.conn.write_all(format!("{tag} IDLE\r\n").as_bytes())?;
+        self.expect_continuation()?;
+        let mut event = false;
+        let mut waits = 0;
+        while !stop.load(Ordering::Relaxed) && waits < 25 {
+            match read_line(&mut self.conn) {
+                Ok(line) if line.text.starts_with('*') => {
+                    event = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(err) if net::is_timeout(&err) => waits += 1,
+                Err(err) => return Err(err),
+            }
+        }
+        self.conn.write_all(b"DONE\r\n")?;
+        self.finish(&tag)?;
+        Ok(event)
+    }
+
     /// Best-effort; the connection is unusable afterwards.
     pub fn logout(&mut self) {
         let tag = self.next_tag();
@@ -577,6 +625,45 @@ mod tests {
             )
             .unwrap();
         assert!(client.noop().unwrap());
+        client.logout();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn capability_and_status() {
+        let (port, handle) = testserver::imap(vec![
+            testserver::Expect::new("CAPABILITY", "* CAPABILITY IMAP4rev1 IDLE\r\n".into()),
+            testserver::Expect::new(
+                "STATUS \"Archive\" (UNSEEN)",
+                "* STATUS \"Archive\" (UNSEEN 3)\r\n".into(),
+            ),
+            testserver::Expect::new("CAPABILITY", "* CAPABILITY IMAP4rev1\r\n".into()),
+        ]);
+        let mut client = Client::connect("127.0.0.1", port, false).unwrap();
+        assert!(client.supports_idle().unwrap());
+        assert_eq!(client.status_unseen("Archive").unwrap(), 3);
+        // IMAP4rev1 must not read as IDLE support.
+        assert!(!client.supports_idle().unwrap());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn idle_reports_events_and_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (port, handle) = testserver::imap(vec![
+            testserver::Expect::untagged("IDLE", "+ idling\r\n* 3 EXISTS\r\n".into()),
+            testserver::Expect::new("DONE", String::new()),
+            testserver::Expect::untagged("IDLE", "+ idling\r\n".into()),
+            testserver::Expect::new("DONE", String::new()),
+            testserver::Expect::new("LOGOUT", String::new()),
+        ]);
+        let mut client = Client::connect("127.0.0.1", port, false).unwrap();
+        let stop = AtomicBool::new(false);
+        // The server announces a change: idle reports it.
+        assert!(client.idle(&stop).unwrap());
+        // Stop already set: idle sends DONE straight away, no event.
+        stop.store(true, Ordering::Relaxed);
+        assert!(!client.idle(&stop).unwrap());
         client.logout();
         handle.join().unwrap();
     }

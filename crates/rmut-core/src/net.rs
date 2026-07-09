@@ -49,6 +49,17 @@ impl Write for Stream {
     }
 }
 
+/// True when the error is the socket's read timeout firing (the IDLE
+/// wait uses it as a tick to check its stop flag).
+pub(crate) fn is_timeout(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>().is_some_and(|e| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        )
+    })
+}
+
 pub(crate) fn connect(host: &str, port: u16, tls: bool) -> Result<Stream> {
     let tcp =
         TcpStream::connect((host, port)).with_context(|| format!("connecting to {host}:{port}"))?;

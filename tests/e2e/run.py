@@ -157,6 +157,9 @@ def scenario_view_and_pager(tmp):
     write_msgs(md, ["jane", "petr", "ci"])
     r = Rmut(md, base_env(tmp))
     r.expect("Msgs:3", "New:1", "Lunch on Friday?", "Schůzka zítra", "CI failed on main")
+    r.keys(b"y")  # the folder browser counts Petr's message in new/
+    r.expect("(1 new)")
+    r.keys(b"q")
     r.keys(b"\r")  # newest (Petr, new) opens in the pager
     r.expect("sejdeme se zítra v 9:00", "Message 3/3")
     r.keys(b"K")  # previous message
@@ -374,8 +377,9 @@ editor = "{editor}"
 
 
 class FakeImap(threading.Thread):
-    """Stateful IMAP server: enough of RFC 3501 for rmut's client.
-    Accepts sequential connections (mailbox switches reconnect)."""
+    """Stateful IMAP server: enough of RFC 3501 (+ IDLE) for rmut's
+    client. Connections are served concurrently — rmut keeps a second
+    one open for IDLE."""
 
     def __init__(self):
         super().__init__(daemon=True)
@@ -387,6 +391,7 @@ class FakeImap(threading.Thread):
         self.commands = []
         self.appended = []
         self.announce = False
+        self.idle_push = False  # make the idling connection see EXISTS
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -399,12 +404,15 @@ class FakeImap(threading.Thread):
                 conn, _ = self.sock.accept()
             except OSError:
                 return
-            try:
-                self.serve(conn)
-            except (ConnectionError, OSError):
-                pass
-            finally:
-                conn.close()
+            threading.Thread(target=self.serve_one, args=(conn,), daemon=True).start()
+
+    def serve_one(self, conn):
+        try:
+            self.serve(conn)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            conn.close()
 
     def serve(self, conn):
         rfile = conn.makefile("rb")
@@ -423,9 +431,38 @@ class FakeImap(threading.Thread):
             self.commands.append(line)
             tag, _, cmd = line.partition(" ")
             up = cmd.upper()
+            if up.startswith("IDLE"):
+                # Wait for DONE, pushing an EXISTS when the test set
+                # idle_push meanwhile. select() instead of a socket
+                # timeout: a timed-out makefile object breaks on 3.9.
+                conn.sendall(b"+ idling\r\n")
+                while True:
+                    with self.lock:
+                        if self.idle_push:
+                            self.idle_push = False
+                            conn.sendall(f"* {len(self.msgs)} EXISTS\r\n".encode())
+                    ready, _, _ = select.select([conn], [], [], 0.1)
+                    if not ready:
+                        continue
+                    raw2 = rfile.readline()
+                    if not raw2 or raw2.decode().strip().upper() == "DONE":
+                        break
+                conn.sendall(f"{tag} OK done\r\n".encode())
+                continue
             with self.lock:
                 if up.startswith("LOGIN"):
                     pass
+                elif up.startswith("CAPABILITY"):
+                    conn.sendall(b"* CAPABILITY IMAP4rev1 IDLE\r\n")
+                elif up.startswith("STATUS"):
+                    m = re.match(r'STATUS "([^"]+)"', cmd, re.I)
+                    name = m.group(1) if m else "?"
+                    unseen = (
+                        sum(1 for f, _ in self.msgs.values() if "\\Seen" not in f)
+                        if name == "INBOX"
+                        else 0
+                    )
+                    conn.sendall(f'* STATUS "{name}" (UNSEEN {unseen})\r\n'.encode())
                 elif up.startswith("SELECT"):
                     conn.sendall(
                         f"* {len(self.msgs)} EXISTS\r\n"
@@ -558,7 +595,7 @@ def scenario_imap(tmp):
 name = "Jarda"
 email = "jarda@example.com"
 [mail]
-poll_seconds = 1
+poll_seconds = 30
 editor = "{editor}"
 [[accounts]]
 name = "test"
@@ -593,12 +630,15 @@ smtp_tls = false
     r.keys(b"y")
     r.expect("synced: 1 deleted")
     wait_for(lambda: 1 not in imap.msgs, desc="message expunged on the server")
-    # New mail arrives server-side; the NOOP poll picks it up.
+    # New mail arrives server-side; IDLE (not the 30 s poll) must be
+    # what makes rmut notice it this fast.
     imap.add(3, set(), IMAP_MSG.format(
         sender="three@remote.example", subject="remote three",
         date="Wed, 8 Jul 2026 10:00:00 +0200", mid="r3", body="body three"))
     imap.announce = True
+    imap.idle_push = True
     r.expect("remote three", "Msgs:2", timeout=8)
+    assert any("IDLE" in c for c in imap.commands), "client never idled"
     # Compose: SMTP submission plus Fcc via APPEND to Sent.
     r.keys(b"m")
     r.expect("To:")
