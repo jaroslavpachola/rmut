@@ -501,18 +501,22 @@ impl State {
         }
         let (host, port, tls) = split_url(folder_url);
         out += &format!("imap_host = {}\n", quote(host));
-        if let Some(p) = port {
-            out += &format!("imap_port = {p}\n");
-        }
-        if !tls {
-            out += "imap_tls = false\n";
+        // imap:// means the standard port with STARTTLS (rmut upgrades
+        // any non-993 port), never a plaintext connection.
+        match (port, tls) {
+            (Some(p), _) => out += &format!("imap_port = {p}\n"),
+            (None, false) => out += "imap_port = 143\n",
+            (None, true) => {}
         }
         if let Some(smtp) = &self.smtp_url {
-            let (host, port, _tls) = split_url(smtp);
+            let (host, port, tls) = split_url(smtp);
             let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
             out += &format!("smtp_host = {}\n", quote(host));
-            if let Some(p) = port {
-                out += &format!("smtp_port = {p}\n");
+            match (port, tls) {
+                (Some(p), _) => out += &format!("smtp_port = {p}\n"),
+                // smtps:// default is implicit TLS on 465.
+                (None, true) => out += "smtp_port = 465\n",
+                (None, false) => {}
             }
         }
         if let Some(sent) = &self.sent {
@@ -802,6 +806,20 @@ mod tests {
         assert_eq!(acct.password.as_deref(), Some("hunter2"));
         assert_eq!(acct.password().unwrap(), "hunter2");
         assert!(toml.contains("consider password_command"), "{toml}");
+    }
+
+    #[test]
+    fn plain_imap_url_means_starttls_port_never_disabled_tls() {
+        let (cfg, toml) = to_config(concat!(
+            "set folder = imap://mail.example.com\n",
+            "set imap_user = u\n",
+            "set smtp_url = smtps://smtp.example.com\n",
+        ));
+        let acct = cfg.account("mutt").unwrap();
+        assert_eq!(acct.imap_port, 143);
+        assert!(acct.imap_tls, "STARTTLS, not plaintext");
+        assert!(!toml.contains("imap_tls"), "{toml}");
+        assert_eq!(acct.smtp_port, 465);
     }
 
     #[test]

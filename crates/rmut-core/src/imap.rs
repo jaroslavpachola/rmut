@@ -45,13 +45,33 @@ pub struct Fetched {
 
 impl Client {
     pub fn connect(host: &str, port: u16, tls: bool) -> Result<Client> {
-        let mut conn = Conn::new(net::connect(host, port, tls)?);
+        // Port 993 is TLS from the first byte; on any other port the
+        // session is upgraded with STARTTLS before LOGIN (unless
+        // imap_tls = false, for tests).
+        let implicit = tls && port == 993;
+        let mut conn = Conn::new(net::connect(host, port, implicit)?);
         let greeting = read_line(&mut conn)?;
         ensure!(
             greeting.text.starts_with("* OK") || greeting.text.starts_with("* PREAUTH"),
             "unexpected IMAP greeting: {}",
             greeting.text
         );
+        if tls && !implicit {
+            conn.write_all(b"rmut0 STARTTLS\r\n")?;
+            loop {
+                let line = read_line(&mut conn)?;
+                if let Some(rest) = line.text.strip_prefix("rmut0 ") {
+                    ensure!(
+                        rest.starts_with("OK"),
+                        "server refused STARTTLS: {}",
+                        line.text
+                    );
+                    break;
+                }
+            }
+            let tcp = conn.into_stream().into_tcp()?;
+            conn = Conn::new(net::wrap_tls(tcp, host)?);
+        }
         Ok(Client { conn, tag: 0 })
     }
 
@@ -398,6 +418,25 @@ fn imap_flags(flags: Flags) -> String {
 mod tests {
     use super::*;
     use crate::testserver;
+
+    #[test]
+    fn starttls_refusal_is_an_error() {
+        // tls on a non-993 port means STARTTLS; a server that refuses
+        // it must fail the connect — never a plaintext LOGIN.
+        let (port, handle) = testserver::imap(vec![testserver::Expect::fail(
+            "STARTTLS",
+            "NO too old for that",
+        )]);
+        let err = match Client::connect("127.0.0.1", port, true) {
+            Err(err) => err,
+            Ok(_) => panic!("connect must fail when STARTTLS is refused"),
+        };
+        assert!(
+            err.to_string().contains("refused STARTTLS"),
+            "unexpected error: {err:#}"
+        );
+        handle.join().unwrap();
+    }
 
     #[test]
     fn literal_len_only_at_line_end() {

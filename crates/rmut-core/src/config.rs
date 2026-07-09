@@ -112,7 +112,8 @@ pub struct Account {
     pub imap_host: Option<String>,
     #[serde(default = "default_imap_port")]
     pub imap_port: u16,
-    /// TLS from the first byte (default). Disabling is for tests only.
+    /// Encrypt IMAP (default): TLS from the first byte on port 993,
+    /// STARTTLS on any other port. Disabling is for tests only.
     #[serde(default = "default_true")]
     pub imap_tls: bool,
     pub smtp_host: Option<String>,

@@ -136,7 +136,7 @@ name = "work"
 user = "jane@example.com"
 password_command = "pass show mail/work"   # first stdout line
 # password = "..."                         # alternative; keep the file chmod 600
-imap_host = "imap.example.com"             # imap_port = 993, imap_tls = true
+imap_host = "imap.example.com"             # imap_port = 993 (implicit TLS; 143 = STARTTLS)
 smtp_host = "smtp.example.com"             # smtp_port = 587 (STARTTLS; 465 = implicit TLS)
 sent_folder = "Sent"                       # Fcc target via IMAP APPEND
 
