@@ -42,6 +42,21 @@ pub fn parse_spec(spec: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// Tidy a mailbox name: collapse `//` runs and trim `/` from the ends
+/// (servers reject "adjacent hierarchy separators"); empty → INBOX.
+pub fn clean_mailbox(name: &str) -> String {
+    let cleaned = name
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if cleaned.is_empty() {
+        "INBOX".into()
+    } else {
+        cleaned
+    }
+}
+
 /// Where a folder's cache maildir lives:
 /// `$XDG_CACHE_HOME/rmut/imap/<account>/<mailbox>` (percent-encoded).
 pub fn cache_dir(account: &str, mailbox: &str) -> PathBuf {
@@ -95,6 +110,7 @@ pub fn is_partial(path: &Path) -> bool {
 impl Remote {
     /// Connect, log in, select, and bring the cache maildir up to date.
     pub fn open(account: &Account, mailbox: &str, password: &str) -> Result<Remote> {
+        let mailbox = &clean_mailbox(mailbox);
         let host = account
             .imap_host
             .as_deref()
@@ -228,7 +244,7 @@ impl Remote {
     /// Fcc: file the sent message into the account's Sent folder.
     /// Returns the folder name for the status line.
     pub fn append_sent(&mut self, body: &[u8]) -> Result<String> {
-        let folder = self.account.sent_folder.clone();
+        let folder = clean_mailbox(&self.account.sent_folder);
         let flags = Flags {
             seen: true,
             ..Default::default()
@@ -257,6 +273,17 @@ impl Drop for Remote {
 mod tests {
     use super::*;
     use crate::testserver::{self, Expect};
+
+    #[test]
+    fn clean_mailbox_fixes_separator_trouble() {
+        assert_eq!(clean_mailbox("INBOX"), "INBOX");
+        assert_eq!(clean_mailbox("Work/Reports"), "Work/Reports");
+        assert_eq!(clean_mailbox("Work//Reports"), "Work/Reports");
+        assert_eq!(clean_mailbox("/INBOX/"), "INBOX");
+        assert_eq!(clean_mailbox("INBOX/"), "INBOX");
+        assert_eq!(clean_mailbox("//"), "INBOX");
+        assert_eq!(clean_mailbox(""), "INBOX");
+    }
 
     fn account(port: u16) -> Account {
         Account {

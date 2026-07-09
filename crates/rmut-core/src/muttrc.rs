@@ -321,11 +321,16 @@ impl State {
     }
 
     /// mutt's +x / =x mean "under $folder"; for an IMAP folder that is
-    /// an account folder spec, locally a joined path.
+    /// an account folder spec, locally a joined path. A full
+    /// imap[s]:// URL maps to the mailbox in its path.
     fn expand_mailbox(&self, value: &str) -> String {
+        if is_imap_url(value) {
+            return format!("imap:{ACCOUNT}/{}", url_mailbox(value));
+        }
         let Some(rest) = value.strip_prefix(['+', '=']) else {
             return value.to_string();
         };
+        let rest = rest.trim_matches('/');
         match &self.folder {
             Some(f) if is_imap_url(f) => format!("imap:{ACCOUNT}/{rest}"),
             Some(f) => format!("{}/{rest}", f.trim_end_matches('/')),
@@ -408,12 +413,21 @@ impl State {
                 out += &format!("email = {}\n", quote(e));
             }
         }
-        let imap = self.folder.as_deref().filter(|f| is_imap_url(f));
+        // A full URL in spoolfile also identifies the IMAP server when
+        // $folder is local or unset.
+        let imap = self
+            .folder
+            .as_deref()
+            .filter(|f| is_imap_url(f))
+            .or_else(|| self.spoolfile.as_deref().filter(|s| is_imap_url(s)));
         let mut mailboxes = Vec::new();
         if let Some(spool) = &self.spoolfile {
             mailboxes.push(match imap {
+                Some(_) if is_imap_url(spool) => {
+                    format!("imap:{ACCOUNT}/{}", url_mailbox(spool))
+                }
                 Some(_) => {
-                    let inbox = spool.trim_start_matches(['+', '=']);
+                    let inbox = spool.trim_start_matches(['+', '=']).trim_matches('/');
                     format!("imap:{ACCOUNT}/{inbox}")
                 }
                 None => self.expand_mailbox(spool),
@@ -573,10 +587,12 @@ impl State {
         if folder_url.is_some()
             && let Some(sent) = &self.sent
         {
-            out += &format!(
-                "sent_folder = {}\n",
-                quote(sent.trim_start_matches(['+', '=']))
-            );
+            let folder = if is_imap_url(sent) {
+                url_mailbox(sent)
+            } else {
+                sent.trim_start_matches(['+', '=']).trim_matches('/').into()
+            };
+            out += &format!("sent_folder = {}\n", quote(&folder));
         }
         out
     }
@@ -586,18 +602,33 @@ fn is_imap_url(value: &str) -> bool {
     value.starts_with("imap://") || value.starts_with("imaps://")
 }
 
-/// host, explicit port, and whether the scheme implies TLS.
+/// host, explicit port, and whether the scheme implies TLS. Any
+/// mailbox path in the URL is ignored here (see `url_mailbox`).
 fn split_url(url: &str) -> (&str, Option<u16>, bool) {
     let (tls, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (scheme.ends_with('s'), rest),
         None => (true, url),
     };
-    let rest = rest.trim_end_matches('/');
+    let rest = rest.split('/').next().unwrap_or(rest);
     match rest.rsplit_once(':') {
         Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => {
             (host, port.parse().ok(), tls)
         }
         _ => (rest, None, tls),
+    }
+}
+
+/// The mailbox named by an imap[s]:// URL's path; INBOX when absent.
+fn url_mailbox(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let path = rest
+        .split_once('/')
+        .map_or("", |(_, p)| p)
+        .trim_matches('/');
+    if path.is_empty() {
+        "INBOX".into()
+    } else {
+        path.to_string()
     }
 }
 
@@ -881,6 +912,38 @@ mod tests {
         assert!(cfg.accounts.is_empty());
         assert!(!toml.contains("hunter2"), "password must not leak:\n{toml}");
         assert!(toml.contains("(redacted)"), "{toml}");
+    }
+
+    #[test]
+    fn url_style_spoolfile_record_and_mailboxes() {
+        // The common mutt style: full URLs everywhere, no +shortcuts.
+        let (cfg, toml) = to_config(concat!(
+            "set folder = \"imaps://mail.example.com/\"\n",
+            "set spoolfile = \"imaps://mail.example.com/INBOX\"\n",
+            "set record = \"imaps://mail.example.com/Sent\"\n",
+            "set imap_user = jane\n",
+            "mailboxes imaps://mail.example.com/INBOX imaps://mail.example.com/Archive\n",
+        ));
+        let acct = cfg.account("mutt").unwrap();
+        assert_eq!(acct.imap_host, Some("mail.example.com".into()));
+        assert_eq!(acct.sent_folder, "Sent");
+        assert_eq!(
+            cfg.mail.mailboxes,
+            vec!["imap:mutt/INBOX", "imap:mutt/Archive"]
+        );
+        assert!(!toml.contains("//INBOX"), "no doubled separators:\n{toml}");
+    }
+
+    #[test]
+    fn url_spoolfile_alone_identifies_the_server() {
+        let (cfg, _) = to_config(concat!(
+            "set spoolfile = imaps://mail.example.com:1993/INBOX\n",
+            "set imap_user = jane\n",
+        ));
+        let acct = cfg.account("mutt").unwrap();
+        assert_eq!(acct.imap_host, Some("mail.example.com".into()));
+        assert_eq!(acct.imap_port, 1993);
+        assert_eq!(cfg.mail.mailboxes, vec!["imap:mutt/INBOX"]);
     }
 
     #[test]
