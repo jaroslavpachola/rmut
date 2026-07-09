@@ -2,8 +2,11 @@
 
 Goal: a daily-drivable mutt replacement for local maildirs — mutt's
 index/pager workflow, message manipulation, and compose, with mutt
-default keybindings throughout. IMAP/SMTP and muttrc compatibility are
-explicitly post-1.0.
+default keybindings throughout. IMAP/SMTP and muttrc compatibility were
+originally post-1.0; IMAP/SMTP (R5) made it in anyway.
+
+**1.0 declared** (2026-07) after R1–R5. Remaining milestones below are
+post-1.0.
 
 ## R1 — read-only browser (done, 0.1)
 
