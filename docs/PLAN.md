@@ -103,9 +103,78 @@ post-1.0.
       imap_pass imports as the account's stored `password` (1.3),
       secrets are never echoed into comments
 
-## Post-1.0 candidates
+## 1.3–1.6 — mutt-parity batches (done, no milestone)
 
-- OAuth2 (XOAUTH2) for IMAP/SMTP accounts
-- mbox format support
-- HTML part rendering (w3m-style dump)
+Driven by real-world muttrc imports rather than planned up front:
+stored `password` on accounts (1.3); IMAP STARTTLS and the first
+"implement missing" batch — ssl_starttls/force_tls, smtp_pass,
+smtp_authenticators (AUTH LOGIN fallback), print_command (1.4); the
+second batch — sort/sort_aux, date_format, mime_forward,
+pager_index_lines/context, ~T pattern + tagged color, imap_peek,
+auto_view filters, extra binds (1.5); index_format `%?X?then&else?`
+conditionals, `%L`, 3-char `%Z` (1.6); mutt-style quit/purge prompts.
+
+## R8 — compose attachments and message commands (1.7)
+
+The biggest daily-use gap: rmut cannot attach a file to outgoing mail.
+
+- [ ] Attach files: `Attach: <path> [description]` pseudo-headers in
+      the draft, collected at send into multipart/mixed (base64,
+      content-type guessed from the extension); works for compose,
+      reply, and forward; attachment count shown at the send prompt
+- [ ] PGP over the assembled multipart, lifting the current "no PGP
+      with an attached forward" restriction (RFC 3156 wraps any part)
+- [ ] `C` copy to mailbox — like `s` save but without marking the
+      original deleted (plumbing exists in `copy_to`)
+- [ ] `|` pipe the raw message to a shell command (the `p` print path
+      becomes a preset of it)
+- [ ] `b` bounce (resend as-is to new recipients) and `e` edit the
+      message as a new draft
+
+## R9 — identities and hook basics (1.8)
+
+One global `[identity]` today; mutt users switch From per folder and
+per recipient via folder-hook/send-hook.
+
+- [ ] Per-account `name`/`email` on `[[accounts]]`: From follows the
+      open mailbox's account when composing
+- [ ] mutt's `reverse_name`: replying uses whichever of our addresses
+      the original was addressed to
+- [ ] Folder-pattern → identity mapping in config for local maildirs
+      (the minimal folder-hook)
+- [ ] Importer: translate folder-hook/send-hook lines that only set
+      from/realname; anything else stays `# not imported`
+
+## R10 — patterns v2 (1.9)
+
+- [ ] Real pattern parser: `!` negation, `|` OR, `()` grouping
+      (adjacent terms stay implicit AND)
+- [ ] `~d` date ranges (`~d 01/06/2026-30/06/2026`, `~d <1w`, `~d >2d`)
+- [ ] `~t` to, `~c` cc, `~e` sender, `~p` addressed-to-me
+- [ ] Regex matching where mutt uses regexes, keeping today's
+      case-insensitive behavior for plain strings
+
+## R11 — new-mail awareness and IDLE (1.10)
+
+- [ ] Track new mail across all configured mailboxes (mutt's
+      `mailboxes` notion), not just the open one: mark folders with
+      new mail in the browser `y` and hint in the status line
+- [ ] Unread counts in the folder browser (local: scan `new/`; IMAP:
+      STATUS UNSEEN)
+- [ ] IMAP IDLE on the open folder, falling back to NOOP polling when
+      the server lacks it
+
+## R12 — address completion (1.11)
+
+- [ ] Tab at the To/Cc prompt completes against the alias file
+- [ ] `query_command` (khard/abook/LDAP): run it on Tab with the
+      current word, parse mutt's tab-separated output format
+
+## Candidates (unscoped)
+
+- Macros (key → sequence of actions) — would also let the importer
+  translate mutt `macro` lines instead of skipping them
+- OAuth2 (XOAUTH2/OAUTHBEARER) for IMAP/SMTP accounts
+- mbox read support
 - Sidebar, notmuch/xapian search
+- Non-goals for now: S/MIME, POP3, scoring
