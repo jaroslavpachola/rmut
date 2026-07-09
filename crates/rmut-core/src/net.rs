@@ -99,10 +99,14 @@ impl Conn {
 
     fn fill(&mut self) -> Result<()> {
         self.start = 0;
-        self.end = self
-            .stream
-            .read(&mut self.buf)
-            .context("reading from server")?;
+        self.end = loop {
+            match self.stream.read(&mut self.buf) {
+                // A signal (e.g. SIGCHLD from a gpg child) can interrupt
+                // the read; that is not an error, try again.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                other => break other.context("reading from server")?,
+            }
+        };
         if self.end == 0 {
             bail!("server closed the connection");
         }
