@@ -193,6 +193,14 @@ def scenario_sync_delete_flag_limit(tmp):
     r.keys(b"l")
     r.keys(b"\x15\r")  # ctrl+u clears the prefilled limit
     r.expect("Msgs:2")
+    # patterns v2: OR, negation, and error reporting
+    r.keys(b"l~f jane|~f petr\r")
+    r.expect("limit:~f jane|~f petr")
+    r.keys(b"l\x15!~f jane\r")
+    r.expect("limit:!~f jane")
+    r.keys(b"l\x15~x\r")
+    r.expect("bad pattern: unknown pattern ~x")
+    r.keys(b"l\x15\r")  # back to all
     r.keys(b"q")
     r.close()
 

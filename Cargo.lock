@@ -574,6 +574,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,11 +595,12 @@ dependencies = [
 
 [[package]]
 name = "rmut-core"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "chrono",
  "mailparse",
+ "regex-lite",
  "rustls",
  "serde",
  "tempfile",
@@ -603,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-tui"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "ratatui",

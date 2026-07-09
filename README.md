@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.8** — everything from the 1.0 roadmap plus R5–R9: mutt-style index
+**1.9** — everything from the 1.0 roadmap plus R5–R10: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -19,10 +19,12 @@ caching, `$` sync mapped to the server, and sending via SMTP
 submission with an IMAP Fcc, **PGP via gpg(1)**: decrypt/verify on
 view, sign/encrypt from the send prompt, **attachments and message
 commands** (R8): `Attach:` pseudo-headers in the draft, copy/pipe/
-bounce/resend on `C`/`|`/`b`/`e`, and **identities** (R9): per-account
+bounce/resend on `C`/`|`/`b`/`e`, **identities** (R9): per-account
 From, `[[identities]]` folder/recipient rules (the minimal folder-/
-send-hook), and mutt's reverse_name. A pty-driven e2e suite (including
-fake IMAP/SMTP servers and a stub gpg) lives in `tests/e2e/`.
+send-hook), and mutt's reverse_name, and **patterns v2** (R10):
+`!`/`|`/`()`, regexes, `~t`/`~c`/`~C`/`~e`/`~p`, `~d` date ranges. A
+pty-driven e2e suite (including fake IMAP/SMTP servers and a stub gpg)
+lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -66,9 +68,15 @@ message, `d` delete and advance, `h` toggle full headers,
 Attachments: `Enter` view a text part, `s` save part to a file.
 
 Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
-`~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged; a bare
-word matches
-subject or from; several terms AND together.
+`~t x` to, `~c x` cc, `~C x` to-or-cc, `~e x` sender, `~d spec` date,
+`~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
+`~p` addressed to me; a bare word matches subject or from. `x` is a
+case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
+back to plain substring). `~d` takes a day or range —
+`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027` — or an
+offset: `<1w` (within), `>2d` (older than), `=3d` (that day); units
+y m w d H M. Adjacent terms AND, `!` negates, `|` ORs, `()` groups:
+`!~D (~f jane | ~t jane) ~d <1m`.
 
 ## IMAP
 

@@ -148,14 +148,17 @@ per recipient via folder-hook/send-hook.
       only set from/realname translate (regex → glob for the easy
       shapes); anything else stays `# not imported`
 
-## R10 — patterns v2 (1.9)
+## R10 — patterns v2 (done, 1.9)
 
-- [ ] Real pattern parser: `!` negation, `|` OR, `()` grouping
-      (adjacent terms stay implicit AND)
-- [ ] `~d` date ranges (`~d 01/06/2026-30/06/2026`, `~d <1w`, `~d >2d`)
-- [ ] `~t` to, `~c` cc, `~e` sender, `~p` addressed-to-me
-- [ ] Regex matching where mutt uses regexes, keeping today's
-      case-insensitive behavior for plain strings
+- [x] Real pattern parser: `!` negation, `|` OR, `()` grouping
+      (adjacent terms stay implicit AND); parse errors reach the
+      status line instead of matching nothing
+- [x] `~d` date ranges (`~d 01/06/2026-30/06/2026`, open ends, `<1w`,
+      `>2d`, `=3d`; units y m w d H M)
+- [x] `~t` to, `~c` cc, `~C` to-or-cc, `~e` sender (header read on
+      demand), `~p` addressed-to-me
+- [x] String arguments are case-insensitive regexes (regex-lite); an
+      invalid regex degrades to the old substring match
 
 ## R11 — new-mail awareness and IDLE (1.10)
 

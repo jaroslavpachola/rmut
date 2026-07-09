@@ -626,7 +626,13 @@ impl App {
                 if input.is_empty() || input == "all" {
                     self.limit = None;
                 } else {
-                    self.limit = Some((input.to_string(), pattern::parse(input)));
+                    match pattern::parse(input) {
+                        Ok(patterns) => self.limit = Some((input.to_string(), patterns)),
+                        Err(err) => {
+                            self.status = Some(format!("bad pattern: {err}"));
+                            return;
+                        }
+                    }
                 }
                 self.rebuild_visible(keep);
                 if self.visible.is_empty() {
@@ -635,7 +641,13 @@ impl App {
             }
             LineKind::Search => {
                 if !input.is_empty() {
-                    self.last_search = Some(pattern::parse(input));
+                    match pattern::parse(input) {
+                        Ok(patterns) => self.last_search = Some(patterns),
+                        Err(err) => {
+                            self.status = Some(format!("bad pattern: {err}"));
+                            return;
+                        }
+                    }
                 }
                 self.search_next();
             }
@@ -768,7 +780,7 @@ impl App {
                     .map(|(s, _)| s.clone())
                     .unwrap_or_default();
                 self.prompt = Some(Prompt::Line {
-                    label: "Limit (~f/~s/~b/~N/~F/~D/~U or text, empty=all): ".into(),
+                    label: "Limit (~f/~s/~b/~t/~c/~d/flags, ! | (), empty=all): ".into(),
                     buf,
                     kind: LineKind::Limit,
                 });
@@ -2052,7 +2064,7 @@ impl App {
         let mut visible = Vec::with_capacity(self.msgs.len());
         for i in 0..self.msgs.len() {
             let limit_ok = match &self.limit {
-                Some((_, patterns)) => pattern::matches(patterns, &self.msgs[i].env),
+                Some((_, patterns)) => pattern::matches(patterns, &self.msgs[i].env, &self.me),
                 None => true,
             };
             if !limit_ok {
@@ -2138,7 +2150,7 @@ impl App {
         let n = self.visible.len();
         for step in 1..=n {
             let vi = (self.sel + step) % n;
-            if pattern::matches(&patterns, &self.msgs[self.visible[vi]].env) {
+            if pattern::matches(&patterns, &self.msgs[self.visible[vi]].env, &self.me) {
                 if vi <= self.sel {
                     self.status = Some("search wrapped".into());
                 }

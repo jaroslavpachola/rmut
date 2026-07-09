@@ -246,6 +246,14 @@ fn run_filter(command: &str, input: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Decoded value of the first `name` header, read from disk (used by
+/// the `~e` Sender pattern).
+pub fn first_header(path: &Path, name: &str) -> Option<String> {
+    let raw = fs::read(path).ok()?;
+    let mail = parse_mail(&raw).ok()?;
+    mail.get_headers().get_first_value(name)
+}
+
 /// Decoded text body only (used by `~b` pattern matching).
 pub fn body_text(path: &Path) -> Result<String> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;

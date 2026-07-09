@@ -9,6 +9,7 @@ description = "Core mail handling for rmut: maildir scanning, message parsing"
 anyhow = { workspace = true }
 chrono = { workspace = true }
 mailparse = { workspace = true }
+regex-lite = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 rustls = { workspace = true }
