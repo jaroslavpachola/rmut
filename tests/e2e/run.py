@@ -606,6 +606,81 @@ smtp_tls = false
     r.close()
 
 
+def scenario_pgp(tmp):
+    """Decrypt on view and sign on send, against a stub gpg."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751900000.7.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: sealed orders\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <sealed@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/encrypted; boundary="b";\r\n'
+            '\tprotocol="application/pgp-encrypted"\r\n\r\n'
+            "--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--b\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nZZZ\r\n-----END PGP MESSAGE-----\r\n"
+            "--b--\r\n"
+        )
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--decrypt*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
+            '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
+            '  echo "[GNUPG:] GOODSIG AAA Jane <jane@example.com>" >&2\n'
+            "  printf 'Content-Type: text/plain\\r\\n\\r\\nthe secret plan\\r\\n' ;;\n"
+            "*--detach-sign*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] SIG_CREATED D 1 8 00 12 FPR" >&2\n'
+            "  printf -- '-----BEGIN PGP SIGNATURE-----\\nAAAA\\n"
+            "-----END PGP SIGNATURE-----\\n' ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[pgp]\ncommand = "{gpg}"\n')
+    editor = os.path.join(tmp, "editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "signed body line\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    sent_file = os.path.join(tmp, "sent.eml")
+    sendmail = os.path.join(tmp, "sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    env = base_env(tmp, {
+        "RMUT_CONFIG": config,
+        "EDITOR": editor,
+        "RMUT_SENDMAIL": sendmail,
+    })
+    r = Rmut(md, env)
+    r.expect("Msgs:2", "sealed orders")
+    r.keys(b"\r")  # newest = the encrypted message
+    r.expect("the secret plan", "decrypted", "good signature from Jane")
+    r.keys(b"i")
+    # Compose, pick sign from the security menu, send.
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rsigned subject\r")  # editor appends the body
+    r.expect("Send message?")
+    r.keys(b"ss")  # security menu -> sign
+    r.expect("[PGP: sign]")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="sendmail invoked")
+    r.expect("message sent")
+    sent = open(sent_file).read()
+    assert "Content-Type: multipart/signed" in sent
+    assert "micalg=pgp-sha256" in sent
+    assert "BEGIN PGP SIGNATURE" in sent
+    assert "signed body line" in sent
+    r.keys(b"q")  # both messages were already seen — quits directly
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -614,6 +689,7 @@ SCENARIOS = [
     scenario_config,
     scenario_send_via_config_sendmail,
     scenario_imap,
+    scenario_pgp,
 ]
 
 

@@ -13,7 +13,7 @@ use rmut_core::config::{Account, Config};
 use rmut_core::message::Envelope;
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote::{self, Remote};
-use rmut_core::{alias, compose, maildir, message, smtp, thread};
+use rmut_core::{alias, compose, maildir, message, pgp, smtp, thread};
 
 use crate::keymap::{IndexAction, Keymap, PagerAction};
 use crate::theme::Theme;
@@ -93,6 +93,7 @@ pub enum KeyKind {
     Sort,
     Quit,
     Send,
+    Security,
     Recall,
 }
 
@@ -136,14 +137,35 @@ pub struct ComposeSetup {
     to: Option<String>,
 }
 
+/// PGP treatment for an outgoing draft, chosen at the send prompt.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Security {
+    None,
+    Sign,
+    Encrypt,
+    Both,
+}
+
+impl Security {
+    fn label(self) -> &'static str {
+        match self {
+            Security::None => "",
+            Security::Sign => "sign",
+            Security::Encrypt => "encrypt",
+            Security::Both => "sign+encrypt",
+        }
+    }
+}
+
 /// A draft file going through editor → send/postpone/discard.
 pub struct Compose {
     pub path: PathBuf,
     /// Postponed original to delete once the message is sent.
     pub recall_source: Option<PathBuf>,
+    pub security: Security,
 }
 
-const SEND_PROMPT: &str = "Send message? (y)es (e)dit (p)ostpone (q)discard: ";
+const SEND_PROMPT: &str = "Send message? (y)es (e)dit (s)ecurity (p)ostpone (q)discard";
 
 pub struct App {
     pub dir: PathBuf,
@@ -489,6 +511,12 @@ impl App {
                     }
                 }
                 KeyCode::Char('p') => self.postpone_draft(),
+                KeyCode::Char('s') => {
+                    self.prompt = Some(Prompt::Key {
+                        label: "Security: (e)ncrypt (s)ign (b)oth (c)lear: ".into(),
+                        kind: KeyKind::Security,
+                    });
+                }
                 KeyCode::Char('q') => {
                     if let Some(c) = self.compose.take() {
                         let _ = std::fs::remove_file(&c.path);
@@ -497,6 +525,18 @@ impl App {
                 }
                 _ => self.reprompt_send(),
             },
+            KeyKind::Security => {
+                if let Some(c) = &mut self.compose {
+                    c.security = match code {
+                        KeyCode::Char('e') => Security::Encrypt,
+                        KeyCode::Char('s') => Security::Sign,
+                        KeyCode::Char('b') => Security::Both,
+                        KeyCode::Char('c') => Security::None,
+                        _ => c.security,
+                    };
+                }
+                self.reprompt_send();
+            }
             KeyKind::Recall => match code {
                 KeyCode::Char('r') => self.recall_postponed(),
                 KeyCode::Char('n') => self.continue_setup(ComposeKind::New, None),
@@ -1081,6 +1121,7 @@ impl App {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: None,
+                    security: self.default_security(),
                 });
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
@@ -1117,10 +1158,32 @@ impl App {
     }
 
     fn reprompt_send(&mut self) {
+        let security = self
+            .compose
+            .as_ref()
+            .map(|c| c.security)
+            .unwrap_or(Security::None);
+        let label = match security {
+            Security::None => format!("{SEND_PROMPT}: "),
+            s => format!("{SEND_PROMPT} [PGP: {}]: ", s.label()),
+        };
         self.prompt = Some(Prompt::Key {
-            label: SEND_PROMPT.into(),
+            label,
             kind: KeyKind::Send,
         });
+    }
+
+    /// Initial security for a fresh draft, from the [pgp] config.
+    fn default_security(&self) -> Security {
+        match (
+            self.config.pgp.sign_by_default,
+            self.config.pgp.encrypt_by_default,
+        ) {
+            (true, true) => Security::Both,
+            (true, false) => Security::Sign,
+            (false, true) => Security::Encrypt,
+            (false, false) => Security::None,
+        }
     }
 
     fn send_draft(&mut self) {
@@ -1149,6 +1212,15 @@ impl App {
             Ok(t) => t,
             Err(err) => {
                 self.status = Some(format!("{err} — press e to edit"));
+                self.compose = Some(compose_state);
+                self.reprompt_send();
+                return;
+            }
+        };
+        let final_text = match self.apply_security(compose_state.security, final_text) {
+            Ok(t) => t,
+            Err(err) => {
+                self.status = Some(format!("pgp: {err:#} — e edits, s changes security"));
                 self.compose = Some(compose_state);
                 self.reprompt_send();
                 return;
@@ -1201,6 +1273,26 @@ impl App {
                 self.status = Some(format!("send failed: {err:#}"));
                 self.compose = Some(compose_state);
                 self.reprompt_send();
+            }
+        }
+    }
+
+    /// Apply the chosen PGP treatment to a finalized draft.
+    fn apply_security(&self, security: Security, text: String) -> Result<String> {
+        let cfg = &self.config.pgp;
+        match security {
+            Security::None => Ok(text),
+            Security::Sign => pgp::sign_message(cfg, &text),
+            Security::Encrypt | Security::Both => {
+                // Encrypt to every recipient plus the sender, so the
+                // Fcc copy stays readable.
+                let (mut rcpts, _) = compose::smtp_envelope(&text)?;
+                if let Some(from) = compose::from_address(&text) {
+                    rcpts.push(from);
+                }
+                rcpts.sort();
+                rcpts.dedup();
+                pgp::encrypt_message(cfg, &rcpts, security == Security::Both, &text)
             }
         }
     }
@@ -1298,6 +1390,7 @@ impl App {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: Some(file.path),
+                    security: self.default_security(),
                 });
             }
             Err(err) => self.status = Some(format!("cannot recall: {err:#}")),
@@ -1349,7 +1442,17 @@ impl App {
             return;
         }
         match message::load(&path) {
-            Ok(view) => {
+            Ok(mut view) => {
+                // PGP messages: decrypt/verify via gpg, prepend the
+                // verdict line to whatever body ends up shown.
+                if let Ok(raw) = std::fs::read(&path)
+                    && let Some(p) = pgp::view(&self.config.pgp, &raw)
+                {
+                    if let Some(body) = p.body {
+                        view.body = body;
+                    }
+                    view.body = format!("{}\n\n{}", p.note, view.body);
+                }
                 self.mode = Mode::Pager(Pager {
                     view,
                     scroll: 0,

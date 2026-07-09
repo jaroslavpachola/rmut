@@ -146,8 +146,14 @@ fn pager_lines(
     }
     lines.push(Line::raw(""));
     for line in view.body.lines() {
+        // Marker lines like the PGP verdict get the header treatment.
+        let marker = line.starts_with("[-- ") && line.ends_with(" --]");
         for wrapped in wrap_line(line, width) {
-            lines.push(Line::raw(wrapped));
+            lines.push(if marker {
+                Line::styled(wrapped, Style::new().fg(header_color).bold())
+            } else {
+                Line::raw(wrapped)
+            });
         }
     }
     lines
