@@ -52,11 +52,16 @@ struct State {
     sign_key: Option<String>,
     sign_by_default: bool,
     encrypt_by_default: bool,
+    print: Option<String>,
     imap_user: Option<String>,
     imap_pass: Option<String>,
+    smtp_pass: Option<String>,
     smtp_url: Option<String>,
     aliases: Vec<String>,
     skipped: Vec<String>,
+    /// Directives that match what rmut always does — acknowledged in
+    /// the output so the user knows they were seen, not dropped.
+    satisfied: Vec<String>,
 }
 
 fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
@@ -243,6 +248,10 @@ impl State {
         self.skipped.push(format!("{line}  ({why})"));
     }
 
+    fn satisfy(&mut self, line: &str, why: &str) {
+        self.satisfied.push(format!("{line}  ({why})"));
+    }
+
     fn set(&mut self, name: &str, value: &str, line: &str) {
         let v = value.to_string();
         match name {
@@ -273,16 +282,39 @@ impl State {
             "pgp_sign_as" | "pgp_default_key" => self.sign_key = Some(v),
             "crypt_autosign" | "pgp_autosign" => self.sign_by_default = is_yes(&v),
             "crypt_autoencrypt" | "pgp_autoencrypt" => self.encrypt_by_default = is_yes(&v),
+            "print_command" => self.print = Some(v),
             "imap_user" => self.imap_user = Some(v),
             "smtp_url" => self.smtp_url = Some(v),
             "imap_pass" => self.imap_pass = Some(v),
-            "smtp_pass" => {
-                // rmut uses one credential per account; redact — the
-                // skip comment must not echo the secret.
-                self.skip(
-                    "set smtp_pass = (redacted)",
-                    "rmut uses the account's single password for SMTP too",
-                );
+            "smtp_pass" => self.smtp_pass = Some(v),
+            "ssl_starttls" | "ssl_force_tls" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "rmut always negotiates TLS/STARTTLS");
+                } else {
+                    self.skip(line, "rmut cannot skip TLS (imap_tls = false is for tests)");
+                }
+            }
+            "charset" | "send_charset" => {
+                if v.to_lowercase().replace(['-', '_'], "").contains("utf8") {
+                    self.satisfy(line, "rmut is UTF-8 native");
+                } else {
+                    self.skip(line, "rmut is UTF-8 only");
+                }
+            }
+            "pgp_auto_decode" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "rmut always decrypts/verifies PGP on view");
+                } else {
+                    self.skip(line, "rmut always checks PGP; there is no off switch");
+                }
+            }
+            "smtp_authenticators" => {
+                let m = v.to_lowercase();
+                if m.contains("plain") || m.contains("login") {
+                    self.satisfy(line, "rmut negotiates AUTH PLAIN/LOGIN by itself");
+                } else {
+                    self.skip(line, "rmut supports only AUTH PLAIN and LOGIN");
+                }
             }
             _ => self.skip(line, "no rmut equivalent"),
         }
@@ -399,6 +431,7 @@ impl State {
             || self.sendmail.is_some()
             || self.editor.is_some()
             || self.poll_seconds.is_some()
+            || self.print.is_some()
         {
             out += "\n[mail]\n";
             if !mailboxes.is_empty() {
@@ -419,6 +452,9 @@ impl State {
             }
             if let Some(n) = self.poll_seconds {
                 out += &format!("poll_seconds = {n}\n");
+            }
+            if let Some(p) = &self.print {
+                out += &format!("print = {}\n", quote(p));
             }
         }
         if let Some(f) = &self.index_format {
@@ -454,22 +490,25 @@ impl State {
             }
         }
         let mut skipped = self.skipped.clone();
-        match imap {
-            Some(url) => out += &self.account_toml(url),
-            None => {
-                if self.imap_pass.is_some() {
-                    skipped.push(
-                        "set imap_pass = (redacted)  (no IMAP folder, so no account to put it on)"
-                            .into(),
-                    );
-                }
-            }
+        if imap.is_some() || self.smtp_url.is_some() {
+            out += &self.account_toml(imap, &mut skipped);
+        } else if self.imap_pass.is_some() || self.smtp_pass.is_some() {
+            skipped.push(
+                "set imap_pass/smtp_pass = (redacted)  (no IMAP/SMTP server, nowhere to put it)"
+                    .into(),
+            );
         }
         if !self.aliases.is_empty() {
             out += "\n# aliases found — rmut reads mutt-format alias files; put these\n";
             out += "# lines in ~/.config/rmut/aliases (or point $RMUT_ALIASES at them):\n";
             for a in &self.aliases {
                 out += &format!("#   {a}\n");
+            }
+        }
+        if !self.satisfied.is_empty() {
+            out += "\n# satisfied by rmut's defaults (nothing to configure):\n";
+            for s in &self.satisfied {
+                out += &format!("#   {s}\n");
             }
         }
         if !skipped.is_empty() {
@@ -481,7 +520,7 @@ impl State {
         out
     }
 
-    fn account_toml(&self, folder_url: &str) -> String {
+    fn account_toml(&self, folder_url: Option<&str>, skipped: &mut Vec<String>) -> String {
         let mut out = format!("\n[[accounts]]\nname = {}\n", quote(ACCOUNT));
         let user = self
             .imap_user
@@ -489,24 +528,36 @@ impl State {
             .or_else(|| self.email.clone())
             .unwrap_or_else(|| "TODO".into());
         out += &format!("user = {}\n", quote(&user));
-        match &self.imap_pass {
-            Some(pass) => {
+        // One credential per account: imap_pass, or smtp_pass when
+        // it is the only one given.
+        match (&self.imap_pass, &self.smtp_pass) {
+            (Some(a), Some(b)) if a != b => {
                 out += "# imported from imap_pass; consider password_command instead\n";
+                out += &format!("password = {}\n", quote(a));
+                skipped.push(
+                    "set smtp_pass = (redacted)  (differs from imap_pass; rmut uses one password per account)"
+                        .into(),
+                );
+            }
+            (Some(pass), _) | (None, Some(pass)) => {
+                out += "# imported from imap_pass/smtp_pass; consider password_command instead\n";
                 out += &format!("password = {}\n", quote(pass));
             }
-            None => {
+            (None, None) => {
                 out += "# TODO: set a command that prints the password (or password = \"...\"):\n";
                 out += "password_command = \"pass show mail/TODO\"\n";
             }
         }
-        let (host, port, tls) = split_url(folder_url);
-        out += &format!("imap_host = {}\n", quote(host));
-        // imap:// means the standard port with STARTTLS (rmut upgrades
-        // any non-993 port), never a plaintext connection.
-        match (port, tls) {
-            (Some(p), _) => out += &format!("imap_port = {p}\n"),
-            (None, false) => out += "imap_port = 143\n",
-            (None, true) => {}
+        if let Some(url) = folder_url {
+            let (host, port, tls) = split_url(url);
+            out += &format!("imap_host = {}\n", quote(host));
+            // imap:// means the standard port with STARTTLS (rmut
+            // upgrades any non-993 port), never a plaintext connection.
+            match (port, tls) {
+                (Some(p), _) => out += &format!("imap_port = {p}\n"),
+                (None, false) => out += "imap_port = 143\n",
+                (None, true) => {}
+            }
         }
         if let Some(smtp) = &self.smtp_url {
             let (host, port, tls) = split_url(smtp);
@@ -519,7 +570,9 @@ impl State {
                 (None, false) => {}
             }
         }
-        if let Some(sent) = &self.sent {
+        if folder_url.is_some()
+            && let Some(sent) = &self.sent
+        {
             out += &format!(
                 "sent_folder = {}\n",
                 quote(sent.trim_start_matches(['+', '=']))
@@ -827,7 +880,74 @@ mod tests {
         let (cfg, toml) = to_config("set folder = ~/Mail\nset imap_pass = hunter2\n");
         assert!(cfg.accounts.is_empty());
         assert!(!toml.contains("hunter2"), "password must not leak:\n{toml}");
-        assert!(toml.contains("imap_pass = (redacted)"), "{toml}");
+        assert!(toml.contains("(redacted)"), "{toml}");
+    }
+
+    #[test]
+    fn smtp_only_muttrc_still_gets_an_account() {
+        let (cfg, _) = to_config(concat!(
+            "set folder = ~/Mail\n",
+            "set from = jane@x\n",
+            "set smtp_url = smtp://smtp.example.com:587\n",
+            "set smtp_pass = sekrit\n",
+        ));
+        let acct = cfg.account("mutt").unwrap();
+        assert!(acct.imap_host.is_none());
+        assert_eq!(acct.smtp_host, Some("smtp.example.com".into()));
+        assert_eq!(acct.user, "jane@x");
+        assert_eq!(acct.password.as_deref(), Some("sekrit"));
+    }
+
+    #[test]
+    fn differing_smtp_pass_is_noted_and_redacted() {
+        let (cfg, toml) = to_config(concat!(
+            "set folder = imaps://h\n",
+            "set imap_user = u\n",
+            "set imap_pass = aaa\n",
+            "set smtp_url = smtp://s\n",
+            "set smtp_pass = bbb\n",
+        ));
+        assert_eq!(
+            cfg.account("mutt").unwrap().password.as_deref(),
+            Some("aaa")
+        );
+        assert!(!toml.contains("bbb"), "smtp_pass must not leak:\n{toml}");
+        assert!(toml.contains("differs from imap_pass"), "{toml}");
+    }
+
+    #[test]
+    fn default_matching_directives_are_acknowledged() {
+        let (cfg, toml) = to_config(concat!(
+            "set ssl_starttls        = yes\n",
+            "set ssl_force_tls       = yes\n",
+            "set charset             = \"UTF-8\"\n",
+            "set pgp_auto_decode     = yes\n",
+            "set smtp_authenticators =\"login\"\n",
+            "set print_command       = \"a2ps\"\n",
+        ));
+        assert_eq!(cfg.mail.print.as_deref(), Some("a2ps"));
+        assert!(toml.contains("# satisfied by rmut's defaults"), "{toml}");
+        for directive in [
+            "ssl_starttls",
+            "ssl_force_tls",
+            "charset",
+            "pgp_auto_decode",
+            "smtp_authenticators",
+        ] {
+            assert!(toml.contains(directive), "{directive} missing:\n{toml}");
+        }
+        assert!(!toml.contains("# not imported"), "{toml}");
+    }
+
+    #[test]
+    fn non_default_tls_and_charset_still_surface() {
+        let (_cfg, toml) = to_config(concat!(
+            "set ssl_force_tls = no\n",
+            "set charset = \"iso-8859-2\"\n",
+            "set smtp_authenticators = \"oauthbearer\"\n",
+        ));
+        assert!(toml.contains("# not imported:"), "{toml}");
+        assert!(!toml.contains("# satisfied"), "{toml}");
     }
 
     #[test]
