@@ -53,6 +53,14 @@ struct State {
     sign_by_default: bool,
     encrypt_by_default: bool,
     print: Option<String>,
+    sort: Option<String>,
+    sort_aux: Option<String>,
+    date_format: Option<String>,
+    pager_index_lines: Option<u64>,
+    pager_context: Option<u64>,
+    forward_attach: bool,
+    save_default: Option<String>,
+    filters: BTreeMap<String, String>,
     imap_user: Option<String>,
     imap_pass: Option<String>,
     smtp_pass: Option<String>,
@@ -87,6 +95,16 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
             "alias" => st.aliases.push(line.clone()),
             "bind" => st.bind(&tokens[1..], &line),
             "color" => st.color(&tokens[1..], &line),
+            "auto_view" => {
+                for mime in &tokens[1..] {
+                    st.auto_view(mime, &line);
+                }
+            }
+            "save-hook" => match (tokens.get(1).map(String::as_str), tokens.get(2)) {
+                // Expanded at output time — $folder may come later.
+                (Some("." | "~A"), Some(mailbox)) => st.save_default = Some(mailbox.clone()),
+                _ => st.skip(&line, "only the catch-all pattern . maps to [mail] save"),
+            },
             "source" if tokens.len() >= 2 => {
                 if depth >= 10 {
                     st.skip(&line, "source nesting too deep");
@@ -308,6 +326,62 @@ impl State {
                     self.skip(line, "rmut always checks PGP; there is no off switch");
                 }
             }
+            "sort" => {
+                let (rev, name) = match v.strip_prefix("reverse-") {
+                    Some(rest) => ("reverse-", rest),
+                    None => ("", v.as_str()),
+                };
+                match name {
+                    "date" | "date-sent" | "date-received" => {
+                        self.sort = Some(format!("{rev}date"));
+                    }
+                    "threads" => self.sort = Some("threads".into()),
+                    "subject" | "size" | "from" => self.sort = Some(format!("{rev}{name}")),
+                    _ => self.skip(line, "no matching rmut sort order"),
+                }
+            }
+            "sort_aux" => match v.as_str() {
+                "last-date-sent" | "last-date-received" | "reverse-last-date-sent" => {
+                    self.sort_aux = Some("last-date-sent".into());
+                }
+                "date" | "date-sent" | "date-received" => {
+                    self.satisfy(line, "threads are ordered oldest-first by default");
+                }
+                _ => self.skip(line, "only date / last-date-sent map"),
+            },
+            "date_format" => {
+                // A leading ! toggles the locale in mutt; the format
+                // string itself is what matters here.
+                self.date_format = Some(v.trim_start_matches('!').to_string());
+            }
+            "pager_index_lines" => match v.parse() {
+                Ok(n) => self.pager_index_lines = Some(n),
+                Err(_) => self.skip(line, "not a number"),
+            },
+            "pager_context" => match v.parse() {
+                Ok(n) => self.pager_context = Some(n),
+                Err(_) => self.skip(line, "not a number"),
+            },
+            "mime_forward" => {
+                if is_yes(&v) {
+                    self.forward_attach = true;
+                } else {
+                    self.satisfy(line, "inline forwarding is rmut's default");
+                }
+            }
+            "mime_forward_rest" => {
+                self.satisfy(line, "the entire original message is attached");
+            }
+            "imap_peek" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "fetches use BODY.PEEK; \\Seen is set only on sync");
+                } else {
+                    self.skip(line, "rmut never marks messages read while fetching");
+                }
+            }
+            "menu_scroll" => {
+                self.satisfy(line, "menus always scroll line-wise");
+            }
             "smtp_authenticators" => {
                 let m = v.to_lowercase();
                 if m.contains("plain") || m.contains("login") {
@@ -344,7 +418,7 @@ impl State {
             return;
         };
         if function == "noop" {
-            self.skip(line, "noop bindings are not needed");
+            self.satisfy(line, "unbound keys already do nothing");
             return;
         }
         let Some(key) = convert_key(key) else {
@@ -375,6 +449,28 @@ impl State {
         }
     }
 
+    fn auto_view(&mut self, mime: &str, line: &str) {
+        match mime {
+            "text/html" => {
+                // The command lives in mailcap, which is not read;
+                // w3m is the usual suspect — adjust after import.
+                self.filters
+                    .entry("text/html".into())
+                    .or_insert_with(|| "w3m -dump -T text/html -O UTF-8".into());
+            }
+            m if m.starts_with("text/") => {
+                self.satisfy(line, "text parts already display inline");
+            }
+            "application/pgp" | "application/pgp-signature" | "application/pgp-encrypted" => {
+                self.satisfy(line, "PGP is handled natively");
+            }
+            _ => self.skip(
+                line,
+                "add a [filters] entry with a command that reads the part on stdin",
+            ),
+        }
+    }
+
     fn color(&mut self, args: &[String], line: &str) {
         let (Some(object), Some(fg), Some(bg)) = (args.first(), args.get(1), args.get(2)) else {
             self.skip(line, "unrecognized color syntax");
@@ -382,6 +478,14 @@ impl State {
         };
         let fg = convert_color(fg);
         let bg = convert_color(bg);
+        // rmut's index slots take one color; when the foreground says
+        // nothing (black/white/default on a colored background), the
+        // background is what the user actually sees.
+        let vivid = if matches!(fg.as_str(), "black" | "white" | "default") && bg != "default" {
+            bg.clone()
+        } else {
+            fg.clone()
+        };
         match (object.as_str(), args.get(3).map(String::as_str)) {
             ("status", _) => {
                 self.colors.insert("status_fg", fg);
@@ -391,10 +495,13 @@ impl State {
                 self.colors.insert("header", fg);
             }
             ("index", Some("~D")) => {
-                self.colors.insert("deleted", fg);
+                self.colors.insert("deleted", vivid);
             }
             ("index", Some("~F")) => {
-                self.colors.insert("flagged", fg);
+                self.colors.insert("flagged", vivid);
+            }
+            ("index", Some("~T")) => {
+                self.colors.insert("tagged", vivid);
             }
             _ => self.skip(line, "no rmut color slot"),
         }
@@ -446,6 +553,8 @@ impl State {
             || self.editor.is_some()
             || self.poll_seconds.is_some()
             || self.print.is_some()
+            || self.save_default.is_some()
+            || self.forward_attach
         {
             out += "\n[mail]\n";
             if !mailboxes.is_empty() {
@@ -470,12 +579,47 @@ impl State {
             if let Some(p) = &self.print {
                 out += &format!("print = {}\n", quote(p));
             }
+            if let Some(save) = &self.save_default {
+                out += &format!("save = {}\n", quote(&self.expand_mailbox(save)));
+            }
+            if self.forward_attach {
+                out += "forward = \"attach\"\n";
+            }
         }
-        if let Some(f) = &self.index_format {
-            out += &format!(
-                "\n[index]\n# rmut supports %C %Z %d %F %c %s of mutt's specifiers\nformat = {}\n",
-                quote(f)
-            );
+        if self.index_format.is_some()
+            || self.sort.is_some()
+            || self.sort_aux.is_some()
+            || self.date_format.is_some()
+        {
+            out += "\n[index]\n";
+            if let Some(f) = &self.index_format {
+                out += "# rmut supports %C %Z %d %F %c %s of mutt's specifiers\n";
+                out += &format!("format = {}\n", quote(f));
+            }
+            if let Some(sort) = &self.sort {
+                out += &format!("sort = {}\n", quote(sort));
+            }
+            if let Some(aux) = &self.sort_aux {
+                out += &format!("sort_aux = {}\n", quote(aux));
+            }
+            if let Some(df) = &self.date_format {
+                out += &format!("date_format = {}\n", quote(df));
+            }
+        }
+        if self.pager_index_lines.is_some() || self.pager_context.is_some() {
+            out += "\n[pager]\n";
+            if let Some(n) = self.pager_index_lines {
+                out += &format!("index_lines = {n}\n");
+            }
+            if let Some(n) = self.pager_context {
+                out += &format!("context = {n}\n");
+            }
+        }
+        if !self.filters.is_empty() {
+            out += "\n[filters]\n# auto_view: the command reads the part on stdin (from mailcap\n# in mutt; adjust to taste)\n";
+            for (mime, command) in &self.filters {
+                out += &format!("{} = {}\n", quote(mime), quote(command));
+            }
         }
         if !self.colors.is_empty() {
             out += "\n[colors]\n";
@@ -719,6 +863,11 @@ fn index_function(name: &str) -> Option<&'static str> {
         "view-attachments" => "attachments",
         "collapse-thread" => "fold-thread",
         "collapse-all" => "fold-all",
+        "imap-fetch-mail" | "fetch-mail" => "fetch-mail",
+        "tag-entry" | "tag-message" => "tag",
+        "tag-prefix" => "tag-prefix",
+        "save-message" => "save",
+        "print-message" => "print",
         "help" => "help",
         _ => return None,
     })
@@ -742,6 +891,8 @@ fn pager_function(name: &str) -> Option<&'static str> {
         "reply" => "reply",
         "group-reply" => "group-reply",
         "forward-message" => "forward",
+        "save-message" => "save",
+        "print-message" => "print",
         "help" => "help",
         _ => return None,
     })
@@ -915,6 +1066,69 @@ mod tests {
     }
 
     #[test]
+    fn sort_pager_and_forward_directives_import() {
+        let (cfg, toml) = to_config(concat!(
+            "set sort                = \"threads\"\n",
+            "set sort_aux            = last-date-sent\n",
+            "set date_format         = \"%d.%m.%Y\"\n",
+            "set pager_index_lines   = 10\n",
+            "set pager_context       = 3\n",
+            "set mime_forward        = yes\n",
+            "set mime_forward_rest   = yes\n",
+            "save-hook . +General\n",
+            "set folder = ~/Mail\n",
+            "bind index G imap-fetch-mail\n",
+        ));
+        assert_eq!(cfg.index.sort.as_deref(), Some("threads"));
+        assert_eq!(cfg.index.sort_aux.as_deref(), Some("last-date-sent"));
+        assert_eq!(cfg.index.date_format.as_deref(), Some("%d.%m.%Y"));
+        assert_eq!(cfg.pager.index_lines, 10);
+        assert_eq!(cfg.pager.context, 3);
+        assert_eq!(cfg.mail.forward.as_deref(), Some("attach"));
+        assert_eq!(cfg.mail.save.as_deref(), Some("~/Mail/General"));
+        assert_eq!(
+            cfg.keys.index.get("fetch-mail").map(String::as_str),
+            Some("G")
+        );
+        assert!(toml.contains("mime_forward_rest"), "{toml}");
+        assert!(!toml.contains("# not imported"), "{toml}");
+    }
+
+    #[test]
+    fn auto_view_and_peek_and_tagged_color() {
+        let (cfg, toml) = to_config(concat!(
+            "auto_view application/zip\n",
+            "auto_view text/x-patch text/x-diff\n",
+            "auto_view application/pgp-signature application/pgp\n",
+            "auto_view text/html\n",
+            "auto_view text/calendar\n",
+            "set imap_peek           = yes\n",
+            "set menu_scroll\n",
+            "bind index % noop\n",
+            "color index black   cyan    \"~T\"\n",
+        ));
+        assert!(
+            cfg.filters.get("text/html").unwrap().contains("w3m"),
+            "html filter"
+        );
+        // black-on-cyan: the background is the visible color.
+        assert_eq!(cfg.colors.get("tagged").map(String::as_str), Some("cyan"));
+        assert!(toml.contains("# satisfied by rmut's defaults"), "{toml}");
+        for satisfied in [
+            "x-patch",
+            "pgp-signature",
+            "imap_peek",
+            "menu_scroll",
+            "noop",
+        ] {
+            assert!(toml.contains(satisfied), "{satisfied} missing:\n{toml}");
+        }
+        // zip and calendar have no obvious command: they stay visible.
+        assert!(toml.contains("application/zip"), "{toml}");
+        assert!(toml.contains("text/calendar"), "{toml}");
+    }
+
+    #[test]
     fn imap_pass_without_imap_folder_is_redacted() {
         let (cfg, toml) = to_config("set folder = ~/Mail\nset imap_pass = hunter2\n");
         assert!(cfg.accounts.is_empty());
@@ -1050,7 +1264,7 @@ mod tests {
     #[test]
     fn aliases_and_unknowns_surface_as_comments() {
         let import = import(
-            "alias petr Petr Novak <petr@example.com>\nset sort = threads\nmacro index x y\n",
+            "alias petr Petr Novak <petr@example.com>\nset sleep_time = 0\nmacro index x y\n",
             Path::new("/"),
         );
         assert_eq!(import.aliases.len(), 1);
@@ -1059,7 +1273,7 @@ mod tests {
                 .toml
                 .contains("#   alias petr Petr Novak <petr@example.com>")
         );
-        assert!(import.toml.contains("set sort = threads"));
+        assert!(import.toml.contains("set sleep_time = 0"));
         assert!(import.toml.contains("macro index x y"));
         // and the output is still valid (if empty) config
         toml::from_str::<Config>(&import.toml).unwrap();
