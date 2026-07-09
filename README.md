@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.1** — everything from the 1.0 roadmap plus R5 and R6: mutt-style index
+**1.2** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -31,6 +31,7 @@ cargo run -p rmut-tui -- ~/Maildir     # or: just run ~/Maildir
 
 ```
 usage: rmut [MAILDIR | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
+       rmut --import-muttrc [MUTTRC]
 ```
 
 Without an argument, rmut opens the first configured mailbox, `$MAIL`,
@@ -147,6 +148,21 @@ encrypt_by_default = false
 Key syntax: a character, `ctrl+x`, `alt+x`, or enter/esc/space/tab/
 backspace/up/down/pgup/pgdn/home/end. `?` lists all actions with their
 current keys.
+
+### Coming from mutt
+
+```sh
+rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
+```
+
+translates a muttrc (identity, folder/mailboxes, record/postponed,
+sendmail/editor, binds, status/header colors, PGP defaults, IMAP/SMTP
+URLs into an `[[accounts]]` skeleton) into rmut TOML on stdout for
+review — it never writes any file itself. Directives with no rmut
+equivalent are kept as `# not imported:` comments; `imap_pass` is
+redacted (set `password_command` instead). Alias files need no
+translation: rmut reads mutt-format aliases, so point `$RMUT_ALIASES`
+at your existing file or copy it to `~/.config/rmut/aliases`.
 
 ## Development
 

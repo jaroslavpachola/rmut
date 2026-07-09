@@ -89,6 +89,19 @@ post-1.0.
 - [x] Config: `[pgp]` section — gpg command, default signing key,
       sign_by_default / encrypt_by_default
 
+## R7 — muttrc importer (done, 1.2)
+
+- [x] `rmut --import-muttrc [FILE]`: translate a muttrc into rmut TOML
+      on stdout (review-and-save, never writes the config itself)
+- [x] set: identity, folder/spoolfile/mailboxes (+/= expansion),
+      record/postponed/sendmail/editor/mail_check, index_format,
+      pgp_sign_as/crypt_autosign/crypt_autoencrypt
+- [x] bind (index/pager function + \C/\e/<name> key translation),
+      color (status/header/~D/~F slots), source includes, alias
+      passthrough (rmut reads mutt alias files as-is)
+- [x] everything untranslatable surfaces as `# not imported:` comments;
+      imap_pass/smtp_pass are redacted, never echoed
+
 ## Post-1.0 candidates
 
 - OAuth2 (XOAUTH2) for IMAP/SMTP accounts
