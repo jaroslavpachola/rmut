@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.3** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
+**1.4** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -45,12 +45,14 @@ read, `$` sync changes to disk, `o` sort (`d`ate `f`rom `s`ubject
 si`z`e `t`hreads, uppercase reverses), Alt+v/Alt+V fold thread/all
 (with thread sort), `l` limit, `/` search + `n` next, `c` open mailbox
 by path, `y` folder browser, `v` attachments, `m` compose, `r` reply,
-`g` group reply, `f` forward, `q` quit (asks when changes are
+`g` group reply, `f` forward, `p` print (pipes the message to
+`mail.print`, default `lpr`), `q` quit (asks when changes are
 pending), `x` abort without saving.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
-`v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `q`/`i` back.
+`v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `p` print,
+`q`/`i` back.
 
 Attachments: `Enter` view a text part, `s` save part to a file.
 
@@ -116,6 +118,7 @@ postponed = "~/Maildir/.Drafts"
 sendmail = "/usr/sbin/sendmail"
 editor = "vim"
 poll_seconds = 5             # new-mail check interval
+print = "lpr"                # `p` pipes the message here
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
@@ -158,11 +161,14 @@ rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
 ```
 
 translates a muttrc (identity, folder/mailboxes, record/postponed,
-sendmail/editor, binds, status/header colors, PGP defaults, IMAP/SMTP
-URLs into an `[[accounts]]` skeleton) into rmut TOML on stdout for
-review — it never writes any file itself. Directives with no rmut
-equivalent are kept as `# not imported:` comments; `imap_pass` becomes
-the account's stored `password`. Alias files need no
+sendmail/editor/print_command, binds, status/header colors, PGP
+defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton) into rmut
+TOML on stdout for review — it never writes any file itself.
+Directives with no rmut equivalent are kept as `# not imported:`
+comments, and ones that match rmut's built-in behavior (ssl_starttls,
+UTF-8 charset, pgp_auto_decode, ...) are acknowledged under
+`# satisfied by rmut's defaults`; `imap_pass`/`smtp_pass` become the
+account's stored `password`. Alias files need no
 translation: rmut reads mutt-format aliases, so point `$RMUT_ALIASES`
 at your existing file or copy it to `~/.config/rmut/aliases`.
 
