@@ -681,6 +681,27 @@ def scenario_pgp(tmp):
     r.close()
 
 
+def scenario_print(tmp):
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    out = os.path.join(tmp, "printed.txt")
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[mail]\nprint = "cat >> {out}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config}))
+    r.expect("Msgs:1")
+    r.keys(b"p")
+    r.expect("Print message?")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(out), desc="print command ran")
+    r.expect("printed via")
+    printed = open(out).read()
+    assert "Subject: Lunch on Friday?" in printed
+    assert "Are you free for lunch" in printed
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_import_muttrc(tmp):
     """--import-muttrc prints reviewable TOML (no pty needed)."""
     muttrc = os.path.join(tmp, "muttrc")
@@ -718,6 +739,7 @@ SCENARIOS = [
     scenario_send_via_config_sendmail,
     scenario_imap,
     scenario_pgp,
+    scenario_print,
     scenario_import_muttrc,
 ]
 

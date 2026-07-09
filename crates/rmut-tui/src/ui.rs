@@ -8,9 +8,9 @@ use rmut_core::message::{self, MessageView, Part};
 
 use crate::app::{App, Mode, Pager, Prompt};
 
-const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts $:Sync M-v:Fold";
+const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts p:Print $:Sync M-v:Fold";
 const PAGER_HELP: &str =
-    "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply f:Fwd d:Del h:Hdrs v:Parts";
+    "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply f:Fwd d:Del h:Hdrs v:Parts p:Print";
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";

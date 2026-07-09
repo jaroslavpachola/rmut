@@ -12,6 +12,7 @@
 //! sendmail = "/usr/sbin/sendmail"
 //! editor = "vim"
 //! poll_seconds = 5
+//! print = "lpr"
 //!
 //! [index]
 //! format = "%4C %Z %-6d %-20.20F %5c %s"
@@ -75,6 +76,8 @@ pub struct Mail {
     pub sendmail: Option<String>,
     pub editor: Option<String>,
     pub poll_seconds: Option<u64>,
+    /// Shell command the printed message is piped to (default lpr).
+    pub print: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

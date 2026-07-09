@@ -95,6 +95,7 @@ pub enum KeyKind {
     Send,
     Security,
     Recall,
+    Print,
 }
 
 pub enum Prompt {
@@ -542,6 +543,11 @@ impl App {
                 KeyCode::Char('n') => self.continue_setup(ComposeKind::New, None),
                 _ => {}
             },
+            KeyKind::Print => {
+                if code == KeyCode::Char('y') {
+                    self.print_current();
+                }
+            }
         }
     }
 
@@ -673,6 +679,7 @@ impl App {
                 }
             }
             IndexAction::Folders => self.open_folder_browser(),
+            IndexAction::Print => self.confirm_print(),
             IndexAction::Help => self.open_help(),
         }
     }
@@ -737,6 +744,10 @@ impl App {
             }
             PagerAction::Forward => {
                 self.start_compose(ComposeKind::Forward);
+                return;
+            }
+            PagerAction::Print => {
+                self.confirm_print();
                 return;
             }
             PagerAction::Help => {
@@ -1427,32 +1438,37 @@ impl App {
         }
     }
 
+    /// Fetch (IMAP), parse, and PGP-process a message the way the
+    /// pager shows it.
+    fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
+        // Cached IMAP messages start header-only; get the body now.
+        if let Some(remote) = &mut self.remote
+            && remote::is_partial(path)
+        {
+            remote.fetch_body(path).context("cannot fetch message")?;
+        }
+        let mut view = message::load(path)?;
+        // PGP messages: decrypt/verify via gpg, prepend the verdict
+        // line to whatever body ends up shown.
+        if let Ok(raw) = std::fs::read(path)
+            && let Some(p) = pgp::view(&self.config.pgp, &raw)
+        {
+            if let Some(body) = p.body {
+                view.body = body;
+            }
+            view.body = format!("{}\n\n{}", p.note, view.body);
+        }
+        Ok(view)
+    }
+
     fn open_selected(&mut self) {
         self.mark_read();
         let Some(&i) = self.visible.get(self.sel) else {
             return;
         };
         let path = self.msgs[i].env.file.path.clone();
-        // Cached IMAP messages start header-only; get the body now.
-        if let Some(remote) = &mut self.remote
-            && remote::is_partial(&path)
-            && let Err(err) = remote.fetch_body(&path)
-        {
-            self.status = Some(format!("cannot fetch message: {err:#}"));
-            return;
-        }
-        match message::load(&path) {
-            Ok(mut view) => {
-                // PGP messages: decrypt/verify via gpg, prepend the
-                // verdict line to whatever body ends up shown.
-                if let Ok(raw) = std::fs::read(&path)
-                    && let Some(p) = pgp::view(&self.config.pgp, &raw)
-                {
-                    if let Some(body) = p.body {
-                        view.body = body;
-                    }
-                    view.body = format!("{}\n\n{}", p.note, view.body);
-                }
+        match self.load_view(&path) {
+            Ok(view) => {
                 self.mode = Mode::Pager(Pager {
                     view,
                     scroll: 0,
@@ -1460,6 +1476,48 @@ impl App {
                 });
             }
             Err(err) => self.status = Some(format!("cannot open message: {err:#}")),
+        }
+    }
+
+    fn confirm_print(&mut self) {
+        if self.visible.get(self.sel).is_none() {
+            return;
+        }
+        self.prompt = Some(Prompt::Key {
+            label: "Print message? (y/n): ".into(),
+            kind: KeyKind::Print,
+        });
+    }
+
+    /// Pipe the message as displayed (brief headers, decoded body) to
+    /// the configured print command, lpr by default.
+    fn print_current(&mut self) {
+        let Some(&i) = self.visible.get(self.sel) else {
+            return;
+        };
+        let path = self.msgs[i].env.file.path.clone();
+        let view = match self.load_view(&path) {
+            Ok(v) => v,
+            Err(err) => {
+                self.status = Some(format!("cannot print: {err:#}"));
+                return;
+            }
+        };
+        let mut text = String::new();
+        for (name, value) in &view.brief {
+            text += &format!("{name}: {value}\n");
+        }
+        text.push('\n');
+        text += &view.body;
+        let command = self
+            .config
+            .mail
+            .print
+            .clone()
+            .unwrap_or_else(|| "lpr".into());
+        match pipe_to(&command, text.as_bytes()) {
+            Ok(()) => self.status = Some(format!("printed via {command}")),
+            Err(err) => self.status = Some(format!("print failed: {err:#}")),
         }
     }
 
@@ -1739,6 +1797,26 @@ fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
     anyhow::ensure!(!rcpts.is_empty(), "no recipient addresses");
     let password = account_password(account)?;
     smtp::send(account, &password, &from, &rcpts, text.as_bytes())
+}
+
+/// Run a shell command with `bytes` on its stdin.
+fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("running {command}"))?;
+    child
+        .stdin
+        .take()
+        .context("no stdin on print child")?
+        .write_all(bytes)?;
+    let status = child.wait()?;
+    anyhow::ensure!(status.success(), "{command} exited with {status}");
+    Ok(())
 }
 
 fn run_sendmail(bytes: &[u8], configured: Option<&str>) -> Result<()> {

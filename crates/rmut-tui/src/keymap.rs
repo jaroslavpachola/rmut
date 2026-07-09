@@ -142,6 +142,7 @@ pub enum IndexAction {
     Attachments,
     FoldThread,
     FoldAll,
+    Print,
     Help,
 }
 
@@ -163,6 +164,7 @@ pub enum PagerAction {
     Reply,
     GroupReply,
     Forward,
+    Print,
     Help,
 }
 
@@ -197,6 +199,7 @@ impl IndexAction {
             Attachments => "attachments",
             FoldThread => "fold-thread",
             FoldAll => "fold-all",
+            Print => "print",
             Help => "help",
         }
     }
@@ -231,6 +234,7 @@ impl IndexAction {
             Attachments => "list message parts",
             FoldThread => "fold/unfold current thread",
             FoldAll => "fold/unfold all threads",
+            Print => "pipe message to the print command",
             Help => "this help",
         }
     }
@@ -265,6 +269,7 @@ impl IndexAction {
             Attachments,
             FoldThread,
             FoldAll,
+            Print,
             Help,
         ]
     }
@@ -297,6 +302,7 @@ impl PagerAction {
             Reply => "reply",
             GroupReply => "group-reply",
             Forward => "forward",
+            Print => "print",
             Help => "help",
         }
     }
@@ -320,6 +326,7 @@ impl PagerAction {
             Reply => "reply to sender",
             GroupReply => "reply to all",
             Forward => "forward message",
+            Print => "pipe message to the print command",
             Help => "this help",
         }
     }
@@ -343,6 +350,7 @@ impl PagerAction {
             Reply,
             GroupReply,
             Forward,
+            Print,
             Help,
         ]
     }
@@ -397,6 +405,7 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ch('v'), Attachments),
         (KeyPattern::alt('v'), FoldThread),
         (KeyPattern::alt('V'), FoldAll),
+        (KeyPattern::ch('p'), Print),
         (KeyPattern::ch('?'), Help),
     ]
 }
@@ -429,6 +438,7 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('r'), Reply),
         (KeyPattern::ch('g'), GroupReply),
         (KeyPattern::ch('f'), Forward),
+        (KeyPattern::ch('p'), Print),
         (KeyPattern::ch('?'), Help),
     ]
 }
