@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.4** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
+**1.5** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -41,23 +41,26 @@ or `~/Maildir`.
 
 Index: `j`/`k` move, `Enter` view, `=`/`*` first/last, PgUp/PgDn or
 Ctrl+B/Ctrl+F page, `d`/`u` delete/undelete, `F` flag, `N` toggle
-read, `$` sync changes to disk, `o` sort (`d`ate `f`rom `s`ubject
-si`z`e `t`hreads, uppercase reverses), Alt+v/Alt+V fold thread/all
-(with thread sort), `l` limit, `/` search + `n` next, `c` open mailbox
-by path, `y` folder browser, `v` attachments, `m` compose, `r` reply,
-`g` group reply, `f` forward, `p` print (pipes the message to
-`mail.print`, default `lpr`), `q` quit (asks when changes are
-pending), `x` abort without saving.
+read, `t` tag + `;` apply the next d/u/F/N to all tagged, `s` save
+(copy to a mailbox + mark deleted), `$` sync changes to disk, `o` sort
+(`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
+Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
++ `n` next, `c` open mailbox by path, `y` folder browser, `G` check
+for new mail now, `v` attachments, `m` compose, `r` reply, `g` group
+reply, `f` forward, `p` print (pipes the message to `mail.print`,
+default `lpr`), `q` quit (asks when changes are pending), `x` abort
+without saving.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
 `v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `p` print,
-`q`/`i` back.
+`s` save, `q`/`i` back.
 
 Attachments: `Enter` view a text part, `s` save part to a file.
 
 Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
-`~N` new, `~F` flagged, `~D` deleted, `~U` unread; a bare word matches
+`~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged; a bare
+word matches
 subject or from; several terms AND together.
 
 ## IMAP
@@ -119,16 +122,28 @@ sendmail = "/usr/sbin/sendmail"
 editor = "vim"
 poll_seconds = 5             # new-mail check interval
 print = "lpr"                # `p` pipes the message here
+save = "~/Maildir/.Archive"  # default target for `s`
+forward = "inline"           # or "attach" (original as message/rfc822)
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
                                          # %F from %c size %s subject
+sort = "threads"             # initial sort; reverse-date, size, ...
+sort_aux = "last-date-sent"  # threads ordered by their newest message
+date_format = "%d.%m.%Y"     # strftime for the date column
+
+[pager]
+index_lines = 10             # keep a slice of the index above the pager
+context = 3                  # overlapping lines when paging
+
+[filters]                    # auto_view: render a part via a command
+"text/html" = "w3m -dump -T text/html -O UTF-8"
 
 [ui]
 theme = "default"            # or "mono"
 
-[colors]                     # status_fg status_bg deleted flagged header
-deleted = "red"
+[colors]                     # status_fg status_bg deleted flagged
+deleted = "red"              # tagged header
 
 [keys.index]                 # remap: action = "key" (see ? for actions)
 sync = "w"
