@@ -94,10 +94,15 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         let msg = &app.msgs[mi];
         let env = &msg.env;
         let status = env.file.flags.status_char(env.file.is_new);
-        let flagged = if env.file.flags.flagged {
-            '!'
-        } else if env.tagged {
+        let flagged = if env.file.flags.flagged { '!' } else { ' ' };
+        // Third %Z slot, mutt-style: tag mark or how the mail
+        // addresses me.
+        let mark = if env.tagged {
             '*'
+        } else if env.to.iter().any(|a| app.me.contains(a)) {
+            if env.to.len() == 1 { '+' } else { 'T' }
+        } else if env.cc.iter().any(|a| app.me.contains(a)) {
+            'C'
         } else {
             ' '
         };
@@ -121,6 +126,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 number: vi + 1,
                 status,
                 flag: flagged,
+                mark,
                 date: &message::format_index_date_with(
                     env.date,
                     app.config.index.date_format.as_deref(),

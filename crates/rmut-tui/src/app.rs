@@ -201,6 +201,9 @@ pub struct App {
     pub config: Config,
     pub theme: Theme,
     pub keymap: Keymap,
+    /// My own addresses (identity, accounts, $EMAIL), lowercase, for
+    /// the addressed-to-me index mark.
+    pub me: Vec<String>,
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
@@ -238,6 +241,16 @@ impl App {
         }
         let status = (!warnings.is_empty()).then(|| warnings.join("; "));
         let count = msgs.len();
+        let mut me: Vec<String> = config
+            .identity
+            .email
+            .iter()
+            .chain(config.accounts.iter().map(|a| &a.user))
+            .map(|a| a.to_lowercase())
+            .collect();
+        if let Ok(email) = std::env::var("EMAIL") {
+            me.push(email.to_lowercase());
+        }
         let mut app = App {
             dir: dir.to_path_buf(),
             title: dir.display().to_string(),
@@ -260,6 +273,7 @@ impl App {
             config,
             theme,
             keymap,
+            me,
             compose_setup: None,
             compose: None,
             pending_editor: None,

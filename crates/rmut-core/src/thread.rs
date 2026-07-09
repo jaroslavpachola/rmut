@@ -196,6 +196,8 @@ mod tests {
             msg_id: (!id.is_empty()).then(|| format!("<{id}>")),
             references: refs.iter().map(|r| format!("<{r}>")).collect(),
             tagged: false,
+            to: vec![],
+            cc: vec![],
         }
     }
 

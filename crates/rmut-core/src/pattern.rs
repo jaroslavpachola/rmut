@@ -86,6 +86,8 @@ mod tests {
             msg_id: None,
             references: vec![],
             tagged: false,
+            to: vec![],
+            cc: vec![],
         }
     }
 

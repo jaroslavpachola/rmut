@@ -593,7 +593,7 @@ impl State {
         {
             out += "\n[index]\n";
             if let Some(f) = &self.index_format {
-                out += "# rmut supports %C %Z %d %F %c %s of mutt's specifiers\n";
+                out += "# rmut renders %C %Z %d %F/%L %c %s and %?X?then&else?\n# conditionals; %l (lines) is never set, so its else branch shows\n";
                 out += &format!("format = {}\n", quote(f));
             }
             if let Some(sort) = &self.sort {

@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.5** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
+**1.6** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -127,7 +127,8 @@ forward = "inline"           # or "attach" (original as message/rfc822)
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
-                                         # %F from %c size %s subject
+                                         # %F/%L from %c size %s subject
+                                         # %?X?then&else? conditionals
 sort = "threads"             # initial sort; reverse-date, size, ...
 sort_aux = "last-date-sent"  # threads ordered by their newest message
 date_format = "%d.%m.%Y"     # strftime for the date column

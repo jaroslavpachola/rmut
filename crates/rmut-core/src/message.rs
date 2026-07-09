@@ -21,6 +21,10 @@ pub struct Envelope {
     pub references: Vec<String>,
     /// Runtime tag mark (mutt's `t`); never persisted.
     pub tagged: bool,
+    /// Bare lowercase To / Cc addresses, for the "addressed to me"
+    /// index mark.
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
 }
 
 pub fn envelope(file: MailFile) -> Result<Envelope> {
@@ -42,6 +46,8 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     let msg_id = headers
         .get_first_value("Message-ID")
         .and_then(|v| parse_msg_ids(&v).into_iter().next());
+    let to = field_addresses(&headers.get_all_values("To").join(", "));
+    let cc = field_addresses(&headers.get_all_values("Cc").join(", "));
     let mut references = headers
         .get_first_value("References")
         .map(|v| parse_msg_ids(&v))
@@ -60,7 +66,26 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         msg_id,
         references,
         tagged: false,
+        to,
+        cc,
     })
+}
+
+/// Bare lowercase addresses in an address header value.
+fn field_addresses(value: &str) -> Vec<String> {
+    let Ok(list) = mailparse::addrparse(value) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for addr in list.iter() {
+        match addr {
+            mailparse::MailAddr::Single(single) => out.push(single.addr.to_lowercase()),
+            mailparse::MailAddr::Group(group) => {
+                out.extend(group.addrs.iter().map(|a| a.addr.to_lowercase()));
+            }
+        }
+    }
+    out
 }
 
 /// Extract all `<...>` message-id tokens from a header value.
