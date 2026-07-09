@@ -181,7 +181,9 @@ def scenario_sync_delete_flag_limit(tmp):
     r.keys(b"=")  # first (CI)
     r.keys(b"d")
     r.expect("Del:1")
-    r.keys(b"$")
+    r.keys(b"$")  # deletions pending -> purge prompt
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"y")
     r.expect("synced: 1 deleted")
     assert not any("1751750100" in f for f in os.listdir(os.path.join(md, "cur")))
     r.keys(b"*F$")  # flag newest, sync
@@ -302,7 +304,9 @@ sync = "w"
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("1|buil|CI failed on main", "2|Jane|Lunch on Friday?")
     r.keys(b"=d")  # first message (CI), mark deleted
-    r.keys(b"w")  # remapped sync
+    r.keys(b"w")  # remapped sync; confirm the purge
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"y")
     r.expect("synced: 1 deleted")
     wait_for(
         lambda: not any("1751750100" in f for f in os.listdir(os.path.join(md, "cur"))),
@@ -577,7 +581,9 @@ smtp_tls = false
         desc="read-mark pushed via UID STORE",
     )
     assert "\\Seen" in imap.msgs[2][0]
-    r.keys(b"=d$")  # first = uid 1: delete and sync -> STORE + EXPUNGE
+    r.keys(b"=d$")  # first = uid 1: delete, sync, confirm the purge
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"y")
     r.expect("synced: 1 deleted")
     wait_for(lambda: 1 not in imap.msgs, desc="message expunged on the server")
     # New mail arrives server-side; the NOOP poll picks it up.

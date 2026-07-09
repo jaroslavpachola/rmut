@@ -97,6 +97,10 @@ pub enum KeyKind {
     Security,
     Recall,
     Print,
+    /// Confirm expunging deleted messages; `quit` leaves afterwards.
+    Purge {
+        quit: bool,
+    },
 }
 
 pub enum Prompt {
@@ -536,10 +540,25 @@ impl App {
             }
             KeyKind::Quit => match code {
                 KeyCode::Char('y') => {
-                    self.sync();
-                    self.quit = true;
+                    if self.deleted_count() > 0 {
+                        self.prompt_purge(true);
+                    } else {
+                        self.sync(true);
+                        self.quit = true;
+                    }
                 }
                 KeyCode::Char('n') => self.quit = true,
+                _ => {}
+            },
+            KeyKind::Purge { quit } => match code {
+                // y expunges; n writes flag changes but keeps the
+                // messages marked deleted, like mutt.
+                KeyCode::Char('y') | KeyCode::Char('n') => {
+                    self.sync(code == KeyCode::Char('y'));
+                    if quit {
+                        self.quit = true;
+                    }
+                }
                 _ => {}
             },
             KeyKind::Send => match code {
@@ -707,7 +726,13 @@ impl App {
                     m.dirty = true;
                 }
             }
-            IndexAction::Sync => self.sync(),
+            IndexAction::Sync => {
+                if self.deleted_count() > 0 {
+                    self.prompt_purge(false);
+                } else {
+                    self.sync(true);
+                }
+            }
             IndexAction::Compose => self.start_compose(ComposeKind::New),
             IndexAction::Reply => self.start_compose(ComposeKind::Reply),
             IndexAction::GroupReply => self.start_compose(ComposeKind::GroupReply),
@@ -1890,13 +1915,24 @@ impl App {
     /// removed, other dirty messages are renamed with their new flags.
     /// For an IMAP mailbox the changes go to the server first (UID
     /// STORE / EXPUNGE); the local pass then updates the cache to match.
-    fn sync(&mut self) {
+    fn prompt_purge(&mut self, quit: bool) {
+        self.prompt = Some(Prompt::Key {
+            label: format!("Purge {} deleted message(s)? (y/n): ", self.deleted_count()),
+            kind: KeyKind::Purge { quit },
+        });
+    }
+
+    /// `purge` expunges deleted messages; without it they stay marked
+    /// and only flag changes are written.
+    fn sync(&mut self, purge: bool) {
         if let Some(remote) = &mut self.remote {
             let mut deletes: Vec<PathBuf> = Vec::new();
             let mut flag_pushes: Vec<(PathBuf, maildir::Flags)> = Vec::new();
             for m in &self.msgs {
                 if m.env.file.flags.deleted {
-                    deletes.push(m.env.file.path.clone());
+                    if purge {
+                        deletes.push(m.env.file.path.clone());
+                    }
                 } else if m.dirty {
                     flag_pushes.push((m.env.file.path.clone(), m.env.file.flags));
                 }
@@ -1923,6 +1959,9 @@ impl App {
         let mut errors: Vec<String> = Vec::new();
         self.msgs.retain_mut(|m| {
             if m.env.file.flags.deleted {
+                if !purge {
+                    return true; // stays marked for a later purge
+                }
                 match maildir::remove(&m.env.file) {
                     Ok(()) => {
                         removed += 1;

@@ -42,7 +42,8 @@ or `~/Maildir`.
 Index: `j`/`k` move, `Enter` view, `=`/`*` first/last, PgUp/PgDn or
 Ctrl+B/Ctrl+F page, `d`/`u` delete/undelete, `F` flag, `N` toggle
 read, `t` tag + `;` apply the next d/u/F/N to all tagged, `s` save
-(copy to a mailbox + mark deleted), `$` sync changes to disk, `o` sort
+(copy to a mailbox + mark deleted), `$` sync changes to disk (asks
+before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
 Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
 + `n` next, `c` open mailbox by path, `y` folder browser, `G` check
