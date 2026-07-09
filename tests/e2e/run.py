@@ -681,6 +681,34 @@ def scenario_pgp(tmp):
     r.close()
 
 
+def scenario_import_muttrc(tmp):
+    """--import-muttrc prints reviewable TOML (no pty needed)."""
+    muttrc = os.path.join(tmp, "muttrc")
+    with open(muttrc, "w") as f:
+        f.write(
+            "set realname = \"Jan Novak\"\n"
+            "set from = jarda@example.com\n"
+            "set folder = ~/Mail\n"
+            "set spoolfile = +inbox\n"
+            "bind index \\Cd delete-message\n"
+            "set imap_pass = topsecret\n"
+            "macro index x \"<limit>~N<enter>\"\n"
+        )
+    proc = subprocess.run(
+        [RMUT, "--import-muttrc", muttrc],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    assert 'name = "Jan Novak"' in out
+    assert 'email = "jarda@example.com"' in out
+    assert 'mailboxes = ["~/Mail/inbox"]' in out
+    assert 'delete = "ctrl+d"' in out
+    assert "macro index x" in out  # surfaced as a comment
+    assert "topsecret" not in out  # passwords never leak
+    assert "(redacted)" in out
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -690,6 +718,7 @@ SCENARIOS = [
     scenario_send_via_config_sendmail,
     scenario_imap,
     scenario_pgp,
+    scenario_import_muttrc,
 ]
 
 
