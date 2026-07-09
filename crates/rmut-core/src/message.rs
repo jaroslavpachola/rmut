@@ -19,6 +19,8 @@ pub struct Envelope {
     pub msg_id: Option<String>,
     /// References chain (oldest first), In-Reply-To appended if novel.
     pub references: Vec<String>,
+    /// Runtime tag mark (mutt's `t`); never persisted.
+    pub tagged: bool,
 }
 
 pub fn envelope(file: MailFile) -> Result<Envelope> {
@@ -57,6 +59,7 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         date,
         msg_id,
         references,
+        tagged: false,
     })
 }
 
@@ -100,9 +103,15 @@ pub fn short_from(from: &str) -> String {
 }
 
 pub fn format_index_date(epoch: i64) -> String {
+    format_index_date_with(epoch, None)
+}
+
+/// Index date column, with an optional strftime override (mutt's
+/// date_format); "%b %d" when unset.
+pub fn format_index_date_with(epoch: i64, format: Option<&str>) -> String {
     match Local.timestamp_opt(epoch, 0) {
         chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-            dt.format("%b %d").to_string()
+            dt.format(format.unwrap_or("%b %d")).to_string()
         }
         chrono::LocalResult::None => "      ".into(),
     }
@@ -118,6 +127,16 @@ pub struct MessageView {
 }
 
 pub fn load(path: &Path) -> Result<MessageView> {
+    load_with(path, &std::collections::HashMap::new())
+}
+
+/// Like `load`, but when the message has no text/plain part, a part
+/// whose MIME type appears in `filters` is rendered through its shell
+/// command (stdin → stdout), mutt's auto_view.
+pub fn load_with(
+    path: &Path,
+    filters: &std::collections::HashMap<String, String>,
+) -> Result<MessageView> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
     let header_map = mail.get_headers();
@@ -132,8 +151,74 @@ pub fn load(path: &Path) -> Result<MessageView> {
         .iter()
         .map(|h| (h.get_key(), h.get_value()))
         .collect();
-    let body = extract_text(&mail).unwrap_or_else(|| "[-- no displayable text part --]".into());
+    let body = find_plain(&mail)
+        .or_else(|| filtered_body(&mail, filters))
+        .or_else(|| extract_text(&mail))
+        .unwrap_or_else(|| "[-- no displayable text part --]".into());
     Ok(MessageView { brief, all, body })
+}
+
+/// The first text/plain leaf, depth-first.
+fn find_plain(mail: &ParsedMail) -> Option<String> {
+    if mail.subparts.is_empty() {
+        return (mail.ctype.mimetype == "text/plain")
+            .then(|| mail.get_body().ok())
+            .flatten();
+    }
+    mail.subparts.iter().find_map(find_plain)
+}
+
+/// First leaf with a configured filter, rendered through it.
+fn filtered_body(
+    mail: &ParsedMail,
+    filters: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let mut all = Vec::new();
+    leaves(mail, &mut all);
+    for part in all {
+        if let Some(command) = filters.get(&part.ctype.mimetype)
+            && let Ok(raw) = part.get_body_raw()
+        {
+            return match run_filter(command, &raw) {
+                Ok(text) => Some(format!(
+                    "[-- {} rendered by {command} --]\n\n{text}",
+                    part.ctype.mimetype
+                )),
+                Err(err) => Some(format!("[-- filter {command} failed: {err:#} --]")),
+            };
+        }
+    }
+    None
+}
+
+/// Decoded part rendered through a filter command (attachment viewer).
+pub fn filter_part(path: &Path, index: usize, command: &str) -> Result<String> {
+    let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let mail = parse_mail(&raw)?;
+    let bytes = leaf_at(&mail, index)?.get_body_raw()?;
+    run_filter(command, &bytes)
+}
+
+/// sh -c `command` with the part on stdin, capturing stdout.
+fn run_filter(command: &str, input: &[u8]) -> Result<String> {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("running {command}"))?;
+    let mut stdin = child.stdin.take().context("no stdin on filter child")?;
+    let input = input.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let out = child.wait_with_output()?;
+    let _ = writer.join();
+    anyhow::ensure!(out.status.success(), "{command} exited with {}", out.status);
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Decoded text body only (used by `~b` pattern matching).

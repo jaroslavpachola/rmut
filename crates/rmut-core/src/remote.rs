@@ -252,6 +252,13 @@ impl Remote {
 
     /// Fcc: file the sent message into the account's Sent folder.
     /// Returns the folder name for the status line.
+    /// APPEND a message into another folder of this account (`s` save).
+    pub fn append_to(&mut self, mailbox: &str, flags: Flags, body: &[u8]) -> Result<String> {
+        let folder = clean_mailbox(mailbox);
+        self.client.append(&folder, flags, body)?;
+        Ok(folder)
+    }
+
     pub fn append_sent(&mut self, body: &[u8]) -> Result<String> {
         let folder = clean_mailbox(&self.account.sent_folder);
         let flags = Flags {

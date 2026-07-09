@@ -1,6 +1,7 @@
 //! Mutt-ish search/limit patterns: `~f x` (from), `~s x` (subject),
 //! `~b x` (body), `~N` (new), `~F` (flagged), `~D` (deleted), `~U`
-//! (unread); a bare word matches subject or from. Multiple terms AND.
+//! (unread), `~T` (tagged); a bare word matches subject or from.
+//! Multiple terms AND.
 
 use crate::message::{self, Envelope};
 
@@ -13,6 +14,7 @@ pub enum Pattern {
     Flagged,
     Deleted,
     Unread,
+    Tagged,
     /// Bare word: matches subject or from (mutt's $simple_search).
     Default(String),
 }
@@ -26,6 +28,7 @@ pub fn parse(input: &str) -> Vec<Pattern> {
             "~F" => patterns.push(Pattern::Flagged),
             "~D" => patterns.push(Pattern::Deleted),
             "~U" => patterns.push(Pattern::Unread),
+            "~T" => patterns.push(Pattern::Tagged),
             "~f" | "~s" | "~b" => {
                 let arg = tokens.next().unwrap_or("").to_string();
                 patterns.push(match token {
@@ -51,6 +54,7 @@ pub fn matches(patterns: &[Pattern], env: &Envelope) -> bool {
         Pattern::Flagged => env.file.flags.flagged,
         Pattern::Deleted => env.file.flags.deleted,
         Pattern::Unread => !env.file.flags.seen,
+        Pattern::Tagged => env.tagged,
         Pattern::Body(s) => {
             let body =
                 body.get_or_insert_with(|| message::body_text(&env.file.path).unwrap_or_default());
@@ -81,6 +85,7 @@ mod tests {
             date: 0,
             msg_id: None,
             references: vec![],
+            tagged: false,
         }
     }
 
@@ -108,5 +113,13 @@ mod tests {
         assert!(matches(&parse("~N"), &e));
         assert!(!matches(&parse("~F"), &e));
         assert!(matches(&[], &e)); // empty pattern matches everything
+    }
+
+    #[test]
+    fn tagged_pattern_reads_the_runtime_mark() {
+        let mut e = env("Jane", "s", false, Flags::default());
+        assert!(!matches(&parse("~T"), &e));
+        e.tagged = true;
+        assert!(matches(&parse("~T"), &e));
     }
 }

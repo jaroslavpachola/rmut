@@ -53,8 +53,13 @@ pub struct Config {
     pub identity: Identity,
     pub mail: Mail,
     pub index: Index,
+    pub pager: Pager,
     pub ui: Ui,
     pub colors: HashMap<String, String>,
+    /// MIME type → shell command that renders the part (stdin → stdout),
+    /// e.g. "text/html" = "w3m -dump -T text/html". Used when a message
+    /// has no text/plain part, and in the attachment viewer.
+    pub filters: HashMap<String, String>,
     pub keys: Keys,
     pub accounts: Vec<Account>,
     pub pgp: Pgp,
@@ -78,12 +83,35 @@ pub struct Mail {
     pub poll_seconds: Option<u64>,
     /// Shell command the printed message is piped to (default lpr).
     pub print: Option<String>,
+    /// Default target offered by `s` (save message to a mailbox).
+    pub save: Option<String>,
+    /// "inline" (quoted text, the default) or "attach" (the original
+    /// goes along as a message/rfc822 part, mutt's mime_forward).
+    pub forward: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Index {
     pub format: Option<String>,
+    /// Initial sort: date/from/subject/size/threads, "reverse-" prefix
+    /// allowed (the `o` menu can still change it at runtime).
+    pub sort: Option<String>,
+    /// "last-date-sent" orders threads by their newest message instead
+    /// of the default oldest-first.
+    pub sort_aux: Option<String>,
+    /// chrono strftime string for the index date column (mutt's
+    /// date_format), e.g. "%d.%m.%Y"; default "%b %d".
+    pub date_format: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Pager {
+    /// Lines of the message index kept visible above the pager.
+    pub index_lines: u16,
+    /// Lines of overlap when paging (mutt's pager_context).
+    pub context: usize,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

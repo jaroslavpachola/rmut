@@ -65,17 +65,19 @@ fn link(arena: &mut [Container], parent: usize, child: usize) {
     arena[parent].children.push(child);
 }
 
-/// Earliest date in a container's subtree (for ordering threads).
-fn subtree_date(arena: &[Container], envs: &[&Envelope], node: usize) -> i64 {
+/// Earliest (or, with `newest`, latest) date in a container's
+/// subtree, for ordering threads and siblings.
+fn subtree_date(arena: &[Container], envs: &[&Envelope], node: usize, newest: bool) -> i64 {
     let own = arena[node]
         .message
         .map(|m| envs[m].date)
-        .unwrap_or(i64::MAX);
+        .unwrap_or(if newest { i64::MIN } else { i64::MAX });
+    let fold = if newest { i64::max } else { i64::min };
     arena[node]
         .children
         .iter()
-        .map(|&c| subtree_date(arena, envs, c))
-        .fold(own, i64::min)
+        .map(|&c| subtree_date(arena, envs, c, newest))
+        .fold(own, fold)
 }
 
 /// Children of `node` that carry messages, looking through empty
@@ -96,19 +98,26 @@ fn emit(
     node: usize,
     depth: usize,
     root: usize,
+    newest: bool,
     out: &mut Vec<ThreadedItem>,
 ) {
     let index = arena[node].message.expect("emit called on empty container");
     out.push(ThreadedItem { index, depth, root });
     let mut kids = Vec::new();
     real_children(arena, node, &mut kids);
-    kids.sort_by_key(|&k| subtree_date(arena, envs, k));
+    kids.sort_by_key(|&k| subtree_date(arena, envs, k, newest));
     for kid in kids {
-        emit(arena, envs, kid, depth + 1, root, out);
+        emit(arena, envs, kid, depth + 1, root, newest, out);
     }
 }
 
 pub fn thread(envs: &[&Envelope]) -> Vec<ThreadedItem> {
+    thread_by(envs, false)
+}
+
+/// Like `thread`, ordering threads by their newest message when
+/// `newest` (mutt's sort_aux = last-date-sent).
+pub fn thread_by(envs: &[&Envelope], newest: bool) -> Vec<ThreadedItem> {
     let mut arena: Vec<Container> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
 
@@ -158,12 +167,12 @@ pub fn thread(envs: &[&Envelope]) -> Vec<ThreadedItem> {
         }
     }
     let envs_ref = envs;
-    top.sort_by_key(|&t| subtree_date(&arena, envs_ref, t));
+    top.sort_by_key(|&t| subtree_date(&arena, envs_ref, t, newest));
 
     let mut out = Vec::new();
     for t in top {
         let root = arena[t].message.expect("top containers carry messages");
-        emit(&arena, envs_ref, t, 0, root, &mut out);
+        emit(&arena, envs_ref, t, 0, root, newest, &mut out);
     }
     out
 }
@@ -186,6 +195,7 @@ mod tests {
             date,
             msg_id: (!id.is_empty()).then(|| format!("<{id}>")),
             references: refs.iter().map(|r| format!("<{r}>")).collect(),
+            tagged: false,
         }
     }
 
@@ -224,6 +234,21 @@ mod tests {
         // c references a and the missing b; c still lands under a.
         let envs = [env("a", &[], 1), env("c", &["a", "b-missing"], 3)];
         assert_eq!(run(&envs), vec![(0, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn newest_orders_threads_by_their_latest_message() {
+        // Thread A: root at 10, reply at 100. Thread B: single at 50.
+        let envs = [env("a", &[], 10), env("a2", &["a"], 100), env("b", &[], 50)];
+        let refs: Vec<&Envelope> = envs.iter().collect();
+        let oldest: Vec<usize> = thread_by(&refs, false).iter().map(|t| t.index).collect();
+        assert_eq!(oldest, vec![0, 1, 2], "thread A first by its oldest");
+        let newest: Vec<usize> = thread_by(&refs, true).iter().map(|t| t.index).collect();
+        assert_eq!(
+            newest,
+            vec![2, 0, 1],
+            "thread B first, A has the newest last"
+        );
     }
 
     #[test]

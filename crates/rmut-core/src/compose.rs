@@ -125,6 +125,40 @@ pub fn finalize(draft: &str, from: &str, msg_id: &str, date: &str) -> Result<Str
     Ok(format!("{head}\n\n{body}"))
 }
 
+/// Turn a finalized draft into multipart/mixed with the draft text as
+/// the first part and the original message attached as message/rfc822
+/// (mutt's mime_forward).
+pub fn attach_original(text: &str, original: &[u8]) -> Result<String> {
+    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+    let boundary = {
+        let mut n = 0usize;
+        loop {
+            let b = format!("=-rmut-fwd-{}-{n}", std::process::id());
+            let bb = b.as_bytes();
+            let hit = |c: &[u8]| c.windows(bb.len()).any(|w| w == bb);
+            if !hit(body.as_bytes()) && !hit(original) {
+                break b;
+            }
+            n += 1;
+        }
+    };
+    let mut out = head.trim_end().to_string();
+    out +=
+        &format!("\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\n\n");
+    out += &format!("--{boundary}\nContent-Type: text/plain; charset=utf-8\n\n{body}");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out +=
+        &format!("--{boundary}\nContent-Type: message/rfc822\nContent-Disposition: attachment\n\n");
+    out += &String::from_utf8_lossy(original);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out += &format!("--{boundary}--\n");
+    Ok(out)
+}
+
 /// First address in an RFC 5322 address field, without display name —
 /// e.g. the SMTP envelope sender from a From line.
 pub fn bare_address(field: &str) -> Option<String> {
@@ -276,6 +310,24 @@ mod tests {
         assert!(!out.contains("hidden@q"));
         assert!(out.contains("To: Alice <a@x>, b@y\n"));
         assert!(out.ends_with("\n\nbody\n"));
+    }
+
+    #[test]
+    fn attach_original_builds_rfc822_part() {
+        let draft = "To: bob@x\nSubject: Fwd: hi\n\nsee attached\n";
+        let orig = b"From: jane@x\r\nSubject: hi\r\n\r\noriginal body\r\n";
+        let out = attach_original(draft, orig).unwrap();
+        let mail = mailparse::parse_mail(out.as_bytes()).unwrap();
+        assert_eq!(mail.ctype.mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].get_body().unwrap().trim(), "see attached");
+        assert_eq!(mail.subparts[1].ctype.mimetype, "message/rfc822");
+        assert!(
+            mail.subparts[1]
+                .get_body()
+                .unwrap()
+                .contains("original body")
+        );
     }
 
     #[test]
