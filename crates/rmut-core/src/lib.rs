@@ -5,6 +5,7 @@ pub mod format;
 pub mod imap;
 pub mod maildir;
 pub mod message;
+pub mod muttrc;
 mod net;
 pub mod pattern;
 pub mod pgp;
