@@ -78,15 +78,15 @@ post-1.0.
       STARTTLS or implicit TLS, AUTH PLAIN/LOGIN; Fcc via IMAP APPEND
       to the Sent folder
 
-## R6 — PGP/GPG (post-1.0)
+## R6 — PGP/GPG (done, 1.1)
 
-- [ ] Decrypt on view: PGP/MIME (multipart/encrypted) and inline PGP
+- [x] Decrypt on view: PGP/MIME (multipart/encrypted) and inline PGP
       via gpg(1), decrypted body shown in the pager
-- [ ] Verify signatures (multipart/signed + inline), good/bad/unknown
+- [x] Verify signatures (multipart/signed + inline), good/bad/unknown
       status line in the pager
-- [ ] Compose: sign, encrypt, or both from the send prompt (mutt-style
+- [x] Compose: sign, encrypt, or both from the send prompt (mutt-style
       security menu), recipient key lookup by address, encrypt-to-self
-- [ ] Config: `[pgp]` section — gpg command, default signing key,
+- [x] Config: `[pgp]` section — gpg command, default signing key,
       sign_by_default / encrypt_by_default
 
 ## Post-1.0 candidates

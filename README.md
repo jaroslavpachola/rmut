@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.0** — everything from the 1.0 roadmap plus R5: mutt-style index
+**1.1** — everything from the 1.0 roadmap plus R5 and R6: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -16,8 +16,10 @@ themes/colors, key remapping), **new-mail detection**, a `?` help
 screen generated from the active keymap, and now **IMAP and SMTP
 accounts**: open `imap:account/FOLDER` mailboxes over TLS, with local
 caching, `$` sync mapped to the server, and sending via SMTP
-submission with an IMAP Fcc. A pty-driven e2e suite (including fake
-IMAP/SMTP servers) lives in `tests/e2e/`.
+submission with an IMAP Fcc, and **PGP via gpg(1)**: decrypt/verify on
+view, sign/encrypt from the send prompt. A pty-driven e2e suite
+(including fake IMAP/SMTP servers and a stub gpg) lives in
+`tests/e2e/`.
 
 ## Install & run
 
@@ -66,6 +68,19 @@ pushes your changes to the server (flags via UID STORE, deletes via
 EXPUNGE) and new mail is picked up by polling (`poll_seconds`). The
 password comes from `password_command` (e.g. `pass show mail/work`),
 once per session.
+
+## PGP
+
+PGP messages are handled on view by shelling out to gpg(1):
+PGP/MIME (RFC 3156) and inline/clearsigned messages are decrypted
+and/or verified, with a `[-- PGP: ... --]` verdict line at the top of
+the pager (good/BAD/unverified signature). Outgoing mail is treated
+per message: at the send prompt, `s` opens the security menu —
+(e)ncrypt, (s)ign, (b)oth, (c)lear — and the chosen state shows in the
+prompt. Signing uses `sign_key` (or gpg's default key); encryption
+looks keys up by recipient address and always encrypts to the sender
+too, so the Fcc copy stays readable. Passphrases are gpg-agent's
+business — rmut never sees them.
 
 ## Sending mail
 
@@ -121,6 +136,12 @@ password_command = "pass show mail/work"   # first stdout line; never a plaintex
 imap_host = "imap.example.com"             # imap_port = 993, imap_tls = true
 smtp_host = "smtp.example.com"             # smtp_port = 587 (STARTTLS; 465 = implicit TLS)
 sent_folder = "Sent"                       # Fcc target via IMAP APPEND
+
+[pgp]                        # optional; gpg from $PATH by default
+command = "gpg"
+sign_key = "jane@example.com"  # --local-user; gpg's default key if unset
+sign_by_default = false        # preselect security for new drafts
+encrypt_by_default = false
 ```
 
 Key syntax: a character, `ctrl+x`, `alt+x`, or enter/esc/space/tab/
