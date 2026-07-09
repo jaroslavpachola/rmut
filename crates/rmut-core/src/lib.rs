@@ -7,6 +7,7 @@ pub mod maildir;
 pub mod message;
 mod net;
 pub mod pattern;
+pub mod pgp;
 pub mod remote;
 pub mod smtp;
 pub mod thread;

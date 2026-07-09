@@ -145,7 +145,7 @@ pub fn body_text(path: &Path) -> Result<String> {
 
 /// Depth-first search for the first text/plain part (falling back to any
 /// text/* part), with transfer encoding and charset decoded by mailparse.
-fn extract_text(mail: &ParsedMail) -> Option<String> {
+pub(crate) fn extract_text(mail: &ParsedMail) -> Option<String> {
     if mail.subparts.is_empty() {
         if mail.ctype.mimetype.starts_with("text/") {
             return mail.get_body().ok();
