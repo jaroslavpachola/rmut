@@ -8,6 +8,7 @@ pub struct Theme {
     bar_reversed: bool,
     pub deleted: Color,
     pub flagged: Color,
+    pub tagged: Color,
     pub header: Color,
 }
 
@@ -20,6 +21,7 @@ impl Theme {
                 bar_reversed: true,
                 deleted: Color::Reset,
                 flagged: Color::Reset,
+                tagged: Color::Reset,
                 header: Color::Reset,
             },
             // mutt's default look
@@ -29,6 +31,7 @@ impl Theme {
                 bar_reversed: false,
                 deleted: Color::Red,
                 flagged: Color::Yellow,
+                tagged: Color::Cyan,
                 header: Color::Green,
             },
         }
@@ -53,6 +56,7 @@ impl Theme {
                 }
                 "deleted" => theme.deleted = color,
                 "flagged" => theme.flagged = color,
+                "tagged" => theme.tagged = color,
                 "header" => theme.header = color,
                 other => warnings.push(format!("unknown color key {other:?}")),
             }

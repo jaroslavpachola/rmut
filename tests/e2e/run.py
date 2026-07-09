@@ -311,7 +311,7 @@ sync = "w"
     # help screen shows the remapped key and, after paging, the patterns
     r.keys(b"?")
     r.expect("write changes to the maildir")
-    r.keys(b" ")
+    r.keys(b"  ")  # two pages down: the action list has grown
     r.expect("Patterns")
     r.keys(b"q")
     # new-mail detection: drop a message into new/ and wait for the poll
@@ -702,6 +702,35 @@ def scenario_print(tmp):
     r.close()
 
 
+def scenario_tag_save_sort(tmp):
+    """Config sort/date_format, tagging with ;-prefix, save to mailbox."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "petr", "ci"])
+    save_dir = os.path.join(tmp, "archive")
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write('[index]\nsort = "reverse-date"\ndate_format = "%Y|%m"\n\n'
+                f'[mail]\nsave = "{save_dir}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config}))
+    r.expect("Msgs:3", "(sort:date-rev)", "2026|07")
+    r.keys(b"=")    # first entry (newest, reverse-date)
+    r.keys(b"tt")   # tag two; t advances to the third
+    r.keys(b";d")   # delete all tagged
+    r.expect("applied to 2", "Del:2")
+    r.keys(b";u")   # and undelete them again (Del:1 below proves it)
+    r.keys(b"s")    # save the selected message
+    r.expect("Save to mailbox:")
+    r.keys(b"\r")   # accept the configured default
+    r.expect("saved to", "Del:1")
+    msgs = [p for sub in ("cur", "new")
+            for p in os.listdir(os.path.join(save_dir, sub))]
+    assert len(msgs) == 1, msgs
+    r.keys(b"q")    # pending deletion -> quit prompt
+    r.expect("save & quit")
+    r.keys(b"n")
+    r.close()
+
+
 def scenario_import_muttrc(tmp):
     """--import-muttrc prints reviewable TOML (no pty needed)."""
     muttrc = os.path.join(tmp, "muttrc")
@@ -740,6 +769,7 @@ SCENARIOS = [
     scenario_imap,
     scenario_pgp,
     scenario_print,
+    scenario_tag_save_sort,
     scenario_import_muttrc,
 ]
 

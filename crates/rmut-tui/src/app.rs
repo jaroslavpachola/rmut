@@ -84,6 +84,7 @@ pub enum LineKind {
     Search,
     ChangeDir,
     SavePart,
+    SaveMsg,
     ComposeTo,
     ComposeSubject,
 }
@@ -164,6 +165,9 @@ pub struct Compose {
     /// Postponed original to delete once the message is sent.
     pub recall_source: Option<PathBuf>,
     pub security: Security,
+    /// Original message to attach as message/rfc822 (forward =
+    /// "attach", mutt's mime_forward).
+    pub attach: Option<PathBuf>,
 }
 
 const SEND_PROMPT: &str = "Send message? (y)es (e)dit (s)ecurity (p)ostpone (q)discard";
@@ -200,6 +204,8 @@ pub struct App {
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
+    /// `;` was pressed: the next flag operation applies to tagged messages.
+    tag_next: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
     dir_mtimes: (Option<SystemTime>, Option<SystemTime>),
     quit: bool,
@@ -232,7 +238,7 @@ impl App {
         }
         let status = (!warnings.is_empty()).then(|| warnings.join("; "));
         let count = msgs.len();
-        Ok(App {
+        let mut app = App {
             dir: dir.to_path_buf(),
             title: dir.display().to_string(),
             remote: None,
@@ -257,8 +263,26 @@ impl App {
             compose_setup: None,
             compose: None,
             pending_editor: None,
+            tag_next: false,
             quit: false,
-        })
+        };
+        if let Some(spec) = app.config.index.sort.clone() {
+            match parse_sort(&spec) {
+                Some((sort, rev)) => {
+                    app.sort = sort;
+                    app.sort_rev = rev;
+                    app.resort(None);
+                }
+                None => {
+                    let warn = format!("unknown sort {spec:?} in config");
+                    app.status = Some(match app.status.take() {
+                        Some(prev) => format!("{prev}; {warn}"),
+                        None => warn,
+                    });
+                }
+            }
+        }
+        Ok(app)
     }
 
     /// Open a mailbox by spec: an `imap:account[/folder]` string (the
@@ -573,6 +597,7 @@ impl App {
             }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::SavePart => self.save_part(input),
+            LineKind::SaveMsg => self.save_message(input),
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.finish_compose_setup(input),
         }
@@ -582,9 +607,32 @@ impl App {
 
     fn handle_index_key(&mut self, key: KeyEvent, page: usize) {
         let Some(action) = self.keymap.lookup_index(&key) else {
+            self.tag_next = false;
             return;
         };
+        let apply_tagged = mem::take(&mut self.tag_next);
         match action {
+            IndexAction::Tag => {
+                if let Some(m) = self.cur_mut() {
+                    m.env.tagged = !m.env.tagged;
+                    self.select(self.sel.saturating_add(1));
+                }
+            }
+            IndexAction::TagPrefix => {
+                if self.msgs.iter().any(|m| m.env.tagged) {
+                    self.tag_next = true;
+                    self.status = Some("apply next function to tagged messages".into());
+                } else {
+                    self.status = Some("no tagged messages".into());
+                }
+            }
+            IndexAction::FetchMail => {
+                self.check_new_mail();
+                if self.status.is_none() {
+                    self.status = Some("checked for new mail".into());
+                }
+            }
+            IndexAction::Save => self.prompt_save(),
             IndexAction::Quit => {
                 let pending = self.pending_count();
                 if pending == 0 {
@@ -609,26 +657,37 @@ impl App {
             IndexAction::FoldThread => self.toggle_collapse(false),
             IndexAction::FoldAll => self.toggle_collapse(true),
             IndexAction::Delete => {
-                if let Some(m) = self.cur_mut() {
+                if apply_tagged {
+                    self.each_tagged(|m| m.env.file.flags.deleted = true);
+                } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
                     self.select(self.sel.saturating_add(1));
                 }
             }
             IndexAction::Undelete => {
-                if let Some(m) = self.cur_mut() {
+                if apply_tagged {
+                    self.each_tagged(|m| m.env.file.flags.deleted = false);
+                } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.deleted = false;
                     m.dirty = true;
                 }
             }
             IndexAction::Flag => {
-                if let Some(m) = self.cur_mut() {
+                if apply_tagged {
+                    self.each_tagged(|m| m.env.file.flags.flagged = !m.env.file.flags.flagged);
+                } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.flagged = !m.env.file.flags.flagged;
                     m.dirty = true;
                 }
             }
             IndexAction::ToggleNew => {
-                if let Some(m) = self.cur_mut() {
+                if apply_tagged {
+                    self.each_tagged(|m| {
+                        m.env.file.flags.seen = !m.env.file.flags.seen;
+                        m.env.file.is_new = false;
+                    });
+                } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.seen = !m.env.file.flags.seen;
                     m.env.file.is_new = false;
                     m.dirty = true;
@@ -750,12 +809,22 @@ impl App {
                 self.confirm_print();
                 return;
             }
+            PagerAction::Save => {
+                self.prompt_save();
+                return;
+            }
             PagerAction::Help => {
                 self.open_help();
                 return;
             }
             _ => {}
         }
+        // The mini-index (pager.index_lines) shrinks the pager
+        // viewport; pager.context keeps overlap when paging.
+        let page = page
+            .saturating_sub(self.config.pager.index_lines as usize)
+            .max(1);
+        let step = page.saturating_sub(self.config.pager.context).max(1);
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
@@ -768,8 +837,8 @@ impl App {
             }
             PagerAction::Down => pager.scroll = (pager.scroll + 1).min(max_scroll),
             PagerAction::Up => pager.scroll = pager.scroll.saturating_sub(1),
-            PagerAction::PageDown => pager.scroll = (pager.scroll + page).min(max_scroll),
-            PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(page),
+            PagerAction::PageDown => pager.scroll = (pager.scroll + step).min(max_scroll),
+            PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(step),
             PagerAction::Top => pager.scroll = 0,
             PagerAction::Bottom => pager.scroll = max_scroll,
             _ => {}
@@ -855,8 +924,31 @@ impl App {
             _ => return,
         };
         if !is_text {
-            self.status = Some(format!("{mimetype} is not text — save it with s"));
-            return;
+            // A configured filter can still render it (auto_view).
+            match self.config.filters.get(&mimetype).cloned() {
+                Some(command) => {
+                    match message::filter_part(&msg_path, index, &command) {
+                        Ok(body) => {
+                            let headers = vec![("Content-Type".to_string(), mimetype)];
+                            self.mode = Mode::Pager(Pager {
+                                view: message::MessageView {
+                                    brief: headers.clone(),
+                                    all: headers,
+                                    body,
+                                },
+                                scroll: 0,
+                                full_headers: false,
+                            });
+                        }
+                        Err(err) => self.status = Some(format!("filter failed: {err:#}")),
+                    }
+                    return;
+                }
+                None => {
+                    self.status = Some(format!("{mimetype} is not text — save it with s"));
+                    return;
+                }
+            }
         }
         match message::part_text(&msg_path, index) {
             Ok(body) => {
@@ -1083,6 +1175,7 @@ impl App {
         let mut in_reply_to = None;
         let mut references = None;
         let mut body = String::new();
+        let mut attach = None;
         if let Some(b) = &setup.base {
             match setup.kind {
                 ComposeKind::Reply | ComposeKind::GroupReply => {
@@ -1110,6 +1203,10 @@ impl App {
                         }
                     }
                 }
+                ComposeKind::Forward if self.forward_attaches() => {
+                    // The original goes along whole; nothing to quote.
+                    attach = Some(b.path.clone());
+                }
                 ComposeKind::Forward => {
                     let orig = message::body_text(&b.path).unwrap_or_default();
                     body = compose::forward_body(&b.from_display, b.date, &b.subject, &orig);
@@ -1133,10 +1230,15 @@ impl App {
                     path,
                     recall_source: None,
                     security: self.default_security(),
+                    attach,
                 });
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
         }
+    }
+
+    fn forward_attaches(&self) -> bool {
+        self.config.mail.forward.as_deref() == Some("attach")
     }
 
     fn edit_draft(&mut self, terminal: &mut DefaultTerminal, compose: Compose) {
@@ -1227,6 +1329,30 @@ impl App {
                 self.reprompt_send();
                 return;
             }
+        };
+        let final_text = match &compose_state.attach {
+            Some(_) if compose_state.security != Security::None => {
+                self.status =
+                    Some("PGP with an attached forward is not supported — (s)ecurity clear".into());
+                self.compose = Some(compose_state);
+                self.reprompt_send();
+                return;
+            }
+            Some(orig) => {
+                match std::fs::read(orig).and_then(|bytes| {
+                    compose::attach_original(&final_text, &bytes)
+                        .map_err(|e| std::io::Error::other(e.to_string()))
+                }) {
+                    Ok(t) => t,
+                    Err(err) => {
+                        self.status = Some(format!("cannot attach the original: {err}"));
+                        self.compose = Some(compose_state);
+                        self.reprompt_send();
+                        return;
+                    }
+                }
+            }
+            None => final_text,
         };
         let final_text = match self.apply_security(compose_state.security, final_text) {
             Ok(t) => t,
@@ -1402,6 +1528,7 @@ impl App {
                     path,
                     recall_source: Some(file.path),
                     security: self.default_security(),
+                    attach: None,
                 });
             }
             Err(err) => self.status = Some(format!("cannot recall: {err:#}")),
@@ -1415,6 +1542,94 @@ impl App {
             return;
         }
         self.sel = index.min(self.visible.len() - 1);
+    }
+
+    /// Apply `f` to every tagged message, marking them dirty.
+    fn each_tagged(&mut self, f: impl Fn(&mut Msg)) {
+        let mut count = 0usize;
+        for m in self.msgs.iter_mut().filter(|m| m.env.tagged) {
+            f(m);
+            m.dirty = true;
+            count += 1;
+        }
+        self.status = Some(format!("applied to {count} tagged message(s)"));
+    }
+
+    fn prompt_save(&mut self) {
+        if self.visible.get(self.sel).is_none() {
+            return;
+        }
+        let buf = self.config.mail.save.clone().unwrap_or_default();
+        self.prompt = Some(Prompt::Line {
+            label: "Save to mailbox: ".into(),
+            buf,
+            kind: LineKind::SaveMsg,
+        });
+    }
+
+    /// Copy the message to a mailbox (local maildir path or a folder
+    /// of the open IMAP account) and mark the original deleted, like
+    /// mutt's s.
+    fn save_message(&mut self, input: &str) {
+        if input.is_empty() {
+            self.status = Some("no mailbox given".into());
+            return;
+        }
+        let Some(&i) = self.visible.get(self.sel) else {
+            return;
+        };
+        let path = self.msgs[i].env.file.path.clone();
+        let flags = self.msgs[i].env.file.flags;
+        // A header-only IMAP cache file must be completed first.
+        if let Some(remote) = &mut self.remote
+            && remote::is_partial(&path)
+            && let Err(err) = remote.fetch_body(&path)
+        {
+            self.status = Some(format!("cannot fetch message: {err:#}"));
+            return;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(err) => {
+                self.status = Some(format!("cannot read message: {err}"));
+                return;
+            }
+        };
+        let target = match remote::parse_spec(input) {
+            Some((account, folder)) => match &mut self.remote {
+                Some(remote) if remote.account.name == account => {
+                    match remote.append_to(folder, flags, &bytes) {
+                        Ok(folder) => format!("imap:{account}/{folder}"),
+                        Err(err) => {
+                            self.status = Some(format!("cannot save: {err:#}"));
+                            return;
+                        }
+                    }
+                }
+                _ => {
+                    self.status = Some("can only save to a folder of the open account".into());
+                    return;
+                }
+            },
+            None => {
+                let dir = expand_tilde(input);
+                let result = maildir::create(&dir)
+                    .and_then(|()| maildir::deliver(&dir, &bytes, flags))
+                    .map(|_| dir.display().to_string());
+                match result {
+                    Ok(shown) => shown,
+                    Err(err) => {
+                        self.status = Some(format!("cannot save: {err:#}"));
+                        return;
+                    }
+                }
+            }
+        };
+        if let Some(m) = self.cur_mut() {
+            m.env.file.flags.deleted = true;
+            m.dirty = true;
+        }
+        self.status = Some(format!("saved to {target} (original marked deleted)"));
     }
 
     fn cur_mut(&mut self) -> Option<&mut Msg> {
@@ -1447,7 +1662,7 @@ impl App {
         {
             remote.fetch_body(path).context("cannot fetch message")?;
         }
-        let mut view = message::load(path)?;
+        let mut view = message::load_with(path, &self.config.filters)?;
         // PGP messages: decrypt/verify via gpg, prepend the verdict
         // line to whatever body ends up shown.
         if let Ok(raw) = std::fs::read(path)
@@ -1594,9 +1809,10 @@ impl App {
 
     fn resort(&mut self, keep: Option<PathBuf>) {
         if self.sort == SortKey::Threads {
+            let newest = self.config.index.sort_aux.as_deref() == Some("last-date-sent");
             let items = {
                 let envs: Vec<&Envelope> = self.msgs.iter().map(|m| &m.env).collect();
-                thread::thread(&envs)
+                thread::thread_by(&envs, newest)
             };
             let mut old: Vec<Option<Msg>> = self.msgs.drain(..).map(Some).collect();
             let mut new_pos = vec![0usize; old.len()];
@@ -1743,6 +1959,24 @@ fn subject_key(subject: &str) -> String {
         }
     }
     key
+}
+
+/// "[reverse-]date|from|subject|size|threads" from the config.
+fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
+    let (rev, name) = match spec.strip_prefix("reverse-") {
+        Some(rest) => (true, rest),
+        None => (false, spec),
+    };
+    let key = match name {
+        "date" | "date-sent" | "date-received" => SortKey::Date,
+        "from" => SortKey::From,
+        "subject" => SortKey::Subject,
+        "size" => SortKey::Size,
+        "threads" => SortKey::Threads,
+        _ => return None,
+    };
+    // Thread sort has no reverse variant.
+    Some((key, rev && key != SortKey::Threads))
 }
 
 fn expand_tilde(input: &str) -> PathBuf {

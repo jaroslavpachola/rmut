@@ -143,6 +143,10 @@ pub enum IndexAction {
     FoldThread,
     FoldAll,
     Print,
+    Tag,
+    TagPrefix,
+    FetchMail,
+    Save,
     Help,
 }
 
@@ -165,6 +169,7 @@ pub enum PagerAction {
     GroupReply,
     Forward,
     Print,
+    Save,
     Help,
 }
 
@@ -200,6 +205,10 @@ impl IndexAction {
             FoldThread => "fold-thread",
             FoldAll => "fold-all",
             Print => "print",
+            Tag => "tag",
+            TagPrefix => "tag-prefix",
+            FetchMail => "fetch-mail",
+            Save => "save",
             Help => "help",
         }
     }
@@ -235,6 +244,10 @@ impl IndexAction {
             FoldThread => "fold/unfold current thread",
             FoldAll => "fold/unfold all threads",
             Print => "pipe message to the print command",
+            Tag => "toggle the tag on this message",
+            TagPrefix => "apply the next function to tagged messages",
+            FetchMail => "check for new mail now",
+            Save => "save (copy + mark deleted) to a mailbox",
             Help => "this help",
         }
     }
@@ -270,6 +283,10 @@ impl IndexAction {
             FoldThread,
             FoldAll,
             Print,
+            Tag,
+            TagPrefix,
+            FetchMail,
+            Save,
             Help,
         ]
     }
@@ -303,6 +320,7 @@ impl PagerAction {
             GroupReply => "group-reply",
             Forward => "forward",
             Print => "print",
+            Save => "save",
             Help => "help",
         }
     }
@@ -327,6 +345,7 @@ impl PagerAction {
             GroupReply => "reply to all",
             Forward => "forward message",
             Print => "pipe message to the print command",
+            Save => "save (copy + mark deleted) to a mailbox",
             Help => "this help",
         }
     }
@@ -351,6 +370,7 @@ impl PagerAction {
             GroupReply,
             Forward,
             Print,
+            Save,
             Help,
         ]
     }
@@ -406,6 +426,10 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::alt('v'), FoldThread),
         (KeyPattern::alt('V'), FoldAll),
         (KeyPattern::ch('p'), Print),
+        (KeyPattern::ch('t'), Tag),
+        (KeyPattern::ch(';'), TagPrefix),
+        (KeyPattern::ch('G'), FetchMail),
+        (KeyPattern::ch('s'), Save),
         (KeyPattern::ch('?'), Help),
     ]
 }
@@ -439,6 +463,7 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('g'), GroupReply),
         (KeyPattern::ch('f'), Forward),
         (KeyPattern::ch('p'), Print),
+        (KeyPattern::ch('s'), Save),
         (KeyPattern::ch('?'), Help),
     ]
 }

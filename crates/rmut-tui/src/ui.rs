@@ -8,9 +8,8 @@ use rmut_core::message::{self, MessageView, Part};
 
 use crate::app::{App, Mode, Pager, Prompt};
 
-const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts p:Print $:Sync M-v:Fold";
-const PAGER_HELP: &str =
-    "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply f:Fwd d:Del h:Hdrs v:Parts p:Print";
+const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts p:Print $:Sync";
+const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply f:Fwd d:Del s:Save h:Hdrs v:Parts p:Print";
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
@@ -32,12 +31,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     frame.render_widget(Line::from(help).style(app.theme.bar_style()), help_area);
 
-    match &app.mode {
-        Mode::Index => draw_index(frame, content_area, app),
-        Mode::Pager(pager) => draw_pager(frame, content_area, pager, app.theme.header),
-        Mode::Attach { parts, sel, .. } => draw_attach(frame, content_area, parts, *sel),
-        Mode::Folders { dirs, sel } => draw_folders(frame, content_area, dirs, *sel),
-        Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
+    if matches!(app.mode, Mode::Pager(_)) {
+        // Optionally keep a slice of the index visible above the pager
+        // (mutt's pager_index_lines).
+        let index_lines = app
+            .config
+            .pager
+            .index_lines
+            .min(content_area.height.saturating_sub(1));
+        let pager_area = if index_lines > 0 {
+            let [index_area, pager_area] =
+                Layout::vertical([Constraint::Length(index_lines), Constraint::Min(1)])
+                    .areas(content_area);
+            draw_index(frame, index_area, app);
+            pager_area
+        } else {
+            content_area
+        };
+        if let Mode::Pager(pager) = &app.mode {
+            draw_pager(frame, pager_area, pager, app.theme.header);
+        }
+    } else {
+        match &app.mode {
+            Mode::Index => draw_index(frame, content_area, app),
+            Mode::Pager(_) => unreachable!(),
+            Mode::Attach { parts, sel, .. } => draw_attach(frame, content_area, parts, *sel),
+            Mode::Folders { dirs, sel } => draw_folders(frame, content_area, dirs, *sel),
+            Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
+        }
     }
     draw_bottom_line(frame, status_area, app, content_area.height);
 }
@@ -73,7 +94,13 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         let msg = &app.msgs[mi];
         let env = &msg.env;
         let status = env.file.flags.status_char(env.file.is_new);
-        let flagged = if env.file.flags.flagged { '!' } else { ' ' };
+        let flagged = if env.file.flags.flagged {
+            '!'
+        } else if env.tagged {
+            '*'
+        } else {
+            ' '
+        };
         let (depth, hidden) = app.thread_info(mi);
         let mut subject = env.subject.clone();
         if let Some(n) = hidden {
@@ -94,7 +121,10 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 number: vi + 1,
                 status,
                 flag: flagged,
-                date: &message::format_index_date(env.date),
+                date: &message::format_index_date_with(
+                    env.date,
+                    app.config.index.date_format.as_deref(),
+                ),
                 from: &env.from,
                 size: &humanize_size(env.file.size),
                 subject: &subject,
@@ -107,6 +137,8 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         }
         if status == 'D' {
             style = style.fg(app.theme.deleted);
+        } else if env.tagged {
+            style = style.fg(app.theme.tagged);
         } else if env.file.flags.flagged {
             style = style.fg(app.theme.flagged);
         }
@@ -284,7 +316,10 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
         return;
     }
     let text = match &app.mode {
-        Mode::Pager(pager) => pager_status(app, pager, content_height, area.width as usize),
+        Mode::Pager(pager) => {
+            let height = content_height.saturating_sub(app.config.pager.index_lines);
+            pager_status(app, pager, height, area.width as usize)
+        }
         Mode::Attach { parts, .. } => format!("---rmut: attachments [Parts:{}]", parts.len()),
         Mode::Folders { dirs, .. } => format!("---rmut: mailboxes [Found:{}]", dirs.len()),
         Mode::Help { .. } => "---rmut: help".to_string(),
