@@ -85,6 +85,9 @@ pub enum LineKind {
     ChangeDir,
     SavePart,
     SaveMsg,
+    CopyMsg,
+    Pipe,
+    BounceTo,
     ComposeTo,
     ComposeSubject,
 }
@@ -96,6 +99,8 @@ pub enum KeyKind {
     Security,
     Recall,
     Print,
+    /// Confirm sending the message in `App::bounce_to`.
+    Bounce,
     /// Confirm expunging deleted messages; `quit` leaves afterwards.
     Purge {
         quit: bool,
@@ -210,6 +215,8 @@ pub struct App {
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
+    /// Recipients waiting for the bounce confirmation.
+    bounce_to: Option<String>,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
@@ -280,6 +287,7 @@ impl App {
             compose_setup: None,
             compose: None,
             pending_editor: None,
+            bounce_to: None,
             tag_next: false,
             quit: false,
         };
@@ -496,6 +504,7 @@ impl App {
                 KeyCode::Esc => {
                     self.prompt = None;
                     self.compose_setup = None;
+                    self.bounce_to = None;
                 }
                 KeyCode::Backspace => {
                     buf.pop();
@@ -592,6 +601,14 @@ impl App {
                     self.print_current();
                 }
             }
+            KeyKind::Bounce => {
+                let to = self.bounce_to.take();
+                if code == KeyCode::Char('y')
+                    && let Some(to) = to
+                {
+                    self.bounce_current(&to);
+                }
+            }
         }
     }
 
@@ -617,7 +634,10 @@ impl App {
             }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::SavePart => self.save_part(input),
-            LineKind::SaveMsg => self.save_message(input),
+            LineKind::SaveMsg => self.copy_message(input, true),
+            LineKind::CopyMsg => self.copy_message(input, false),
+            LineKind::Pipe => self.pipe_message(input),
+            LineKind::BounceTo => self.bounce_to_submitted(input),
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.finish_compose_setup(input),
         }
@@ -652,7 +672,11 @@ impl App {
                     self.status = Some("checked for new mail".into());
                 }
             }
-            IndexAction::Save => self.prompt_save(),
+            IndexAction::Save => self.prompt_copy(true),
+            IndexAction::Copy => self.prompt_copy(false),
+            IndexAction::Pipe => self.prompt_pipe(),
+            IndexAction::Bounce => self.prompt_bounce(),
+            IndexAction::Resend => self.resend_current(),
             IndexAction::Quit => {
                 // Like mutt: flag changes are written silently; only
                 // pending deletions raise a question (the purge one).
@@ -835,7 +859,23 @@ impl App {
                 return;
             }
             PagerAction::Save => {
-                self.prompt_save();
+                self.prompt_copy(true);
+                return;
+            }
+            PagerAction::Copy => {
+                self.prompt_copy(false);
+                return;
+            }
+            PagerAction::Pipe => {
+                self.prompt_pipe();
+                return;
+            }
+            PagerAction::Bounce => {
+                self.prompt_bounce();
+                return;
+            }
+            PagerAction::Resend => {
+                self.resend_current();
                 return;
             }
             PagerAction::Help => {
@@ -1296,15 +1336,23 @@ impl App {
     }
 
     fn reprompt_send(&mut self) {
-        let security = self
-            .compose
-            .as_ref()
-            .map(|c| c.security)
-            .unwrap_or(Security::None);
-        let label = match security {
-            Security::None => format!("{SEND_PROMPT}: "),
-            s => format!("{SEND_PROMPT} [PGP: {}]: ", s.label()),
+        let (security, attachments) = match &self.compose {
+            Some(c) => {
+                let files = std::fs::read_to_string(&c.path)
+                    .map(|text| compose::extract_attachments(&text).1.len())
+                    .unwrap_or(0);
+                (c.security, files + usize::from(c.attach.is_some()))
+            }
+            None => (Security::None, 0),
         };
+        let mut label = SEND_PROMPT.to_string();
+        if attachments > 0 {
+            label += &format!(" [{attachments} attachment(s)]");
+        }
+        if security != Security::None {
+            label += &format!(" [PGP: {}]", security.label());
+        }
+        label += ": ";
         self.prompt = Some(Prompt::Key {
             label,
             kind: KeyKind::Send,
@@ -1335,6 +1383,7 @@ impl App {
                 return;
             }
         };
+        let (raw, files) = compose::extract_attachments(&raw);
         let host = maildir::hostname();
         let from = self
             .config
@@ -1355,34 +1404,27 @@ impl App {
                 return;
             }
         };
-        let final_text = match &compose_state.attach {
-            Some(_) if compose_state.security != Security::None => {
-                self.status =
-                    Some("PGP with an attached forward is not supported — (s)ecurity clear".into());
-                self.compose = Some(compose_state);
-                self.reprompt_send();
-                return;
-            }
-            Some(orig) => {
-                match std::fs::read(orig).and_then(|bytes| {
-                    compose::attach_original(&final_text, &bytes)
-                        .map_err(|e| std::io::Error::other(e.to_string()))
-                }) {
-                    Ok(t) => t,
-                    Err(err) => {
-                        self.status = Some(format!("cannot attach the original: {err}"));
-                        self.compose = Some(compose_state);
-                        self.reprompt_send();
-                        return;
-                    }
+        let original = match &compose_state.attach {
+            Some(path) => match std::fs::read(path) {
+                Ok(bytes) => Some(bytes),
+                Err(err) => {
+                    self.status = Some(format!("cannot attach the original: {err}"));
+                    self.compose = Some(compose_state);
+                    self.reprompt_send();
+                    return;
                 }
-            }
-            None => final_text,
+            },
+            None => None,
         };
-        let final_text = match self.apply_security(compose_state.security, final_text) {
+        let final_text = match self.secure_message(
+            compose_state.security,
+            final_text,
+            &files,
+            original.as_deref(),
+        ) {
             Ok(t) => t,
             Err(err) => {
-                self.status = Some(format!("pgp: {err:#} — e edits, s changes security"));
+                self.status = Some(format!("{err:#} — e edits, s changes security"));
                 self.compose = Some(compose_state);
                 self.reprompt_send();
                 return;
@@ -1390,7 +1432,11 @@ impl App {
         };
         let send_result = match self.smtp_account() {
             Some(account) => send_via_smtp(&account, &final_text),
-            None => run_sendmail(final_text.as_bytes(), self.config.mail.sendmail.as_deref()),
+            None => run_sendmail(
+                final_text.as_bytes(),
+                self.config.mail.sendmail.as_deref(),
+                None,
+            ),
         };
         match send_result {
             Ok(()) => {
@@ -1439,23 +1485,52 @@ impl App {
         }
     }
 
-    /// Apply the chosen PGP treatment to a finalized draft.
-    fn apply_security(&self, security: Security, text: String) -> Result<String> {
+    /// Assemble the outgoing message from a finalized draft: `files`
+    /// and the forwarded `original` first turn it into multipart/mixed,
+    /// then the chosen PGP treatment wraps whatever entity resulted.
+    fn secure_message(
+        &self,
+        security: Security,
+        text: String,
+        files: &[compose::Attachment],
+        original: Option<&[u8]>,
+    ) -> Result<String> {
         let cfg = &self.config.pgp;
-        match security {
-            Security::None => Ok(text),
-            Security::Sign => pgp::sign_message(cfg, &text),
-            Security::Encrypt | Security::Both => {
-                // Encrypt to every recipient plus the sender, so the
-                // Fcc copy stays readable.
-                let (mut rcpts, _) = compose::smtp_envelope(&text)?;
-                if let Some(from) = compose::from_address(&text) {
-                    rcpts.push(from);
-                }
-                rcpts.sort();
-                rcpts.dedup();
-                pgp::encrypt_message(cfg, &rcpts, security == Security::Both, &text)
+        // Encrypt to every recipient plus the sender, so the Fcc copy
+        // stays readable.
+        let recipients = |text: &str| -> Result<Vec<String>> {
+            let (mut rcpts, _) = compose::smtp_envelope(text)?;
+            if let Some(from) = compose::from_address(text) {
+                rcpts.push(from);
             }
+            rcpts.sort();
+            rcpts.dedup();
+            Ok(rcpts)
+        };
+        if files.is_empty() && original.is_none() {
+            return match security {
+                Security::None => Ok(text),
+                Security::Sign => pgp::sign_message(cfg, &text),
+                Security::Encrypt | Security::Both => pgp::encrypt_message(
+                    cfg,
+                    &recipients(&text)?,
+                    security == Security::Both,
+                    &text,
+                ),
+            };
+        }
+        let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+        let entity = compose::mixed_entity(body, files, original)?;
+        match security {
+            Security::None => Ok(format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())),
+            Security::Sign => pgp::sign_entity(cfg, head, entity.as_bytes()),
+            Security::Encrypt | Security::Both => pgp::encrypt_entity(
+                cfg,
+                &recipients(&text)?,
+                security == Security::Both,
+                head,
+                entity.as_bytes(),
+            ),
         }
     }
 
@@ -1580,22 +1655,52 @@ impl App {
         self.status = Some(format!("applied to {count} tagged message(s)"));
     }
 
-    fn prompt_save(&mut self) {
+    fn prompt_copy(&mut self, delete: bool) {
         if self.visible.get(self.sel).is_none() {
             return;
         }
         let buf = self.config.mail.save.clone().unwrap_or_default();
         self.prompt = Some(Prompt::Line {
-            label: "Save to mailbox: ".into(),
+            label: if delete {
+                "Save to mailbox: "
+            } else {
+                "Copy to mailbox: "
+            }
+            .into(),
             buf,
-            kind: LineKind::SaveMsg,
+            kind: if delete {
+                LineKind::SaveMsg
+            } else {
+                LineKind::CopyMsg
+            },
         });
     }
 
+    /// The selected message's raw bytes, completing a header-only IMAP
+    /// cache file first. Failures land in the status line.
+    fn full_message_bytes(&mut self) -> Option<Vec<u8>> {
+        let &i = self.visible.get(self.sel)?;
+        let path = self.msgs[i].env.file.path.clone();
+        if let Some(remote) = &mut self.remote
+            && remote::is_partial(&path)
+            && let Err(err) = remote.fetch_body(&path)
+        {
+            self.status = Some(format!("cannot fetch message: {err:#}"));
+            return None;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                self.status = Some(format!("cannot read message: {err}"));
+                None
+            }
+        }
+    }
+
     /// Copy the message to a mailbox (local maildir path or a folder
-    /// of the open IMAP account) and mark the original deleted, like
-    /// mutt's s.
-    fn save_message(&mut self, input: &str) {
+    /// of the open IMAP account); with `delete` the original is marked
+    /// deleted afterwards — mutt's s versus C.
+    fn copy_message(&mut self, input: &str, delete: bool) {
         if input.is_empty() {
             self.status = Some("no mailbox given".into());
             return;
@@ -1603,22 +1708,9 @@ impl App {
         let Some(&i) = self.visible.get(self.sel) else {
             return;
         };
-        let path = self.msgs[i].env.file.path.clone();
         let flags = self.msgs[i].env.file.flags;
-        // A header-only IMAP cache file must be completed first.
-        if let Some(remote) = &mut self.remote
-            && remote::is_partial(&path)
-            && let Err(err) = remote.fetch_body(&path)
-        {
-            self.status = Some(format!("cannot fetch message: {err:#}"));
+        let Some(bytes) = self.full_message_bytes() else {
             return;
-        }
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(err) => {
-                self.status = Some(format!("cannot read message: {err}"));
-                return;
-            }
         };
         let target = match remote::parse_spec(input) {
             Some((account, folder)) => match &mut self.remote {
@@ -1650,11 +1742,142 @@ impl App {
                 }
             }
         };
-        if let Some(m) = self.cur_mut() {
-            m.env.file.flags.deleted = true;
-            m.dirty = true;
+        if delete {
+            if let Some(m) = self.cur_mut() {
+                m.env.file.flags.deleted = true;
+                m.dirty = true;
+            }
+            self.status = Some(format!("saved to {target} (original marked deleted)"));
+        } else {
+            self.status = Some(format!("copied to {target}"));
         }
-        self.status = Some(format!("saved to {target} (original marked deleted)"));
+    }
+
+    fn prompt_pipe(&mut self) {
+        if self.visible.get(self.sel).is_none() {
+            return;
+        }
+        self.prompt = Some(Prompt::Line {
+            label: "Pipe to command: ".into(),
+            buf: String::new(),
+            kind: LineKind::Pipe,
+        });
+    }
+
+    /// Pipe the raw message to a shell command, like mutt's |.
+    fn pipe_message(&mut self, command: &str) {
+        if command.is_empty() {
+            self.status = Some("no command given".into());
+            return;
+        }
+        let Some(bytes) = self.full_message_bytes() else {
+            return;
+        };
+        match pipe_to(command, &bytes) {
+            Ok(()) => self.status = Some(format!("piped to {command}")),
+            Err(err) => self.status = Some(format!("pipe failed: {err:#}")),
+        }
+    }
+
+    fn prompt_bounce(&mut self) {
+        if self.visible.get(self.sel).is_none() {
+            return;
+        }
+        self.prompt = Some(Prompt::Line {
+            label: "Bounce message to: ".into(),
+            buf: String::new(),
+            kind: LineKind::BounceTo,
+        });
+    }
+
+    fn bounce_to_submitted(&mut self, input: &str) {
+        let to = alias::expand(input, &alias::load_default());
+        if to.trim().is_empty() {
+            self.status = Some("no recipients — bounce cancelled".into());
+            return;
+        }
+        self.bounce_to = Some(to.clone());
+        self.prompt = Some(Prompt::Key {
+            label: format!("Bounce message to {to}? (y/n): "),
+            kind: KeyKind::Bounce,
+        });
+    }
+
+    /// Resend the message as-is to new recipients: Resent-* headers on
+    /// top, the rest untouched.
+    fn bounce_current(&mut self, to: &str) {
+        let Some(bytes) = self.full_message_bytes() else {
+            return;
+        };
+        let rcpts = compose::addresses(to);
+        if rcpts.is_empty() {
+            self.status = Some(format!("cannot parse the addresses in {to:?}"));
+            return;
+        }
+        let host = maildir::hostname();
+        let from = self
+            .config
+            .identity
+            .from_line()
+            .unwrap_or_else(|| default_from(&host));
+        let text = compose::bounce_text(
+            &bytes,
+            &from,
+            to,
+            &compose::rfc2822_now(),
+            &compose::make_message_id(&host),
+        );
+        let envelope_from = compose::bare_address(&from).unwrap_or_else(|| from.clone());
+        let result = match self.smtp_account() {
+            Some(account) => account_password(&account).and_then(|password| {
+                smtp::send(&account, &password, &envelope_from, &rcpts, text.as_bytes())
+            }),
+            None => run_sendmail(
+                text.as_bytes(),
+                self.config.mail.sendmail.as_deref(),
+                Some(&rcpts),
+            ),
+        };
+        match result {
+            Ok(()) => self.status = Some(format!("message bounced to {to}")),
+            Err(err) => self.status = Some(format!("bounce failed: {err:#}")),
+        }
+    }
+
+    /// Open a copy of the message as a new draft (mutt's resend): its
+    /// To/Cc/Subject and body prefill the editor, then the normal send
+    /// prompt takes over.
+    fn resend_current(&mut self) {
+        // Completes a partial IMAP file so the body is really there.
+        if self.full_message_bytes().is_none() {
+            return;
+        }
+        let Some(base) = self.compose_base() else {
+            self.status = Some("no message selected".into());
+            return;
+        };
+        let body = message::body_text(&base.path).unwrap_or_default();
+        let text = compose::draft_text(
+            &compose::DraftHeaders {
+                to: base.orig_to.clone(),
+                cc: (!base.orig_cc.trim().is_empty()).then(|| base.orig_cc.clone()),
+                subject: base.subject.clone(),
+                in_reply_to: None,
+                references: None,
+            },
+            &body,
+        );
+        match write_draft(&text) {
+            Ok(path) => {
+                self.pending_editor = Some(Compose {
+                    path,
+                    recall_source: None,
+                    security: self.default_security(),
+                    attach: None,
+                });
+            }
+            Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
+        }
     }
 
     fn cur_mut(&mut self) -> Option<&mut Msg> {
@@ -2092,7 +2315,9 @@ fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn run_sendmail(bytes: &[u8], configured: Option<&str>) -> Result<()> {
+/// With `rcpts` the addresses go on the command line (a bounce keeps
+/// its Resent-To out of -t's reach); otherwise -t reads To/Cc/Bcc.
+fn run_sendmail(bytes: &[u8], configured: Option<&str>, rcpts: Option<&[String]>) -> Result<()> {
     let command = std::env::var("RMUT_SENDMAIL")
         .ok()
         .or_else(|| configured.map(String::from));
@@ -2111,7 +2336,13 @@ fn run_sendmail(bytes: &[u8], configured: Option<&str>) -> Result<()> {
             (p, Vec::new())
         }
     };
-    args.extend(["-t".into(), "-oi".into()]);
+    match rcpts {
+        Some(rcpts) => {
+            args.push("-oi".into());
+            args.extend(rcpts.iter().cloned());
+        }
+        None => args.extend(["-t".into(), "-oi".into()]),
+    }
     let mut child = Command::new(&prog)
         .args(&args)
         .stdin(Stdio::piped())

@@ -114,22 +114,23 @@ pager_index_lines/context, ~T pattern + tagged color, imap_peek,
 auto_view filters, extra binds (1.5); index_format `%?X?then&else?`
 conditionals, `%L`, 3-char `%Z` (1.6); mutt-style quit/purge prompts.
 
-## R8 — compose attachments and message commands (1.7)
+## R8 — compose attachments and message commands (done, 1.7)
 
-The biggest daily-use gap: rmut cannot attach a file to outgoing mail.
+The biggest daily-use gap: rmut could not attach a file to outgoing
+mail.
 
-- [ ] Attach files: `Attach: <path> [description]` pseudo-headers in
+- [x] Attach files: `Attach: <path> [description]` pseudo-headers in
       the draft, collected at send into multipart/mixed (base64,
       content-type guessed from the extension); works for compose,
       reply, and forward; attachment count shown at the send prompt
-- [ ] PGP over the assembled multipart, lifting the current "no PGP
-      with an attached forward" restriction (RFC 3156 wraps any part)
-- [ ] `C` copy to mailbox — like `s` save but without marking the
-      original deleted (plumbing exists in `copy_to`)
-- [ ] `|` pipe the raw message to a shell command (the `p` print path
-      becomes a preset of it)
-- [ ] `b` bounce (resend as-is to new recipients) and `e` edit the
-      message as a new draft
+- [x] PGP over the assembled multipart, lifting the old "no PGP with
+      an attached forward" restriction (RFC 3156 wraps any entity)
+- [x] `C` copy to mailbox — like `s` save but without marking the
+      original deleted
+- [x] `|` pipe the raw message to a shell command
+- [x] `b` bounce (Resent-\* block prepended, recipients on the
+      sendmail argv / SMTP envelope) and `e` edit the message as a
+      new draft (mutt's resend)
 
 ## R9 — identities and hook basics (1.8)
 

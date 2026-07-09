@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.6** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
+**1.7** — everything from the 1.0 roadmap plus R5–R8: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -16,10 +16,11 @@ themes/colors, key remapping), **new-mail detection**, a `?` help
 screen generated from the active keymap, and now **IMAP and SMTP
 accounts**: open `imap:account/FOLDER` mailboxes over TLS, with local
 caching, `$` sync mapped to the server, and sending via SMTP
-submission with an IMAP Fcc, and **PGP via gpg(1)**: decrypt/verify on
-view, sign/encrypt from the send prompt. A pty-driven e2e suite
-(including fake IMAP/SMTP servers and a stub gpg) lives in
-`tests/e2e/`.
+submission with an IMAP Fcc, **PGP via gpg(1)**: decrypt/verify on
+view, sign/encrypt from the send prompt, and **attachments and message
+commands** (R8): `Attach:` pseudo-headers in the draft, copy/pipe/
+bounce/resend on `C`/`|`/`b`/`e`. A pty-driven e2e suite (including
+fake IMAP/SMTP servers and a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -48,14 +49,17 @@ before purging deleted messages, like mutt), `o` sort
 Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
 + `n` next, `c` open mailbox by path, `y` folder browser, `G` check
 for new mail now, `v` attachments, `m` compose, `r` reply, `g` group
-reply, `f` forward, `p` print (pipes the message to `mail.print`,
-default `lpr`), `q` quit (writes changes; asks before purging
-deletions, like mutt), `x` abort without saving.
+reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
+the raw message to a shell command, `b` bounce (resend as-is to new
+recipients, with a Resent-\* block), `e` edit the message as a new
+draft, `p` print (pipes the message to `mail.print`, default `lpr`),
+`q` quit (writes changes; asks before purging deletions, like mutt),
+`x` abort without saving.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
 `v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `p` print,
-`s` save, `q`/`i` back.
+`s` save, `C`/`|`/`b`/`e` copy/pipe/bounce/resend, `q`/`i` back.
 
 Attachments: `Enter` view a text part, `s` save part to a file.
 
@@ -105,6 +109,24 @@ the send prompt, `p` postpones the draft into a nearby Drafts maildir
 copied to a nearby Sent maildir when one exists (local mailboxes).
 Aliases are read from `$RMUT_ALIASES` or `~/.config/rmut/aliases`, one
 mutt-style `alias nick address...` per line.
+
+To attach files, add `Attach:` pseudo-headers to the draft in the
+editor (mutt's edit_headers style):
+
+```
+To: jane@example.com
+Subject: the report
+Attach: ~/report.pdf the Q2 numbers
+Attach: "/tmp/two words.png"
+
+see attached
+```
+
+Each one becomes a base64 part of a multipart/mixed message (content
+type guessed from the extension, the rest of the line an optional
+description); the send prompt shows the attachment count. PGP signing
+and encryption wrap the whole multipart, attachments included — this
+also works for forwards with `forward = "attach"`.
 
 ## Configuration
 

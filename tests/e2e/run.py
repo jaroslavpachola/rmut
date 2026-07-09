@@ -7,6 +7,7 @@ output loses spaces between unchanged regions. All assertions therefore
 match against whitespace-squashed, ANSI-stripped text.
 """
 
+import base64
 import os
 import pty
 import re
@@ -706,6 +707,80 @@ def scenario_print(tmp):
     r.close()
 
 
+def scenario_message_commands(tmp):
+    """R8: | pipe, C copy, Attach: pseudo-headers, b bounce, e resend."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-cmds.eml")
+    args_file = os.path.join(tmp, "sendmail-args")
+    sendmail = os.path.join(tmp, "sendmail-cmds.sh")
+    with open(sendmail, "w") as f:
+        f.write(f'#!/bin/sh\necho "$@" >> {args_file}\ncat >> {sent_file}\nexit 0\n')
+    os.chmod(sendmail, 0o755)
+    blob = bytes(range(256))
+    with open(os.path.join(tmp, "blob.bin"), "wb") as f:
+        f.write(blob)
+    editor = os.path.join(tmp, "attach-editor.sh")
+    with open(editor, "w") as f:
+        f.write(f'#!/bin/sh\nprintf "hello attach\\n" >> "$1"\n'
+                f'sed -i "1a Attach: {tmp}/blob.bin raw bytes" "$1"\n')
+    os.chmod(editor, 0o755)
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail}))
+    r.expect("Msgs:1")
+    # | pipes the raw message to a shell command
+    piped = os.path.join(tmp, "piped.eml")
+    r.keys(b"|")
+    r.expect("Pipe to command:")
+    r.keys(f"cat > {piped}\r".encode())
+    r.expect("piped to")
+    assert "Message-ID: <msg1@example.com>" in open(piped).read()
+    # C copies without marking the original deleted
+    copy_dir = os.path.join(tmp, "copies")
+    r.keys(b"C")
+    r.expect("Copy to mailbox:")
+    r.keys(f"{copy_dir}\r".encode())
+    r.expect("copied to", absent=["Del:1"])
+    copies = [p for sub in ("cur", "new")
+              for p in os.listdir(os.path.join(copy_dir, sub))]
+    assert len(copies) == 1, copies
+    # an Attach: pseudo-header becomes a base64 multipart/mixed part
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"petr@example.com\rwith attachment\r")
+    r.expect("[1 attachment(s)]")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="sendmail invoked")
+    r.expect("message sent")
+    sent = open(sent_file).read()
+    assert "Content-Type: multipart/mixed" in sent
+    assert 'filename="blob.bin"' in sent
+    assert "Content-Description: raw bytes" in sent
+    assert base64.b64encode(blob).decode()[:76] in sent
+    assert "Attach:" not in sent  # the pseudo-header never leaves rmut
+    # b bounces the original with a Resent-* block, rcpts on the argv
+    r.keys(b"b")
+    r.expect("Bounce message to:")
+    r.keys(b"petr@example.com\r")
+    r.expect("petr@example.com? (y/n):")  # the confirmation prompt
+    r.keys(b"y")
+    wait_for(lambda: "Resent-To: petr@example.com" in open(sent_file).read(),
+             desc="bounce sent")
+    r.expect("message bounced to petr@example.com")
+    sent = open(sent_file).read()
+    assert "Resent-From: jarda@example.com" in sent
+    assert "Subject: Lunch on Friday?" in sent  # original kept as-is
+    assert "-oi petr@example.com" in open(args_file).read()
+    # e resends: the message becomes a fresh draft through the editor
+    # (the same editor script attaches the blob again, hence 2 mixed)
+    r.keys(b"ey")
+    wait_for(
+        lambda: open(sent_file).read().count("Content-Type: multipart/mixed") == 2,
+        desc="resent message delivered",
+    )
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_tag_save_sort(tmp):
     """Config sort/date_format, tagging with ;-prefix, save to mailbox."""
     md = make_maildir(tmp, "md")
@@ -773,6 +848,7 @@ SCENARIOS = [
     scenario_imap,
     scenario_pgp,
     scenario_print,
+    scenario_message_commands,
     scenario_tag_save_sort,
     scenario_import_muttrc,
 ]

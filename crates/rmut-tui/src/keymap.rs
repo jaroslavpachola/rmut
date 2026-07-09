@@ -147,6 +147,10 @@ pub enum IndexAction {
     TagPrefix,
     FetchMail,
     Save,
+    Copy,
+    Pipe,
+    Bounce,
+    Resend,
     Help,
 }
 
@@ -170,6 +174,10 @@ pub enum PagerAction {
     Forward,
     Print,
     Save,
+    Copy,
+    Pipe,
+    Bounce,
+    Resend,
     Help,
 }
 
@@ -209,6 +217,10 @@ impl IndexAction {
             TagPrefix => "tag-prefix",
             FetchMail => "fetch-mail",
             Save => "save",
+            Copy => "copy",
+            Pipe => "pipe",
+            Bounce => "bounce",
+            Resend => "resend",
             Help => "help",
         }
     }
@@ -248,6 +260,10 @@ impl IndexAction {
             TagPrefix => "apply the next function to tagged messages",
             FetchMail => "check for new mail now",
             Save => "save (copy + mark deleted) to a mailbox",
+            Copy => "copy to a mailbox (original stays)",
+            Pipe => "pipe raw message to a shell command",
+            Bounce => "bounce (resend) message to new recipients",
+            Resend => "edit the message as a new draft",
             Help => "this help",
         }
     }
@@ -287,6 +303,10 @@ impl IndexAction {
             TagPrefix,
             FetchMail,
             Save,
+            Copy,
+            Pipe,
+            Bounce,
+            Resend,
             Help,
         ]
     }
@@ -321,6 +341,10 @@ impl PagerAction {
             Forward => "forward",
             Print => "print",
             Save => "save",
+            Copy => "copy",
+            Pipe => "pipe",
+            Bounce => "bounce",
+            Resend => "resend",
             Help => "help",
         }
     }
@@ -346,6 +370,10 @@ impl PagerAction {
             Forward => "forward message",
             Print => "pipe message to the print command",
             Save => "save (copy + mark deleted) to a mailbox",
+            Copy => "copy to a mailbox (original stays)",
+            Pipe => "pipe raw message to a shell command",
+            Bounce => "bounce (resend) message to new recipients",
+            Resend => "edit the message as a new draft",
             Help => "this help",
         }
     }
@@ -371,6 +399,10 @@ impl PagerAction {
             Forward,
             Print,
             Save,
+            Copy,
+            Pipe,
+            Bounce,
+            Resend,
             Help,
         ]
     }
@@ -430,6 +462,10 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ch(';'), TagPrefix),
         (KeyPattern::ch('G'), FetchMail),
         (KeyPattern::ch('s'), Save),
+        (KeyPattern::ch('C'), Copy),
+        (KeyPattern::ch('|'), Pipe),
+        (KeyPattern::ch('b'), Bounce),
+        (KeyPattern::ch('e'), Resend),
         (KeyPattern::ch('?'), Help),
     ]
 }
@@ -464,6 +500,10 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('f'), Forward),
         (KeyPattern::ch('p'), Print),
         (KeyPattern::ch('s'), Save),
+        (KeyPattern::ch('C'), Copy),
+        (KeyPattern::ch('|'), Pipe),
+        (KeyPattern::ch('b'), Bounce),
+        (KeyPattern::ch('e'), Resend),
         (KeyPattern::ch('?'), Help),
     ]
 }

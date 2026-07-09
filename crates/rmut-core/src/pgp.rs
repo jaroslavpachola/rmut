@@ -381,16 +381,22 @@ fn view_inline(cfg: &Pgp, text: &str, encrypted: bool) -> View {
 /// Wrap a finalized draft in multipart/signed.
 pub fn sign_message(cfg: &Pgp, text: &str) -> Result<String> {
     let (head, body) = split_head_body(text);
-    let entity = inner_entity(body);
-    let (sig, micalg) = sign_detached(cfg, &entity)?;
-    let b = boundary(&[&entity, sig.as_bytes()]);
+    sign_entity(cfg, head, &inner_entity(body))
+}
+
+/// Wrap an arbitrary MIME entity (its own Content-Type header + body,
+/// CRLF endings — e.g. compose::mixed_entity) in multipart/signed
+/// under `head`.
+pub fn sign_entity(cfg: &Pgp, head: &str, entity: &[u8]) -> Result<String> {
+    let (sig, micalg) = sign_detached(cfg, entity)?;
+    let b = boundary(&[entity, sig.as_bytes()]);
     let mut out = head.trim_end().to_string();
     out += &format!(
         "\nMIME-Version: 1.0\nContent-Type: multipart/signed; boundary=\"{b}\";\n\tmicalg={micalg}; protocol=\"application/pgp-signature\"\n\n"
     );
     out += &format!("--{b}\r\n");
     // Byte-identical to what was signed: entity, then the delimiter.
-    out += std::str::from_utf8(&entity).expect("entity is built from str");
+    out += std::str::from_utf8(entity).expect("entity is built from str");
     out += &format!(
         "\r\n--{b}\r\nContent-Type: application/pgp-signature\r\n\r\n{}\r\n--{b}--\r\n",
         sig.trim_end()
@@ -404,7 +410,18 @@ pub fn sign_message(cfg: &Pgp, text: &str) -> Result<String> {
 /// encryption layer. Headers, including Subject, stay in clear.
 pub fn encrypt_message(cfg: &Pgp, recipients: &[String], sign: bool, text: &str) -> Result<String> {
     let (head, body) = split_head_body(text);
-    let armor = encrypt(cfg, recipients, sign, &inner_entity(body))?;
+    encrypt_entity(cfg, recipients, sign, head, &inner_entity(body))
+}
+
+/// Like `encrypt_message`, but over an arbitrary MIME entity.
+pub fn encrypt_entity(
+    cfg: &Pgp,
+    recipients: &[String],
+    sign: bool,
+    head: &str,
+    entity: &[u8],
+) -> Result<String> {
+    let armor = encrypt(cfg, recipients, sign, entity)?;
     let b = boundary(&[armor.as_bytes()]);
     let mut out = head.trim_end().to_string();
     out += &format!(
@@ -433,7 +450,7 @@ fn inner_entity(body: &str) -> Vec<u8> {
 }
 
 /// RFC 3156 canonical form: every line ending is CRLF.
-fn crlf(data: &[u8]) -> Vec<u8> {
+pub(crate) fn crlf(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + 16);
     for (i, line) in data.split(|&b| b == b'\n').enumerate() {
         if i > 0 {
@@ -806,6 +823,42 @@ esac"#,
             mail.subparts[0].get_body().unwrap(),
             "line one\r\nline two\r\n"
         );
+        let v = view(&cfg, msg.as_bytes()).unwrap();
+        assert!(v.note.contains("good signature"), "{}", v.note);
+        assert_eq!(
+            scratch(dir.path(), "signed.in"),
+            scratch(dir.path(), "verify.in")
+        );
+    }
+
+    /// Signing a multipart entity (draft with attachments) keeps the
+    /// entity byte-identical and verifiable, like the text/plain case.
+    #[test]
+    fn sign_entity_roundtrips_a_multipart() {
+        let (dir, cfg) = stub(
+            r#"case "$*" in
+*--detach-sign*)
+  cat > "$D/signed.in"
+  echo "[GNUPG:] SIG_CREATED D 1 8 00 12 FPR" >&2
+  printf -- '-----BEGIN PGP SIGNATURE-----\nAAA\n-----END PGP SIGNATURE-----\n' ;;
+*--verify*)
+  cat > "$D/verify.in"
+  echo "[GNUPG:] GOODSIG AAA Jane <j@x>" >&2 ;;
+esac"#,
+        );
+        let entity = "Content-Type: multipart/mixed; boundary=\"mm\"\r\n\r\n\
+                      --mm\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nhi\r\n\
+                      --mm\r\nContent-Type: application/pdf\r\n\r\ndata\r\n--mm--\r\n";
+        let msg = sign_entity(
+            &cfg,
+            "To: bob@x\nFrom: jane@x\nSubject: s",
+            entity.as_bytes(),
+        )
+        .unwrap();
+        let mail = parse_mail(msg.as_bytes()).unwrap();
+        assert_eq!(mail.ctype.mimetype, "multipart/signed");
+        assert_eq!(mail.subparts[0].ctype.mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts[0].subparts.len(), 2);
         let v = view(&cfg, msg.as_bytes()).unwrap();
         assert!(v.note.contains("good signature"), "{}", v.note);
         assert_eq!(

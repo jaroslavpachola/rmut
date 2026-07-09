@@ -1,6 +1,8 @@
 //! Draft building and finalizing for outgoing mail.
 
-use anyhow::{Result, ensure};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, ensure};
 use chrono::{Local, TimeZone};
 
 pub struct DraftHeaders {
@@ -125,38 +127,160 @@ pub fn finalize(draft: &str, from: &str, msg_id: &str, date: &str) -> Result<Str
     Ok(format!("{head}\n\n{body}"))
 }
 
-/// Turn a finalized draft into multipart/mixed with the draft text as
-/// the first part and the original message attached as message/rfc822
-/// (mutt's mime_forward).
-pub fn attach_original(text: &str, original: &[u8]) -> Result<String> {
-    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+/// A file named in an `Attach:` pseudo-header of the draft.
+pub struct Attachment {
+    pub path: PathBuf,
+    pub description: Option<String>,
+}
+
+/// Pull mutt-style `Attach: <path> [description]` pseudo-headers out of
+/// a draft's header block; quotes allow a path with spaces, `~/` means
+/// $HOME. Returns the draft without those lines.
+pub fn extract_attachments(draft: &str) -> (String, Vec<Attachment>) {
+    let (head, body) = match draft.split_once("\n\n") {
+        Some((h, b)) => (h, Some(b)),
+        None => (draft, None),
+    };
+    let mut attachments = Vec::new();
+    let mut kept = Vec::new();
+    for line in head.lines() {
+        let value = match line.split_once(':') {
+            Some((k, v)) if k.trim().eq_ignore_ascii_case("attach") => v.trim(),
+            _ => {
+                kept.push(line);
+                continue;
+            }
+        };
+        if value.is_empty() {
+            continue;
+        }
+        let (path, desc) = match value.strip_prefix('"') {
+            Some(rest) => rest.split_once('"').unwrap_or((rest, "")),
+            None => value.split_once(char::is_whitespace).unwrap_or((value, "")),
+        };
+        let desc = desc.trim();
+        attachments.push(Attachment {
+            path: expand_home(path),
+            description: (!desc.is_empty()).then(|| desc.to_string()),
+        });
+    }
+    let mut out = kept.join("\n");
+    if let Some(body) = body {
+        out += "\n\n";
+        out += body;
+    }
+    (out, attachments)
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return Path::new(&home).join(rest);
+    }
+    PathBuf::from(path)
+}
+
+/// Content type guessed from the filename extension.
+fn content_type(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("txt" | "log" | "md" | "patch" | "diff") => "text/plain",
+        Some("html" | "htm") => "text/html",
+        Some("csv") => "text/csv",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("zip") => "application/zip",
+        Some("gz") => "application/gzip",
+        Some("tar") => "application/x-tar",
+        Some("json") => "application/json",
+        Some("xml") => "application/xml",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Base64 in MIME shape: 76-character lines, CRLF line endings.
+fn b64_wrapped(bytes: &[u8]) -> String {
+    let s = crate::smtp::b64(bytes);
+    let mut out = String::with_capacity(s.len() + s.len() / 38 + 2);
+    for chunk in s.as_bytes().chunks(76) {
+        out.push_str(std::str::from_utf8(chunk).expect("base64 is ascii"));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// The MIME entity (Content-Type header + body, CRLF endings) for a
+/// draft body with attachments: multipart/mixed with the text first,
+/// files base64-encoded, and optionally the forwarded original as
+/// message/rfc822 (mutt's mime_forward). The caller puts it under the
+/// draft's top-level headers — or inside a PGP layer.
+pub fn mixed_entity(body: &str, files: &[Attachment], original: Option<&[u8]>) -> Result<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut text = String::from(
+        "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n",
+    );
+    text += &String::from_utf8_lossy(&crate::pgp::crlf(body.as_bytes()));
+    parts.push(text);
+    for a in files {
+        let bytes =
+            std::fs::read(&a.path).with_context(|| format!("reading {}", a.path.display()))?;
+        let name = a
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("attachment");
+        let mut p = format!(
+            "Content-Type: {}\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n",
+            content_type(&a.path),
+        );
+        if let Some(d) = &a.description {
+            p += &format!("Content-Description: {d}\r\n");
+        }
+        p += "Content-Transfer-Encoding: base64\r\n\r\n";
+        p += &b64_wrapped(&bytes);
+        parts.push(p);
+    }
+    if let Some(orig) = original {
+        let mut p =
+            String::from("Content-Type: message/rfc822\r\nContent-Disposition: attachment\r\n\r\n");
+        p += &String::from_utf8_lossy(&crate::pgp::crlf(orig));
+        parts.push(p);
+    }
     let boundary = {
         let mut n = 0usize;
         loop {
-            let b = format!("=-rmut-fwd-{}-{n}", std::process::id());
-            let bb = b.as_bytes();
-            let hit = |c: &[u8]| c.windows(bb.len()).any(|w| w == bb);
-            if !hit(body.as_bytes()) && !hit(original) {
+            let b = format!("=-rmut-mixed-{}-{n}", std::process::id());
+            if !parts.iter().any(|p| p.contains(&b)) {
                 break b;
             }
             n += 1;
         }
     };
-    let mut out = head.trim_end().to_string();
-    out +=
-        &format!("\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"{boundary}\"\n\n");
-    out += &format!("--{boundary}\nContent-Type: text/plain; charset=utf-8\n\n{body}");
-    if !out.ends_with('\n') {
-        out.push('\n');
+    let mut out = format!("Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n");
+    for p in &parts {
+        out += &format!("--{boundary}\r\n");
+        out += p;
+        if !out.ends_with("\r\n") {
+            out += "\r\n";
+        }
     }
-    out +=
-        &format!("--{boundary}\nContent-Type: message/rfc822\nContent-Disposition: attachment\n\n");
-    out += &String::from_utf8_lossy(original);
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out += &format!("--{boundary}--\n");
+    out += &format!("--{boundary}--\r\n");
     Ok(out)
+}
+
+/// Message text for a bounce: the original with a fresh Resent-* block
+/// prepended, per RFC 5322 (the newest resend goes first).
+pub fn bounce_text(original: &[u8], from: &str, to: &str, date: &str, msg_id: &str) -> String {
+    format!(
+        "Resent-From: {from}\r\nResent-Date: {date}\r\nResent-Message-ID: {msg_id}\r\nResent-To: {to}\r\n{}",
+        String::from_utf8_lossy(original),
+    )
 }
 
 /// First address in an RFC 5322 address field, without display name —
@@ -192,6 +316,13 @@ fn field_addresses(value: &str, out: &mut Vec<String>) {
             }
         }
     }
+}
+
+/// Every bare address in an RFC 5322 address field.
+pub fn addresses(field: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    field_addresses(field, &mut out);
+    out
 }
 
 /// SMTP envelope for a finalized draft: every To/Cc/Bcc address, and
@@ -313,21 +444,82 @@ mod tests {
     }
 
     #[test]
-    fn attach_original_builds_rfc822_part() {
-        let draft = "To: bob@x\nSubject: Fwd: hi\n\nsee attached\n";
+    fn extract_attachments_takes_the_pseudo_headers_out() {
+        let draft = "To: a@x\nAttach: /tmp/report.pdf the Q2 numbers\n\
+                     attach: \"/tmp/two words.png\"\nAttach:\nSubject: s\n\nbody\n";
+        let (out, files) = extract_attachments(draft);
+        assert_eq!(out, "To: a@x\nSubject: s\n\nbody\n");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, PathBuf::from("/tmp/report.pdf"));
+        assert_eq!(files[0].description.as_deref(), Some("the Q2 numbers"));
+        assert_eq!(files[1].path, PathBuf::from("/tmp/two words.png"));
+        assert_eq!(files[1].description, None);
+    }
+
+    #[test]
+    fn extract_attachments_leaves_plain_drafts_alone() {
+        let draft = "To: a@x\nSubject: s\n\nAttach: not a header, body text\n";
+        let (out, files) = extract_attachments(draft);
+        assert_eq!(out, draft);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn mixed_entity_encodes_files_and_original() {
+        use mailparse::MailHeaderMap;
+        let dir = std::env::temp_dir().join(format!("rmut-attach-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blob: Vec<u8> = (0..=255u8).collect();
+        std::fs::write(dir.join("blob.bin"), &blob).unwrap();
+        let files = [Attachment {
+            path: dir.join("blob.bin"),
+            description: Some("raw bytes".into()),
+        }];
         let orig = b"From: jane@x\r\nSubject: hi\r\n\r\noriginal body\r\n";
-        let out = attach_original(draft, orig).unwrap();
-        let mail = mailparse::parse_mail(out.as_bytes()).unwrap();
+        let entity = mixed_entity("see attached", &files, Some(orig)).unwrap();
+        let mail = mailparse::parse_mail(entity.as_bytes()).unwrap();
         assert_eq!(mail.ctype.mimetype, "multipart/mixed");
-        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts.len(), 3);
         assert_eq!(mail.subparts[0].get_body().unwrap().trim(), "see attached");
-        assert_eq!(mail.subparts[1].ctype.mimetype, "message/rfc822");
+        let file = &mail.subparts[1];
+        assert_eq!(file.ctype.mimetype, "application/octet-stream");
+        assert_eq!(file.get_body_raw().unwrap(), blob);
+        let disp = file.get_headers().get_first_value("Content-Disposition");
+        assert!(disp.unwrap().contains("filename=\"blob.bin\""));
+        assert_eq!(
+            file.get_headers()
+                .get_first_value("Content-Description")
+                .as_deref(),
+            Some("raw bytes")
+        );
+        assert_eq!(mail.subparts[2].ctype.mimetype, "message/rfc822");
         assert!(
-            mail.subparts[1]
+            mail.subparts[2]
                 .get_body()
                 .unwrap()
                 .contains("original body")
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mixed_entity_reports_a_missing_file() {
+        let files = [Attachment {
+            path: PathBuf::from("/nonexistent/nope.pdf"),
+            description: None,
+        }];
+        let err = mixed_entity("hi", &files, None).unwrap_err();
+        assert!(err.to_string().contains("/nonexistent/nope.pdf"));
+    }
+
+    #[test]
+    fn bounce_text_prepends_resent_headers() {
+        let orig = b"From: jane@x\nSubject: hi\n\nbody\n";
+        let out = bounce_text(orig, "Me <me@x>", "bob@y", "DATE", "<id@x>");
+        assert!(out.starts_with("Resent-From: Me <me@x>\r\n"));
+        assert!(out.contains("Resent-Date: DATE\r\n"));
+        assert!(out.contains("Resent-To: bob@y\r\n"));
+        assert!(out.ends_with("From: jane@x\nSubject: hi\n\nbody\n"));
     }
 
     #[test]
