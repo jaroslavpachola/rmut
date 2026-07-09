@@ -32,6 +32,12 @@
 //! imap_host = "imap.example.com"   # imap_port = 993, imap_tls = true
 //! smtp_host = "smtp.example.com"   # smtp_port = 587, smtp_tls = true
 //! sent_folder = "Sent"             # Fcc target via IMAP APPEND
+//!
+//! [pgp]
+//! command = "gpg"              # runs via $PATH; passphrases come from
+//! sign_key = "jane@example.com"  # the gpg agent, never from rmut
+//! sign_by_default = false
+//! encrypt_by_default = false
 //! ```
 
 use std::collections::HashMap;
@@ -50,6 +56,7 @@ pub struct Config {
     pub colors: HashMap<String, String>,
     pub keys: Keys,
     pub accounts: Vec<Account>,
+    pub pgp: Pgp,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -113,6 +120,33 @@ pub struct Account {
     /// IMAP folder that receives the Fcc copy of sent mail.
     #[serde(default = "default_sent_folder")]
     pub sent_folder: String,
+}
+
+/// PGP via gpg(1). Decrypt/verify happens automatically when a viewed
+/// message is PGP; signing and encrypting are chosen at the send
+/// prompt. Passphrases are gpg-agent's business — rmut never sees them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Pgp {
+    /// The gpg executable (a name looked up in $PATH or a full path).
+    pub command: String,
+    /// Signing key for --local-user; gpg's default key when unset.
+    pub sign_key: Option<String>,
+    /// Preselect signing / encrypting for new drafts (the send prompt's
+    /// security menu can still change it per message).
+    pub sign_by_default: bool,
+    pub encrypt_by_default: bool,
+}
+
+impl Default for Pgp {
+    fn default() -> Self {
+        Pgp {
+            command: "gpg".into(),
+            sign_key: None,
+            sign_by_default: false,
+            encrypt_by_default: false,
+        }
+    }
 }
 
 fn default_imap_port() -> u16 {
@@ -280,6 +314,21 @@ mod tests {
         assert!(test.smtp_host.is_none());
         assert_eq!(test.sent_folder, "INBOX/Sent");
         assert!(cfg.account("nope").is_none());
+    }
+
+    #[test]
+    fn pgp_section_defaults_and_overrides() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.pgp.command, "gpg");
+        assert!(cfg.pgp.sign_key.is_none());
+        assert!(!cfg.pgp.sign_by_default && !cfg.pgp.encrypt_by_default);
+        let cfg: Config = toml::from_str(
+            "[pgp]\ncommand = \"gpg2\"\nsign_key = \"jane@x\"\nsign_by_default = true\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.pgp.command, "gpg2");
+        assert_eq!(cfg.pgp.sign_key.as_deref(), Some("jane@x"));
+        assert!(cfg.pgp.sign_by_default && !cfg.pgp.encrypt_by_default);
     }
 
     #[test]
