@@ -320,10 +320,14 @@ fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[(String, usize)], sel: us
 
 fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u16) {
     if let Some(prompt) = &app.prompt {
-        let text = match prompt {
+        let mut text = match prompt {
             Prompt::Line { label, buf, .. } => format!("{label}{buf}\u{2581}"),
             Prompt::Key { label, .. } => label.clone(),
         };
+        // Completion hints and the like show behind the input.
+        if let Some(msg) = &app.status {
+            text += &format!("  [{msg}]");
+        }
         frame.render_widget(Line::from(text), area);
         return;
     }

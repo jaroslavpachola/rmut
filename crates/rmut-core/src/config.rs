@@ -115,6 +115,10 @@ pub struct Mail {
     /// "inline" (quoted text, the default) or "attach" (the original
     /// goes along as a message/rfc822 part, mutt's mime_forward).
     pub forward: Option<String>,
+    /// mutt's query_command: external address lookup for Tab
+    /// completion at the To prompt (`%s` = the word, or appended),
+    /// e.g. "khard email --parsable %s".
+    pub query_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

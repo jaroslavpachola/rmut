@@ -63,6 +63,7 @@ struct State {
     sign_by_default: bool,
     encrypt_by_default: bool,
     print: Option<String>,
+    query_command: Option<String>,
     sort: Option<String>,
     sort_aux: Option<String>,
     date_format: Option<String>,
@@ -378,6 +379,7 @@ impl State {
             "crypt_autosign" | "pgp_autosign" => self.sign_by_default = is_yes(&v),
             "crypt_autoencrypt" | "pgp_autoencrypt" => self.encrypt_by_default = is_yes(&v),
             "print_command" => self.print = Some(v),
+            "query_command" => self.query_command = Some(v),
             "imap_user" => self.imap_user = Some(v),
             "smtp_url" => self.smtp_url = Some(v),
             "imap_pass" => self.imap_pass = Some(v),
@@ -694,6 +696,7 @@ impl State {
             || self.editor.is_some()
             || self.poll_seconds.is_some()
             || self.print.is_some()
+            || self.query_command.is_some()
             || self.save_default.is_some()
             || self.forward_attach
         {
@@ -719,6 +722,9 @@ impl State {
             }
             if let Some(p) = &self.print {
                 out += &format!("print = {}\n", quote(p));
+            }
+            if let Some(q) = &self.query_command {
+                out += &format!("query_command = {}\n", quote(q));
             }
             if let Some(save) = &self.save_default {
                 out += &format!("save = {}\n", quote(&self.expand_mailbox(save)));
@@ -1260,6 +1266,7 @@ mod tests {
             "set pager_context       = 3\n",
             "set mime_forward        = yes\n",
             "set mime_forward_rest   = yes\n",
+            "set query_command       = \"khard email --parsable %s\"\n",
             "save-hook . +General\n",
             "set folder = ~/Mail\n",
             "bind index G imap-fetch-mail\n",
@@ -1270,6 +1277,10 @@ mod tests {
         assert_eq!(cfg.pager.index_lines, 10);
         assert_eq!(cfg.pager.context, 3);
         assert_eq!(cfg.mail.forward.as_deref(), Some("attach"));
+        assert_eq!(
+            cfg.mail.query_command.as_deref(),
+            Some("khard email --parsable %s")
+        );
         assert_eq!(cfg.mail.save.as_deref(), Some("~/Mail/General"));
         assert_eq!(
             cfg.keys.index.get("fetch-mail").map(String::as_str),

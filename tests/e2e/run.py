@@ -238,11 +238,20 @@ def scenario_compose_send_postpone(tmp):
     os.chmod(sendmail, 0o755)
     aliases = os.path.join(tmp, "aliases")
     with open(aliases, "w") as f:
-        f.write("alias petr Petr Novak <petr@example.com>\n")
+        f.write("alias petr Petr Novak <petr@example.com>\n"
+                "alias pete Pete Example <pete@example.org>\n")
+    query = os.path.join(tmp, "query.sh")
+    with open(query, "w") as f:
+        f.write("#!/bin/sh\nprintf 'Searching...\\nzdenka@example.com\\tZdenka Q\\n'\n")
+    os.chmod(query, 0o755)
+    cfg = os.path.join(tmp, "compose-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\nquery_command = "{query} %s"\n')
     env = base_env(tmp, {
         "EDITOR": editor,
         "RMUT_SENDMAIL": sendmail,
         "RMUT_ALIASES": aliases,
+        "RMUT_CONFIG": cfg,
     })
     r = Rmut(md, env)
     r.expect("Msgs:1")
@@ -286,6 +295,27 @@ def scenario_compose_send_postpone(tmp):
     r.keys(b"mry")  # recall prompt -> recall -> editor -> send
     wait_for(lambda: "Subject: posty" in open(sent_file).read(), desc="recalled mail sent")
     wait_for(lambda: os.listdir(postponed_cur) == [], desc="postponed original removed")
+    # Tab completion at the To prompt: first alias match by prefix...
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"pe\t\rcomp1\ry")
+    wait_for(lambda: "Subject: comp1" in open(sent_file).read(), desc="completed send")
+    assert "To: Pete Example <pete@example.org>" in open(sent_file).read()
+    # ...a second Tab cycles to the next match (2 aliases + the
+    # query script's unconditional hit = 3 candidates)...
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"pe\t\t")
+    r.expect("match 2/3")
+    r.keys(b"\rcomp2\ry")
+    wait_for(lambda: "Subject: comp2" in open(sent_file).read(), desc="cycled send")
+    assert open(sent_file).read().count("To: Petr Novak <petr@example.com>") == 2
+    # ...and query_command results complete too.
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"zd\t\rcomp3\ry")
+    wait_for(lambda: "Subject: comp3" in open(sent_file).read(), desc="query send")
+    assert "To: Zdenka Q <zdenka@example.com>" in open(sent_file).read()
     r.keys(b"q")
     r.close()
 

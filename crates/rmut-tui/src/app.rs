@@ -181,6 +181,16 @@ pub struct Compose {
 
 const SEND_PROMPT: &str = "Send message? (y)es (e)dit (s)ecurity (p)ostpone (q)discard";
 
+/// Tab-completion state at an address prompt: candidates for the token
+/// at `start`, `expect` being the whole buffer after the last
+/// insertion (an edit in between restarts the match).
+struct Complete {
+    start: usize,
+    candidates: Vec<String>,
+    index: usize,
+    expect: String,
+}
+
 pub struct App {
     pub dir: PathBuf,
     /// What the status line calls this mailbox: the path for local
@@ -220,6 +230,8 @@ pub struct App {
     bounce_to: Option<String>,
     /// Background IDLE watcher for the open IMAP folder.
     idle: Option<remote::IdleWatch>,
+    /// Address completion state at the To prompt (Tab cycles).
+    complete: Option<Complete>,
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
@@ -302,6 +314,7 @@ impl App {
             pending_editor: None,
             bounce_to: None,
             idle: None,
+            complete: None,
             mailbox_new: HashMap::new(),
             tag_next: false,
             quit: false,
@@ -557,6 +570,7 @@ impl App {
                 }
                 KeyCode::Char('u') if is_ctrl(&key) => buf.clear(),
                 KeyCode::Char(c) if !is_ctrl(&key) => buf.push(c),
+                KeyCode::Tab => self.tab_complete(),
                 KeyCode::Enter => {
                     if let Some(Prompt::Line { buf, kind, .. }) = self.prompt.take() {
                         self.run_line_prompt(kind, buf.trim());
@@ -654,6 +668,66 @@ impl App {
                 {
                     self.bounce_current(&to);
                 }
+            }
+        }
+    }
+
+    /// Tab at an address prompt: complete the token under the cursor
+    /// against aliases and query_command; repeated Tab cycles the
+    /// candidates.
+    fn tab_complete(&mut self) {
+        let (buf_now, kind) = match &self.prompt {
+            Some(Prompt::Line { buf, kind, .. }) => (buf.clone(), *kind),
+            _ => return,
+        };
+        if !matches!(kind, LineKind::ComposeTo | LineKind::BounceTo) {
+            return;
+        }
+        let set_buf = |app: &mut App, text: &str| {
+            if let Some(Prompt::Line { buf, .. }) = &mut app.prompt {
+                *buf = text.to_string();
+            }
+        };
+        if let Some(c) = &mut self.complete
+            && c.expect == buf_now
+            && c.candidates.len() > 1
+        {
+            c.index = (c.index + 1) % c.candidates.len();
+            let next = format!("{}{}", &buf_now[..c.start], c.candidates[c.index]);
+            c.expect = next.clone();
+            let note = format!("match {}/{}", c.index + 1, c.candidates.len());
+            set_buf(self, &next);
+            self.status = Some(note);
+            return;
+        }
+        self.complete = None;
+        let after_comma = buf_now.rfind(',').map(|i| i + 1).unwrap_or(0);
+        let start =
+            after_comma + buf_now[after_comma..].len() - buf_now[after_comma..].trim_start().len();
+        let word = buf_now[start..].trim().to_string();
+        if word.is_empty() {
+            self.status = Some("nothing to complete".into());
+            return;
+        }
+        let candidates = alias::complete(
+            &word,
+            &alias::load_default(),
+            self.config.mail.query_command.as_deref(),
+        );
+        match candidates.len() {
+            0 => self.status = Some(format!("no matches for {word}")),
+            n => {
+                let next = format!("{}{}", &buf_now[..start], candidates[0]);
+                set_buf(self, &next);
+                if n > 1 {
+                    self.status = Some(format!("match 1/{n} (Tab cycles)"));
+                }
+                self.complete = Some(Complete {
+                    start,
+                    candidates,
+                    index: 0,
+                    expect: next,
+                });
             }
         }
     }

@@ -172,11 +172,16 @@ per recipient via folder-hook/send-hook.
       re-issued before the half-hour limit, stops on mailbox switch);
       NOOP polling stays as the fallback when the server lacks it
 
-## R12 — address completion (1.11)
+## R12 — address completion (done, 1.11)
 
-- [ ] Tab at the To/Cc prompt completes against the alias file
-- [ ] `query_command` (khard/abook/LDAP): run it on Tab with the
-      current word, parse mutt's tab-separated output format
+- [x] Tab at the To prompt (compose and bounce) completes the word
+      under the cursor against alias nicks by prefix; repeated Tab
+      cycles multiple matches, with a match counter shown behind the
+      input
+- [x] `query_command` (khard/abook/LDAP): run on Tab with the current
+      word (`%s` or appended, shell-quoted), mutt's tab-separated
+      output parsed (first line skipped, `addr<TAB>name` rows);
+      imported 1:1 from a muttrc
 
 ## Candidates (unscoped)
 

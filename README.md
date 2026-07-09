@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.10** — everything from the 1.0 roadmap plus R5–R11: mutt-style
+**1.11** — everything from the 1.0 roadmap plus R5–R12: mutt-style
 index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
@@ -25,9 +25,10 @@ From, `[[identities]]` folder/recipient rules (the minimal folder-/
 send-hook), and mutt's reverse_name, **patterns v2** (R10):
 `!`/`|`/`()`, regexes, `~t`/`~c`/`~C`/`~e`/`~p`, `~d` date ranges, and
 **new-mail awareness** (R11): counts in the folder browser, watching
-the other configured mailboxes, IMAP IDLE. A pty-driven e2e suite
-(including fake IMAP/SMTP servers and a stub gpg) lives in
-`tests/e2e/`.
+the other configured mailboxes, IMAP IDLE, and **address completion**
+(R12): Tab at the To prompt completes aliases and query_command
+results. A pty-driven e2e suite (including fake IMAP/SMTP servers and
+a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -129,7 +130,12 @@ the send prompt, `p` postpones the draft into a nearby Drafts maildir
 (or `.rmut-postponed`); the next `m` offers to recall it. Sent mail is
 copied to a nearby Sent maildir when one exists (local mailboxes).
 Aliases are read from `$RMUT_ALIASES` or `~/.config/rmut/aliases`, one
-mutt-style `alias nick address...` per line.
+mutt-style `alias nick address...` per line. At the To prompt (compose
+and bounce), **Tab** completes the word under the cursor: alias nicks
+by prefix, plus hits from `query_command` when one is configured
+(mutt's protocol — `%s` is the search word, the first output line is a
+message, then `address<TAB>name` lines). Repeated Tab cycles through
+multiple matches.
 
 To attach files, add `Attach:` pseudo-headers to the draft in the
 editor (mutt's edit_headers style):
@@ -178,6 +184,7 @@ poll_seconds = 5             # new-mail check interval
 print = "lpr"                # `p` pipes the message here
 save = "~/Maildir/.Archive"  # default target for `s`
 forward = "inline"           # or "attach" (original as message/rfc822)
+query_command = "khard email --parsable %s"   # Tab completion lookup
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
@@ -233,7 +240,8 @@ rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
 ```
 
 translates a muttrc (identity, folder/mailboxes, record/postponed,
-sendmail/editor/print_command, binds, status/header colors, PGP
+sendmail/editor/print_command/query_command, binds, status/header
+colors, PGP
 defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, reverse_name,
 and folder-hooks/send-hooks that only set from/realname into
 `[[identities]]` rules) into rmut

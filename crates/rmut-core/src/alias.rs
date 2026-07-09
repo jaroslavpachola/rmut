@@ -37,6 +37,64 @@ pub fn parse(text: &str) -> HashMap<String, String> {
     map
 }
 
+/// Completion candidates for a partial address: expansions of every
+/// alias whose nick starts with `word` (case-insensitive), then
+/// query_command results — sorted, deduplicated.
+pub fn complete(
+    word: &str,
+    aliases: &HashMap<String, String>,
+    query_command: Option<&str>,
+) -> Vec<String> {
+    let lower = word.to_lowercase();
+    let mut out: Vec<String> = aliases
+        .iter()
+        .filter(|(nick, _)| nick.to_lowercase().starts_with(&lower))
+        .map(|(_, expansion)| expansion.clone())
+        .collect();
+    out.sort();
+    if let Some(command) = query_command {
+        out.extend(query(command, word));
+    }
+    out.dedup();
+    out
+}
+
+/// Run mutt's query_command (`%s` = the search word, appended when the
+/// command has no `%s`) and parse its output: the first line is a
+/// human message, then one `address<TAB>name[<TAB>extra]` per line.
+pub fn query(command: &str, word: &str) -> Vec<String> {
+    let quoted = format!("'{}'", word.replace('\'', r"'\''"));
+    let command = if command.contains("%s") {
+        command.replace("%s", &quoted)
+    } else {
+        format!("{command} {quoted}")
+    };
+    let Ok(out) = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let addr = fields.next()?.trim();
+            if addr.is_empty() {
+                return None;
+            }
+            Some(
+                match fields.next().map(str::trim).filter(|n| !n.is_empty()) {
+                    Some(name) => format!("{name} <{addr}>"),
+                    None => addr.to_string(),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Expand comma-separated recipients; a bare token exactly matching an
 /// alias nick is replaced by its expansion.
 pub fn expand(input: &str, aliases: &HashMap<String, String>) -> String {
@@ -54,6 +112,53 @@ pub fn expand(input: &str, aliases: &HashMap<String, String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_matches_nick_prefixes() {
+        let map = parse(
+            "alias petr Petr Novak <petr@example.com>\nalias pete pete@example.org\nalias jane jane@example.com\n",
+        );
+        assert_eq!(
+            complete("PE", &map, None),
+            vec![
+                "Petr Novak <petr@example.com>".to_string(),
+                "pete@example.org".into(),
+            ]
+        );
+        assert_eq!(complete("jane", &map, None).len(), 1);
+        assert!(complete("zz", &map, None).is_empty());
+    }
+
+    #[test]
+    fn query_parses_mutt_output() {
+        // First line is a message; addr\tname\textra lines follow.
+        let cmd =
+            "printf 'Searching %s...\\nzdenka@example.com\\tZdenka Q\\tnote\\nbare@example.com\\n'";
+        assert_eq!(
+            query(cmd, "zd"),
+            vec![
+                "Zdenka Q <zdenka@example.com>".to_string(),
+                "bare@example.com".into(),
+            ]
+        );
+        // The word reaches the command shell-quoted, quotes included.
+        assert_eq!(query("echo dummy; echo %s", "a'b"), vec!["a'b".to_string()]);
+        assert!(query("false", "x").is_empty());
+        // Query results merge behind alias matches in complete().
+        let map = parse("alias zdeno zdeno@example.net\n");
+        let all = complete(
+            "zd",
+            &map,
+            Some("printf 'found\\nzdenka@example.com\\tZdenka Q\\n'"),
+        );
+        assert_eq!(
+            all,
+            vec![
+                "zdeno@example.net".to_string(),
+                "Zdenka Q <zdenka@example.com>".into(),
+            ]
+        );
+    }
 
     #[test]
     fn parse_and_expand() {
