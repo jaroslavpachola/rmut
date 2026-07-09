@@ -100,7 +100,8 @@ post-1.0.
       color (status/header/~D/~F slots), source includes, alias
       passthrough (rmut reads mutt alias files as-is)
 - [x] everything untranslatable surfaces as `# not imported:` comments;
-      imap_pass/smtp_pass are redacted, never echoed
+      imap_pass imports as the account's stored `password` (1.3),
+      secrets are never echoed into comments
 
 ## Post-1.0 candidates
 

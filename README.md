@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.2** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
+**1.3** — everything from the 1.0 roadmap plus R5–R7: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -68,7 +68,8 @@ first view — so the index is fast and old mail reopens offline. `$`
 pushes your changes to the server (flags via UID STORE, deletes via
 EXPUNGE) and new mail is picked up by polling (`poll_seconds`). The
 password comes from `password_command` (e.g. `pass show mail/work`),
-once per session.
+run once per session — or from a stored `password`, if you accept a
+secret sitting in the config file (keep it chmod 600).
 
 ## PGP
 
@@ -133,7 +134,8 @@ sync = "w"
 [[accounts]]                 # remote account: open with `rmut imap:work`
 name = "work"
 user = "jane@example.com"
-password_command = "pass show mail/work"   # first stdout line; never a plaintext password
+password_command = "pass show mail/work"   # first stdout line
+# password = "..."                         # alternative; keep the file chmod 600
 imap_host = "imap.example.com"             # imap_port = 993, imap_tls = true
 smtp_host = "smtp.example.com"             # smtp_port = 587 (STARTTLS; 465 = implicit TLS)
 sent_folder = "Sent"                       # Fcc target via IMAP APPEND
@@ -159,8 +161,8 @@ translates a muttrc (identity, folder/mailboxes, record/postponed,
 sendmail/editor, binds, status/header colors, PGP defaults, IMAP/SMTP
 URLs into an `[[accounts]]` skeleton) into rmut TOML on stdout for
 review — it never writes any file itself. Directives with no rmut
-equivalent are kept as `# not imported:` comments; `imap_pass` is
-redacted (set `password_command` instead). Alias files need no
+equivalent are kept as `# not imported:` comments; `imap_pass` becomes
+the account's stored `password`. Alias files need no
 translation: rmut reads mutt-format aliases, so point `$RMUT_ALIASES`
 at your existing file or copy it to `~/.config/rmut/aliases`.
 

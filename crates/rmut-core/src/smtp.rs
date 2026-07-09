@@ -191,7 +191,8 @@ mod tests {
         let account = crate::config::Account {
             name: "t".into(),
             user: "jane".into(),
-            password_command: "unused".into(),
+            password_command: None,
+            password: None,
             imap_host: None,
             imap_port: 993,
             imap_tls: true,
@@ -229,7 +230,8 @@ mod tests {
         let account = crate::config::Account {
             name: "t".into(),
             user: "jane".into(),
-            password_command: "unused".into(),
+            password_command: None,
+            password: None,
             imap_host: None,
             imap_port: 993,
             imap_tls: true,
@@ -258,7 +260,8 @@ mod tests {
         let account = crate::config::Account {
             name: "t".into(),
             user: "jane".into(),
-            password_command: "unused".into(),
+            password_command: None,
+            password: None,
             imap_host: None,
             imap_port: 993,
             imap_tls: true,

@@ -53,6 +53,7 @@ struct State {
     sign_by_default: bool,
     encrypt_by_default: bool,
     imap_user: Option<String>,
+    imap_pass: Option<String>,
     smtp_url: Option<String>,
     aliases: Vec<String>,
     skipped: Vec<String>,
@@ -274,11 +275,13 @@ impl State {
             "crypt_autoencrypt" | "pgp_autoencrypt" => self.encrypt_by_default = is_yes(&v),
             "imap_user" => self.imap_user = Some(v),
             "smtp_url" => self.smtp_url = Some(v),
-            "imap_pass" | "smtp_pass" => {
-                // Redact — the skip comment must not echo the secret.
+            "imap_pass" => self.imap_pass = Some(v),
+            "smtp_pass" => {
+                // rmut uses one credential per account; redact — the
+                // skip comment must not echo the secret.
                 self.skip(
-                    &format!("set {name} = (redacted)"),
-                    "passwords are not imported; use password_command",
+                    "set smtp_pass = (redacted)",
+                    "rmut uses the account's single password for SMTP too",
                 );
             }
             _ => self.skip(line, "no rmut equivalent"),
@@ -450,8 +453,17 @@ impl State {
                 out += "encrypt_by_default = true\n";
             }
         }
-        if let Some(url) = imap {
-            out += &self.account_toml(url);
+        let mut skipped = self.skipped.clone();
+        match imap {
+            Some(url) => out += &self.account_toml(url),
+            None => {
+                if self.imap_pass.is_some() {
+                    skipped.push(
+                        "set imap_pass = (redacted)  (no IMAP folder, so no account to put it on)"
+                            .into(),
+                    );
+                }
+            }
         }
         if !self.aliases.is_empty() {
             out += "\n# aliases found — rmut reads mutt-format alias files; put these\n";
@@ -460,9 +472,9 @@ impl State {
                 out += &format!("#   {a}\n");
             }
         }
-        if !self.skipped.is_empty() {
+        if !skipped.is_empty() {
             out += "\n# not imported:\n";
-            for s in &self.skipped {
+            for s in &skipped {
                 out += &format!("#   {s}\n");
             }
         }
@@ -477,8 +489,16 @@ impl State {
             .or_else(|| self.email.clone())
             .unwrap_or_else(|| "TODO".into());
         out += &format!("user = {}\n", quote(&user));
-        out += "# TODO: rmut never stores passwords — set a command that prints it:\n";
-        out += "password_command = \"pass show mail/TODO\"\n";
+        match &self.imap_pass {
+            Some(pass) => {
+                out += "# imported from imap_pass; consider password_command instead\n";
+                out += &format!("password = {}\n", quote(pass));
+            }
+            None => {
+                out += "# TODO: set a command that prints the password (or password = \"...\"):\n";
+                out += "password_command = \"pass show mail/TODO\"\n";
+            }
+        }
         let (host, port, tls) = split_url(folder_url);
         out += &format!("imap_host = {}\n", quote(host));
         if let Some(p) = port {
@@ -778,9 +798,25 @@ mod tests {
             cfg.mail.mailboxes,
             vec!["imap:mutt/INBOX", "imap:mutt/Archive"]
         );
-        assert!(toml.contains("passwords are not imported"));
+        // imap_pass carries over as the stored password.
+        assert_eq!(acct.password.as_deref(), Some("hunter2"));
+        assert_eq!(acct.password().unwrap(), "hunter2");
+        assert!(toml.contains("consider password_command"), "{toml}");
+    }
+
+    #[test]
+    fn imap_pass_without_imap_folder_is_redacted() {
+        let (cfg, toml) = to_config("set folder = ~/Mail\nset imap_pass = hunter2\n");
+        assert!(cfg.accounts.is_empty());
         assert!(!toml.contains("hunter2"), "password must not leak:\n{toml}");
-        assert!(toml.contains("password_command"));
+        assert!(toml.contains("imap_pass = (redacted)"), "{toml}");
+    }
+
+    #[test]
+    fn account_without_imap_pass_gets_a_placeholder() {
+        let (cfg, toml) = to_config("set folder = imaps://h.example.com\nset imap_user = u\n");
+        assert!(cfg.account("mutt").unwrap().password_command.is_some());
+        assert!(toml.contains("pass show mail/TODO"), "{toml}");
     }
 
     #[test]

@@ -262,7 +262,8 @@ mod tests {
         Account {
             name: "test".into(),
             user: "jane".into(),
-            password_command: "unused".into(),
+            password_command: None,
+            password: None,
             imap_host: Some("127.0.0.1".into()),
             imap_port: port,
             imap_tls: false,

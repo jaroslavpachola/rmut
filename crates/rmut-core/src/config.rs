@@ -28,7 +28,7 @@
 //! [[accounts]]        # remote account, opened as imap:name/FOLDER
 //! name = "work"
 //! user = "jane@example.com"
-//! password_command = "pass show mail/work"
+//! password_command = "pass show mail/work"   # or: password = "..."
 //! imap_host = "imap.example.com"   # imap_port = 993, imap_tls = true
 //! smtp_host = "smtp.example.com"   # smtp_port = 587, smtp_tls = true
 //! sent_folder = "Sent"             # Fcc target via IMAP APPEND
@@ -97,13 +97,18 @@ pub struct Keys {
 }
 
 /// One remote account: IMAP for reading, SMTP for sending. The
-/// password comes from running `password_command` through the shell —
-/// never from the config file itself.
+/// password comes from `password_command` (preferred) or, when you
+/// accept a secret sitting in the config file, a literal `password`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Account {
     pub name: String,
     pub user: String,
-    pub password_command: String,
+    /// Shell command whose first stdout line is the password
+    /// (pass(1)-style). Wins over `password` when both are set.
+    pub password_command: Option<String>,
+    /// Plaintext password. Convenient, but anyone who can read the
+    /// config can read your mail — keep the file at mode 600.
+    pub password: Option<String>,
     pub imap_host: Option<String>,
     #[serde(default = "default_imap_port")]
     pub imap_port: u16,
@@ -166,11 +171,24 @@ fn default_sent_folder() -> String {
 }
 
 impl Account {
-    /// First stdout line of `password_command`.
+    /// First stdout line of `password_command`, or the stored
+    /// `password` when no command is configured.
     pub fn password(&self) -> Result<String> {
+        let Some(command) = &self.password_command else {
+            return self
+                .password
+                .clone()
+                .filter(|p| !p.is_empty())
+                .with_context(|| {
+                    format!(
+                        "account {} has neither password_command nor password",
+                        self.name
+                    )
+                });
+        };
         let out = std::process::Command::new("sh")
             .arg("-c")
-            .arg(&self.password_command)
+            .arg(command)
             .output()
             .with_context(|| format!("running password command for account {}", self.name))?;
         ensure!(
@@ -336,12 +354,12 @@ mod tests {
         assert!(toml::from_str::<Config>("[[accounts]]\nname = \"x\"\n").is_err());
     }
 
-    #[test]
-    fn password_command_takes_first_line() {
-        let account = |cmd: &str| Account {
+    fn test_account() -> Account {
+        Account {
             name: "t".into(),
             user: "u".into(),
-            password_command: cmd.into(),
+            password_command: None,
+            password: None,
             imap_host: None,
             imap_port: 993,
             imap_tls: true,
@@ -349,6 +367,14 @@ mod tests {
             smtp_port: 587,
             smtp_tls: true,
             sent_folder: "Sent".into(),
+        }
+    }
+
+    #[test]
+    fn password_command_takes_first_line() {
+        let account = |cmd: &str| Account {
+            password_command: Some(cmd.into()),
+            ..test_account()
         };
         assert_eq!(
             account("printf 'secret\\nrest\\n'").password().unwrap(),
@@ -356,5 +382,28 @@ mod tests {
         );
         assert!(account("false").password().is_err());
         assert!(account("true").password().is_err()); // empty output
+    }
+
+    #[test]
+    fn stored_password_and_precedence() {
+        let stored = Account {
+            password: Some("hunter2".into()),
+            ..test_account()
+        };
+        assert_eq!(stored.password().unwrap(), "hunter2");
+        // A configured command wins over the stored password.
+        let both = Account {
+            password_command: Some("echo from-command".into()),
+            password: Some("hunter2".into()),
+            ..test_account()
+        };
+        assert_eq!(both.password().unwrap(), "from-command");
+        let neither = test_account();
+        assert!(neither.password().is_err());
+        let cfg: Config = toml::from_str(
+            "[[accounts]]\nname = \"x\"\nuser = \"u\"\npassword = \"pw\"\nimap_host = \"h\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.account("x").unwrap().password().unwrap(), "pw");
     }
 }
