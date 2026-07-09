@@ -49,8 +49,8 @@ Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
 + `n` next, `c` open mailbox by path, `y` folder browser, `G` check
 for new mail now, `v` attachments, `m` compose, `r` reply, `g` group
 reply, `f` forward, `p` print (pipes the message to `mail.print`,
-default `lpr`), `q` quit (asks when changes are pending), `x` abort
-without saving.
+default `lpr`), `q` quit (writes changes; asks before purging
+deletions, like mutt), `x` abort without saving.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,

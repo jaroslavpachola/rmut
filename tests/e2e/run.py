@@ -161,9 +161,7 @@ def scenario_view_and_pager(tmp):
     r.keys(b"K")  # previous message
     r.expect("Are you free for lunch")
     r.keys(b"i")
-    r.keys(b"q")  # pending read-marks -> quit prompt
-    r.expect("save & quit")
-    r.keys(b"n")
+    r.keys(b"q")  # read-marks are written silently on quit, like mutt
     r.close()
 
 
@@ -731,9 +729,9 @@ def scenario_tag_save_sort(tmp):
     msgs = [p for sub in ("cur", "new")
             for p in os.listdir(os.path.join(save_dir, sub))]
     assert len(msgs) == 1, msgs
-    r.keys(b"q")    # pending deletion -> quit prompt
-    r.expect("save & quit")
-    r.keys(b"n")
+    r.keys(b"q")    # pending deletion -> purge prompt, straight away
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"n")    # keep it marked deleted; flags are written, rmut quits
     r.close()
 
 

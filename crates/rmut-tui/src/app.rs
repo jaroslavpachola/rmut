@@ -92,7 +92,6 @@ pub enum LineKind {
 #[derive(Clone, Copy)]
 pub enum KeyKind {
     Sort,
-    Quit,
     Send,
     Security,
     Recall,
@@ -538,18 +537,6 @@ impl App {
                     if rev { " (reverse)" } else { "" }
                 ));
             }
-            KeyKind::Quit => match code {
-                KeyCode::Char('y') => {
-                    if self.deleted_count() > 0 {
-                        self.prompt_purge(true);
-                    } else {
-                        self.sync(true);
-                        self.quit = true;
-                    }
-                }
-                KeyCode::Char('n') => self.quit = true,
-                _ => {}
-            },
             KeyKind::Purge { quit } => match code {
                 // y expunges; n writes flag changes but keeps the
                 // messages marked deleted, like mutt.
@@ -667,16 +654,15 @@ impl App {
             }
             IndexAction::Save => self.prompt_save(),
             IndexAction::Quit => {
-                let pending = self.pending_count();
-                if pending == 0 {
-                    self.quit = true;
+                // Like mutt: flag changes are written silently; only
+                // pending deletions raise a question (the purge one).
+                if self.deleted_count() > 0 {
+                    self.prompt_purge(true);
                 } else {
-                    self.prompt = Some(Prompt::Key {
-                        label: format!(
-                            "{pending} change(s) — save & quit (y) / discard & quit (n) / cancel: "
-                        ),
-                        kind: KeyKind::Quit,
-                    });
+                    if self.pending_count() > 0 {
+                        self.sync(true);
+                    }
+                    self.quit = true;
                 }
             }
             IndexAction::Abort => self.quit = true,

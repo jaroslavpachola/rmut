@@ -216,7 +216,7 @@ impl IndexAction {
     pub fn describe(self) -> &'static str {
         use IndexAction::*;
         match self {
-            Quit => "quit (asks about pending changes)",
+            Quit => "quit (writes changes; asks before purging deletions)",
             Abort => "quit without saving changes",
             Down => "next message",
             Up => "previous message",
