@@ -707,6 +707,73 @@ def scenario_print(tmp):
     r.close()
 
 
+def scenario_identities(tmp):
+    """R9: recipient/folder identity rules and reverse_name."""
+    md = make_maildir(tmp, "md")
+    md2 = make_maildir(tmp, "md2")
+    # A message addressed to "me" under a display name, for reverse_name.
+    with open(os.path.join(md, "cur", "1751790000.9.host:2,S"), "w") as f:
+        f.write("From: Jane Doe <jane@example.com>\r\n"
+                "To: Boss Me <jarda@example.com>\r\n"
+                "Subject: status?\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <rev1@example.com>\r\n\r\nAny update?\r\n")
+    write_msgs(md2, ["ci"])
+    sent_file = os.path.join(tmp, "sent-ids.eml")
+    sendmail = os.path.join(tmp, "sendmail-ids.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "body-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "ids-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            f"""
+[identity]
+name = "Jarda"
+email = "jarda@example.com"
+reverse_name = true
+[mail]
+sendmail = "{sendmail}"
+editor = "{editor}"
+[[identities]]
+recipient = "*@work.example.com"
+name = "Jarda Work"
+email = "jarda-work@example.com"
+[[identities]]
+folder = "*md2*"
+email = "second@example.com"
+"""
+        )
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    r.expect("Msgs:1")
+    # recipient rule: composing to *@work.example.com switches From
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"petr@work.example.com\rreport\ry")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "From: Jarda Work <jarda-work@example.com>" in open(sent_file).read(),
+             desc="recipient identity applied")
+    # reverse_name: the reply From is the address the mail came to,
+    # with the display name the sender used
+    r.keys(b"r\r\ry")
+    wait_for(lambda: "From: Boss Me <jarda@example.com>" in open(sent_file).read(),
+             desc="reverse_name applied")
+    # folder rule: the same compose from md2 uses its identity
+    r.keys(b"c")
+    r.expect("Open mailbox:")
+    r.keys(f"{md2}\r".encode())
+    r.expect("CI failed on main")
+    r.keys(b"mx@y.example.com\rhello\ry")
+    wait_for(lambda: "From: Jarda <second@example.com>" in open(sent_file).read(),
+             desc="folder identity applied")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_message_commands(tmp):
     """R8: | pipe, C copy, Attach: pseudo-headers, b bounce, e resend."""
     md = make_maildir(tmp, "md")
@@ -849,6 +916,7 @@ SCENARIOS = [
     scenario_pgp,
     scenario_print,
     scenario_message_commands,
+    scenario_identities,
     scenario_tag_save_sort,
     scenario_import_muttrc,
 ]

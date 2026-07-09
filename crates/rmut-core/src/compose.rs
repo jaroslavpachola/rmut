@@ -6,6 +6,10 @@ use anyhow::{Context, Result, ensure};
 use chrono::{Local, TimeZone};
 
 pub struct DraftHeaders {
+    /// From line when an identity override applies (reverse_name, a
+    /// folder/recipient rule, the account); the user can edit it, and
+    /// finalize falls back to the default identity when absent.
+    pub from: Option<String>,
     pub to: String,
     pub cc: Option<String>,
     pub subject: String,
@@ -15,7 +19,11 @@ pub struct DraftHeaders {
 
 /// The text the user edits in $EDITOR: header block, blank line, body.
 pub fn draft_text(h: &DraftHeaders, body: &str) -> String {
-    let mut out = format!("To: {}\n", h.to);
+    let mut out = String::new();
+    if let Some(from) = &h.from {
+        out += &format!("From: {from}\n");
+    }
+    out += &format!("To: {}\n", h.to);
     if let Some(cc) = &h.cc
         && !cc.trim().is_empty()
     {
@@ -325,6 +333,41 @@ pub fn addresses(field: &str) -> Vec<String> {
     out
 }
 
+/// mutt's reverse_name: the first of `me` (lowercase bare addresses)
+/// the original message was addressed to, in the form it appeared —
+/// the display name from the To/Cc header is kept.
+pub fn reverse_from(orig_to: &str, orig_cc: &str, me: &[String]) -> Option<String> {
+    let mine = |single: &mailparse::SingleInfo| -> Option<String> {
+        if !me.contains(&single.addr.to_lowercase()) {
+            return None;
+        }
+        Some(match &single.display_name {
+            Some(name) if !name.trim().is_empty() => format!("{name} <{}>", single.addr),
+            _ => single.addr.clone(),
+        })
+    };
+    for field in [orig_to, orig_cc] {
+        let Ok(list) = mailparse::addrparse(field) else {
+            continue;
+        };
+        for addr in list.iter() {
+            match addr {
+                mailparse::MailAddr::Single(single) => {
+                    if let Some(from) = mine(single) {
+                        return Some(from);
+                    }
+                }
+                mailparse::MailAddr::Group(group) => {
+                    if let Some(from) = group.addrs.iter().find_map(&mine) {
+                        return Some(from);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// SMTP envelope for a finalized draft: every To/Cc/Bcc address, and
 /// the text with Bcc headers removed (they must not go on the wire).
 pub fn smtp_envelope(text: &str) -> Result<(Vec<String>, String)> {
@@ -385,6 +428,7 @@ mod tests {
     fn draft_text_skips_empty_optional_headers() {
         let text = draft_text(
             &DraftHeaders {
+                from: None,
                 to: "a@x".into(),
                 cc: Some("".into()),
                 subject: "s".into(),
@@ -394,6 +438,35 @@ mod tests {
             "hi",
         );
         assert_eq!(text, "To: a@x\nSubject: s\n\nhi\n");
+        let text = draft_text(
+            &DraftHeaders {
+                from: Some("Jane Work <jane@work.example.com>".into()),
+                to: "a@x".into(),
+                cc: None,
+                subject: "s".into(),
+                in_reply_to: None,
+                references: None,
+            },
+            "hi",
+        );
+        assert!(text.starts_with("From: Jane Work <jane@work.example.com>\nTo: a@x\n"));
+    }
+
+    #[test]
+    fn reverse_from_finds_my_address_as_it_appeared() {
+        let me = vec!["jane@example.com".to_string(), "old@example.com".into()];
+        // Display name kept, match case-insensitive.
+        assert_eq!(
+            reverse_from("Boss Me <Jane@example.com>, bob@y", "", &me).as_deref(),
+            Some("Boss Me <Jane@example.com>")
+        );
+        // Bare address stays bare; Cc is searched after To.
+        assert_eq!(
+            reverse_from("bob@y", "old@example.com", &me).as_deref(),
+            Some("old@example.com")
+        );
+        assert_eq!(reverse_from("bob@y, eve@z", "", &me), None);
+        assert_eq!(reverse_from("", "", &me), None);
     }
 
     #[test]

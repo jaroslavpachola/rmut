@@ -321,6 +321,7 @@ mod tests {
             smtp_port: 587,
             smtp_tls: true,
             sent_folder: "Sent".into(),
+            identity: None,
         }
     }
 

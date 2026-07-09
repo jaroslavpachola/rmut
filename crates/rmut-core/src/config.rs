@@ -4,6 +4,13 @@
 //! [identity]
 //! name = "Jane Doe"
 //! email = "jane@example.com"
+//! reverse_name = false  # reply From = the address the mail came to
+//!
+//! [[identities]]        # conditional identity (folder-/send-hook)
+//! folder = "*work*"     # glob on the open mailbox, and/or:
+//! recipient = "*@work.example.com"   # glob on a draft recipient
+//! name = "Jane Work"
+//! email = "jane@work.example.com"
 //!
 //! [mail]
 //! mailboxes = ["~/Maildir", "~/Maildir/.Sent"]
@@ -62,12 +69,32 @@ pub struct Config {
     pub filters: HashMap<String, String>,
     pub keys: Keys,
     pub accounts: Vec<Account>,
+    /// Conditional identities, applied in order over `identity` when
+    /// their globs match — the minimal folder-hook / send-hook.
+    pub identities: Vec<IdentityRule>,
     pub pgp: Pgp,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Identity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    /// mutt's reverse_name: a reply's From becomes whichever of your
+    /// addresses the original was sent to.
+    pub reverse_name: bool,
+}
+
+/// One `[[identities]]` entry. With both globs set, both must match;
+/// with neither, it always applies. Unset name/email keep the value
+/// from the layer below.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct IdentityRule {
+    /// Glob (`*`) on the open mailbox: a path or an `imap:` spec.
+    pub folder: Option<String>,
+    /// Glob (`*`) on any recipient address of the draft.
+    pub recipient: Option<String>,
     pub name: Option<String>,
     pub email: Option<String>,
 }
@@ -157,6 +184,9 @@ pub struct Account {
     /// IMAP folder that receives the Fcc copy of sent mail.
     #[serde(default = "default_sent_folder")]
     pub sent_folder: String,
+    /// From identity when composing from this account's mailboxes,
+    /// e.g. identity = { name = "Jane Work", email = "jane@work.example.com" }.
+    pub identity: Option<Identity>,
 }
 
 /// PGP via gpg(1). Decrypt/verify happens automatically when a viewed
@@ -247,6 +277,72 @@ impl Config {
     pub fn account(&self, name: &str) -> Option<&Account> {
         self.accounts.iter().find(|a| a.name == name)
     }
+
+    /// The identity for a draft, layered like mutt hooks: `[identity]`,
+    /// then the account's, then every matching `[[identities]]` rule in
+    /// order (a later rule overrides an earlier one; unset fields keep
+    /// the value below). `rcpts` are the draft's bare recipient
+    /// addresses — empty when they are not known yet, which makes
+    /// recipient rules not match.
+    pub fn identity_for(
+        &self,
+        folder: &str,
+        rcpts: &[String],
+        account: Option<&Account>,
+    ) -> Identity {
+        let mut id = self.identity.clone();
+        let mut overlay = |name: &Option<String>, email: &Option<String>| {
+            if name.is_some() {
+                id.name = name.clone();
+            }
+            if email.is_some() {
+                id.email = email.clone();
+            }
+        };
+        if let Some(acct) = account.and_then(|a| a.identity.as_ref()) {
+            overlay(&acct.name, &acct.email);
+        }
+        for rule in &self.identities {
+            let folder_ok = rule.folder.as_deref().is_none_or(|g| glob_match(g, folder));
+            let recipient_ok = rule
+                .recipient
+                .as_deref()
+                .is_none_or(|g| rcpts.iter().any(|r| glob_match(g, r)));
+            if folder_ok && recipient_ok {
+                overlay(&rule.name, &rule.email);
+            }
+        }
+        id
+    }
+}
+
+/// Glob match: `*` spans anything, everything else is literal;
+/// case-insensitive, anchored at both ends.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.to_lowercase().chars().collect();
+    let t: Vec<char> = text.to_lowercase().chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if pi < p.len() && p[pi] == t[ti] {
+            pi += 1;
+            ti += 1;
+        } else if let Some((sp, st)) = star {
+            // Backtrack: let the last * swallow one more character.
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -399,7 +495,75 @@ mod tests {
             smtp_port: 587,
             smtp_tls: true,
             sent_folder: "Sent".into(),
+            identity: None,
         }
+    }
+
+    #[test]
+    fn glob_match_star_and_case() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*work*", "/home/jane/Maildir/work-stuff"));
+        assert!(glob_match("*@work.example.com", "Jane@Work.Example.Com"));
+        assert!(glob_match("imap:work/*", "imap:work/INBOX"));
+        assert!(!glob_match("*@work.example.com", "jane@example.com"));
+        assert!(!glob_match("work", "workplace")); // anchored
+        assert!(glob_match("a*b*c", "aXbYc"));
+        assert!(!glob_match("a*b*c", "aXcYb"));
+    }
+
+    #[test]
+    fn identity_layers_like_hooks() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [identity]
+            name = "Jane"
+            email = "jane@example.com"
+            reverse_name = true
+
+            [[identities]]
+            folder = "*work*"
+            email = "jane@work.example.com"
+
+            [[identities]]
+            recipient = "*@club.example.com"
+            name = "Jenny"
+
+            [[accounts]]
+            name = "acct"
+            user = "u"
+            imap_host = "h"
+            identity = { name = "Jane Acct", email = "acct@example.com" }
+            "#,
+        )
+        .unwrap();
+        assert!(cfg.identity.reverse_name);
+        // No match: the global identity as-is.
+        let id = cfg.identity_for("~/Maildir", &[], None);
+        assert_eq!(id.from_line().as_deref(), Some("Jane <jane@example.com>"));
+        // Folder rule overrides the email, keeps the name.
+        let id = cfg.identity_for("~/Maildir/work", &[], None);
+        assert_eq!(
+            id.from_line().as_deref(),
+            Some("Jane <jane@work.example.com>")
+        );
+        // Recipient rule overlays the name; needs a matching recipient.
+        let rcpts = vec!["bob@club.example.com".to_string()];
+        let id = cfg.identity_for("~/Maildir", &rcpts, None);
+        assert_eq!(id.from_line().as_deref(), Some("Jenny <jane@example.com>"));
+        let id = cfg.identity_for("~/Maildir", &[], None);
+        assert_eq!(id.name.as_deref(), Some("Jane"));
+        // The account identity sits between global and the rules.
+        let account = cfg.account("acct").unwrap();
+        let id = cfg.identity_for("imap:acct/INBOX", &[], Some(account));
+        assert_eq!(
+            id.from_line().as_deref(),
+            Some("Jane Acct <acct@example.com>")
+        );
+        let id = cfg.identity_for("imap:acct/work", &[], Some(account));
+        assert_eq!(
+            id.from_line().as_deref(),
+            Some("Jane Acct <jane@work.example.com>")
+        );
     }
 
     #[test]

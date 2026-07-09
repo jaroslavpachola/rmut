@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.7** — everything from the 1.0 roadmap plus R5–R8: mutt-style index
+**1.8** — everything from the 1.0 roadmap plus R5–R9: mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -17,9 +17,11 @@ screen generated from the active keymap, and now **IMAP and SMTP
 accounts**: open `imap:account/FOLDER` mailboxes over TLS, with local
 caching, `$` sync mapped to the server, and sending via SMTP
 submission with an IMAP Fcc, **PGP via gpg(1)**: decrypt/verify on
-view, sign/encrypt from the send prompt, and **attachments and message
+view, sign/encrypt from the send prompt, **attachments and message
 commands** (R8): `Attach:` pseudo-headers in the draft, copy/pipe/
-bounce/resend on `C`/`|`/`b`/`e`. A pty-driven e2e suite (including
+bounce/resend on `C`/`|`/`b`/`e`, and **identities** (R9): per-account
+From, `[[identities]]` folder/recipient rules (the minimal folder-/
+send-hook), and mutt's reverse_name. A pty-driven e2e suite (including
 fake IMAP/SMTP servers and a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
@@ -103,7 +105,11 @@ configured), the message goes out via SMTP submission — STARTTLS on
 copy — and the Fcc lands in the account's `sent_folder` by IMAP
 APPEND. Otherwise it is handed to `sendmail -t -oi`; setting
 `$RMUT_SENDMAIL` or `mail.sendmail` forces the sendmail path. `From:`
-defaults to `$EMAIL` or `user@hostname` unless the draft sets one. At
+defaults to the identity in effect — `[identity]` overlaid by the open
+account's `identity` and any matching `[[identities]]` rules, with
+`reverse_name` picking the address a replied-to message came to — or
+falls back to `$EMAIL` / `user@hostname`; the draft's own From line
+always wins, and rmut prefills it whenever an identity applies. At
 the send prompt, `p` postpones the draft into a nearby Drafts maildir
 (or `.rmut-postponed`); the next `m` offers to recall it. Sent mail is
 copied to a nearby Sent maildir when one exists (local mailboxes).
@@ -136,6 +142,14 @@ also works for forwards with `forward = "attach"`.
 [identity]
 name = "Jane Doe"            # From: Jane Doe <jane@example.com>
 email = "jane@example.com"
+reverse_name = false         # true: a reply's From becomes whichever
+                             # of your addresses the mail was sent to
+
+[[identities]]               # conditional identity (folder-/send-hook):
+folder = "*work*"            # glob on the open mailbox, and/or
+recipient = "*@work.example.com"   # glob on a draft recipient;
+name = "Jane Work"           # matching rules overlay [identity] in
+email = "jane@work.example.com"    # order, unset fields fall through
 
 [mail]
 mailboxes = ["~/Maildir"]    # default mailbox + folder browser entries
@@ -181,6 +195,8 @@ password_command = "pass show mail/work"   # first stdout line
 imap_host = "imap.example.com"             # imap_port = 993 (implicit TLS; 143 = STARTTLS)
 smtp_host = "smtp.example.com"             # smtp_port = 587 (STARTTLS; 465 = implicit TLS)
 sent_folder = "Sent"                       # Fcc target via IMAP APPEND
+identity = { name = "Jane W", email = "jane@work.example.com" }  # From
+                                           # when composing from this account
 
 [pgp]                        # optional; gpg from $PATH by default
 command = "gpg"
@@ -201,7 +217,9 @@ rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
 
 translates a muttrc (identity, folder/mailboxes, record/postponed,
 sendmail/editor/print_command, binds, status/header colors, PGP
-defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton) into rmut
+defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, reverse_name,
+and folder-hooks/send-hooks that only set from/realname into
+`[[identities]]` rules) into rmut
 TOML on stdout for review — it never writes any file itself.
 Directives with no rmut equivalent are kept as `# not imported:`
 comments, and ones that match rmut's built-in behavior (ssl_starttls,

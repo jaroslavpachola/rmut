@@ -32,10 +32,20 @@ pub fn import(text: &str, dir: &Path) -> Import {
     }
 }
 
+/// An `[[identities]]` rule from a folder-hook / send-hook.
+struct IdRule {
+    folder: Option<String>,
+    recipient: Option<String>,
+    name: Option<String>,
+    email: Option<String>,
+}
+
 #[derive(Default)]
 struct State {
     name: Option<String>,
     email: Option<String>,
+    reverse_name: bool,
+    identity_rules: Vec<IdRule>,
     /// `set folder`, for expanding the +/= mailbox shortcuts.
     folder: Option<String>,
     spoolfile: Option<String>,
@@ -99,6 +109,10 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
                 for mime in &tokens[1..] {
                     st.auto_view(mime, &line);
                 }
+            }
+            "folder-hook" | "send-hook" => {
+                let folder_hook = cmd == "folder-hook";
+                st.hook(folder_hook, &tokens[1..], &line);
             }
             "save-hook" => match (tokens.get(1).map(String::as_str), tokens.get(2)) {
                 // Expanded at output time — $folder may come later.
@@ -246,6 +260,67 @@ fn is_yes(value: &str) -> bool {
     matches!(value, "yes" | "ask-yes" | "true" | "1")
 }
 
+/// "Jane Doe <jane@x>" or a bare address → (display name, address).
+fn split_from(v: &str) -> (Option<String>, String) {
+    match v.split_once('<') {
+        Some((n, rest)) => {
+            let n = n.trim().trim_matches('"');
+            (
+                (!n.is_empty()).then(|| n.to_string()),
+                rest.trim_end_matches('>').trim().to_string(),
+            )
+        }
+        None => (None, v.trim().to_string()),
+    }
+}
+
+/// A mutt hook regex as an rmut glob, for the easy shapes: literals,
+/// `.*` runs, `^`/`$` anchors, `\`-escapes, a `~t`/`~C` recipient
+/// prefix, `+`/`=` folder shortcuts. None means too regex-y.
+fn hook_glob(pattern: &str) -> Option<String> {
+    let p = pattern.trim();
+    let p = p
+        .strip_prefix("~t ")
+        .or_else(|| p.strip_prefix("~C "))
+        .unwrap_or(p)
+        .trim()
+        .trim_start_matches(['+', '=']);
+    if p.starts_with('~') || p.starts_with('%') {
+        return None;
+    }
+    if p == "." || p == ".*" {
+        return Some("*".into());
+    }
+    let (p, anchored_start) = match p.strip_prefix('^') {
+        Some(rest) => (rest, true),
+        None => (p, false),
+    };
+    let (p, anchored_end) = match p.strip_suffix('$') {
+        Some(rest) => (rest, true),
+        None => (p, false),
+    };
+    let mut glob = String::new();
+    let mut chars = p.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => glob.push(chars.next()?),
+            '.' if chars.peek() == Some(&'*') => {
+                chars.next();
+                glob.push('*');
+            }
+            '(' | ')' | '[' | ']' | '{' | '}' | '|' | '+' | '?' | '$' | '^' | '*' => return None,
+            c => glob.push(c),
+        }
+    }
+    if !anchored_start && !glob.starts_with('*') {
+        glob.insert(0, '*');
+    }
+    if !anchored_end && !glob.ends_with('*') {
+        glob.push('*');
+    }
+    Some(glob)
+}
+
 fn expand_path(value: &str, dir: &Path) -> PathBuf {
     if let Some(rest) = value.strip_prefix("~/")
         && let Ok(home) = std::env::var("HOME")
@@ -275,15 +350,17 @@ impl State {
         match name {
             "realname" => self.name = Some(v),
             "from" => {
-                // "Jane Doe <jane@x>" or a bare address.
-                if let Some((n, rest)) = v.split_once('<') {
-                    let n = n.trim().trim_matches('"');
-                    if !n.is_empty() {
-                        self.name.get_or_insert_with(|| n.to_string());
-                    }
-                    self.email = Some(rest.trim_end_matches('>').trim().to_string());
+                let (n, e) = split_from(&v);
+                if let Some(n) = n {
+                    self.name.get_or_insert(n);
+                }
+                self.email = Some(e);
+            }
+            "reverse_name" => {
+                if is_yes(&v) {
+                    self.reverse_name = true;
                 } else {
-                    self.email = Some(v);
+                    self.satisfy(line, "off is rmut's default");
                 }
             }
             "folder" => self.folder = Some(v),
@@ -392,6 +469,52 @@ impl State {
             }
             _ => self.skip(line, "no rmut equivalent"),
         }
+    }
+
+    /// A folder-hook / send-hook whose command only sets from/realname
+    /// becomes an [[identities]] rule; everything else is skipped.
+    fn hook(&mut self, folder_hook: bool, args: &[String], line: &str) {
+        let [pattern, command] = args else {
+            self.skip(line, "unrecognized hook syntax");
+            return;
+        };
+        let Some(glob) = hook_glob(pattern) else {
+            self.skip(line, "the pattern does not translate to a glob");
+            return;
+        };
+        let tokens = tokenize(command);
+        let only_identity_sets = "only 'set from/realname' hooks translate";
+        if tokens.first().map(String::as_str) != Some("set") {
+            self.skip(line, only_identity_sets);
+            return;
+        }
+        let (mut name, mut email) = (None, None);
+        for (key, value) in assignments(&tokens[1..]) {
+            match key.as_str() {
+                "realname" => name = Some(value),
+                "from" => {
+                    let (n, e) = split_from(&value);
+                    if name.is_none() {
+                        name = n;
+                    }
+                    email = Some(e);
+                }
+                _ => {
+                    self.skip(line, only_identity_sets);
+                    return;
+                }
+            }
+        }
+        if name.is_none() && email.is_none() {
+            self.skip(line, only_identity_sets);
+            return;
+        }
+        self.identity_rules.push(IdRule {
+            folder: folder_hook.then(|| glob.clone()),
+            recipient: (!folder_hook).then_some(glob),
+            name,
+            email,
+        });
     }
 
     /// mutt's +x / =x mean "under $folder"; for an IMAP folder that is
@@ -511,12 +634,30 @@ impl State {
 
     fn to_toml(&self) -> String {
         let mut out = String::from("# generated by rmut --import-muttrc; review before use\n");
-        if self.name.is_some() || self.email.is_some() {
+        if self.name.is_some() || self.email.is_some() || self.reverse_name {
             out += "\n[identity]\n";
             if let Some(n) = &self.name {
                 out += &format!("name = {}\n", quote(n));
             }
             if let Some(e) = &self.email {
+                out += &format!("email = {}\n", quote(e));
+            }
+            if self.reverse_name {
+                out += "reverse_name = true\n";
+            }
+        }
+        for rule in &self.identity_rules {
+            out += "\n[[identities]]\n";
+            if let Some(f) = &rule.folder {
+                out += &format!("folder = {}\n", quote(f));
+            }
+            if let Some(r) = &rule.recipient {
+                out += &format!("recipient = {}\n", quote(r));
+            }
+            if let Some(n) = &rule.name {
+                out += &format!("name = {}\n", quote(n));
+            }
+            if let Some(e) = &rule.email {
                 out += &format!("email = {}\n", quote(e));
             }
         }
@@ -908,6 +1049,50 @@ mod tests {
         let cfg: Config = toml::from_str(&import.toml)
             .unwrap_or_else(|e| panic!("bad TOML: {e}\n{}", import.toml));
         (cfg, import.toml)
+    }
+
+    #[test]
+    fn hooks_become_identity_rules() {
+        let (cfg, toml) = to_config(concat!(
+            "set reverse_name = yes\n",
+            "folder-hook work 'set from=\"Jane Work <jane@work.example.com>\"'\n",
+            "send-hook '~t @club\\.example\\.com' 'set realname=\"Jenny\"'\n",
+            "folder-hook . 'push <collapse-all>'\n",
+            "send-hook '~l' 'set from=list@example.com'\n",
+        ));
+        assert!(cfg.identity.reverse_name);
+        assert_eq!(cfg.identities.len(), 2);
+        let work = &cfg.identities[0];
+        assert_eq!(work.folder.as_deref(), Some("*work*"));
+        assert!(work.recipient.is_none());
+        assert_eq!(work.name.as_deref(), Some("Jane Work"));
+        assert_eq!(work.email.as_deref(), Some("jane@work.example.com"));
+        let club = &cfg.identities[1];
+        assert_eq!(club.recipient.as_deref(), Some("*@club.example.com*"));
+        assert!(club.folder.is_none());
+        assert_eq!(club.name.as_deref(), Some("Jenny"));
+        // The push hook and the ~l pattern stay visible as comments.
+        assert!(toml.contains("push <collapse-all>"), "{toml}");
+        assert!(toml.contains("does not translate to a glob"), "{toml}");
+        // reverse_name off matches rmut's default.
+        let (cfg, toml) = to_config("set reverse_name = no\n");
+        assert!(!cfg.identity.reverse_name);
+        assert!(toml.contains("# satisfied"), "{toml}");
+    }
+
+    #[test]
+    fn hook_glob_shapes() {
+        assert_eq!(hook_glob(".").as_deref(), Some("*"));
+        assert_eq!(hook_glob("work").as_deref(), Some("*work*"));
+        assert_eq!(hook_glob("^/mail/work$").as_deref(), Some("/mail/work"));
+        assert_eq!(hook_glob("=lists").as_deref(), Some("*lists*"));
+        assert_eq!(
+            hook_glob("~t bob@example\\.com").as_deref(),
+            Some("*bob@example.com*")
+        );
+        assert_eq!(hook_glob("work.*").as_deref(), Some("*work*"));
+        assert!(hook_glob("(a|b)").is_none());
+        assert!(hook_glob("~f jane").is_none());
     }
 
     #[test]

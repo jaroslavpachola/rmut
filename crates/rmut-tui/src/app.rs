@@ -256,6 +256,13 @@ impl App {
             .email
             .iter()
             .chain(config.accounts.iter().map(|a| &a.user))
+            .chain(
+                config
+                    .accounts
+                    .iter()
+                    .filter_map(|a| a.identity.as_ref().and_then(|i| i.email.as_ref())),
+            )
+            .chain(config.identities.iter().filter_map(|r| r.email.as_ref()))
             .map(|a| a.to_lowercase())
             .collect();
         if let Ok(email) = std::env::var("EMAIL") {
@@ -1279,8 +1286,10 @@ impl App {
                 ComposeKind::New => {}
             }
         }
+        let from = self.compose_from(setup.base.as_ref(), &to);
         let text = compose::draft_text(
             &compose::DraftHeaders {
+                from,
                 to,
                 cc,
                 subject: subject.to_string(),
@@ -1300,6 +1309,27 @@ impl App {
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
         }
+    }
+
+    /// From line for a new draft: reverse_name picks the address the
+    /// replied-to message came to; otherwise the layered identity
+    /// (global, account, matching [[identities]] rules).
+    fn compose_from(&self, base: Option<&ComposeBase>, to: &str) -> Option<String> {
+        if self.config.identity.reverse_name
+            && let Some(b) = base
+            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, &self.me)
+        {
+            return Some(from);
+        }
+        let rcpts = compose::addresses(to);
+        self.current_identity(&rcpts).from_line()
+    }
+
+    /// The identity in effect for this mailbox (and, when known, the
+    /// draft's recipients).
+    fn current_identity(&self, rcpts: &[String]) -> rmut_core::config::Identity {
+        self.config
+            .identity_for(&self.title, rcpts, self.remote.as_ref().map(|r| &r.account))
     }
 
     fn forward_attaches(&self) -> bool {
@@ -1386,8 +1416,7 @@ impl App {
         let (raw, files) = compose::extract_attachments(&raw);
         let host = maildir::hostname();
         let from = self
-            .config
-            .identity
+            .current_identity(&[])
             .from_line()
             .unwrap_or_else(|| default_from(&host));
         let final_text = match compose::finalize(
@@ -1816,8 +1845,7 @@ impl App {
         }
         let host = maildir::hostname();
         let from = self
-            .config
-            .identity
+            .current_identity(&rcpts)
             .from_line()
             .unwrap_or_else(|| default_from(&host));
         let text = compose::bounce_text(
@@ -1859,6 +1887,7 @@ impl App {
         let body = message::body_text(&base.path).unwrap_or_default();
         let text = compose::draft_text(
             &compose::DraftHeaders {
+                from: self.compose_from(None, &base.orig_to),
                 to: base.orig_to.clone(),
                 cc: (!base.orig_cc.trim().is_empty()).then(|| base.orig_cc.clone()),
                 subject: base.subject.clone(),

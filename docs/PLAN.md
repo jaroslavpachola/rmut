@@ -132,19 +132,21 @@ mail.
       sendmail argv / SMTP envelope) and `e` edit the message as a
       new draft (mutt's resend)
 
-## R9 — identities and hook basics (1.8)
+## R9 — identities and hook basics (done, 1.8)
 
-One global `[identity]` today; mutt users switch From per folder and
+One global `[identity]` before; mutt users switch From per folder and
 per recipient via folder-hook/send-hook.
 
-- [ ] Per-account `name`/`email` on `[[accounts]]`: From follows the
-      open mailbox's account when composing
-- [ ] mutt's `reverse_name`: replying uses whichever of our addresses
-      the original was addressed to
-- [ ] Folder-pattern → identity mapping in config for local maildirs
-      (the minimal folder-hook)
-- [ ] Importer: translate folder-hook/send-hook lines that only set
-      from/realname; anything else stays `# not imported`
+- [x] Per-account identity on `[[accounts]]` (`identity = { name,
+      email }`): From follows the open mailbox's account
+- [x] mutt's `reverse_name`: replying uses whichever of our addresses
+      the original was addressed to, display name kept
+- [x] `[[identities]]` rules — `folder` and/or `recipient` globs,
+      layered over `[identity]` in order (folder-hook + send-hook in
+      one mechanism); the draft gets a visible, editable From line
+- [x] Importer: `reverse_name` and folder-hook/send-hook lines that
+      only set from/realname translate (regex → glob for the easy
+      shapes); anything else stays `# not imported`
 
 ## R10 — patterns v2 (1.9)
 

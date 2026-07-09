@@ -200,6 +200,7 @@ mod tests {
             smtp_port: port,
             smtp_tls: false,
             sent_folder: "Sent".into(),
+            identity: None,
         };
         send(
             &account,
@@ -239,6 +240,7 @@ mod tests {
             smtp_port: port,
             smtp_tls: false,
             sent_folder: "Sent".into(),
+            identity: None,
         };
         send(&account, "secret", "jane@x", &["bob@y".into()], b"hi\n").unwrap();
         handle.join().unwrap();
@@ -269,6 +271,7 @@ mod tests {
             smtp_port: port,
             smtp_tls: false,
             sent_folder: "Sent".into(),
+            identity: None,
         };
         let err = send(&account, "s", "jane@x", &["bob@y".into()], b"hi").unwrap_err();
         assert!(format!("{err:#}").contains("no such user"));
