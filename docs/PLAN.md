@@ -1,9 +1,12 @@
-# rmut 1.0 roadmap
+# rmut roadmap
 
-Goal: a daily-drivable mutt replacement for local maildirs — mutt's
-index/pager workflow, message manipulation, and compose, with mutt
-default keybindings throughout. IMAP/SMTP and muttrc compatibility were
-originally post-1.0; IMAP/SMTP (R5) made it in anyway.
+Goal: a daily-drivable mutt replacement — mutt's index/pager workflow,
+message manipulation, and compose, with mutt default keybindings
+throughout. That goal is met: R1–R15 shipped maildir, IMAP/SMTP with
+IDLE and OAuth2, mbox, PGP, the muttrc importer, patterns, identities,
+macros, and completion. From here, bugs and paper cuts found in daily
+use outrank everything below — the remaining milestones are ranked
+nice-to-haves, none committed until picked up.
 
 **1.0 declared** (2026-07) after R1–R5. Remaining milestones below are
 post-1.0.
@@ -240,8 +243,44 @@ For Gmail/O365 accounts, where app passwords are dying out.
       rewritten (RO/AF), quoting preserved; refuses when the spool
       changed since the mirror (refresh with G, sync again)
 
-## Candidates (unscoped)
+## R16 — index polish: %l and %L (1.15)
 
-- Sidebar, notmuch/xapian search
-- `%l` line counts and `%L` list-name detection in index_format
-- Non-goals for now: S/MIME, POP3, scoring
+Small, closes the two documented index_format gaps.
+
+- [ ] `%l`: message line count — cheap for local maildirs (count on
+      envelope parse, cache in the envelope); header-only IMAP cache
+      files show the `%?l?…&…?` else branch until the body is fetched
+- [ ] `%L`: mutt's list-name detection — show the List-Id (or the
+      To/Cc list address) instead of the author for mailing-list
+      traffic; needs List-Id/List-Post in the envelope
+- [ ] Importer: stop annotating imported index_format strings with
+      the "%l is never set" caveat once both render
+
+## R17 — sidebar (1.16)
+
+- [ ] Optional left pane listing the configured mailboxes with
+      new/unseen counts (the folder browser's data, always visible);
+      toggle key + `[sidebar]` config (width, visible)
+- [ ] Highlight the open mailbox; ctrl+up/down or remappable keys to
+      move and open without leaving the index
+- [ ] Reuse the R11 counting (local new/ scan, IMAP STATUS) with the
+      poll keeping counts fresh
+
+## R18 — notmuch search (1.17)
+
+Shell out to notmuch(1), mutt-kz style — no linking, no new deps.
+
+- [ ] `[mail] notmuch = true` (or auto-detect the database): a search
+      key runs `notmuch search --output=files <query>` and opens the
+      hits as a virtual read-only mailbox (symlink/copy into a temp
+      maildir, like the mbox mirror)
+- [ ] Message operations that make sense there: view, reply, copy,
+      pipe; flag changes and deletes are disabled (the real copies
+      live elsewhere)
+- [ ] Document the setup: notmuch new in a hook or cron, rmut for
+      reading
+
+## Non-goals
+
+S/MIME, POP3, scoring — still out; revisit only if daily use proves
+otherwise.
