@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rmut-core", "crates/rmut-tui"]
 
 [workspace.package]
-version = "1.12.0"
+version = "1.13.0"
 edition = "2024"
 license = "MIT"
 

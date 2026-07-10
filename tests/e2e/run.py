@@ -428,6 +428,7 @@ class FakeImap(threading.Thread):
         self.appended = []
         self.announce = False
         self.idle_push = False  # make the idling connection see EXISTS
+        self.auth_payloads = []  # SASL responses from AUTHENTICATE
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -483,6 +484,13 @@ class FakeImap(threading.Thread):
                     raw2 = rfile.readline()
                     if not raw2 or raw2.decode().strip().upper() == "DONE":
                         break
+                conn.sendall(f"{tag} OK done\r\n".encode())
+                continue
+            if up.startswith("AUTHENTICATE"):
+                # SASL with one client response (XOAUTH2/OAUTHBEARER).
+                conn.sendall(b"+ \r\n")
+                payload = rfile.readline().decode().strip()
+                self.auth_payloads.append(payload)
                 conn.sendall(f"{tag} OK done\r\n".encode())
                 continue
             with self.lock:
@@ -582,7 +590,11 @@ class FakeSmtp(threading.Thread):
             self.commands.append(line)
             up = line.upper()
             if up.startswith("EHLO"):
-                conn.sendall(b"250-fake\r\n250 AUTH PLAIN\r\n")
+                conn.sendall(b"250-fake\r\n250 AUTH PLAIN XOAUTH2\r\n")
+            elif up.startswith("AUTH XOAUTH2"):
+                conn.sendall(b"334 \r\n")
+                self.commands.append(rfile.readline().decode().rstrip("\r\n"))
+                conn.sendall(b"235 ok\r\n")
             elif up.startswith("AUTH"):
                 conn.sendall(b"235 ok\r\n")
             elif up.startswith("MAIL") or up.startswith("RCPT"):
@@ -636,7 +648,8 @@ editor = "{editor}"
 [[accounts]]
 name = "test"
 user = "jane"
-password_command = "echo pw"
+auth = "xoauth2"
+token_command = "echo test-token"
 imap_host = "127.0.0.1"
 imap_port = {imap.port}
 imap_tls = false
@@ -650,8 +663,12 @@ smtp_tls = false
         "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
     })
     r = Rmut("imap:test", env)
-    # Index built from header-only cache files.
+    # Index built from header-only cache files; the login went through
+    # SASL XOAUTH2 with the token_command's output.
     r.expect("imap:test/INBOX", "Msgs:2", "New:1", "remote one", "remote two")
+    assert imap.auth_payloads, "no AUTHENTICATE payload seen"
+    decoded = base64.b64decode(imap.auth_payloads[0]).decode()
+    assert "user=jane" in decoded and "auth=Bearer test-token" in decoded
     r.keys(b"\r")  # newest = uid 2: body fetched from the server on view
     r.expect("full body two")
     r.keys(b"i$")  # back, sync: the read-mark goes to the server

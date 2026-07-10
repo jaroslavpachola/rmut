@@ -97,6 +97,34 @@ impl Client {
         Ok(())
     }
 
+    /// SASL AUTHENTICATE with one client response (the OAuth
+    /// mechanisms): send it on the server's first continuation; a
+    /// second continuation carries an error blob, which an empty line
+    /// converts into the tagged NO.
+    pub fn authenticate(&mut self, mechanism: &str, response_b64: &str) -> Result<()> {
+        let tag = self.next_tag();
+        self.conn
+            .write_all(format!("{tag} AUTHENTICATE {mechanism}\r\n").as_bytes())?;
+        let mut response = Some(response_b64);
+        loop {
+            let line = read_line(&mut self.conn)?;
+            if let Some(rest) = line
+                .text
+                .strip_prefix(tag.as_str())
+                .and_then(|r| r.strip_prefix(' '))
+            {
+                ensure!(rest.starts_with("OK"), "server said: {rest}");
+                return Ok(());
+            }
+            if line.text.starts_with('+') {
+                match response.take() {
+                    Some(payload) => self.conn.write_all(format!("{payload}\r\n").as_bytes())?,
+                    None => self.conn.write_all(b"\r\n")?,
+                }
+            }
+        }
+    }
+
     pub fn list(&mut self) -> Result<Vec<Folder>> {
         let lines = self.command("LIST \"\" \"*\"")?;
         Ok(lines.iter().filter_map(parse_list).collect())
@@ -626,6 +654,29 @@ mod tests {
             .unwrap();
         assert!(client.noop().unwrap());
         client.logout();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn authenticate_oauth_success_and_failure() {
+        // XOAUTH2 for user=jane token=tok, precomputed base64.
+        let blob = "dXNlcj1qYW5lAWF1dGg9QmVhcmVyIHRvawEB";
+        let (port, handle) = testserver::imap(vec![
+            testserver::Expect::untagged("AUTHENTICATE XOAUTH2", "+ \r\n".into()),
+            testserver::Expect::new(blob, String::new()),
+            // Second attempt: the server answers the response with an
+            // error blob; the client's empty line fetches the NO.
+            testserver::Expect::untagged("AUTHENTICATE XOAUTH2", "+ \r\n".into()),
+            testserver::Expect::untagged(blob, "+ eyJzdGF0dXMiOiI0MDEifQ==\r\n".into()),
+            testserver::Expect::fail("", "NO [AUTHENTICATIONFAILED] bad token"),
+        ]);
+        let mut client = Client::connect("127.0.0.1", port, false).unwrap();
+        client.authenticate("XOAUTH2", blob).unwrap();
+        let err = client.authenticate("XOAUTH2", blob).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("AUTHENTICATIONFAILED"),
+            "{err:#}"
+        );
         handle.join().unwrap();
     }
 

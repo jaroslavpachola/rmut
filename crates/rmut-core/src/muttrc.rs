@@ -76,6 +76,8 @@ struct State {
     filters: BTreeMap<String, String>,
     imap_user: Option<String>,
     imap_pass: Option<String>,
+    /// "xoauth2"/"oauthbearer" from *_authenticators.
+    oauth: Option<String>,
     smtp_pass: Option<String>,
     smtp_url: Option<String>,
     aliases: Vec<String>,
@@ -464,12 +466,19 @@ impl State {
             "menu_scroll" => {
                 self.satisfy(line, "menus always scroll line-wise");
             }
-            "smtp_authenticators" => {
+            "imap_authenticators" | "smtp_authenticators" => {
                 let m = v.to_lowercase();
-                if m.contains("plain") || m.contains("login") {
+                if m.contains("oauthbearer") {
+                    self.oauth = Some("oauthbearer".into());
+                } else if m.contains("xoauth2") {
+                    self.oauth = Some("xoauth2".into());
+                } else if m.contains("plain") || m.contains("login") {
                     self.satisfy(line, "rmut negotiates AUTH PLAIN/LOGIN by itself");
                 } else {
-                    self.skip(line, "rmut supports only AUTH PLAIN and LOGIN");
+                    self.skip(
+                        line,
+                        "rmut supports PLAIN/LOGIN and OAuth (xoauth2/oauthbearer)",
+                    );
                 }
             }
             _ => self.skip(line, "no rmut equivalent"),
@@ -873,6 +882,29 @@ impl State {
         out
     }
 
+    /// The password lines of the account: imap_pass, or smtp_pass when
+    /// it is the only one given, or a placeholder to fill in.
+    fn password_toml(&self, out: &mut String, skipped: &mut Vec<String>) {
+        match (&self.imap_pass, &self.smtp_pass) {
+            (Some(a), Some(b)) if a != b => {
+                *out += "# imported from imap_pass; consider password_command instead\n";
+                *out += &format!("password = {}\n", quote(a));
+                skipped.push(
+                    "set smtp_pass = (redacted)  (differs from imap_pass; rmut uses one password per account)"
+                        .into(),
+                );
+            }
+            (Some(pass), _) | (None, Some(pass)) => {
+                *out += "# imported from imap_pass/smtp_pass; consider password_command instead\n";
+                *out += &format!("password = {}\n", quote(pass));
+            }
+            (None, None) => {
+                *out += "# TODO: set a command that prints the password (or password = \"...\"):\n";
+                *out += "password_command = \"pass show mail/TODO\"\n";
+            }
+        }
+    }
+
     fn account_toml(&self, folder_url: Option<&str>, skipped: &mut Vec<String>) -> String {
         let mut out = format!("\n[[accounts]]\nname = {}\n", quote(ACCOUNT));
         // imap_user wins; then the user@ part of the folder/smtp URL.
@@ -887,25 +919,21 @@ impl State {
             .or_else(|| self.email.clone())
             .unwrap_or_else(|| "TODO".into());
         out += &format!("user = {}\n", quote(&user));
-        // One credential per account: imap_pass, or smtp_pass when
-        // it is the only one given.
-        match (&self.imap_pass, &self.smtp_pass) {
-            (Some(a), Some(b)) if a != b => {
-                out += "# imported from imap_pass; consider password_command instead\n";
-                out += &format!("password = {}\n", quote(a));
+        if let Some(mech) = &self.oauth {
+            out += &format!("auth = {}\n", quote(mech));
+            out += "# TODO: set a command that prints a fresh access token\n";
+            out += "# (oauth2ms, mutt_oauth2.py, ...):\n";
+            out += "token_command = \"oauth2ms\"\n";
+            if self.imap_pass.is_some() || self.smtp_pass.is_some() {
                 skipped.push(
-                    "set smtp_pass = (redacted)  (differs from imap_pass; rmut uses one password per account)"
+                    "set imap_pass/smtp_pass = (redacted)  (the account authenticates with OAuth)"
                         .into(),
                 );
             }
-            (Some(pass), _) | (None, Some(pass)) => {
-                out += "# imported from imap_pass/smtp_pass; consider password_command instead\n";
-                out += &format!("password = {}\n", quote(pass));
-            }
-            (None, None) => {
-                out += "# TODO: set a command that prints the password (or password = \"...\"):\n";
-                out += "password_command = \"pass show mail/TODO\"\n";
-            }
+        } else {
+            // One credential per account: imap_pass, or smtp_pass when
+            // it is the only one given.
+            self.password_toml(&mut out, skipped);
         }
         if let Some(url) = folder_url {
             let (_, host, port, tls) = split_url(url);
@@ -1185,6 +1213,31 @@ mod tests {
         let (cfg, toml) = to_config("set reverse_name = no\n");
         assert!(!cfg.identity.reverse_name);
         assert!(toml.contains("# satisfied"), "{toml}");
+    }
+
+    #[test]
+    fn oauth_authenticators_become_account_auth() {
+        let (cfg, toml) = to_config(concat!(
+            "set folder = \"imaps://outlook.example.com/\"\n",
+            "set imap_user = \"jane@example.com\"\n",
+            "set imap_pass = \"hunter2\"\n",
+            "set imap_authenticators = \"oauthbearer\"\n",
+            "set smtp_authenticators = \"xoauth2:plain\"\n",
+        ));
+        let account = cfg.account("mutt").unwrap();
+        // The last-seen mechanism wins; both directives name OAuth.
+        assert_eq!(account.auth.as_deref(), Some("xoauth2"));
+        assert_eq!(account.token_command.as_deref(), Some("oauth2ms"));
+        // The stored password is not emitted alongside OAuth.
+        assert!(account.password.is_none());
+        assert!(!toml.contains("hunter2"), "{toml}");
+        assert!(toml.contains("the account authenticates with OAuth"));
+        assert!(toml.contains("fresh access token"), "{toml}");
+        // Plain-only stays satisfied, unknown mechanisms stay skipped.
+        let (_, toml) = to_config("set smtp_authenticators = \"plain\"\n");
+        assert!(toml.contains("# satisfied"), "{toml}");
+        let (_, toml) = to_config("set smtp_authenticators = \"gssapi\"\n");
+        assert!(toml.contains("xoauth2/oauthbearer"), "{toml}");
     }
 
     #[test]

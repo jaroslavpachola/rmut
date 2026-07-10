@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.12** — everything from the 1.0 roadmap plus R5–R13: mutt-style
+**1.13** — everything from the 1.0 roadmap plus R5–R14: mutt-style
 index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
@@ -27,9 +27,10 @@ send-hook), and mutt's reverse_name, **patterns v2** (R10):
 **new-mail awareness** (R11): counts in the folder browser, watching
 the other configured mailboxes, IMAP IDLE, and **address completion**
 (R12): Tab at the To prompt completes aliases and query_command
-results, and **macros** (R13): a key replays a sequence, prompts
-included. A pty-driven e2e suite (including fake IMAP/SMTP servers and
-a stub gpg) lives in `tests/e2e/`.
+results, **macros** (R13): a key replays a sequence, prompts included,
+and **OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
+`token_command`. A pty-driven e2e suite (including fake IMAP/SMTP
+servers and a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -99,6 +100,14 @@ The folder browser asks the server for UNSEEN counts (STATUS). The
 password comes from `password_command` (e.g. `pass show mail/work`),
 run once per session — or from a stored `password`, if you accept a
 secret sitting in the config file (keep it chmod 600).
+
+For Gmail/O365-style **OAuth2**, set `auth = "xoauth2"` (or
+`"oauthbearer"`, RFC 7628) and a `token_command` whose first output
+line is a fresh access token — acquiring and refreshing tokens is the
+external tool's business (oauth2ms, mutt_oauth2.py, ...). The command
+runs for every connection, since tokens expire; both IMAP
+(AUTHENTICATE) and SMTP (AUTH) then use the token instead of a
+password.
 
 ## PGP
 
@@ -223,6 +232,8 @@ name = "work"
 user = "jane@example.com"
 password_command = "pass show mail/work"   # first stdout line
 # password = "..."                         # alternative; keep the file chmod 600
+# auth = "xoauth2"                         # or "oauthbearer": OAuth2 with
+# token_command = "oauth2ms"               # a fresh access token per connection
 imap_host = "imap.example.com"             # imap_port = 993 (implicit TLS; 143 = STARTTLS)
 smtp_host = "smtp.example.com"             # smtp_port = 587 (STARTTLS; 465 = implicit TLS)
 sent_folder = "Sent"                       # Fcc target via IMAP APPEND
@@ -249,7 +260,9 @@ rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
 translates a muttrc (identity, folder/mailboxes, record/postponed,
 sendmail/editor/print_command/query_command, binds, status/header
 colors, PGP
-defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, reverse_name,
+defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton — with
+`auth`/`token_command` when `*_authenticators` names
+oauthbearer/xoauth2 — reverse_name,
 folder-hooks/send-hooks that only set from/realname into
 `[[identities]]` rules, and macros whose sequence is plain keys and
 prompt input) into rmut

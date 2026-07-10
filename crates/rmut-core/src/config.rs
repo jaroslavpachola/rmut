@@ -191,6 +191,14 @@ pub struct Account {
     /// otherwise. Disabling is for tests only.
     #[serde(default = "default_true")]
     pub smtp_tls: bool,
+    /// "password" (default), "xoauth2", or "oauthbearer". The OAuth
+    /// mechanisms authenticate with an access token from
+    /// `token_command` instead of a password.
+    pub auth: Option<String>,
+    /// Shell command whose first stdout line is a *fresh* OAuth access
+    /// token (refresh is its business — oauth2ms, mutt_oauth2.py, ...).
+    /// Run for every connection; tokens expire, so it is never cached.
+    pub token_command: Option<String>,
     /// IMAP folder that receives the Fcc copy of sent mail.
     #[serde(default = "default_sent_folder")]
     pub sent_folder: String,
@@ -242,6 +250,60 @@ fn default_sent_folder() -> String {
     "Sent".into()
 }
 
+/// How an account authenticates, from its `auth` key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AuthKind {
+    Password,
+    XOAuth2,
+    OAuthBearer,
+}
+
+impl AuthKind {
+    pub fn sasl_name(self) -> &'static str {
+        match self {
+            AuthKind::Password => "PLAIN",
+            AuthKind::XOAuth2 => "XOAUTH2",
+            AuthKind::OAuthBearer => "OAUTHBEARER",
+        }
+    }
+
+    /// The SASL initial response (before base64): RFC 7628 for
+    /// OAUTHBEARER, the Google shape for XOAUTH2.
+    pub fn initial_response(self, user: &str, token: &str, host: &str, port: u16) -> String {
+        match self {
+            AuthKind::XOAuth2 => format!("user={user}\x01auth=Bearer {token}\x01\x01"),
+            AuthKind::OAuthBearer => {
+                format!("n,a={user},\x01host={host}\x01port={port}\x01auth=Bearer {token}\x01\x01")
+            }
+            AuthKind::Password => String::new(),
+        }
+    }
+}
+
+/// First stdout line of a credential command.
+fn first_line_of(command: &str, what: &str, name: &str) -> Result<String> {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .with_context(|| format!("running {what} for account {name}"))?;
+    ensure!(
+        out.status.success(),
+        "{what} for account {name} exited with {}",
+        out.status
+    );
+    let secret = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    ensure!(
+        !secret.is_empty(),
+        "{what} for account {name} printed nothing"
+    );
+    Ok(secret)
+}
+
 impl Account {
     /// First stdout line of `password_command`, or the stored
     /// `password` when no command is configured.
@@ -258,28 +320,33 @@ impl Account {
                     )
                 });
         };
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .output()
-            .with_context(|| format!("running password command for account {}", self.name))?;
-        ensure!(
-            out.status.success(),
-            "password command for account {} exited with {}",
-            self.name,
-            out.status
-        );
-        let pass = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string();
-        ensure!(
-            !pass.is_empty(),
-            "password command for account {} printed nothing",
-            self.name
-        );
-        Ok(pass)
+        first_line_of(command, "password command", &self.name)
+    }
+
+    pub fn auth_kind(&self) -> Result<AuthKind> {
+        match self.auth.as_deref() {
+            None | Some("password") => Ok(AuthKind::Password),
+            Some("xoauth2") => Ok(AuthKind::XOAuth2),
+            Some("oauthbearer") => Ok(AuthKind::OAuthBearer),
+            Some(other) => anyhow::bail!("unknown auth {other:?} for account {}", self.name),
+        }
+    }
+
+    /// The credential matching `auth_kind`: the password, or a fresh
+    /// access token from `token_command`.
+    pub fn secret(&self) -> Result<String> {
+        match self.auth_kind()? {
+            AuthKind::Password => self.password(),
+            _ => {
+                let command = self.token_command.as_deref().with_context(|| {
+                    format!(
+                        "account {} has auth = oauth but no token_command",
+                        self.name
+                    )
+                })?;
+                first_line_of(command, "token command", &self.name)
+            }
+        }
     }
 }
 
@@ -504,6 +571,8 @@ mod tests {
             smtp_host: None,
             smtp_port: 587,
             smtp_tls: true,
+            auth: None,
+            token_command: None,
             sent_folder: "Sent".into(),
             identity: None,
         }
@@ -588,6 +657,54 @@ mod tests {
         );
         assert!(account("false").password().is_err());
         assert!(account("true").password().is_err()); // empty output
+    }
+
+    #[test]
+    fn auth_kinds_and_token_command() {
+        let acct = test_account();
+        assert_eq!(acct.auth_kind().unwrap(), AuthKind::Password);
+        let oauth = Account {
+            auth: Some("oauthbearer".into()),
+            token_command: Some("printf 'tok123\\nrest\\n'".into()),
+            ..test_account()
+        };
+        assert_eq!(oauth.auth_kind().unwrap(), AuthKind::OAuthBearer);
+        assert_eq!(oauth.secret().unwrap(), "tok123");
+        let no_command = Account {
+            auth: Some("xoauth2".into()),
+            ..test_account()
+        };
+        assert!(
+            no_command
+                .secret()
+                .unwrap_err()
+                .to_string()
+                .contains("no token_command")
+        );
+        let bad = Account {
+            auth: Some("kerberos".into()),
+            ..test_account()
+        };
+        assert!(bad.auth_kind().is_err());
+        // "password" is an explicit spelling of the default.
+        let explicit = Account {
+            auth: Some("password".into()),
+            password: Some("pw".into()),
+            ..test_account()
+        };
+        assert_eq!(explicit.secret().unwrap(), "pw");
+    }
+
+    #[test]
+    fn oauth_initial_responses() {
+        assert_eq!(
+            AuthKind::XOAuth2.initial_response("jane", "tok", "imap.example.com", 993),
+            "user=jane\x01auth=Bearer tok\x01\x01"
+        );
+        assert_eq!(
+            AuthKind::OAuthBearer.initial_response("jane", "tok", "imap.example.com", 993),
+            "n,a=jane,\x01host=imap.example.com\x01port=993\x01auth=Bearer tok\x01\x01"
+        );
     }
 
     #[test]

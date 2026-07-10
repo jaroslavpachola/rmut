@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result, ensure};
 
-use crate::config::Account;
+use crate::config::{Account, AuthKind};
 use crate::maildir;
 use crate::net::{self, Conn};
 
@@ -34,7 +34,7 @@ pub fn send(
         conn = Conn::new(net::wrap_tls(tcp, host)?);
         caps = ehlo(&mut conn)?;
     }
-    authenticate(&mut conn, &caps, &account.user, password).context("SMTP authentication")?;
+    authenticate(&mut conn, &caps, account, password).context("SMTP authentication")?;
     command(&mut conn, &format!("MAIL FROM:<{from}>"), 250)?;
     for rcpt in rcpts {
         command(&mut conn, &format!("RCPT TO:<{rcpt}>"), 250)
@@ -51,8 +51,21 @@ fn ehlo(conn: &mut Conn) -> Result<String> {
     command(conn, &format!("EHLO {}", maildir::hostname()), 250)
 }
 
-/// AUTH PLAIN, unless the server's EHLO offered only LOGIN.
-fn authenticate(conn: &mut Conn, caps: &str, user: &str, password: &str) -> Result<()> {
+/// AUTH PLAIN (or LOGIN when the server's EHLO offered only that) with
+/// the password; the OAuth kinds run their SASL mechanism with the
+/// access token in `secret`.
+fn authenticate(conn: &mut Conn, caps: &str, account: &Account, secret: &str) -> Result<()> {
+    let user = &account.user;
+    match account.auth_kind()? {
+        AuthKind::Password => {}
+        kind => {
+            let host = account.smtp_host.as_deref().unwrap_or_default();
+            let initial = kind.initial_response(user, secret, host, account.smtp_port);
+            command(conn, &format!("AUTH {}", kind.sasl_name()), 334)?;
+            command(conn, &b64(initial.as_bytes()), 235)?;
+            return Ok(());
+        }
+    }
     // `caps` is the EHLO reply with its lines joined by "; ", each
     // starting with the "250-"/"250 " code.
     let caps = caps.to_ascii_uppercase();
@@ -64,9 +77,9 @@ fn authenticate(conn: &mut Conn, caps: &str, user: &str, password: &str) -> Resu
     if login_only {
         command(conn, "AUTH LOGIN", 334)?;
         command(conn, &b64(user.as_bytes()), 334)?;
-        command(conn, &b64(password.as_bytes()), 235)?;
+        command(conn, &b64(secret.as_bytes()), 235)?;
     } else {
-        let token = b64(format!("\0{user}\0{password}").as_bytes());
+        let token = b64(format!("\0{user}\0{secret}").as_bytes());
         command(conn, &format!("AUTH PLAIN {token}"), 235)?;
     }
     Ok(())
@@ -199,6 +212,8 @@ mod tests {
             smtp_host: Some("127.0.0.1".into()),
             smtp_port: port,
             smtp_tls: false,
+            auth: None,
+            token_command: None,
             sent_folder: "Sent".into(),
             identity: None,
         };
@@ -214,6 +229,52 @@ mod tests {
         let log = log.lock().unwrap();
         let payload = log.iter().find(|l| l.contains("Subject")).unwrap();
         assert!(payload.contains("..leading dot"));
+    }
+
+    #[test]
+    fn xoauth2_runs_the_sasl_exchange() {
+        let (port, handle, _log) = testserver::smtp(vec![
+            Expect::new("EHLO", "250-x\r\n250 AUTH XOAUTH2\r\n".into()),
+            Expect::new("AUTH XOAUTH2", "334 \r\n".into()),
+            // XOAUTH2 for user=jane token=tok, precomputed base64.
+            Expect::new("dXNlcj1qYW5lAWF1dGg9QmVhcmVyIHRvawEB", "235 ok\r\n".into()),
+            Expect::new("MAIL FROM:<jane@example.com>", "250 ok\r\n".into()),
+            Expect::new("RCPT TO:<bob@example.org>", "250 ok\r\n".into()),
+            Expect::new("DATA", "354 go\r\n".into()),
+            Expect::new("QUIT", "221 bye\r\n".into()),
+        ]);
+        let account = crate::config::Account {
+            auth: Some("xoauth2".into()),
+            ..oauth_test_account(port)
+        };
+        send(
+            &account,
+            "tok",
+            "jane@example.com",
+            &["bob@example.org".into()],
+            b"Subject: hi\n\nbody\n",
+        )
+        .unwrap();
+        handle.join().unwrap();
+    }
+
+    fn oauth_test_account(port: u16) -> crate::config::Account {
+        crate::config::Account {
+            name: "t".into(),
+            user: "jane".into(),
+            password_command: None,
+            password: None,
+            imap_host: None,
+            imap_port: 993,
+            imap_tls: true,
+            smtp_host: Some("127.0.0.1".into()),
+            smtp_port: port,
+            smtp_tls: false,
+            auth: None,
+            token_command: None,
+            sent_folder: "Sent".into(),
+            identity: None,
+        }
     }
 
     #[test]
@@ -239,6 +300,8 @@ mod tests {
             smtp_host: Some("127.0.0.1".into()),
             smtp_port: port,
             smtp_tls: false,
+            auth: None,
+            token_command: None,
             sent_folder: "Sent".into(),
             identity: None,
         };
@@ -270,6 +333,8 @@ mod tests {
             smtp_host: Some("127.0.0.1".into()),
             smtp_port: port,
             smtp_tls: false,
+            auth: None,
+            token_command: None,
             sent_folder: "Sent".into(),
             identity: None,
         };

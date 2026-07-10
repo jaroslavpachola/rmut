@@ -2489,8 +2489,12 @@ fn default_from(hostname: &str) -> String {
     format!("{user}@{hostname}")
 }
 
-/// Run the account's password command once per session.
+/// Run the account's password command once per session. OAuth tokens
+/// expire, so those are fetched fresh for every connection instead.
 fn account_password(account: &Account) -> Result<String> {
+    if !matches!(account.auth_kind()?, rmut_core::config::AuthKind::Password) {
+        return account.secret();
+    }
     static CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
     let mut cache = CACHE.lock().unwrap();
     let map = cache.get_or_insert_with(HashMap::new);

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, ensure};
 
-use crate::config::Account;
+use crate::config::{Account, AuthKind};
 use crate::imap::{Client, Fetched};
 use crate::maildir::{self, Flags, MailFile};
 
@@ -118,6 +118,19 @@ pub fn is_partial(path: &Path) -> bool {
         .is_ok_and(|()| buf == PARTIAL_MARKER)
 }
 
+/// Log the client in the way the account's `auth` asks for: LOGIN
+/// with the password, or SASL AUTHENTICATE with an OAuth token.
+fn login(client: &mut Client, account: &Account, secret: &str) -> Result<()> {
+    match account.auth_kind()? {
+        AuthKind::Password => client.login(&account.user, secret),
+        kind => {
+            let host = account.imap_host.as_deref().unwrap_or_default();
+            let initial = kind.initial_response(&account.user, secret, host, account.imap_port);
+            client.authenticate(kind.sasl_name(), &crate::smtp::b64(initial.as_bytes()))
+        }
+    }
+}
+
 impl Remote {
     /// Connect, log in, select, and bring the cache maildir up to date.
     pub fn open(account: &Account, mailbox: &str, password: &str) -> Result<Remote> {
@@ -127,7 +140,7 @@ impl Remote {
             .as_deref()
             .with_context(|| format!("account {} has no imap_host", account.name))?;
         let mut client = Client::connect(host, account.imap_port, account.imap_tls)?;
-        client.login(&account.user, password)?;
+        login(&mut client, account, password)?;
         let select = client.select(mailbox)?;
         let cache = cache_dir(&account.name, mailbox);
         maildir::create(&cache)?;
@@ -337,7 +350,7 @@ pub fn idle_watch(account: &Account, mailbox: &str, password: &str) -> IdleWatch
         let Ok(mut client) = Client::connect(host, account.imap_port, account.imap_tls) else {
             return;
         };
-        if client.login(&account.user, &password).is_err()
+        if login(&mut client, &account, &password).is_err()
             || !client.supports_idle().unwrap_or(false)
             || client.select(&mailbox).is_err()
         {
@@ -390,6 +403,8 @@ mod tests {
             smtp_host: None,
             smtp_port: 587,
             smtp_tls: true,
+            auth: None,
+            token_command: None,
             sent_folder: "Sent".into(),
             identity: None,
         }
@@ -566,6 +581,26 @@ mod tests {
                 remote.append_sent(b"From: a@b\r\n\r\nx\r\n").unwrap(),
                 "Sent"
             );
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn open_authenticates_with_oauth() {
+        let mut script = vec![
+            Expect::untagged("AUTHENTICATE XOAUTH2", "+ \r\n".into()),
+            // XOAUTH2 for user=jane token=tok, precomputed base64.
+            Expect::new("dXNlcj1qYW5lAWF1dGg9QmVhcmVyIHRvawEB", String::new()),
+        ];
+        script.extend(open_script().into_iter().skip(1)); // no LOGIN
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let acct = Account {
+                auth: Some("xoauth2".into()),
+                ..account(port)
+            };
+            let remote = Remote::open(&acct, "INBOX", "tok").unwrap();
+            assert_eq!(maildir::scan(&remote.cache).unwrap().len(), 2);
         });
         handle.join().unwrap();
     }

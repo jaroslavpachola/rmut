@@ -92,14 +92,19 @@ pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
                     "server expected {:?}, got {line:?}",
                     step.cmd
                 );
-                // IDLE is terminated by a bare DONE; complete it with
-                // the tag remembered from the IDLE command itself.
-                let tag = match line.split(' ').next().unwrap_or("*") {
-                    "DONE" => last_tag.clone(),
-                    t => {
-                        last_tag = t.to_string();
-                        last_tag.clone()
-                    }
+                // Untagged client lines (IDLE's DONE, SASL payloads)
+                // complete with the tag of the command they belong to.
+                // The client's tags are "aN" (and "rmut0" for STARTTLS).
+                let first = line.split(' ').next().unwrap_or("*");
+                let is_tag = first == "rmut0"
+                    || (first.len() > 1
+                        && first.starts_with('a')
+                        && first[1..].bytes().all(|b| b.is_ascii_digit()));
+                let tag = if is_tag {
+                    last_tag = first.to_string();
+                    last_tag.clone()
+                } else {
+                    last_tag.clone()
                 };
                 let _ = stream.write_all(step.reply.as_bytes());
                 if !step.untagged {

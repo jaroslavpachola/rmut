@@ -205,17 +205,22 @@ The last thing the importer routinely skipped: `macro` lines.
       escapes converted); mutt function names inside stay
       `# not imported`
 
-## R14 — OAuth2 (1.13)
+## R14 — OAuth2 (done, 1.13)
 
 For Gmail/O365 accounts, where app passwords are dying out.
 
-- [ ] SASL XOAUTH2 and OAUTHBEARER for IMAP LOGIN/AUTHENTICATE and
-      SMTP AUTH
-- [ ] Account config: `auth = "oauthbearer"` + `token_command`
-      (like password_command, prints an access token — refresh is the
-      external tool's business, e.g. oauth2ms, mutt_oauth2.py)
-- [ ] Importer: recognize mutt's `imap_authenticators`/
-      `smtp_authenticators` naming oauthbearer/xoauth2
+- [x] SASL XOAUTH2 and OAUTHBEARER (RFC 7628) for IMAP AUTHENTICATE
+      and SMTP AUTH — no SASL-IR, so any server works; a failure
+      challenge is answered with an empty line to surface the NO
+- [x] Account config: `auth = "xoauth2"/"oauthbearer"` +
+      `token_command` (like password_command, prints an access token;
+      refresh is the external tool's business — oauth2ms,
+      mutt_oauth2.py). Tokens expire, so it runs per connection,
+      never cached
+- [x] Importer: `imap_authenticators`/`smtp_authenticators` naming
+      oauthbearer/xoauth2 become `auth` + a token_command placeholder;
+      a stored imap_pass is then dropped (redacted note) instead of
+      emitted alongside
 
 ## R15 — mbox (1.14)
 
