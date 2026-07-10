@@ -59,6 +59,8 @@ struct State {
     colors: BTreeMap<&'static str, String>,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
+    macros_index: BTreeMap<String, String>,
+    macros_pager: BTreeMap<String, String>,
     sign_key: Option<String>,
     sign_by_default: bool,
     encrypt_by_default: bool,
@@ -105,6 +107,7 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
             }
             "alias" => st.aliases.push(line.clone()),
             "bind" => st.bind(&tokens[1..], &line),
+            "macro" => st.mutt_macro(&tokens[1..], &line),
             "color" => st.color(&tokens[1..], &line),
             "auto_view" => {
                 for mime in &tokens[1..] {
@@ -574,6 +577,43 @@ impl State {
         }
     }
 
+    /// `macro MENU KEY SEQUENCE [description]` — translated when the
+    /// sequence is plain keys and prompt input; mutt function names
+    /// (`<collapse-all>` etc.) have no rmut equivalent.
+    fn mutt_macro(&mut self, args: &[String], line: &str) {
+        let (menus, key, seq) = match args {
+            [m, k, s] | [m, k, s, _] => (m, k, s),
+            _ => {
+                self.skip(line, "unrecognized macro syntax");
+                return;
+            }
+        };
+        let Some(key) = convert_key(key) else {
+            self.skip(line, "key has no rmut syntax");
+            return;
+        };
+        let Some(sequence) = convert_sequence(seq) else {
+            self.skip(
+                line,
+                "only plain keys translate; mutt function names do not",
+            );
+            return;
+        };
+        let mut used = false;
+        for menu in menus.split(',') {
+            let table = match menu {
+                "index" => &mut self.macros_index,
+                "pager" => &mut self.macros_pager,
+                _ => continue,
+            };
+            table.insert(key.clone(), sequence.clone());
+            used = true;
+        }
+        if !used {
+            self.skip(line, "only index and pager menus exist in rmut");
+        }
+    }
+
     fn auto_view(&mut self, mime: &str, line: &str) {
         match mime {
             "text/html" => {
@@ -782,6 +822,14 @@ impl State {
                 }
             }
         }
+        for (section, table) in [("index", &self.macros_index), ("pager", &self.macros_pager)] {
+            if !table.is_empty() {
+                out += &format!("\n[macros.{section}]\n");
+                for (key, sequence) in table {
+                    out += &format!("{} = {}\n", quote(key), quote(sequence));
+                }
+            }
+        }
         if self.sign_key.is_some() || self.sign_by_default || self.encrypt_by_default {
             out += "\n[pgp]\n";
             if let Some(k) = &self.sign_key {
@@ -974,6 +1022,59 @@ fn convert_key(key: &str) -> Option<String> {
     Some(named.to_string())
 }
 
+/// A mutt macro sequence in rmut's syntax: literal characters,
+/// `<key-name>`s rmut knows, and `\`-escapes (`\n` `\t` `\e` `\Cx`).
+/// None when it names mutt functions or exotic keys.
+fn convert_sequence(seq: &str) -> Option<String> {
+    const NAMES: [&str; 15] = [
+        "enter",
+        "return",
+        "esc",
+        "escape",
+        "space",
+        "tab",
+        "backspace",
+        "up",
+        "down",
+        "pgup",
+        "pageup",
+        "pgdn",
+        "pagedown",
+        "home",
+        "end",
+    ];
+    let mut out = String::new();
+    let mut chars = seq.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                let mut name = String::new();
+                loop {
+                    match chars.next() {
+                        Some('>') => break,
+                        Some(c) => name.push(c),
+                        None => return None,
+                    }
+                }
+                let name = name.to_lowercase();
+                if !NAMES.contains(&name.as_str()) {
+                    return None; // a mutt function name
+                }
+                out += &format!("<{name}>");
+            }
+            '\\' => match chars.next()? {
+                'n' | 'r' => out += "<enter>",
+                't' => out += "<tab>",
+                'e' => out += "<esc>",
+                'c' | 'C' => out += &format!("<ctrl+{}>", chars.next()?.to_ascii_lowercase()),
+                other => out.push(other),
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
 /// mutt "bright" colors are close to ratatui's "light" family.
 fn convert_color(name: &str) -> String {
     match name.strip_prefix("bright") {
@@ -1084,6 +1185,31 @@ mod tests {
         let (cfg, toml) = to_config("set reverse_name = no\n");
         assert!(!cfg.identity.reverse_name);
         assert!(toml.contains("# satisfied"), "{toml}");
+    }
+
+    #[test]
+    fn macros_translate_plain_sequences() {
+        let (cfg, toml) = to_config(concat!(
+            "macro index L \"l~f jane\\n\" \"limit to jane\"\n",
+            "macro index,pager \\Cs \"~s urgent<Enter>\"\n",
+            "macro index A \"<collapse-all>\"\n",
+            "macro compose X \"y\"\n",
+        ));
+        assert_eq!(
+            cfg.macros.index.get("L").map(String::as_str),
+            Some("l~f jane<enter>")
+        );
+        assert_eq!(
+            cfg.macros.index.get("ctrl+s").map(String::as_str),
+            Some("~s urgent<enter>")
+        );
+        assert_eq!(
+            cfg.macros.pager.get("ctrl+s").map(String::as_str),
+            Some("~s urgent<enter>")
+        );
+        // Function names and foreign menus stay visible as comments.
+        assert!(toml.contains("mutt function names do not"), "{toml}");
+        assert!(toml.contains("only index and pager menus"), "{toml}");
     }
 
     #[test]
@@ -1460,7 +1586,7 @@ mod tests {
     #[test]
     fn aliases_and_unknowns_surface_as_comments() {
         let import = import(
-            "alias petr Petr Novak <petr@example.com>\nset sleep_time = 0\nmacro index x y\n",
+            "alias petr Petr Novak <petr@example.com>\nset sleep_time = 0\nmacro index x \"<shell-escape>ls\\n\"\n",
             Path::new("/"),
         );
         assert_eq!(import.aliases.len(), 1);
@@ -1470,7 +1596,8 @@ mod tests {
                 .contains("#   alias petr Petr Novak <petr@example.com>")
         );
         assert!(import.toml.contains("set sleep_time = 0"));
-        assert!(import.toml.contains("macro index x y"));
+        assert!(import.toml.contains("macro index x"), "{}", import.toml);
+        assert!(import.toml.contains("mutt function names"));
         // and the output is still valid (if empty) config
         toml::from_str::<Config>(&import.toml).unwrap();
     }

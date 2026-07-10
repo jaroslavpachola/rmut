@@ -339,6 +339,8 @@ poll_seconds = 1
 format = "%C|%-4.4F|%s"
 [keys.index]
 sync = "w"
+[macros.index]
+L = "l~f jane<enter>"
 """
         )
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
@@ -358,6 +360,10 @@ sync = "w"
     r.keys(b"  ")  # two pages down: the action list has grown
     r.expect("Patterns")
     r.keys(b"q")
+    # the macro replays its sequence through the limit prompt
+    r.keys(b"L")
+    r.expect("limit:~f jane")
+    r.keys(b"l\x15\r")  # clear the limit again
     # new-mail detection: drop a message into new/ and wait for the poll
     write_msgs(md, ["petr"])
     r.expect("new mail in", "+1", timeout=8)

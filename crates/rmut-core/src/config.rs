@@ -68,6 +68,12 @@ pub struct Config {
     /// has no text/plain part, and in the attachment viewer.
     pub filters: HashMap<String, String>,
     pub keys: Keys,
+    /// Macros: a key that replays a sequence of keys, per menu —
+    /// [macros.index] / [macros.pager], `key = "sequence"`. The
+    /// sequence is literal characters plus `<enter>`/`<esc>`/
+    /// `<ctrl+x>`/... names in angle brackets; it feeds the input
+    /// queue, so it can drive prompts.
+    pub macros: Keys,
     pub accounts: Vec<Account>,
     /// Conditional identities, applied in order over `identity` when
     /// their globs match — the minimal folder-hook / send-hook.

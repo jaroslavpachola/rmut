@@ -415,9 +415,39 @@ impl PagerAction {
     }
 }
 
+/// A key sequence for macros: literal characters plus key names in
+/// angle brackets (`<enter>`, `<esc>`, `<ctrl+x>` — everything
+/// `parse_key` accepts). None on an unknown name or an unclosed `<`.
+pub fn parse_sequence(input: &str) -> Option<Vec<KeyEvent>> {
+    let mut out = Vec::new();
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        if c == '<' {
+            let mut name = String::new();
+            loop {
+                match chars.next() {
+                    Some('>') => break,
+                    Some(c) => name.push(c),
+                    None => return None,
+                }
+            }
+            let p = parse_key(&name)?;
+            out.push(KeyEvent::new(p.code, p.mods));
+        } else {
+            out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+    Some(out)
+}
+
 pub struct Keymap {
     pub index: Vec<(KeyPattern, IndexAction)>,
     pub pager: Vec<(KeyPattern, PagerAction)>,
+    /// Macros: trigger → (replayed events, the sequence as written,
+    /// kept for the help screen). Checked before the action bindings,
+    /// so a macro shadows a binding on the same key (like mutt).
+    pub macros_index: Vec<(KeyPattern, Vec<KeyEvent>, String)>,
+    pub macros_pager: Vec<(KeyPattern, Vec<KeyEvent>, String)>,
 }
 
 fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
@@ -510,10 +540,13 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
 
 impl Keymap {
     /// Defaults with config remaps applied: a remap unbinds the action's
-    /// default keys and whatever the new key was bound to.
+    /// default keys and whatever the new key was bound to. Macros come
+    /// from [macros.index]/[macros.pager], `key = "sequence"`.
     pub fn with_config(
         index_over: &HashMap<String, String>,
         pager_over: &HashMap<String, String>,
+        macros_index: &HashMap<String, String>,
+        macros_pager: &HashMap<String, String>,
     ) -> (Keymap, Vec<String>) {
         let mut warnings = Vec::new();
         let mut index = index_defaults();
@@ -538,7 +571,43 @@ impl Keymap {
             pager.retain(|(k, a)| *a != action && *k != key);
             pager.push((key, action));
         }
-        (Keymap { index, pager }, warnings)
+        let mut macros = |table: &HashMap<String, String>, menu: &str| {
+            let mut out = Vec::new();
+            for (key_str, seq_str) in table {
+                let (Some(key), Some(seq)) = (parse_key(key_str), parse_sequence(seq_str)) else {
+                    warnings.push(format!("bad {menu} macro {key_str} = {seq_str:?}"));
+                    continue;
+                };
+                out.push((key, seq, seq_str.clone()));
+            }
+            out
+        };
+        let macros_index = macros(macros_index, "index");
+        let macros_pager = macros(macros_pager, "pager");
+        (
+            Keymap {
+                index,
+                pager,
+                macros_index,
+                macros_pager,
+            },
+            warnings,
+        )
+    }
+
+    /// The macro sequence bound to this key, if any.
+    pub fn lookup_index_macro(&self, key: &KeyEvent) -> Option<&[KeyEvent]> {
+        self.macros_index
+            .iter()
+            .find(|(p, _, _)| p.matches(key))
+            .map(|(_, seq, _)| seq.as_slice())
+    }
+
+    pub fn lookup_pager_macro(&self, key: &KeyEvent) -> Option<&[KeyEvent]> {
+        self.macros_pager
+            .iter()
+            .find(|(p, _, _)| p.matches(key))
+            .map(|(_, seq, _)| seq.as_slice())
     }
 
     pub fn lookup_index(&self, key: &KeyEvent) -> Option<IndexAction> {
@@ -579,6 +648,17 @@ impl Keymap {
                 .collect();
             if !keys.is_empty() {
                 lines.push(format!("  {:<16} {}", keys.join(" "), action.describe()));
+            }
+        }
+        for (title, table) in [
+            ("Index macros", &self.macros_index),
+            ("Pager macros", &self.macros_pager),
+        ] {
+            if !table.is_empty() {
+                lines.extend([String::new(), title.to_string(), String::new()]);
+                for (key, _, raw) in table {
+                    lines.push(format!("  {:<16} {raw}", key.display()));
+                }
             }
         }
         lines.extend(
@@ -627,7 +707,8 @@ mod tests {
         let mut over = HashMap::new();
         over.insert("sync".to_string(), "w".to_string());
         over.insert("delete".to_string(), "ctrl+d".to_string());
-        let (map, warnings) = Keymap::with_config(&over, &HashMap::new());
+        let (map, warnings) =
+            Keymap::with_config(&over, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert!(warnings.is_empty());
         let ev = |p: KeyPattern| KeyEvent::new(p.code, p.mods);
         assert_eq!(
@@ -646,17 +727,67 @@ mod tests {
     fn bad_bindings_warn_and_keep_defaults() {
         let mut over = HashMap::new();
         over.insert("frobnicate".to_string(), "z".to_string());
-        let (map, warnings) = Keymap::with_config(&over, &HashMap::new());
+        let (map, warnings) =
+            Keymap::with_config(&over, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert_eq!(warnings.len(), 1);
         let ev = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         assert_eq!(map.lookup_index(&ev), Some(IndexAction::Quit));
     }
 
     #[test]
+    fn parse_sequence_forms() {
+        let seq = parse_sequence("l~f jane<enter>").unwrap();
+        assert_eq!(seq.len(), 9);
+        assert_eq!(seq[0].code, KeyCode::Char('l'));
+        assert_eq!(seq[2].code, KeyCode::Char('f'));
+        assert_eq!(seq[3].code, KeyCode::Char(' '));
+        assert_eq!(seq[8].code, KeyCode::Enter);
+        let seq = parse_sequence("<ctrl+x><Esc>").unwrap();
+        assert_eq!(seq[0].code, KeyCode::Char('x'));
+        assert!(seq[0].modifiers.contains(KeyModifiers::CONTROL));
+        assert_eq!(seq[1].code, KeyCode::Esc);
+        assert!(parse_sequence("<bogus>").is_none());
+        assert!(parse_sequence("<unclosed").is_none());
+        assert!(parse_sequence("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn macros_parse_shadow_and_warn() {
+        let mut macros_index = HashMap::new();
+        macros_index.insert("d".to_string(), "l~f jane<enter>".to_string());
+        macros_index.insert("Z".to_string(), "<bogus>".to_string());
+        let (map, warnings) = Keymap::with_config(
+            &HashMap::new(),
+            &HashMap::new(),
+            &macros_index,
+            &HashMap::new(),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("bad index macro Z"), "{warnings:?}");
+        let ev = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+        // The macro exists on d — the app checks it before the delete
+        // binding, so it shadows.
+        assert_eq!(map.lookup_index_macro(&ev).unwrap().len(), 9);
+        assert!(
+            map.lookup_pager_macro(&ev).is_none(),
+            "index macro must not leak into the pager"
+        );
+        // Help lists the macro with its raw sequence.
+        let help = map.help_lines().join("\n");
+        assert!(help.contains("Index macros"), "{help}");
+        assert!(help.contains("l~f jane<enter>"), "{help}");
+    }
+
+    #[test]
     fn shift_in_event_does_not_block_match() {
         // Terminals report 'F' as Char('F') + SHIFT.
         let ev = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
-        let (map, _) = Keymap::with_config(&HashMap::new(), &HashMap::new());
+        let (map, _) = Keymap::with_config(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         assert_eq!(map.lookup_index(&ev), Some(IndexAction::Flag));
     }
 }

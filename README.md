@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.11** — everything from the 1.0 roadmap plus R5–R12: mutt-style
+**1.12** — everything from the 1.0 roadmap plus R5–R13: mutt-style
 index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
@@ -27,7 +27,8 @@ send-hook), and mutt's reverse_name, **patterns v2** (R10):
 **new-mail awareness** (R11): counts in the folder browser, watching
 the other configured mailboxes, IMAP IDLE, and **address completion**
 (R12): Tab at the To prompt completes aliases and query_command
-results. A pty-driven e2e suite (including fake IMAP/SMTP servers and
+results, and **macros** (R13): a key replays a sequence, prompts
+included. A pty-driven e2e suite (including fake IMAP/SMTP servers and
 a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
@@ -211,6 +212,12 @@ deleted = "red"              # tagged header
 sync = "w"
 [keys.pager]
 
+[macros.index]               # macro: key = "replayed key sequence" —
+L = "l~f jane<enter>"        # literals + <enter>/<esc>/<ctrl+x>/...;
+[macros.pager]               # it feeds the input queue, so it can
+                             # drive prompts; a macro shadows a
+                             # binding on the same key (like mutt)
+
 [[accounts]]                 # remote account: open with `rmut imap:work`
 name = "work"
 user = "jane@example.com"
@@ -243,8 +250,9 @@ translates a muttrc (identity, folder/mailboxes, record/postponed,
 sendmail/editor/print_command/query_command, binds, status/header
 colors, PGP
 defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, reverse_name,
-and folder-hooks/send-hooks that only set from/realname into
-`[[identities]]` rules) into rmut
+folder-hooks/send-hooks that only set from/realname into
+`[[identities]]` rules, and macros whose sequence is plain keys and
+prompt input) into rmut
 TOML on stdout for review — it never writes any file itself.
 Directives with no rmut equivalent are kept as `# not imported:`
 comments, and ones that match rmut's built-in behavior (ssl_starttls,

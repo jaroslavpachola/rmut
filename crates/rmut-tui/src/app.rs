@@ -232,6 +232,8 @@ pub struct App {
     idle: Option<remote::IdleWatch>,
     /// Address completion state at the To prompt (Tab cycles).
     complete: Option<Complete>,
+    /// Keys queued by a macro, consumed before real terminal input.
+    pending_keys: std::collections::VecDeque<KeyEvent>,
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
@@ -262,7 +264,12 @@ impl App {
         let visible: Vec<usize> = (0..msgs.len()).collect();
         let sel = visible.len().saturating_sub(1);
         let (theme, mut warnings) = Theme::from_config(&config);
-        let (keymap, key_warnings) = Keymap::with_config(&config.keys.index, &config.keys.pager);
+        let (keymap, key_warnings) = Keymap::with_config(
+            &config.keys.index,
+            &config.keys.pager,
+            &config.macros.index,
+            &config.macros.pager,
+        );
         warnings.extend(key_warnings);
         if skipped > 0 {
             warnings.push(format!("{skipped} unreadable message(s) skipped"));
@@ -315,6 +322,7 @@ impl App {
             bounce_to: None,
             idle: None,
             complete: None,
+            pending_keys: std::collections::VecDeque::new(),
             mailbox_new: HashMap::new(),
             tag_next: false,
             quit: false,
@@ -402,10 +410,21 @@ impl App {
         let mut last_poll = Instant::now();
         while !self.quit {
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
-            if event::poll(Duration::from_millis(1000))?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
+            // Macro-queued keys run first, without waiting for input.
+            let key = match self.pending_keys.pop_front() {
+                Some(key) => Some(key),
+                None => {
+                    if event::poll(Duration::from_millis(1000))?
+                        && let Event::Key(key) = event::read()?
+                        && key.kind == KeyEventKind::Press
+                    {
+                        Some(key)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(key) = key {
                 let size = terminal.size()?;
                 self.status = None;
                 self.handle_key(key, size.width as usize, size.height as usize);
@@ -778,6 +797,10 @@ impl App {
     // ---- index ----
 
     fn handle_index_key(&mut self, key: KeyEvent, page: usize) {
+        if let Some(seq) = self.keymap.lookup_index_macro(&key) {
+            self.replay(seq.to_vec());
+            return;
+        }
         let Some(action) = self.keymap.lookup_index(&key) else {
             self.tag_next = false;
             return;
@@ -927,6 +950,10 @@ impl App {
     // ---- pager ----
 
     fn handle_pager_key(&mut self, key: KeyEvent, width: usize, page: usize) {
+        if let Some(seq) = self.keymap.lookup_pager_macro(&key) {
+            self.replay(seq.to_vec());
+            return;
+        }
         let Some(action) = self.keymap.lookup_pager(&key) else {
             return;
         };
@@ -1810,6 +1837,20 @@ impl App {
     }
 
     // ---- shared helpers ----
+
+    /// Queue a macro's keys in front of whatever is already queued (a
+    /// macro fired mid-replay expands in place, like mutt's input
+    /// stack). The cap breaks self-referencing macros.
+    fn replay(&mut self, seq: Vec<KeyEvent>) {
+        if self.pending_keys.len() + seq.len() > 1000 {
+            self.pending_keys.clear();
+            self.status = Some("macro expansion too deep — stopped".into());
+            return;
+        }
+        for (i, key) in seq.into_iter().enumerate() {
+            self.pending_keys.insert(i, key);
+        }
+    }
 
     fn select(&mut self, index: usize) {
         if self.visible.is_empty() {

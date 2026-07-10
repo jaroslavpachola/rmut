@@ -187,20 +187,23 @@ per recipient via folder-hook/send-hook.
 roadmap (R8–R12) is shipped. The milestones below are the former
 unscoped candidates, ranked; none is committed until picked up.
 
-## R13 — macros (1.12)
+## R13 — macros (done, 1.12)
 
-The last thing the importer routinely skips: `macro` lines.
+The last thing the importer routinely skipped: `macro` lines.
 
-- [ ] Config: `[macros.index]` / `[macros.pager]`, `key = "sequence"`
+- [x] Config: `[macros.index]` / `[macros.pager]`, `key = "sequence"`
       — a key that replays a sequence of keys (mutt semantics:
-      macros feed the input queue, so they can drive prompts)
-- [ ] Replay engine: queue the sequence's key events ahead of real
-      input; guard against recursion (a macro triggering itself)
-- [ ] Key-sequence syntax: literal characters plus the existing
-      key names in angle brackets (`<enter>`, `<esc>`, `ctrl+x`...)
-- [ ] Importer: translate `macro index/pager KEY "sequence"` when the
-      sequence is plain keys/prompt input; function names inside
-      (`<collapse-all>` etc.) stay `# not imported`
+      macros feed the input queue, so they can drive prompts); a
+      macro shadows a binding on the same key; `?` lists them
+- [x] Replay engine: queued key events run ahead of real input, a
+      macro fired mid-replay expands in place; a queue cap breaks
+      self-referencing macros
+- [x] Key-sequence syntax: literal characters plus the existing key
+      names in angle brackets (`<enter>`, `<esc>`, `<ctrl+x>`...)
+- [x] Importer: `macro index/pager KEY "sequence"` translates when
+      the sequence is plain keys/prompt input (`\n`/`\t`/`\e`/`\Cx`
+      escapes converted); mutt function names inside stay
+      `# not imported`
 
 ## R14 — OAuth2 (1.13)
 
