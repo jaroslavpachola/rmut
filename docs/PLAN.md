@@ -183,11 +183,47 @@ per recipient via folder-hook/send-hook.
       output parsed (first line skipped, `addr<TAB>name` rows);
       imported 1:1 from a muttrc
 
+**1.11 tagged and released** (2026-07) after R12 — the whole gap-review
+roadmap (R8–R12) is shipped. The milestones below are the former
+unscoped candidates, ranked; none is committed until picked up.
+
+## R13 — macros (1.12)
+
+The last thing the importer routinely skips: `macro` lines.
+
+- [ ] Config: `[macros.index]` / `[macros.pager]`, `key = "sequence"`
+      — a key that replays a sequence of keys (mutt semantics:
+      macros feed the input queue, so they can drive prompts)
+- [ ] Replay engine: queue the sequence's key events ahead of real
+      input; guard against recursion (a macro triggering itself)
+- [ ] Key-sequence syntax: literal characters plus the existing
+      key names in angle brackets (`<enter>`, `<esc>`, `ctrl+x`...)
+- [ ] Importer: translate `macro index/pager KEY "sequence"` when the
+      sequence is plain keys/prompt input; function names inside
+      (`<collapse-all>` etc.) stay `# not imported`
+
+## R14 — OAuth2 (1.13)
+
+For Gmail/O365 accounts, where app passwords are dying out.
+
+- [ ] SASL XOAUTH2 and OAUTHBEARER for IMAP LOGIN/AUTHENTICATE and
+      SMTP AUTH
+- [ ] Account config: `auth = "oauthbearer"` + `token_command`
+      (like password_command, prints an access token — refresh is the
+      external tool's business, e.g. oauth2ms, mutt_oauth2.py)
+- [ ] Importer: recognize mutt's `imap_authenticators`/
+      `smtp_authenticators` naming oauthbearer/xoauth2
+
+## R15 — mbox (1.14)
+
+- [ ] Read-only mbox support: open `/var/mail/$USER` and friends,
+      From_-line splitting, the index/pager work unchanged
+- [ ] Write support (flags via Status:/X-Status:, deletes by rewrite
+      with a lockfile) — or explicitly keep it read-only and document
+      "archive to a maildir with C"
+
 ## Candidates (unscoped)
 
-- Macros (key → sequence of actions) — would also let the importer
-  translate mutt `macro` lines instead of skipping them
-- OAuth2 (XOAUTH2/OAUTHBEARER) for IMAP/SMTP accounts
-- mbox read support
 - Sidebar, notmuch/xapian search
+- `%l` line counts and `%L` list-name detection in index_format
 - Non-goals for now: S/MIME, POP3, scoring
