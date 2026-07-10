@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 
 use crate::app::App;
 
-const USAGE: &str = "usage: rmut [MAILDIR | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
+const USAGE: &str = "usage: rmut [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
        rmut --import-muttrc [MUTTRC]
 
 Opens the given maildir or IMAP folder (INBOX when FOLDER is omitted;

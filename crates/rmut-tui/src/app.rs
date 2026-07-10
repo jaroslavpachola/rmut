@@ -13,7 +13,7 @@ use rmut_core::config::{Account, Config};
 use rmut_core::message::Envelope;
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote::{self, Remote};
-use rmut_core::{alias, compose, maildir, message, pgp, smtp, thread};
+use rmut_core::{alias, compose, maildir, mbox, message, pgp, smtp, thread};
 
 use crate::keymap::{IndexAction, Keymap, PagerAction};
 use crate::theme::Theme;
@@ -198,6 +198,8 @@ pub struct App {
     pub title: String,
     /// Set when `dir` is the cache maildir of an IMAP folder.
     remote: Option<Remote>,
+    /// Set when `dir` mirrors an mbox file; sync writes back into it.
+    mbox: Option<mbox::Mbox>,
     pub msgs: Vec<Msg>,
     /// Indices into `msgs` after applying limit and thread folding.
     pub visible: Vec<usize>,
@@ -297,6 +299,7 @@ impl App {
             dir: dir.to_path_buf(),
             title: dir.display().to_string(),
             remote: None,
+            mbox: None,
             msgs,
             visible,
             sel,
@@ -366,8 +369,25 @@ impl App {
                 app.remote = Some(remote);
                 Ok(app)
             }
-            None => App::open(&expand_tilde(spec), config),
+            None => {
+                let path = expand_tilde(spec);
+                if path.is_file() {
+                    return App::open_mbox(&path, config);
+                }
+                App::open(&path, config)
+            }
         }
+    }
+
+    /// Open an mbox file (e.g. /var/mail/$USER) through its cache
+    /// mirror; `$` sync writes changes back into the file.
+    fn open_mbox(path: &Path, config: Config) -> Result<Self> {
+        let mbox = mbox::Mbox::open(path)?;
+        let cache = mbox.cache.clone();
+        let mut app = App::open(&cache, config)?;
+        app.title = path.display().to_string();
+        app.mbox = Some(mbox);
+        Ok(app)
     }
 
     pub fn new_count(&self) -> usize {
@@ -469,6 +489,12 @@ impl App {
             // and are picked up by the mtime rescan below.
             if let Err(err) = remote.check_new() {
                 self.status = Some(format!("imap: {err:#}"));
+            }
+        }
+        if let Some(mbox) = &mut self.mbox {
+            // Re-mirror when the file changed; same rescan pickup.
+            if let Err(err) = mbox.refresh() {
+                self.status = Some(format!("mbox: {err:#}"));
             }
         }
         self.check_other_mailboxes();
@@ -2372,6 +2398,27 @@ impl App {
                     }
                 });
             if let Err(err) = result {
+                // Nothing applied locally: everything stays pending.
+                self.status = Some(format!("sync failed: {err:#}"));
+                return;
+            }
+        }
+        if let Some(mbox) = &mut self.mbox {
+            // The wanted end state per message id; untouched messages
+            // keep whatever the file already says.
+            let mut state: HashMap<String, Option<(maildir::Flags, bool)>> = HashMap::new();
+            for m in &self.msgs {
+                let Some(id) = mbox::id_of(&m.env.file.path) else {
+                    continue;
+                };
+                if m.env.file.flags.deleted && purge {
+                    state.insert(id, None);
+                } else if m.pending() {
+                    let is_new = m.env.file.is_new && !m.dirty;
+                    state.insert(id, Some((m.env.file.flags, is_new)));
+                }
+            }
+            if let Err(err) = mbox.write_back(&state) {
                 // Nothing applied locally: everything stays pending.
                 self.status = Some(format!("sync failed: {err:#}"));
                 return;

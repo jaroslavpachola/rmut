@@ -225,13 +225,17 @@ For Gmail/O365 accounts, where app passwords are dying out.
       a stored imap_pass is then dropped (redacted note) instead of
       emitted alongside
 
-## R15 — mbox (1.14)
+## R15 — mbox (done, 1.14)
 
-- [ ] Read-only mbox support: open `/var/mail/$USER` and friends,
-      From_-line splitting, the index/pager work unchanged
-- [ ] Write support (flags via Status:/X-Status:, deletes by rewrite
-      with a lockfile) — or explicitly keep it read-only and document
-      "archive to a maildir with C"
+- [x] Open `/var/mail/$USER` and friends: From_-line splitting with
+      mboxrd `>From` unquoting, mirrored into a cache maildir (like
+      IMAP) so the index/pager work unchanged; messages keyed by
+      content hash, so cache flags survive re-mirrors; new deliveries
+      picked up by the poll
+- [x] Write support: `$` sync rewrites the file in place under an
+      exclusive flock — purged messages dropped, Status:/X-Status:
+      rewritten (RO/AF), quoting preserved; refuses when the spool
+      changed since the mirror (refresh with G, sync again)
 
 ## Candidates (unscoped)
 

@@ -68,9 +68,9 @@ pub fn clean_mailbox(name: &str) -> String {
     }
 }
 
-/// Where a folder's cache maildir lives:
-/// `$XDG_CACHE_HOME/rmut/imap/<account>/<mailbox>` (percent-encoded).
-pub fn cache_dir(account: &str, mailbox: &str) -> PathBuf {
+/// `$XDG_CACHE_HOME/rmut` (or `~/.cache/rmut`), shared by the IMAP
+/// and mbox mirrors.
+pub(crate) fn cache_base() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .ok()
         .filter(|s| !s.is_empty())
@@ -81,13 +81,20 @@ pub fn cache_dir(account: &str, mailbox: &str) -> PathBuf {
                 .map(|h| PathBuf::from(h).join(".cache"))
         })
         .unwrap_or_else(std::env::temp_dir);
-    base.join("rmut/imap")
+    base.join("rmut")
+}
+
+/// Where a folder's cache maildir lives:
+/// `$XDG_CACHE_HOME/rmut/imap/<account>/<mailbox>` (percent-encoded).
+pub fn cache_dir(account: &str, mailbox: &str) -> PathBuf {
+    cache_base()
+        .join("imap")
         .join(sanitize(account))
         .join(sanitize(mailbox))
 }
 
 /// Filesystem-safe single path component.
-fn sanitize(name: &str) -> String {
+pub(crate) fn sanitize(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for b in name.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-') {

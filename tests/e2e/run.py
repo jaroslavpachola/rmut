@@ -712,6 +712,57 @@ smtp_tls = false
     r.close()
 
 
+def scenario_mbox(tmp):
+    """R15: open an mbox spool, flag/delete, write-back, new mail."""
+    spool = os.path.join(tmp, "spool")
+    with open(spool, "w") as f:
+        f.write("From jane@example.com Mon Jul  6 10:00:00 2026\n"
+                "From: Jane Doe <jane@example.com>\n"
+                "Subject: spool one\nDate: Mon, 6 Jul 2026 10:00:00 +0200\n"
+                "Message-ID: <s1@example.com>\nStatus: RO\n\nread already\n\n"
+                "From petr@example.com Tue Jul  7 10:00:00 2026\n"
+                "From: Petr Novak <petr@example.com>\n"
+                "Subject: spool two\nDate: Tue, 7 Jul 2026 10:00:00 +0200\n"
+                "Message-ID: <s2@example.com>\n\nfresh in the spool\n\n")
+    cfg = os.path.join(tmp, "mbox-config.toml")
+    with open(cfg, "w") as f:
+        f.write("[mail]\npoll_seconds = 1\n")
+    env = base_env(tmp, {
+        "RMUT_CONFIG": cfg,
+        "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+    })
+    r = Rmut(spool, env)
+    r.expect("Msgs:2", "New:1", "spool one", "spool two")
+    r.keys(b"\r")  # newest (petr, new) opens in the pager
+    r.expect("fresh in the spool")
+    r.keys(b"i")
+    r.keys(b"F")   # flag it: the ! mark shows in its index line
+    r.expect("! Jul 07 Petr")
+    r.keys(b"=d")  # first (jane), mark deleted
+    r.keys(b"$")
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"y")
+    r.expect("synced: 1 deleted")
+    # The spool was rewritten: jane gone, petr read + flagged.
+    def spool_synced():
+        text = open(spool).read()
+        return ("spool one" not in text and "Status: RO" in text
+                and "X-Status: F" in text)
+    wait_for(spool_synced, desc="mbox write-back")
+    text = open(spool).read()
+    assert text.startswith("From petr@example.com"), text[:60]
+    # Delivery appends a message; the poll re-mirrors and announces it.
+    with open(spool, "a") as f:
+        f.write("From ci@example.com Wed Jul  8 10:00:00 2026\n"
+                "From: build-bot@example.com\nSubject: spool three\n"
+                "Date: Wed, 8 Jul 2026 10:00:00 +0200\n"
+                "Message-ID: <s3@example.com>\n\njob finished\n\n")
+    r.expect("new mail in", "+1", timeout=8)
+    r.expect("spool three")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_pgp(tmp):
     """Decrypt on view and sign on send, against a stub gpg."""
     md = make_maildir(tmp, "md")
@@ -1014,6 +1065,7 @@ SCENARIOS = [
     scenario_config,
     scenario_send_via_config_sendmail,
     scenario_imap,
+    scenario_mbox,
     scenario_pgp,
     scenario_print,
     scenario_message_commands,

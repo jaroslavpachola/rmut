@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.13** — everything from the 1.0 roadmap plus R5–R14: mutt-style
+**1.14** — everything from the 1.0 roadmap plus R5–R15: mutt-style
 index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
@@ -28,9 +28,10 @@ send-hook), and mutt's reverse_name, **patterns v2** (R10):
 the other configured mailboxes, IMAP IDLE, and **address completion**
 (R12): Tab at the To prompt completes aliases and query_command
 results, **macros** (R13): a key replays a sequence, prompts included,
-and **OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
-`token_command`. A pty-driven e2e suite (including fake IMAP/SMTP
-servers and a stub gpg) lives in `tests/e2e/`.
+**OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
+`token_command`, and **mbox** (R15): system spools with sync
+write-back. A pty-driven e2e suite (including fake IMAP/SMTP servers
+and a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -41,7 +42,7 @@ cargo run -p rmut-tui -- ~/Maildir     # or: just run ~/Maildir
 ```
 
 ```
-usage: rmut [MAILDIR | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
+usage: rmut [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
        rmut --import-muttrc [MUTTRC]
 ```
 
@@ -108,6 +109,18 @@ external tool's business (oauth2ms, mutt_oauth2.py, ...). The command
 runs for every connection, since tokens expire; both IMAP
 (AUTHENTICATE) and SMTP (AUTH) then use the token instead of a
 password.
+
+## mbox
+
+`rmut /var/mail/$USER` opens an mbox file: it is mirrored into a cache
+maildir (like IMAP folders), so the index, pager, flags, and patterns
+all work unchanged, and messages are keyed by content so your flags
+survive when the spool grows. `$` sync writes changes back into the
+file — deleted messages dropped, `Status:`/`X-Status:` headers
+rewritten (`RO`/`AF`), mboxrd `>From` quoting preserved — under an
+exclusive flock, and refuses (rather than clobbers) when the spool
+changed since the last look; check for new mail (`G`) and sync again.
+New deliveries are picked up by the regular poll.
 
 ## PGP
 

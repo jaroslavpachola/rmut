@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rmut-core", "crates/rmut-tui"]
 
 [workspace.package]
-version = "1.13.0"
+version = "1.14.0"
 edition = "2024"
 license = "MIT"
 
@@ -13,6 +13,7 @@ ratatui = "0.29"
 chrono = "0.4"
 mailparse = "0.16"
 regex-lite = "0.1"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
