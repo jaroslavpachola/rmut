@@ -187,6 +187,9 @@ per recipient via folder-hook/send-hook.
 roadmap (R8–R12) is shipped. The milestones below are the former
 unscoped candidates, ranked; none is committed until picked up.
 
+**1.13 tagged and released** (2026-07) after R14 (macros + OAuth2);
+R15 remains the last scoped milestone.
+
 ## R13 — macros (done, 1.12)
 
 The last thing the importer routinely skipped: `macro` lines.
