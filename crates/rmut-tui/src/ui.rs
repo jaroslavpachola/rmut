@@ -13,6 +13,7 @@ const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply 
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
+const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [help_area, content_area, status_area] = Layout::vertical([
@@ -27,6 +28,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Pager(_) => PAGER_HELP,
         Mode::Attach { .. } => ATTACH_HELP,
         Mode::Folders { .. } => FOLDERS_HELP,
+        Mode::Postponed { .. } => POSTPONED_HELP,
         Mode::Help { .. } => HELP_HELP,
     };
     frame.render_widget(Line::from(help).style(app.theme.bar_style()), help_area);
@@ -72,6 +74,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Mode::Pager(_) => unreachable!(),
             Mode::Attach { parts, sel, .. } => draw_attach(frame, content_area, parts, *sel),
             Mode::Folders { dirs, sel } => draw_folders(frame, content_area, dirs, *sel),
+            Mode::Postponed { drafts, sel } => draw_postponed(frame, content_area, drafts, *sel),
             Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
         }
     }
@@ -383,6 +386,26 @@ fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[(String, usize)], sel: us
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+fn draw_postponed(
+    frame: &mut Frame,
+    area: Rect,
+    drafts: &[(std::path::PathBuf, String)],
+    sel: usize,
+) {
+    let width = area.width as usize;
+    let mut lines = Vec::new();
+    for (i, (_, label)) in drafts.iter().enumerate().take(area.height as usize) {
+        let text = format!("{:>3} {}", i + 1, label);
+        let text = format!("{text:<width$}");
+        let mut style = Style::new();
+        if i == sel {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 // ---- bottom line: prompt or status ----
 
 fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u16) {
@@ -405,6 +428,9 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
         }
         Mode::Attach { parts, .. } => format!("---rmut: attachments [Parts:{}]", parts.len()),
         Mode::Folders { dirs, .. } => format!("---rmut: mailboxes [Found:{}]", dirs.len()),
+        Mode::Postponed { drafts, .. } => {
+            format!("---rmut: postponed drafts [Found:{}]", drafts.len())
+        }
         Mode::Help { .. } => "---rmut: help".to_string(),
         Mode::Index => index_status(app),
     };

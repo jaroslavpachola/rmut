@@ -201,6 +201,12 @@ impl Client {
         self.command("EXPUNGE").map(drop)
     }
 
+    /// Server-side copy into another folder ($trash before a purge).
+    pub fn uid_copy(&mut self, set: &str, mailbox: &str) -> Result<()> {
+        self.command(&format!("UID COPY {set} {}", mailbox_arg(mailbox)?))
+            .map(drop)
+    }
+
     pub fn append(&mut self, mailbox: &str, flags: Flags, body: &[u8]) -> Result<()> {
         let arg = mailbox_arg(mailbox)?;
         let tag = self.next_tag();

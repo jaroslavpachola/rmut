@@ -319,6 +319,36 @@ def scenario_compose_send_postpone(tmp):
     r.keys(b"zd\t\rcomp3\ry")
     wait_for(lambda: "Subject: comp3" in open(sent_file).read(), desc="query send")
     assert "To: Zdenka Q <zdenka@example.com>" in open(sent_file).read()
+    # R20: attach from the send prompt, review, send
+    notes = os.path.join(tmp, "notes.txt")
+    with open(notes, "w") as f:
+        f.write("some notes\n")
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"x@y.example.com\rattprompt\r")
+    r.keys(b"a")
+    r.expect("Attach file:")
+    r.keys(notes.encode() + b"\r")
+    r.expect("[1 attachment(s)]")
+    r.keys(b"v")
+    r.expect("Draft attachments", "notes.txt", "text/plain")
+    r.keys(b"qy")  # back to the send prompt, send
+    wait_for(lambda: "Subject: attprompt" in open(sent_file).read(),
+             desc="attach-prompt send")
+    assert 'filename="notes.txt"' in open(sent_file).read()
+    # R20: two postponed drafts -> the recall picker
+    r.keys(b"mx@y\rdraft-one\rp")
+    r.expect("postponed to")
+    r.keys(b"mn")  # postponed exist: answer (n)ew first
+    r.keys(b"x@y\rdraft-two\rp")
+    wait_for(lambda: len(os.listdir(postponed_cur)) == 2, desc="two drafts")
+    r.keys(b"mr")  # recall -> the picker (newest first)
+    r.expect("postponed drafts [Found:2]", "draft-one", "draft-two")
+    r.keys(b"j\r")  # pick the older draft-one; editor runs, then send
+    r.keys(b"y")
+    wait_for(lambda: "Subject: draft-one" in open(sent_file).read(),
+             desc="picked draft sent")
+    assert len(os.listdir(postponed_cur)) == 1
     r.keys(b"q")
     r.close()
 
@@ -369,7 +399,7 @@ L = "l~f jane<enter>"
     r.keys(b"?")
     r.expect("write changes to the maildir")
     r.keys(b"  ")  # two pages down: the action list has grown
-    r.expect("(limit/search)")
+    r.expect("~p addressed to me")  # the patterns block is on screen
     r.keys(b"q")
     # the macro replays its sequence through the limit prompt
     r.keys(b"L")
@@ -816,6 +846,38 @@ def scenario_mbox(tmp):
     r.close()
 
 
+def scenario_trash_and_alias(tmp):
+    """R20: $trash moves purged mail; create-alias appends to the file."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "ci"])
+    trash = os.path.join(tmp, "trash")
+    cfg = os.path.join(tmp, "trash-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\ntrash = "{trash}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:2")
+    r.keys(b"=d$")  # delete CI, sync
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"y")
+    r.expect("synced: 1 deleted")
+    trashed = [os.path.join(trash, sub, p)
+               for sub in ("cur", "new")
+               for p in os.listdir(os.path.join(trash, sub))]
+    assert len(trashed) == 1, trashed
+    assert "CI failed on main" in open(trashed[0]).read()
+    assert not any("1751750100" in f
+                   for f in os.listdir(os.path.join(md, "cur")))
+    # create-alias on the remaining (jane) message
+    r.keys(b"a")
+    r.expect("Alias as (nick): jane")  # nick prefilled from the address
+    r.keys(b"\r")
+    r.expect("added: alias jane")
+    aliases = open(os.path.join(tmp, "no-aliases")).read()
+    assert "alias jane Jane Doe <jane@example.com>" in aliases
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_pgp(tmp):
     """Decrypt on view and sign on send, against a stub gpg."""
     md = make_maildir(tmp, "md")
@@ -1120,6 +1182,7 @@ SCENARIOS = [
     scenario_send_via_config_sendmail,
     scenario_imap,
     scenario_mbox,
+    scenario_trash_and_alias,
     scenario_pgp,
     scenario_print,
     scenario_message_commands,

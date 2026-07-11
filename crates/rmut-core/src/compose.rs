@@ -190,7 +190,7 @@ fn expand_home(path: &str) -> PathBuf {
 }
 
 /// Content type guessed from the filename extension.
-fn content_type(path: &Path) -> &'static str {
+pub fn content_type(path: &Path) -> &'static str {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

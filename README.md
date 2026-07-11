@@ -5,8 +5,8 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.17** — everything from the 1.0 roadmap plus R5–R17 and hardening
-(R19): mutt-style index
+**1.18** — everything from the 1.0 roadmap plus R5–R17, hardening
+(R19), and flow niceties (R20): mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -33,9 +33,10 @@ results, **macros** (R13): a key replays a sequence, prompts included,
 **index polish** (R16): `%l` line counts and list-aware `%L`, a
 **sidebar** (R17): the configured mailboxes with new-mail counts, and
 **hardening** (R19): transparent IMAP reconnect, incremental refresh,
-a header cache for large maildirs, mbox rewrite backups. A pty-driven
-e2e suite (including fake IMAP/SMTP servers and a stub gpg) lives in
-`tests/e2e/`.
+a header cache for large maildirs, mbox rewrite backups, and **flow
+niceties** (R20): attach/review at the send prompt, create-alias,
+$trash, a postponed-draft picker. A pty-driven e2e suite (including
+fake IMAP/SMTP servers and a stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -70,9 +71,10 @@ highlight, Ctrl+O opens the highlighted mailbox), `v` attachments,
 reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
 the raw message to a shell command, `b` bounce (resend as-is to new
 recipients, with a Resent-\* block), `e` edit the message as a new
-draft, `p` print (pipes the message to `mail.print`, default `lpr`),
-`q` quit (writes changes; asks before purging deletions, like mutt),
-`x` abort without saving.
+draft, `a` add the sender to the alias file (nick prompted, local
+part prefilled), `p` print (pipes the message to `mail.print`,
+default `lpr`), `q` quit (writes changes; asks before purging
+deletions, like mutt), `x` abort without saving.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
@@ -184,9 +186,14 @@ see attached
 
 Each one becomes a base64 part of a multipart/mixed message (content
 type guessed from the extension, the rest of the line an optional
-description); the send prompt shows the attachment count. PGP signing
-and encryption wrap the whole multipart, attachments included — this
-also works for forwards with `forward = "attach"`.
+description); the send prompt shows the attachment count. At the send
+prompt, `a` adds an `Attach:` line without a trip through the editor
+and `v` lists the attachments (name, size, type) before you commit to
+`y`. PGP signing and encryption wrap the whole multipart, attachments
+included — this also works for forwards with `forward = "attach"`.
+
+With several postponed drafts, recalling (`m`, then `r`) opens a
+picker instead of silently taking the newest.
 
 ## Configuration
 
@@ -218,6 +225,9 @@ print = "lpr"                # `p` pipes the message here
 save = "~/Maildir/.Archive"  # default target for `s`
 forward = "inline"           # or "attach" (original as message/rfc822)
 query_command = "khard email --parsable %s"   # Tab completion lookup
+trash = "~/Maildir/.Trash"   # purged mail moves here (mutt's $trash;
+                             # imap:acct/Trash for IMAP mailboxes);
+                             # purging inside it deletes for real
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date

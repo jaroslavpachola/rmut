@@ -304,20 +304,23 @@ Robustness debts that only show up in long sessions and big mailboxes.
 - [x] mbox safety: the spool is copied to `<cache>/.backup` before
       the in-place rewrite, removed on success
 
-## R20 — compose and message-flow niceties
+## R20 — compose and message-flow niceties (done, 1.18)
 
-- [ ] Review attachments at the send prompt: `v` lists the draft's
-      `Attach:` files (name, size, type) before committing to y
-- [ ] `a` at the send prompt appends an `Attach:` line without
-      re-opening the editor
-- [ ] Create-alias (mutt's `a`… on the index): key that appends
-      `alias <nick> <sender>` for the selected message to the alias
-      file, prompting for the nick
-- [ ] Trash semantics (mutt's $trash): `[mail] trash = "..."` makes
-      `d` + purge move messages there instead of erasing them;
-      shift-delete/`D`… stays a real purge
-- [ ] Postponed picker: with several postponed drafts, recalling
-      offers a list instead of silently taking the newest
+- [x] Review attachments at the send prompt: `v` lists the draft's
+      `Attach:` files (name, size, type, description; the forwarded
+      original too) before committing to y
+- [x] `a` at the send prompt appends an `Attach:` line without
+      re-opening the editor (missing files rejected, spaces quoted)
+- [x] Create-alias: `a` on the index/pager appends
+      `alias <nick> <From>` to the alias file, nick prompted with the
+      address's local part prefilled
+- [x] Trash (mutt's $trash): `[mail] trash = "..."` makes the purge
+      move messages there first — maildir delivery locally, UID COPY
+      on IMAP — and aborts if that fails; purging inside the trash
+      deletes for real; imported from `set trash`
+- [x] Postponed picker: with several postponed drafts, recalling
+      offers a date+subject list (newest first) instead of silently
+      taking the newest
 
 ## R21 — color patterns and status format
 

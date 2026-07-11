@@ -303,6 +303,20 @@ impl Remote {
         self.retry(|client, _| client.uid_store_flags(uid, flags))
     }
 
+    /// UID COPY the cached messages into another folder of this
+    /// account (the $trash step before a purge).
+    pub fn copy_to_folder(&mut self, paths: &[PathBuf], mailbox: &str) -> Result<()> {
+        let uids: Vec<String> = paths
+            .iter()
+            .filter_map(|p| uid_of(p))
+            .map(|u| u.to_string())
+            .collect();
+        ensure!(uids.len() == paths.len(), "unrecognized cache filename");
+        let folder = clean_mailbox(mailbox);
+        let set = uids.join(",");
+        self.retry(|client, _| client.uid_copy(&set, &folder))
+    }
+
     /// Mark the given cached messages \Deleted and expunge them.
     pub fn delete(&mut self, paths: &[PathBuf]) -> Result<()> {
         let uids: Vec<String> = paths

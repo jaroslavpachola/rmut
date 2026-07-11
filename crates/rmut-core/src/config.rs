@@ -126,6 +126,10 @@ pub struct Mail {
     /// completion at the To prompt (`%s` = the word, or appended),
     /// e.g. "khard email --parsable %s".
     pub query_command: Option<String>,
+    /// mutt's $trash: purged messages move here (a maildir path, or
+    /// `imap:account/folder` of the open account) instead of being
+    /// erased; purging inside the trash itself deletes for real.
+    pub trash: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

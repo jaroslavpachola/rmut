@@ -37,6 +37,25 @@ pub fn parse(text: &str) -> HashMap<String, String> {
     map
 }
 
+/// Append `alias nick expansion` to the alias file (create-alias),
+/// creating the file if needed. A repeated nick wins by coming later.
+/// Returns the path written.
+pub fn append(nick: &str, expansion: &str) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::io::Write;
+    let path = default_path().context("no alias file path ($HOME unset)")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    writeln!(file, "alias {nick} {expansion}")?;
+    Ok(path)
+}
+
 /// Completion candidates for a partial address: expansions of every
 /// alias whose nick starts with `word` (case-insensitive), then
 /// query_command results — sorted, deduplicated.

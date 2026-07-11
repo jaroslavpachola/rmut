@@ -66,6 +66,7 @@ struct State {
     encrypt_by_default: bool,
     print: Option<String>,
     query_command: Option<String>,
+    trash: Option<String>,
     sort: Option<String>,
     sort_aux: Option<String>,
     date_format: Option<String>,
@@ -385,6 +386,7 @@ impl State {
             "crypt_autoencrypt" | "pgp_autoencrypt" => self.encrypt_by_default = is_yes(&v),
             "print_command" => self.print = Some(v),
             "query_command" => self.query_command = Some(v),
+            "trash" => self.trash = Some(v),
             "imap_user" => self.imap_user = Some(v),
             "smtp_url" => self.smtp_url = Some(v),
             "imap_pass" => self.imap_pass = Some(v),
@@ -746,6 +748,7 @@ impl State {
             || self.poll_seconds.is_some()
             || self.print.is_some()
             || self.query_command.is_some()
+            || self.trash.is_some()
             || self.save_default.is_some()
             || self.forward_attach
         {
@@ -774,6 +777,9 @@ impl State {
             }
             if let Some(q) = &self.query_command {
                 out += &format!("query_command = {}\n", quote(q));
+            }
+            if let Some(t) = &self.trash {
+                out += &format!("trash = {}\n", quote(&self.expand_mailbox(t)));
             }
             if let Some(save) = &self.save_default {
                 out += &format!("save = {}\n", quote(&self.expand_mailbox(save)));
@@ -1446,6 +1452,7 @@ mod tests {
             "set mime_forward        = yes\n",
             "set mime_forward_rest   = yes\n",
             "set query_command       = \"khard email --parsable %s\"\n",
+            "set trash               = +Trash\n",
             "save-hook . +General\n",
             "set folder = ~/Mail\n",
             "bind index G imap-fetch-mail\n",
@@ -1461,6 +1468,7 @@ mod tests {
             Some("khard email --parsable %s")
         );
         assert_eq!(cfg.mail.save.as_deref(), Some("~/Mail/General"));
+        assert_eq!(cfg.mail.trash.as_deref(), Some("~/Mail/Trash"));
         assert_eq!(
             cfg.keys.index.get("fetch-mail").map(String::as_str),
             Some("G")

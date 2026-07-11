@@ -52,6 +52,11 @@ pub enum Mode {
         dirs: Vec<(String, usize)>,
         sel: usize,
     },
+    /// Picking one of several postponed drafts to recall.
+    Postponed {
+        drafts: Vec<(PathBuf, String)>,
+        sel: usize,
+    },
     Help {
         lines: Vec<String>,
         scroll: usize,
@@ -91,6 +96,10 @@ pub enum LineKind {
     BounceTo,
     ComposeTo,
     ComposeSubject,
+    /// A file path to add as an `Attach:` line (send prompt `a`).
+    AttachFile,
+    /// The nick for create-alias; the address waits in `alias_addr`.
+    AliasNick,
 }
 
 #[derive(Clone, Copy)]
@@ -179,7 +188,8 @@ pub struct Compose {
     pub attach: Option<PathBuf>,
 }
 
-const SEND_PROMPT: &str = "Send message? (y)es (e)dit (s)ecurity (p)ostpone (q)discard";
+const SEND_PROMPT: &str =
+    "Send message? (y)es (e)dit (a)ttach (v)iew att. (s)ecurity (p)ostpone (q)discard";
 
 /// Tab-completion state at an address prompt: candidates for the token
 /// at `start`, `expect` being the whole buffer after the last
@@ -230,6 +240,8 @@ pub struct App {
     pending_editor: Option<Compose>,
     /// Recipients waiting for the bounce confirmation.
     bounce_to: Option<String>,
+    /// The sender address waiting for a create-alias nick.
+    alias_addr: Option<String>,
     /// Background IDLE watcher for the open IMAP folder.
     idle: Option<remote::IdleWatch>,
     /// Address completion state at the To prompt (Tab cycles).
@@ -328,6 +340,7 @@ impl App {
             compose: None,
             pending_editor: None,
             bounce_to: None,
+            alias_addr: None,
             idle: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
@@ -491,6 +504,8 @@ impl App {
             self.handle_attach_key(key);
         } else if matches!(self.mode, Mode::Help { .. }) {
             self.handle_help_key(key, page);
+        } else if matches!(self.mode, Mode::Postponed { .. }) {
+            self.handle_postponed_key(key);
         } else {
             self.handle_folders_key(key);
         }
@@ -632,6 +647,10 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc | KeyCode::Char('?') => {
                 self.mode = Mode::Index;
+                // Leaving the attachment review resumes the send flow.
+                if self.compose.is_some() {
+                    self.reprompt_send();
+                }
             }
             KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(max_scroll),
             KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
@@ -657,6 +676,12 @@ impl App {
                     self.prompt = None;
                     self.compose_setup = None;
                     self.bounce_to = None;
+                    self.alias_addr = None;
+                    // Escaping a sub-prompt of the send flow (attach
+                    // file) returns to the send prompt.
+                    if self.compose.is_some() {
+                        self.reprompt_send();
+                    }
                 }
                 KeyCode::Backspace => {
                     buf.pop();
@@ -717,6 +742,14 @@ impl App {
                         self.pending_editor = Some(c);
                     }
                 }
+                KeyCode::Char('a') => {
+                    self.prompt = Some(Prompt::Line {
+                        label: "Attach file: ".into(),
+                        buf: String::new(),
+                        kind: LineKind::AttachFile,
+                    });
+                }
+                KeyCode::Char('v') => self.review_attachments(),
                 KeyCode::Char('p') => self.postpone_draft(),
                 KeyCode::Char('s') => {
                     self.prompt = Some(Prompt::Key {
@@ -863,6 +896,8 @@ impl App {
             LineKind::CopyMsg => self.copy_message(input, false),
             LineKind::Pipe => self.pipe_message(input),
             LineKind::BounceTo => self.bounce_to_submitted(input),
+            LineKind::AttachFile => self.attach_file_submitted(input),
+            LineKind::AliasNick => self.create_alias(input),
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.finish_compose_setup(input),
         }
@@ -906,6 +941,7 @@ impl App {
             IndexAction::Pipe => self.prompt_pipe(),
             IndexAction::Bounce => self.prompt_bounce(),
             IndexAction::Resend => self.resend_current(),
+            IndexAction::CreateAlias => self.prompt_create_alias(),
             IndexAction::Quit => {
                 // Like mutt: flag changes are written silently; only
                 // pending deletions raise a question (the purge one).
@@ -1133,6 +1169,10 @@ impl App {
             }
             PagerAction::Resend => {
                 self.resend_current();
+                return;
+            }
+            PagerAction::CreateAlias => {
+                self.prompt_create_alias();
                 return;
             }
             PagerAction::Help => {
@@ -1664,6 +1704,77 @@ impl App {
         });
     }
 
+    /// Add an `Attach:` line to the draft's header block without a
+    /// trip through the editor (send prompt `a`).
+    fn attach_file_submitted(&mut self, input: &str) {
+        let input = input.trim();
+        if !input.is_empty() {
+            if !expand_tilde(input).is_file() {
+                self.status = Some(format!("{input} is not a file"));
+            } else if let Some(c) = &self.compose {
+                // Quote paths with spaces the way extract_attachments
+                // reads them back.
+                let value = if input.contains(char::is_whitespace) && !input.starts_with('"') {
+                    format!("\"{input}\"")
+                } else {
+                    input.to_string()
+                };
+                let result = std::fs::read_to_string(&c.path).and_then(|text| {
+                    let updated = match text.split_once("\n\n") {
+                        Some((head, body)) => format!("{head}\nAttach: {value}\n\n{body}"),
+                        None => format!("{}\nAttach: {value}\n", text.trim_end()),
+                    };
+                    std::fs::write(&c.path, updated)
+                });
+                if let Err(err) = result {
+                    self.status = Some(format!("cannot attach: {err}"));
+                }
+            }
+        }
+        self.reprompt_send();
+    }
+
+    /// A read-only listing of the draft's attachments (send prompt
+    /// `v`); closing it returns to the send prompt.
+    fn review_attachments(&mut self) {
+        let Some(c) = &self.compose else {
+            return;
+        };
+        let text = std::fs::read_to_string(&c.path).unwrap_or_default();
+        let (_, files) = compose::extract_attachments(&text);
+        let mut lines = vec!["Draft attachments".to_string(), String::new()];
+        if let Some(orig) = &c.attach {
+            lines.push(format!(
+                "  {:<28} message/rfc822  forwarded original",
+                orig.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("(original)"),
+            ));
+        }
+        for a in &files {
+            let size = std::fs::metadata(&a.path).map(|m| m.len());
+            let size = match size {
+                Ok(n) => crate::ui::humanize_size(n),
+                Err(_) => "missing!".into(),
+            };
+            lines.push(format!(
+                "  {:<28} {:>8}  {}{}",
+                a.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                size,
+                compose::content_type(&a.path),
+                a.description
+                    .as_deref()
+                    .map(|d| format!("  ({d})"))
+                    .unwrap_or_default(),
+            ));
+        }
+        if files.is_empty() && c.attach.is_none() {
+            lines.push("  (none — a at the send prompt adds one)".into());
+        }
+        lines.extend([String::new(), "q returns to the send prompt".into()]);
+        self.mode = Mode::Help { lines, scroll: 0 };
+    }
+
     /// Initial security for a fresh draft, from the [pgp] config.
     fn default_security(&self) -> Security {
         match (
@@ -1909,33 +2020,78 @@ impl App {
         }
     }
 
+    /// Recall a postponed draft: straight into the editor when there
+    /// is one, a picker when there are several.
     fn recall_postponed(&mut self) {
-        let Some(dir) = self.postponed_dir() else {
+        let files = self
+            .postponed_dir()
+            .and_then(|dir| maildir::scan(&dir).ok())
+            .unwrap_or_default();
+        let mut files = files;
+        if files.is_empty() {
             self.status = Some("no postponed messages".into());
             return;
-        };
-        let newest = maildir::scan(&dir).ok().and_then(|files| {
-            files
-                .into_iter()
-                .max_by_key(|f| f.path.metadata().and_then(|m| m.modified()).ok())
-        });
-        let Some(file) = newest else {
-            self.status = Some("no postponed messages".into());
+        }
+        if files.len() == 1 {
+            let file = files.remove(0);
+            self.recall_file(file.path);
             return;
-        };
-        let result = std::fs::read_to_string(&file.path)
+        }
+        files.sort_by_key(|f| std::cmp::Reverse(f.path.metadata().and_then(|m| m.modified()).ok()));
+        let drafts = files
+            .into_iter()
+            .map(|f| {
+                let label = match message::envelope(f.clone()) {
+                    Ok(env) => format!("{}  {}", message::format_index_date(env.date), env.subject),
+                    Err(_) => f.path.display().to_string(),
+                };
+                (f.path, label)
+            })
+            .collect();
+        self.mode = Mode::Postponed { drafts, sel: 0 };
+    }
+
+    fn recall_file(&mut self, source: PathBuf) {
+        let result = std::fs::read_to_string(&source)
             .map_err(anyhow::Error::from)
             .and_then(|content| write_draft(&content));
         match result {
             Ok(path) => {
                 self.pending_editor = Some(Compose {
                     path,
-                    recall_source: Some(file.path),
+                    recall_source: Some(source),
                     security: self.default_security(),
                     attach: None,
                 });
             }
             Err(err) => self.status = Some(format!("cannot recall: {err:#}")),
+        }
+    }
+
+    fn handle_postponed_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Postponed { drafts, sel } = &mut self.mode {
+                    *sel = (*sel + 1).min(drafts.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Postponed { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
+            KeyCode::Enter => {
+                let path = match &self.mode {
+                    Mode::Postponed { drafts, sel } => drafts.get(*sel).map(|d| d.0.clone()),
+                    _ => None,
+                };
+                if let Some(path) = path {
+                    self.mode = Mode::Index;
+                    self.recall_file(path);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2068,6 +2224,42 @@ impl App {
             self.status = Some(format!("saved to {target} (original marked deleted)"));
         } else {
             self.status = Some(format!("copied to {target}"));
+        }
+    }
+
+    /// Offer the selected message's sender for the alias file, with
+    /// the address's local part as the suggested nick.
+    fn prompt_create_alias(&mut self) {
+        let Some(&i) = self.visible.get(self.sel) else {
+            return;
+        };
+        let path = self.msgs[i].env.file.path.clone();
+        let Some(from) = message::first_header(&path, "From") else {
+            self.status = Some("the message has no From header".into());
+            return;
+        };
+        let nick = compose::bare_address(&from)
+            .and_then(|a| a.split('@').next().map(|l| l.to_lowercase()))
+            .unwrap_or_default();
+        self.alias_addr = Some(from.trim().to_string());
+        self.prompt = Some(Prompt::Line {
+            label: "Alias as (nick): ".into(),
+            buf: nick,
+            kind: LineKind::AliasNick,
+        });
+    }
+
+    fn create_alias(&mut self, nick: &str) {
+        let Some(addr) = self.alias_addr.take() else {
+            return;
+        };
+        if nick.is_empty() || nick.contains(char::is_whitespace) {
+            self.status = Some("the alias nick must be one word".into());
+            return;
+        }
+        match alias::append(nick, &addr) {
+            Ok(_) => self.status = Some(format!("added: alias {nick} {addr}")),
+            Err(err) => self.status = Some(format!("cannot save the alias: {err:#}")),
         }
     }
 
@@ -2455,9 +2647,53 @@ impl App {
         });
     }
 
+    /// Copy every deleted message into the trash mailbox: UID COPY on
+    /// the server for IMAP mailboxes, maildir delivery otherwise (the
+    /// deleted mark is dropped on the copy).
+    fn trash_deleted(&mut self, trash: &str) -> Result<()> {
+        let deleted: Vec<PathBuf> = self
+            .msgs
+            .iter()
+            .filter(|m| m.env.file.flags.deleted)
+            .map(|m| m.env.file.path.clone())
+            .collect();
+        match (remote::parse_spec(trash), &mut self.remote) {
+            (Some((account, folder)), Some(remote)) if remote.account.name == account => {
+                remote.copy_to_folder(&deleted, folder)
+            }
+            (Some(_), _) => anyhow::bail!("trash must be a folder of the open account"),
+            (None, Some(_)) => {
+                anyhow::bail!("an IMAP mailbox needs an imap:account/folder trash")
+            }
+            (None, None) => {
+                let dir = expand_tilde(trash);
+                maildir::create(&dir)?;
+                for m in self.msgs.iter().filter(|m| m.env.file.flags.deleted) {
+                    let bytes = std::fs::read(&m.env.file.path)?;
+                    let mut flags = m.env.file.flags;
+                    flags.deleted = false;
+                    maildir::deliver(&dir, &bytes, flags)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// `purge` expunges deleted messages; without it they stay marked
     /// and only flag changes are written.
     fn sync(&mut self, purge: bool) {
+        // $trash: purged messages move there first; a failed copy
+        // aborts the purge. Purging inside the trash deletes for real.
+        if purge
+            && self.deleted_count() > 0
+            && let Some(trash) = self.config.mail.trash.clone()
+            && trash != self.title
+            && expand_tilde(&trash) != self.dir
+            && let Err(err) = self.trash_deleted(&trash)
+        {
+            self.status = Some(format!("trash failed: {err:#} — nothing purged"));
+            return;
+        }
         if let Some(remote) = &mut self.remote {
             let mut deletes: Vec<PathBuf> = Vec::new();
             let mut flag_pushes: Vec<(PathBuf, maildir::Flags)> = Vec::new();

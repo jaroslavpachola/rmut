@@ -155,6 +155,7 @@ pub enum IndexAction {
     SidebarNext,
     SidebarPrev,
     SidebarOpen,
+    CreateAlias,
     Help,
 }
 
@@ -182,6 +183,7 @@ pub enum PagerAction {
     Pipe,
     Bounce,
     Resend,
+    CreateAlias,
     Help,
 }
 
@@ -229,6 +231,7 @@ impl IndexAction {
             SidebarNext => "sidebar-next",
             SidebarPrev => "sidebar-prev",
             SidebarOpen => "sidebar-open",
+            CreateAlias => "create-alias",
             Help => "help",
         }
     }
@@ -276,6 +279,7 @@ impl IndexAction {
             SidebarNext => "highlight the next sidebar mailbox",
             SidebarPrev => "highlight the previous sidebar mailbox",
             SidebarOpen => "open the highlighted sidebar mailbox",
+            CreateAlias => "add the sender to the alias file",
             Help => "this help",
         }
     }
@@ -323,6 +327,7 @@ impl IndexAction {
             SidebarNext,
             SidebarPrev,
             SidebarOpen,
+            CreateAlias,
             Help,
         ]
     }
@@ -361,6 +366,7 @@ impl PagerAction {
             Pipe => "pipe",
             Bounce => "bounce",
             Resend => "resend",
+            CreateAlias => "create-alias",
             Help => "help",
         }
     }
@@ -390,6 +396,7 @@ impl PagerAction {
             Pipe => "pipe raw message to a shell command",
             Bounce => "bounce (resend) message to new recipients",
             Resend => "edit the message as a new draft",
+            CreateAlias => "add the sender to the alias file",
             Help => "this help",
         }
     }
@@ -419,6 +426,7 @@ impl PagerAction {
             Pipe,
             Bounce,
             Resend,
+            CreateAlias,
             Help,
         ]
     }
@@ -516,6 +524,7 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ctrl('n'), SidebarNext),
         (KeyPattern::ctrl('p'), SidebarPrev),
         (KeyPattern::ctrl('o'), SidebarOpen),
+        (KeyPattern::ch('a'), CreateAlias),
         (KeyPattern::ch('?'), Help),
     ]
 }
@@ -554,6 +563,7 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('|'), Pipe),
         (KeyPattern::ch('b'), Bounce),
         (KeyPattern::ch('e'), Resend),
+        (KeyPattern::ch('a'), CreateAlias),
         (KeyPattern::ch('?'), Help),
     ]
 }
