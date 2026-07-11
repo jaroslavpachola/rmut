@@ -192,9 +192,11 @@ unscoped candidates, ranked; none is committed until picked up.
 
 **1.13 tagged and released** (2026-07) after R14 (macros + OAuth2).
 
-**1.14 tagged and released** (2026-07) after R15 (mbox) — every scoped
-milestone in this plan is done; only the unscoped candidates at the
-bottom remain.
+**1.14 tagged and released** (2026-07) after R15 (mbox).
+
+**1.16 tagged and released** (2026-07) after R17 (index polish +
+sidebar). R18–R22 below are the second round of nice-to-haves, ranked;
+daily-use findings still outrank them all.
 
 ## R13 — macros (done, 1.12)
 
@@ -281,6 +283,65 @@ Shell out to notmuch(1), mutt-kz style — no linking, no new deps.
       live elsewhere)
 - [ ] Document the setup: notmuch new in a hook or cron, rmut for
       reading
+
+## R19 — daily-driver hardening (1.18)
+
+Robustness debts that only show up in long sessions and big mailboxes.
+
+- [ ] IMAP reconnect: a dropped connection (laptop sleep, server
+      timeout) currently poisons the session — detect the dead socket,
+      reconnect + re-SELECT transparently once, and only surface the
+      error when that fails too; the IDLE watcher already respawns
+- [ ] Incremental refresh: track UIDNEXT so the poll fetches
+      `UID FETCH <last>:*` instead of re-listing flags of every
+      message on each change
+- [ ] Header cache for large local maildirs: opening re-parses every
+      message today — persist envelopes (keyed by filename+mtime) so
+      a 50k-message maildir opens in tenths, not seconds
+- [ ] mbox safety: write a `<spool>.rmut-backup` before the in-place
+      rewrite, removed on success
+
+## R20 — compose and message-flow niceties (1.19)
+
+- [ ] Review attachments at the send prompt: `v` lists the draft's
+      `Attach:` files (name, size, type) before committing to y
+- [ ] `a` at the send prompt appends an `Attach:` line without
+      re-opening the editor
+- [ ] Create-alias (mutt's `a`… on the index): key that appends
+      `alias <nick> <sender>` for the selected message to the alias
+      file, prompting for the nick
+- [ ] Trash semantics (mutt's $trash): `[mail] trash = "..."` makes
+      `d` + purge move messages there instead of erasing them;
+      shift-delete/`D`… stays a real purge
+- [ ] Postponed picker: with several postponed drafts, recalling
+      offers a list instead of silently taking the newest
+
+## R21 — color patterns and status format (1.20)
+
+Patterns v2 makes mutt's coloring model implementable.
+
+- [ ] `[colors.index]`: pattern → color rules for index lines
+      (`"~f boss@example.com" = "yellow"`), evaluated with the R10
+      engine; first match wins
+- [ ] Importer: `color index FG BG PATTERN` lines translate for any
+      pattern the engine parses (today only ~D/~F/~T map)
+- [ ] `status_format`: the mutt-style format string for the bottom
+      line (%f mailbox, %m/%n/%d counts, %V limit, ...), replacing
+      the hardcoded layout
+- [ ] `%M` collapsed-thread count in index_format while at it
+
+## R22 — distribution (1.21)
+
+Make it installable without a checkout.
+
+- [ ] CI: GitHub Actions running `just check` (fmt, clippy -D,
+      tests, e2e) on push/PR
+- [ ] Publish rmut-core + rmut-tui to crates.io
+      (`cargo install rmut-tui`)
+- [ ] A man page (rmut.1, generated or hand-rolled) covering keys,
+      config, and the muttrc importer; `--help` stays the short form
+- [ ] Release automation: tag → GitHub release with a prebuilt
+      x86_64-linux binary
 
 ## Non-goals
 
