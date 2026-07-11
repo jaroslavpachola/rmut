@@ -175,19 +175,24 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
             ' '
         };
         let (depth, hidden) = app.thread_info(mi);
-        let mut subject = env.subject.clone();
-        if let Some(n) = hidden {
-            subject += &format!(" ({n} hidden)");
-        }
-        if depth > 0 {
-            subject = format!("{}└>{subject}", "  ".repeat(depth - 1));
-        }
         let fmt = app
             .config
             .index
             .format
             .as_deref()
             .unwrap_or(format::DEFAULT_FORMAT);
+        let mut subject = env.subject.clone();
+        // The hidden count rides on the subject unless the format
+        // places it itself with %M.
+        if let Some(n) = hidden
+            && !fmt.contains("%M")
+            && !fmt.contains("?M?")
+        {
+            subject += &format!(" ({n} hidden)");
+        }
+        if depth > 0 {
+            subject = format!("{}└>{subject}", "  ".repeat(depth - 1));
+        }
         let text = format::render(
             fmt,
             &IndexFields {
@@ -203,6 +208,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 size: &humanize_size(env.file.size),
                 lines: env.lines,
                 list: env.list.as_deref(),
+                hidden,
                 subject: &subject,
             },
         );
@@ -217,6 +223,15 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
             style = style.fg(app.theme.tagged);
         } else if env.file.flags.flagged {
             style = style.fg(app.theme.flagged);
+        }
+        // The first matching [[color_index]] rule wins over the
+        // built-in slot colors.
+        if let Some((_, rule)) = app
+            .index_rules
+            .iter()
+            .find(|(patterns, _)| rmut_core::pattern::matches(patterns, env, &app.me))
+        {
+            style = style.patch(*rule);
         }
         if vi == app.sel {
             style = style.add_modifier(Modifier::REVERSED);
@@ -442,24 +457,59 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
 }
 
 fn index_status(app: &App) -> String {
-    let mut text = format!("---rmut: {} [Msgs:{}", app.title, app.visible.len());
-    if app.visible.len() != app.msgs.len() {
-        text += &format!("/{}", app.msgs.len());
-    }
-    text += &format!(" New:{}", app.new_count());
-    let deleted = app.deleted_count();
-    if deleted > 0 {
-        text += &format!(" Del:{deleted}");
-    }
-    text += &format!(
-        "] (sort:{}{})",
-        app.sort.name(),
-        if app.sort_rev { "-rev" } else { "" }
-    );
-    if let Some((limit, _)) = &app.limit {
-        text += &format!(" (limit:{limit})");
-    }
-    text
+    let fmt = app
+        .config
+        .ui
+        .status_format
+        .as_deref()
+        .unwrap_or(format::DEFAULT_STATUS_FORMAT);
+    format::render_with(fmt, &|spec| match spec {
+        'f' => app.title.clone(),
+        'm' => app.msgs.len().to_string(),
+        // Shown message count, only when a limit narrows the view.
+        'M' => {
+            if app.visible.len() != app.msgs.len() {
+                app.visible.len().to_string()
+            } else {
+                String::new()
+            }
+        }
+        'n' => app.new_count().to_string(),
+        'u' => app
+            .msgs
+            .iter()
+            .filter(|m| !m.env.file.flags.seen)
+            .count()
+            .to_string(),
+        'd' => app.deleted_count().to_string(),
+        'F' => app
+            .msgs
+            .iter()
+            .filter(|m| m.env.file.flags.flagged)
+            .count()
+            .to_string(),
+        't' => app.msgs.iter().filter(|m| m.env.tagged).count().to_string(),
+        's' => format!(
+            "{}{}",
+            app.sort.name(),
+            if app.sort_rev { "-rev" } else { "" }
+        ),
+        'V' => app
+            .limit
+            .as_ref()
+            .map(|(s, _)| s.clone())
+            .unwrap_or_default(),
+        'r' => {
+            if app.pending_count() > 0 {
+                "*".to_string()
+            } else {
+                String::new()
+            }
+        }
+        'v' => env!("CARGO_PKG_VERSION").to_string(),
+        '%' => "%".to_string(),
+        other => format!("%{other}"),
+    })
 }
 
 fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> String {

@@ -5,8 +5,9 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.18** — everything from the 1.0 roadmap plus R5–R17, hardening
-(R19), and flow niceties (R20): mutt-style index
+**1.19** — everything from the 1.0 roadmap plus R5–R17, hardening
+(R19), flow niceties (R20), and display customization (R21):
+mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -35,8 +36,10 @@ results, **macros** (R13): a key replays a sequence, prompts included,
 **hardening** (R19): transparent IMAP reconnect, incremental refresh,
 a header cache for large maildirs, mbox rewrite backups, and **flow
 niceties** (R20): attach/review at the send prompt, create-alias,
-$trash, a postponed-draft picker. A pty-driven e2e suite (including
-fake IMAP/SMTP servers and a stub gpg) lives in `tests/e2e/`.
+$trash, a postponed-draft picker, and **display customization** (R21):
+pattern→color index rules, mutt's status_format, `%M` collapsed
+counts. A pty-driven e2e suite (including fake IMAP/SMTP servers and a
+stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -233,7 +236,8 @@ trash = "~/Maildir/.Trash"   # purged mail moves here (mutt's $trash;
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
                                          # %F from (%L: "To <list>" for
                                          # List-Id mail) %c size %l body
-                                         # lines %s subject, and
+                                         # lines %M collapsed count
+                                         # %s subject, and
                                          # %?X?then&else? conditionals
 sort = "threads"             # initial sort; reverse-date, size, ...
 sort_aux = "last-date-sent"  # threads ordered by their newest message
@@ -248,6 +252,17 @@ context = 3                  # overlapping lines when paging
 
 [ui]
 theme = "default"            # or "mono"
+status_format = "---rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?"
+                             # bottom line: %f mailbox %m msgs
+                             # %M shown-when-limited %n new %u unread
+                             # %d deleted %F flagged %t tagged %s sort
+                             # %V limit %r pending-mark %v version,
+                             # with %?X?then&else? conditionals
+
+[[color_index]]              # mutt's `color index FG BG PATTERN`:
+pattern = "~f boss@example.com"   # any limit/search pattern; first
+fg = "yellow"                # matching rule colors the index line
+# bg = "blue"
 
 [sidebar]                    # left pane: mail.mailboxes with new-mail
 visible = false              # counts (B toggles at runtime; bold =
@@ -297,8 +312,8 @@ rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
 ```
 
 translates a muttrc (identity, folder/mailboxes, record/postponed,
-sendmail/editor/print_command/query_command, binds, status/header
-colors, PGP
+sendmail/editor/print_command/query_command/status_format, binds,
+status/header colors and `color index FG BG PATTERN` rules, PGP
 defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton — with
 `auth`/`token_command` when `*_authenticators` names
 oauthbearer/xoauth2 — reverse_name,

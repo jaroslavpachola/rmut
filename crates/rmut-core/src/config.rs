@@ -64,6 +64,8 @@ pub struct Config {
     pub ui: Ui,
     pub sidebar: Sidebar,
     pub colors: HashMap<String, String>,
+    /// Pattern → color rules for index lines, evaluated in order.
+    pub color_index: Vec<ColorRule>,
     /// MIME type → shell command that renders the part (stdin → stdout),
     /// e.g. "text/html" = "w3m -dump -T text/html". Used when a message
     /// has no text/plain part, and in the attachment viewer.
@@ -160,6 +162,20 @@ pub struct Pager {
 #[serde(default)]
 pub struct Ui {
     pub theme: Option<String>,
+    /// mutt's status_format for the bottom line (see
+    /// format::DEFAULT_STATUS_FORMAT for the specifiers).
+    pub status_format: Option<String>,
+}
+
+/// One `[[color_index]]` rule (mutt's `color index FG BG PATTERN`):
+/// index lines whose message matches `pattern` take these colors.
+/// First matching rule wins; rules are checked in config order.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ColorRule {
+    pub pattern: String,
+    pub fg: Option<String>,
+    pub bg: Option<String>,
 }
 
 /// The optional left pane listing `mail.mailboxes` with new-mail

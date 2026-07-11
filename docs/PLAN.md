@@ -322,19 +322,22 @@ Robustness debts that only show up in long sessions and big mailboxes.
       offers a date+subject list (newest first) instead of silently
       taking the newest
 
-## R21 — color patterns and status format
+## R21 — color patterns and status format (done, 1.19)
 
-Patterns v2 makes mutt's coloring model implementable.
+Patterns v2 made mutt's coloring model implementable.
 
-- [ ] `[colors.index]`: pattern → color rules for index lines
-      (`"~f boss@example.com" = "yellow"`), evaluated with the R10
-      engine; first match wins
-- [ ] Importer: `color index FG BG PATTERN` lines translate for any
-      pattern the engine parses (today only ~D/~F/~T map)
-- [ ] `status_format`: the mutt-style format string for the bottom
-      line (%f mailbox, %m/%n/%d counts, %V limit, ...), replacing
-      the hardcoded layout
-- [ ] `%M` collapsed-thread count in index_format while at it
+- [x] `[[color_index]]` rules: `pattern` + `fg`/`bg`, evaluated with
+      the R10 engine per index line; first match wins over the slot
+      colors, broken patterns/colors warn and drop
+- [x] Importer: `color index FG BG PATTERN` lines translate for any
+      pattern the engine parses (~D/~F/~T keep their slots, "default"
+      colors are dropped)
+- [x] `[ui] status_format`: mutt-style bottom line — %f %m %M %n %u
+      %d %F %t %s %V %r %v with conditionals, sharing the index
+      format's renderer (`render_with`); the default reproduces the
+      classic layout exactly; imported from `set status_format`
+- [x] `%M` collapsed-thread count in index_format; the "(n hidden)"
+      subject suffix steps aside when the format places %M itself
 
 ## R22 — distribution
 

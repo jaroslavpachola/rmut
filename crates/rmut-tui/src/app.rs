@@ -248,6 +248,9 @@ pub struct App {
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
     pending_keys: std::collections::VecDeque<KeyEvent>,
+    /// Compiled [[color_index]] rules: (patterns, style patch); the
+    /// first matching rule colors the line.
+    pub index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     /// The left mailbox pane: (spec, new/unseen count) entries.
     pub sidebar: Vec<(String, usize)>,
     pub sidebar_sel: usize,
@@ -291,6 +294,28 @@ impl App {
         warnings.extend(key_warnings);
         if skipped > 0 {
             warnings.push(format!("{skipped} unreadable message(s) skipped"));
+        }
+        // Compile [[color_index]] rules; broken ones warn and drop.
+        let mut index_rules = Vec::new();
+        for rule in &config.color_index {
+            let patterns = match pattern::parse(&rule.pattern) {
+                Ok(p) => p,
+                Err(err) => {
+                    warnings.push(format!("bad color_index pattern {:?}: {err}", rule.pattern));
+                    continue;
+                }
+            };
+            let mut style = ratatui::style::Style::new();
+            for (name, is_fg) in [(&rule.fg, true), (&rule.bg, false)] {
+                if let Some(name) = name {
+                    match crate::theme::parse_color(name) {
+                        Some(color) if is_fg => style = style.fg(color),
+                        Some(color) => style = style.bg(color),
+                        None => warnings.push(format!("unknown color_index color {name:?}")),
+                    }
+                }
+            }
+            index_rules.push((patterns, style));
         }
         let status = (!warnings.is_empty()).then(|| warnings.join("; "));
         let count = msgs.len();
@@ -344,6 +369,7 @@ impl App {
             idle: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
+            index_rules,
             sidebar: Vec::new(),
             sidebar_sel: 0,
             sidebar_open: None,

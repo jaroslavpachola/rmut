@@ -8,6 +8,14 @@
 
 pub const DEFAULT_FORMAT: &str = "%4C %Z %-6d %-20.20F %5c %s";
 
+/// Renders exactly rmut's classic status line; override with
+/// `[ui] status_format`. Status specifiers: %f mailbox, %m messages,
+/// %M shown-when-limited, %n new, %u unread, %d deleted, %F flagged,
+/// %t tagged, %s sort, %V limit pattern, %r pending-changes mark,
+/// %v version.
+pub const DEFAULT_STATUS_FORMAT: &str =
+    "---rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?";
+
 pub struct IndexFields<'a> {
     pub number: usize,
     pub status: char,
@@ -24,6 +32,8 @@ pub struct IndexFields<'a> {
     /// Mailing-list name (List-Id); `%L` shows "To <name>" instead of
     /// the author when set.
     pub list: Option<&'a str>,
+    /// Messages hidden under this collapsed thread root (`%M`).
+    pub hidden: Option<usize>,
     pub subject: &'a str,
 }
 
@@ -41,6 +51,7 @@ fn value_of(spec: char, f: &IndexFields) -> String {
         },
         'c' => f.size.to_string(),
         'l' => f.lines.map(|n| n.to_string()).unwrap_or_default(),
+        'M' => f.hidden.map(|n| n.to_string()).unwrap_or_default(),
         's' => f.subject.to_string(),
         '%' => "%".to_string(),
         other => format!("%{other}"),
@@ -48,6 +59,13 @@ fn value_of(spec: char, f: &IndexFields) -> String {
 }
 
 pub fn render(fmt: &str, f: &IndexFields) -> String {
+    render_with(fmt, &|spec| value_of(spec, f))
+}
+
+/// The `%[-][min][.max]X` + `%?X?then&else?` machinery over any
+/// specifier set — index lines and the status line share it. Unknown
+/// specifiers should come back as `"%x"` to stay visible.
+pub fn render_with(fmt: &str, value_of: &dyn Fn(char) -> String) -> String {
     let mut out = String::new();
     let mut chars = fmt.chars().peekable();
     while let Some(c) = chars.next() {
@@ -72,13 +90,13 @@ pub fn render(fmt: &str, f: &IndexFields) -> String {
                     c => cur.push(c),
                 }
             }
-            let value = value_of(spec, f);
+            let value = value_of(spec);
             let chosen = if value.trim().is_empty() || value.trim() == "0" {
                 &else_part
             } else {
                 &then_part
             };
-            out.push_str(&render(chosen, f));
+            out.push_str(&render_with(chosen, value_of));
             continue;
         }
         let mut left = false;
@@ -101,7 +119,7 @@ pub fn render(fmt: &str, f: &IndexFields) -> String {
             }
         }
         let Some(spec) = chars.next() else { break };
-        let value = value_of(spec, f);
+        let value = value_of(spec);
         let mut v: Vec<char> = value.chars().collect();
         if v.len() > max {
             v.truncate(max);
@@ -133,6 +151,7 @@ mod tests {
             size: "1.2K",
             lines: None,
             list: None,
+            hidden: None,
             subject: "Lunch",
         }
     }

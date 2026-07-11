@@ -57,6 +57,9 @@ struct State {
     poll_seconds: Option<u64>,
     index_format: Option<String>,
     colors: BTreeMap<&'static str, String>,
+    /// `color index FG BG PATTERN` rules, in muttrc order.
+    color_index_rules: Vec<(String, String, String)>,
+    status_format: Option<String>,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
     macros_index: BTreeMap<String, String>,
@@ -387,6 +390,7 @@ impl State {
             "print_command" => self.print = Some(v),
             "query_command" => self.query_command = Some(v),
             "trash" => self.trash = Some(v),
+            "status_format" => self.status_format = Some(v),
             "imap_user" => self.imap_user = Some(v),
             "smtp_url" => self.smtp_url = Some(v),
             "imap_pass" => self.imap_pass = Some(v),
@@ -679,6 +683,11 @@ impl State {
             ("index", Some("~T")) => {
                 self.colors.insert("tagged", vivid);
             }
+            // Any other pattern rmut's engine parses becomes a
+            // [[color_index]] rule.
+            ("index", Some(pattern)) if crate::pattern::parse(pattern).is_ok() => {
+                self.color_index_rules.push((pattern.to_string(), fg, bg));
+            }
             _ => self.skip(line, "no rmut color slot"),
         }
     }
@@ -828,6 +837,22 @@ impl State {
             for (k, v) in &self.colors {
                 out += &format!("{k} = {}\n", quote(v));
             }
+        }
+        for (pattern, fg, bg) in &self.color_index_rules {
+            out += "\n[[color_index]]\n";
+            out += &format!("pattern = {}\n", quote(pattern));
+            if fg != "default" {
+                out += &format!("fg = {}\n", quote(fg));
+            }
+            if bg != "default" {
+                out += &format!("bg = {}\n", quote(bg));
+            }
+        }
+        if let Some(sf) = &self.status_format {
+            out += "\n[ui]\n";
+            out += "# rmut renders %f %m %M %n %u %d %F %t %s %V %r %v and\n";
+            out += "# %?X?then&else? conditionals; other specifiers show literally\n";
+            out += &format!("status_format = {}\n", quote(sf));
         }
         for (section, table) in [("index", &self.keys_index), ("pager", &self.keys_pager)] {
             if !table.is_empty() {
@@ -1244,6 +1269,29 @@ mod tests {
         assert!(toml.contains("# satisfied"), "{toml}");
         let (_, toml) = to_config("set smtp_authenticators = \"gssapi\"\n");
         assert!(toml.contains("xoauth2/oauthbearer"), "{toml}");
+    }
+
+    #[test]
+    fn color_index_patterns_and_status_format_import() {
+        let (cfg, toml) = to_config(concat!(
+            "color index yellow default \"~f boss@example.com\"\n",
+            "color index brightred blue \"~d <1w ~U\"\n",
+            "color index red default ~D\n",         // still a slot
+            "color index green default \"~X 3\"\n", // unparseable
+            "set status_format = \"-%r- %f [%m msgs%?t?, %t tagged?]\"\n",
+        ));
+        assert_eq!(cfg.color_index.len(), 2);
+        assert_eq!(cfg.color_index[0].pattern, "~f boss@example.com");
+        assert_eq!(cfg.color_index[0].fg.as_deref(), Some("yellow"));
+        assert!(cfg.color_index[0].bg.is_none()); // "default" dropped
+        assert_eq!(cfg.color_index[1].fg.as_deref(), Some("lightred"));
+        assert_eq!(cfg.color_index[1].bg.as_deref(), Some("blue"));
+        assert_eq!(cfg.colors.get("deleted").map(String::as_str), Some("red"));
+        assert_eq!(
+            cfg.ui.status_format.as_deref(),
+            Some("-%r- %f [%m msgs%?t?, %t tagged?]")
+        );
+        assert!(toml.contains("no rmut color slot"), "{toml}");
     }
 
     #[test]

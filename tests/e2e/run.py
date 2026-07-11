@@ -1123,11 +1123,17 @@ def scenario_tag_save_sort(tmp):
     config = os.path.join(tmp, "config.toml")
     with open(config, "w") as f:
         f.write('[index]\nsort = "reverse-date"\ndate_format = "%Y|%m"\n\n'
-                f'[mail]\nsave = "{save_dir}"\n')
+                f'[mail]\nsave = "{save_dir}"\n\n'
+                '[ui]\nstatus_format = '
+                '"---rmut: %f [Msgs:%?M?%M/?%m %?t?Tagged:%t&no tags?'
+                '%?d? Del:%d?] (sort:%s)"\n\n'
+                '[[color_index]]\npattern = "~f jane"\nfg = "yellow"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config}))
-    r.expect("Msgs:3", "(sort:date-rev)", "2026|07")
+    r.expect("Msgs:3", "(sort:date-rev)", "2026|07", "no tags")
     r.keys(b"=")    # first entry (newest, reverse-date)
-    r.keys(b"tt")   # tag two; t advances to the third
+    r.keys(b"t")    # tag the first; t advances
+    r.expect("Tagged:1")  # the custom status_format counts it
+    r.keys(b"t")    # tag the second
     r.keys(b";d")   # delete all tagged
     r.expect("applied to 2", "Del:2")
     r.keys(b";u")   # and undelete them again (Del:1 below proves it)
