@@ -307,6 +307,10 @@ impl Mbox {
         );
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
+        // The rewrite happens in place (no temp files in /var/mail):
+        // keep a copy in the cache until it lands, in case of a crash.
+        let backup = self.cache.join(".backup");
+        fs::write(&backup, &data).with_context(|| format!("writing {}", backup.display()))?;
         let mut out = Vec::with_capacity(data.len());
         for raw in split(&data) {
             let (flags, old) = match state.get(&raw.id()) {
@@ -334,6 +338,7 @@ impl Mbox {
         file.set_len(out.len() as u64)?;
         file.sync_all()?;
         drop(file); // releases the flock
+        let _ = fs::remove_file(&backup);
         self.snapshot = stat(&self.path)?;
         Ok(())
     }
@@ -442,6 +447,8 @@ mod tests {
             )),
         );
         mbox.write_back(&state).unwrap();
+        // The crash backup is cleaned up after a successful rewrite.
+        assert!(!mbox.cache.join(".backup").exists());
         let text = fs::read_to_string(&spool).unwrap();
         assert!(!text.contains("Subject: first"), "{text}");
         assert!(text.contains("Subject: second"));

@@ -270,7 +270,7 @@ Small, closed the two documented index_format gaps.
 - [x] R11's counting reused (local new/ scan, IMAP STATUS for the
       open account's folders), refreshed by the regular poll
 
-## R18 — notmuch search (1.17)
+## R18 — notmuch search
 
 Shell out to notmuch(1), mutt-kz style — no linking, no new deps.
 
@@ -284,24 +284,27 @@ Shell out to notmuch(1), mutt-kz style — no linking, no new deps.
 - [ ] Document the setup: notmuch new in a hook or cron, rmut for
       reading
 
-## R19 — daily-driver hardening (1.18)
+## R19 — daily-driver hardening (done, 1.17)
 
 Robustness debts that only show up in long sessions and big mailboxes.
 
-- [ ] IMAP reconnect: a dropped connection (laptop sleep, server
-      timeout) currently poisons the session — detect the dead socket,
-      reconnect + re-SELECT transparently once, and only surface the
-      error when that fails too; the IDLE watcher already respawns
-- [ ] Incremental refresh: track UIDNEXT so the poll fetches
-      `UID FETCH <last>:*` instead of re-listing flags of every
-      message on each change
-- [ ] Header cache for large local maildirs: opening re-parses every
-      message today — persist envelopes (keyed by filename+mtime) so
-      a 50k-message maildir opens in tenths, not seconds
-- [ ] mbox safety: write a `<spool>.rmut-backup` before the in-place
-      rewrite, removed on success
+- [x] IMAP reconnect: a dead socket no longer poisons the session —
+      every operation reconnects + re-SELECTs transparently once and
+      retries (all wrapped ops are idempotent); a changed UIDVALIDITY
+      refuses with "reopen the mailbox". The IDLE watcher now truly
+      respawns dropped sessions (60 s pause; only "no IDLE support"
+      gives up)
+- [x] Incremental refresh: NOOP responses are classified — arrivals
+      alone fetch `UID FETCH <last>:*` (the N:* returns-last quirk
+      filtered); flag changes/expunges still reconcile fully
+- [x] Header cache: parsed envelopes persist under
+      $XDG_CACHE_HOME/rmut/headers keyed by base name + length, so
+      reopening a big maildir parses only new files; flag renames
+      keep the key, a partial IMAP file gaining its body re-parses
+- [x] mbox safety: the spool is copied to `<cache>/.backup` before
+      the in-place rewrite, removed on success
 
-## R20 — compose and message-flow niceties (1.19)
+## R20 — compose and message-flow niceties
 
 - [ ] Review attachments at the send prompt: `v` lists the draft's
       `Attach:` files (name, size, type) before committing to y
@@ -316,7 +319,7 @@ Robustness debts that only show up in long sessions and big mailboxes.
 - [ ] Postponed picker: with several postponed drafts, recalling
       offers a list instead of silently taking the newest
 
-## R21 — color patterns and status format (1.20)
+## R21 — color patterns and status format
 
 Patterns v2 makes mutt's coloring model implementable.
 
@@ -330,7 +333,7 @@ Patterns v2 makes mutt's coloring model implementable.
       the hardcoded layout
 - [ ] `%M` collapsed-thread count in index_format while at it
 
-## R22 — distribution (1.21)
+## R22 — distribution
 
 Make it installable without a checkout.
 

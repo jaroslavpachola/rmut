@@ -5,8 +5,8 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.16** — everything from the 1.0 roadmap plus R5–R17: mutt-style
-index
+**1.17** — everything from the 1.0 roadmap plus R5–R17 and hardening
+(R19): mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
 menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
@@ -30,10 +30,12 @@ the other configured mailboxes, IMAP IDLE, and **address completion**
 results, **macros** (R13): a key replays a sequence, prompts included,
 **OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
 `token_command`, **mbox** (R15): system spools with sync write-back,
-**index polish** (R16): `%l` line counts and list-aware `%L`, and a
-**sidebar** (R17): the configured mailboxes with new-mail counts. A
-pty-driven e2e suite (including fake IMAP/SMTP servers and a stub gpg)
-lives in `tests/e2e/`.
+**index polish** (R16): `%l` line counts and list-aware `%L`, a
+**sidebar** (R17): the configured mailboxes with new-mail counts, and
+**hardening** (R19): transparent IMAP reconnect, incremental refresh,
+a header cache for large maildirs, mbox rewrite backups. A pty-driven
+e2e suite (including fake IMAP/SMTP servers and a stub gpg) lives in
+`tests/e2e/`.
 
 ## Install & run
 
@@ -101,7 +103,10 @@ pushes your changes to the server (flags via UID STORE, deletes via
 EXPUNGE). New mail is announced by **IDLE** (RFC 2177, on a second
 connection) and shows up within a second; when the server doesn't
 support IDLE, the NOOP poll (`poll_seconds`) picks it up as before.
-The folder browser asks the server for UNSEEN counts (STATUS). The
+The folder browser asks the server for UNSEEN counts (STATUS). A
+connection dropped by laptop sleep or a server timeout is transparently
+reopened and the operation retried once; polls fetch only new arrivals
+unless the server reported flag changes or expunges. The
 password comes from `password_command` (e.g. `pass show mail/work`),
 run once per session — or from a stored `password`, if you accept a
 secret sitting in the config file (keep it chmod 600).
@@ -122,7 +127,8 @@ all work unchanged, and messages are keyed by content so your flags
 survive when the spool grows. `$` sync writes changes back into the
 file — deleted messages dropped, `Status:`/`X-Status:` headers
 rewritten (`RO`/`AF`), mboxrd `>From` quoting preserved — under an
-exclusive flock, and refuses (rather than clobbers) when the spool
+exclusive flock, with a crash backup kept in the cache until the
+rewrite lands, and refuses (rather than clobbers) when the spool
 changed since the last look; check for new mail (`G`) and sync again.
 New deliveries are picked up by the regular poll.
 

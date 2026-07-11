@@ -19,6 +19,9 @@ pub(crate) struct Expect {
     /// IMAP: send only `reply`, no tagged completion — for IDLE, which
     /// is completed by a later DONE step.
     untagged: bool,
+    /// IMAP: drop the connection instead of answering (reconnect
+    /// tests); the next step is served on a fresh connection.
+    drop_conn: bool,
 }
 
 impl Expect {
@@ -28,6 +31,7 @@ impl Expect {
             reply,
             fail: None,
             untagged: false,
+            drop_conn: false,
         }
     }
 
@@ -37,6 +41,7 @@ impl Expect {
             reply: String::new(),
             fail: Some(status),
             untagged: false,
+            drop_conn: false,
         }
     }
 
@@ -46,6 +51,17 @@ impl Expect {
             reply,
             fail: None,
             untagged: true,
+            drop_conn: false,
+        }
+    }
+
+    pub(crate) fn drop_conn(cmd: &'static str) -> Expect {
+        Expect {
+            cmd,
+            reply: String::new(),
+            fail: None,
+            untagged: false,
+            drop_conn: true,
         }
     }
 }
@@ -92,6 +108,9 @@ pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
                     "server expected {:?}, got {line:?}",
                     step.cmd
                 );
+                if step.drop_conn {
+                    break; // hang up; the next step waits on a new connection
+                }
                 // Untagged client lines (IDLE's DONE, SASL payloads)
                 // complete with the tag of the command they belong to.
                 // The client's tags are "aN" (and "rmut0" for STARTTLS).

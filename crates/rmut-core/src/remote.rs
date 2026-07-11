@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result, ensure};
 
 use crate::config::{Account, AuthKind};
-use crate::imap::{Client, Fetched};
+use crate::imap::{Changes, Client, Fetched};
 use crate::maildir::{self, Flags, MailFile};
+use crate::net;
 
 const PARTIAL_MARKER: &[u8] = b"X-Rmut-Partial: 1\r\n";
 
@@ -27,6 +28,11 @@ pub struct Remote {
     pub mailbox: String,
     pub cache: PathBuf,
     client: Client,
+    /// Credential kept for transparent reconnects.
+    secret: String,
+    uidvalidity: u32,
+    /// Highest UID mirrored so far; arrivals are fetched from here.
+    last_uid: u32,
 }
 
 /// `imap:account[/mailbox]` → (account, mailbox); INBOX when omitted.
@@ -138,16 +144,22 @@ fn login(client: &mut Client, account: &Account, secret: &str) -> Result<()> {
     }
 }
 
+/// A fresh, logged-in session.
+fn connect_client(account: &Account, secret: &str) -> Result<Client> {
+    let host = account
+        .imap_host
+        .as_deref()
+        .with_context(|| format!("account {} has no imap_host", account.name))?;
+    let mut client = Client::connect(host, account.imap_port, account.imap_tls)?;
+    login(&mut client, account, secret)?;
+    Ok(client)
+}
+
 impl Remote {
     /// Connect, log in, select, and bring the cache maildir up to date.
     pub fn open(account: &Account, mailbox: &str, password: &str) -> Result<Remote> {
         let mailbox = &clean_mailbox(mailbox);
-        let host = account
-            .imap_host
-            .as_deref()
-            .with_context(|| format!("account {} has no imap_host", account.name))?;
-        let mut client = Client::connect(host, account.imap_port, account.imap_tls)?;
-        login(&mut client, account, password)?;
+        let mut client = connect_client(account, password)?;
         let select = client.select(mailbox)?;
         let cache = cache_dir(&account.name, mailbox);
         maildir::create(&cache)?;
@@ -169,22 +181,59 @@ impl Remote {
             mailbox: mailbox.to_string(),
             cache,
             client,
+            secret: password.to_string(),
+            uidvalidity: select.uidvalidity,
+            last_uid: 0,
         };
         remote.refresh()?;
         Ok(remote)
+    }
+
+    /// One transparent reconnect after a dropped connection: fresh
+    /// session, same mailbox. A changed UIDVALIDITY means the cache is
+    /// stale — that needs a real reopen, not a silent retry.
+    fn reconnect(&mut self) -> Result<()> {
+        let mut client = connect_client(&self.account, &self.secret)?;
+        let select = client.select(&self.mailbox)?;
+        ensure!(
+            select.uidvalidity == self.uidvalidity,
+            "UIDVALIDITY changed — reopen the mailbox"
+        );
+        self.client = client;
+        Ok(())
+    }
+
+    /// Run an IMAP operation, reconnecting and retrying once when the
+    /// connection died under us (laptop sleep, server timeout). Every
+    /// operation this wraps is idempotent.
+    fn retry<T>(&mut self, mut op: impl FnMut(&mut Client, &Path) -> Result<T>) -> Result<T> {
+        match op(&mut self.client, &self.cache) {
+            Err(err) if net::is_connection_error(&err) => {
+                self.reconnect()
+                    .with_context(|| format!("reconnect after: {err:#}"))?;
+                op(&mut self.client, &self.cache)
+            }
+            other => other,
+        }
     }
 
     /// Reconcile the cache with the server: pull flag changes, drop
     /// expunged messages, download headers of new ones. Returns how
     /// many new messages arrived.
     pub fn refresh(&mut self) -> Result<usize> {
+        let (arrived, max_uid) = self.retry(Self::reconcile)?;
+        self.last_uid = max_uid;
+        Ok(arrived)
+    }
+
+    fn reconcile(client: &mut Client, cache: &Path) -> Result<(usize, u32)> {
         let mut by_uid: HashMap<u32, MailFile> = HashMap::new();
-        for file in maildir::scan(&self.cache)? {
+        for file in maildir::scan(cache)? {
             if let Some(uid) = uid_of(&file.path) {
                 by_uid.insert(uid, file);
             }
         }
-        let metas = self.client.uid_fetch_flags("1:*")?;
+        let metas = client.uid_fetch_flags("1:*")?;
         let mut new_uids: Vec<u32> = Vec::new();
         let mut on_server: HashSet<u32> = HashSet::new();
         for meta in &metas {
@@ -212,41 +261,46 @@ impl Remote {
                 .map(u32::to_string)
                 .collect::<Vec<_>>()
                 .join(",");
-            for fetched in self.client.uid_fetch_headers(&set)? {
-                self.write_partial(&fetched)?;
+            for fetched in client.uid_fetch_headers(&set)? {
+                write_partial(cache, &fetched)?;
             }
         }
-        Ok(new_uids.len())
+        let max_uid = metas.iter().map(|m| m.uid).max().unwrap_or(0);
+        Ok((new_uids.len(), max_uid))
     }
 
-    /// Header-only cache file for a message we haven't viewed yet.
-    fn write_partial(&self, fetched: &Fetched) -> Result<()> {
-        let header = fetched.body.as_deref().unwrap_or_default();
-        let mut content = Vec::with_capacity(PARTIAL_MARKER.len() + header.len());
-        content.extend_from_slice(PARTIAL_MARKER);
-        content.extend_from_slice(header);
-        let sub = if fetched.flags.seen { "cur" } else { "new" };
-        let name = format!(
-            "{}.rmut,S={}{}",
-            fetched.uid,
-            fetched.size,
-            fetched.flags.to_info()
-        );
-        let path = self.cache.join(sub).join(name);
-        fs::write(&path, &content).with_context(|| format!("writing {}", path.display()))
+    /// Mirror only arrivals: everything above the last mirrored UID.
+    fn fetch_new(&mut self) -> Result<usize> {
+        let last = self.last_uid;
+        let (arrived, max_uid) = self.retry(|client, cache| {
+            let mut arrived = 0usize;
+            let mut max_uid = last;
+            for fetched in client.uid_fetch_headers(&format!("{}:*", last + 1))? {
+                // "N:*" always returns at least the last message,
+                // even when nothing is newer.
+                if fetched.uid > last {
+                    write_partial(cache, &fetched)?;
+                    arrived += 1;
+                    max_uid = max_uid.max(fetched.uid);
+                }
+            }
+            Ok((arrived, max_uid))
+        })?;
+        self.last_uid = max_uid;
+        Ok(arrived)
     }
 
     /// Replace a header-only cache file with the full message.
     pub fn fetch_body(&mut self, path: &Path) -> Result<()> {
         let uid = uid_of(path).context("not a cached IMAP message")?;
-        let body = self.client.uid_fetch_full(uid)?;
+        let body = self.retry(|client, _| client.uid_fetch_full(uid))?;
         fs::write(path, &body).with_context(|| format!("writing {}", path.display()))
     }
 
     /// Push a local flag change (from `$` sync) to the server.
     pub fn push_flags(&mut self, path: &Path, flags: Flags) -> Result<()> {
         let uid = uid_of(path).context("not a cached IMAP message")?;
-        self.client.uid_store_flags(uid, flags)
+        self.retry(|client, _| client.uid_store_flags(uid, flags))
     }
 
     /// Mark the given cached messages \Deleted and expunge them.
@@ -257,8 +311,11 @@ impl Remote {
             .map(|u| u.to_string())
             .collect();
         ensure!(uids.len() == paths.len(), "unrecognized cache filename");
-        self.client.uid_delete(&uids.join(","))?;
-        self.client.expunge()
+        let set = uids.join(",");
+        self.retry(|client, _| {
+            client.uid_delete(&set)?;
+            client.expunge()
+        })
     }
 
     /// Selectable folders with their UNSEEN counts, for the folder
@@ -266,23 +323,25 @@ impl Remote {
     /// (STATUS must not target the selected mailbox); a failing STATUS
     /// just shows as 0.
     pub fn folders(&mut self) -> Result<Vec<(String, usize)>> {
-        let names: Vec<String> = self
-            .client
-            .list()?
-            .into_iter()
-            .filter(|f| !f.no_select)
-            .map(|f| f.name)
-            .collect();
-        let mut out = Vec::with_capacity(names.len());
-        for name in names {
-            let unseen = if name == self.mailbox {
-                maildir::new_count(&self.cache)
-            } else {
-                self.client.status_unseen(&name).unwrap_or(0) as usize
-            };
-            out.push((name, unseen));
-        }
-        Ok(out)
+        let open = self.mailbox.clone();
+        self.retry(move |client, cache| {
+            let names: Vec<String> = client
+                .list()?
+                .into_iter()
+                .filter(|f| !f.no_select)
+                .map(|f| f.name)
+                .collect();
+            let mut out = Vec::with_capacity(names.len());
+            for name in names {
+                let unseen = if name == open {
+                    maildir::new_count(cache)
+                } else {
+                    client.status_unseen(&name).unwrap_or(0) as usize
+                };
+                out.push((name, unseen));
+            }
+            Ok(out)
+        })
     }
 
     /// Unseen count of one folder of this account, for the sidebar:
@@ -292,7 +351,8 @@ impl Remote {
         if folder == self.mailbox {
             maildir::new_count(&self.cache)
         } else {
-            self.client.status_unseen(&folder).unwrap_or(0) as usize
+            self.retry(|client, _| client.status_unseen(&folder))
+                .unwrap_or(0) as usize
         }
     }
 
@@ -301,7 +361,7 @@ impl Remote {
     /// APPEND a message into another folder of this account (`s` save).
     pub fn append_to(&mut self, mailbox: &str, flags: Flags, body: &[u8]) -> Result<String> {
         let folder = clean_mailbox(mailbox);
-        self.client.append(&folder, flags, body)?;
+        self.retry(|client, _| client.append(&folder, flags, body))?;
         Ok(folder)
     }
 
@@ -311,18 +371,36 @@ impl Remote {
             seen: true,
             ..Default::default()
         };
-        self.client.append(&folder, flags, body)?;
+        self.retry(|client, _| client.append(&folder, flags, body))?;
         Ok(folder)
     }
 
-    /// Poll the server; refresh the cache when it reported changes.
+    /// Poll the server. Arrivals alone are fetched incrementally from
+    /// the last known UID; anything else triggers a full reconcile.
     pub fn check_new(&mut self) -> Result<usize> {
-        if self.client.noop()? {
-            self.refresh()
-        } else {
-            Ok(0)
+        match self.retry(|client, _| client.noop_changes())? {
+            Changes::None => Ok(0),
+            Changes::NewOnly => self.fetch_new(),
+            Changes::Full => self.refresh(),
         }
     }
+}
+
+/// Header-only cache file for a message we haven't viewed yet.
+fn write_partial(cache: &Path, fetched: &Fetched) -> Result<()> {
+    let header = fetched.body.as_deref().unwrap_or_default();
+    let mut content = Vec::with_capacity(PARTIAL_MARKER.len() + header.len());
+    content.extend_from_slice(PARTIAL_MARKER);
+    content.extend_from_slice(header);
+    let sub = if fetched.flags.seen { "cur" } else { "new" };
+    let name = format!(
+        "{}.rmut,S={}{}",
+        fetched.uid,
+        fetched.size,
+        fetched.flags.to_info()
+    );
+    let path = cache.join(sub).join(name);
+    fs::write(&path, &content).with_context(|| format!("writing {}", path.display()))
 }
 
 impl Drop for Remote {
@@ -362,28 +440,52 @@ pub fn idle_watch(account: &Account, mailbox: &str, password: &str) -> IdleWatch
     let (account, mailbox, password) = (account.clone(), mailbox.to_string(), password.to_string());
     let (thread_changed, thread_stop) = (Arc::clone(&changed), Arc::clone(&stop));
     std::thread::spawn(move || {
-        let Some(host) = account.imap_host.as_deref() else {
-            return;
-        };
-        let Ok(mut client) = Client::connect(host, account.imap_port, account.imap_tls) else {
-            return;
-        };
-        if login(&mut client, &account, &password).is_err()
-            || !client.supports_idle().unwrap_or(false)
-            || client.select(&mailbox).is_err()
-        {
-            return;
-        }
+        // Respawn dropped sessions (laptop sleep, server timeout) with
+        // a pause between attempts; only "no IDLE support" gives up.
         while !thread_stop.load(Ordering::Relaxed) {
-            match client.idle(&thread_stop) {
-                Ok(true) => thread_changed.store(true, Ordering::Relaxed),
-                Ok(false) => {}
-                Err(_) => return,
+            if !idle_session(&account, &mailbox, &password, &thread_stop, &thread_changed) {
+                return;
+            }
+            for _ in 0..60 {
+                if thread_stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
-        client.logout();
     });
     IdleWatch { changed, stop }
+}
+
+/// One IDLE session, ending when the connection dies or `stop` is
+/// set. True = worth reconnecting later; false = give up for good.
+fn idle_session(
+    account: &Account,
+    mailbox: &str,
+    secret: &str,
+    stop: &AtomicBool,
+    changed: &AtomicBool,
+) -> bool {
+    let Ok(mut client) = connect_client(account, secret) else {
+        return true; // maybe offline right now
+    };
+    match client.supports_idle() {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(_) => return true,
+    }
+    if client.select(mailbox).is_err() {
+        return true;
+    }
+    while !stop.load(Ordering::Relaxed) {
+        match client.idle(stop) {
+            Ok(true) => changed.store(true, Ordering::Relaxed),
+            Ok(false) => {}
+            Err(_) => return true,
+        }
+    }
+    client.logout();
+    false
 }
 
 #[cfg(test)]
@@ -599,6 +701,72 @@ mod tests {
                 remote.append_sent(b"From: a@b\r\n\r\nx\r\n").unwrap(),
                 "Sent"
             );
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn reconnects_and_retries_after_a_dropped_connection() {
+        let mut script = open_script();
+        script.push(Expect::drop_conn("NOOP"));
+        // The fresh connection: greeting, LOGIN, SELECT, retried NOOP.
+        script.push(Expect::new("LOGIN", String::new()));
+        script.push(Expect::new(
+            "SELECT \"INBOX\"",
+            "* 2 EXISTS\r\n* OK [UIDVALIDITY 42] ok\r\n".into(),
+        ));
+        script.push(Expect::new("NOOP", String::new()));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            assert_eq!(remote.check_new().unwrap(), 0);
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn reconnect_refuses_a_changed_uidvalidity() {
+        let mut script = open_script();
+        script.push(Expect::drop_conn("NOOP"));
+        script.push(Expect::new("LOGIN", String::new()));
+        script.push(Expect::new(
+            "SELECT \"INBOX\"",
+            "* 2 EXISTS\r\n* OK [UIDVALIDITY 43] changed\r\n".into(),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let err = remote.check_new().unwrap_err();
+            assert!(
+                format!("{err:#}").contains("UIDVALIDITY changed"),
+                "{err:#}"
+            );
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn arrivals_fetch_incrementally() {
+        let mut script = open_script(); // mirrors UIDs 10 and 11
+        script.push(Expect::new("NOOP", "* 3 EXISTS\r\n".into()));
+        script.push(Expect::new(
+            "UID FETCH 12:* (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+            fetch_reply(12, "", "Subject: third\r\n\r\n"),
+        ));
+        // Nothing newer: the N:* quirk returns the last message,
+        // which must not be mirrored twice.
+        script.push(Expect::new("NOOP", "* 3 EXISTS\r\n".into()));
+        script.push(Expect::new(
+            "UID FETCH 13:* (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+            fetch_reply(12, "", "Subject: third\r\n\r\n"),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            assert_eq!(remote.check_new().unwrap(), 1);
+            assert_eq!(remote.check_new().unwrap(), 0);
+            let files = maildir::scan(&remote.cache).unwrap();
+            assert_eq!(files.len(), 3);
         });
         handle.join().unwrap();
     }

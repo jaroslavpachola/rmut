@@ -49,6 +49,16 @@ impl Write for Stream {
     }
 }
 
+/// True when the error means the connection itself died (dropped
+/// socket, EOF) rather than the server saying NO — the caller may
+/// reconnect and retry the command once.
+pub(crate) fn is_connection_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>().is_some()
+        || err
+            .chain()
+            .any(|c| c.to_string().contains("server closed the connection"))
+}
+
 /// True when the error is the socket's read timeout firing (the IDLE
 /// wait uses it as a tick to check its stop flag).
 pub(crate) fn is_timeout(err: &anyhow::Error) -> bool {

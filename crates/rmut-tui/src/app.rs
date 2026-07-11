@@ -13,7 +13,7 @@ use rmut_core::config::{Account, Config};
 use rmut_core::message::Envelope;
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote::{self, Remote};
-use rmut_core::{alias, compose, maildir, mbox, message, pgp, smtp, thread};
+use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thread};
 
 use crate::keymap::{IndexAction, Keymap, PagerAction};
 use crate::theme::Theme;
@@ -259,14 +259,12 @@ fn dir_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
 
 impl App {
     pub fn open(dir: &Path, config: Config) -> Result<Self> {
-        let mut msgs = Vec::new();
-        let mut skipped = 0usize;
-        for file in maildir::scan(dir)? {
-            match message::envelope(file) {
-                Ok(env) => msgs.push(Msg { env, dirty: false }),
-                Err(_) => skipped += 1,
-            }
-        }
+        // The header cache spares re-parsing every message on open.
+        let (envelopes, skipped) = hdrcache::load_envelopes(dir)?;
+        let mut msgs: Vec<Msg> = envelopes
+            .into_iter()
+            .map(|env| Msg { env, dirty: false })
+            .collect();
         // Mutt's default sort: date, oldest first.
         msgs.sort_by_key(|m| m.env.date);
         let visible: Vec<usize> = (0..msgs.len()).collect();

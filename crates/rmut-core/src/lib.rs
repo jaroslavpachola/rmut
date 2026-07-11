@@ -2,6 +2,7 @@ pub mod alias;
 pub mod compose;
 pub mod config;
 pub mod format;
+pub mod hdrcache;
 pub mod imap;
 pub mod maildir;
 pub mod mbox;

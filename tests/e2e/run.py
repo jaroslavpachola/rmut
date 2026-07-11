@@ -147,6 +147,9 @@ def base_env(tmp, extra=None):
         "RMUT_CONFIG": os.path.join(tmp, "no-config.toml"),
         "RMUT_ALIASES": os.path.join(tmp, "no-aliases"),
         "EMAIL": "jarda@example.com",
+        # Keep header/mirror caches inside the sandbox, away from the
+        # user's real ~/.cache.
+        "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
     }
     env.update(extra or {})
     return env
@@ -559,11 +562,18 @@ class FakeImap(threading.Thread):
                     conn.sendall(b'* LIST () "/" "INBOX"\r\n* LIST () "/" "Sent"\r\n')
                 elif up.startswith("UID FETCH"):
                     m = re.match(r"UID FETCH ([\d,:*]+) \((.*)\)", cmd, re.I)
-                    uids = (
-                        sorted(self.msgs)
-                        if m.group(1) == "1:*"
-                        else [int(u) for u in m.group(1).split(",")]
-                    )
+                    spec = m.group(1)
+                    if spec == "1:*":
+                        uids = sorted(self.msgs)
+                    elif spec.endswith(":*"):
+                        start = int(spec[:-2])
+                        uids = [u for u in sorted(self.msgs) if u >= start]
+                        if not uids and self.msgs:
+                            # the IMAP quirk: N:* returns at least the
+                            # last message
+                            uids = [max(self.msgs)]
+                    else:
+                        uids = [int(u) for u in spec.split(",")]
                     for seq, uid in enumerate(uids, 1):
                         if uid not in self.msgs:
                             continue

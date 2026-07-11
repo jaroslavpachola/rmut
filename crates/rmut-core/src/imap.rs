@@ -33,6 +33,16 @@ pub struct Select {
     pub uidvalidity: u32,
 }
 
+/// What a NOOP's untagged responses amounted to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Changes {
+    None,
+    /// Only new arrivals: fetching from the last known UID suffices.
+    NewOnly,
+    /// Flag changes / expunges / anything else: reconcile everything.
+    Full,
+}
+
 /// One message from a FETCH response; `body` holds whatever body
 /// section the command asked for (headers or the full message).
 #[derive(Debug)]
@@ -208,10 +218,24 @@ impl Client {
         self.finish(&tag).map(drop)
     }
 
-    /// True when the server reported anything with the NOOP — new mail,
-    /// expunges, or flag changes.
-    pub fn noop(&mut self) -> Result<bool> {
-        Ok(!self.command("NOOP")?.is_empty())
+    /// NOOP, classifying the server's untagged report: nothing, only
+    /// new arrivals (EXISTS/RECENT), or anything else — flag changes,
+    /// expunges, unknown lines — that needs a full reconciliation.
+    pub fn noop_changes(&mut self) -> Result<Changes> {
+        let lines = self.command("NOOP")?;
+        if lines.is_empty() {
+            return Ok(Changes::None);
+        }
+        let new_only = lines.iter().all(|l| {
+            let t = l.text.trim_end();
+            t.ends_with(" EXISTS") || t.ends_with(" RECENT")
+        });
+        let arrivals = lines.iter().any(|l| l.text.trim_end().ends_with(" EXISTS"));
+        Ok(if new_only && arrivals {
+            Changes::NewOnly
+        } else {
+            Changes::Full
+        })
     }
 
     /// True when the server advertises IDLE (RFC 2177).
@@ -652,8 +676,30 @@ mod tests {
                 b"From: a@b\r\n\r\nhi\r\n",
             )
             .unwrap();
-        assert!(client.noop().unwrap());
+        assert_eq!(client.noop_changes().unwrap(), Changes::NewOnly);
         client.logout();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn noop_classifies_changes() {
+        let (port, handle) = testserver::imap(vec![
+            testserver::Expect::new("NOOP", String::new()),
+            testserver::Expect::new("NOOP", "* 4 EXISTS\r\n* 1 RECENT\r\n".into()),
+            testserver::Expect::new("NOOP", "* 2 EXPUNGE\r\n".into()),
+            testserver::Expect::new(
+                "NOOP",
+                "* 1 FETCH (FLAGS (\\Seen))\r\n* 5 EXISTS\r\n".into(),
+            ),
+            testserver::Expect::new("NOOP", "* 0 RECENT\r\n".into()),
+        ]);
+        let mut client = Client::connect("127.0.0.1", port, false).unwrap();
+        assert_eq!(client.noop_changes().unwrap(), Changes::None);
+        assert_eq!(client.noop_changes().unwrap(), Changes::NewOnly);
+        assert_eq!(client.noop_changes().unwrap(), Changes::Full);
+        assert_eq!(client.noop_changes().unwrap(), Changes::Full);
+        // RECENT without EXISTS says nothing certain: reconcile.
+        assert_eq!(client.noop_changes().unwrap(), Changes::Full);
         handle.join().unwrap();
     }
 
