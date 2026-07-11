@@ -323,6 +323,12 @@ def scenario_compose_send_postpone(tmp):
 def scenario_config(tmp):
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane", "ci"])
+    # A mailing-list message, for %L and %l.
+    with open(os.path.join(md, "cur", "1751960000.9.host:2,S"), "w") as f:
+        f.write("From: announce-bot@example.com\r\nTo: dev@lists.example.com\r\n"
+                "List-Id: <dev.lists.example.com>\r\nSubject: list ping\r\n"
+                "Date: Wed, 8 Jul 2026 09:00:00 +0200\r\n"
+                "Message-ID: <lp@example.com>\r\n\r\none\r\ntwo\r\n")
     make_maildir(tmp, "Sent")
     cfg = os.path.join(tmp, "config.toml")
     with open(cfg, "w") as f:
@@ -336,7 +342,7 @@ mailboxes = ["{md}"]
 sent = "{os.path.join(tmp, 'Sent')}"
 poll_seconds = 1
 [index]
-format = "%C|%-4.4F|%s"
+format = "%C|%-4.4F|%l|%L|%s"
 [keys.index]
 sync = "w"
 [macros.index]
@@ -344,7 +350,9 @@ L = "l~f jane<enter>"
 """
         )
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
-    r.expect("1|buil|CI failed on main", "2|Jane|Lunch on Friday?")
+    r.expect("1|buil|1|build-bot@example.com|CI failed on main",
+             "2|Jane|5|Jane Doe|Lunch on Friday?",
+             "3|anno|2|To dev|list ping")
     r.keys(b"=d")  # first message (CI), mark deleted
     r.keys(b"w")  # remapped sync; confirm the purge
     r.expect("Purge 1 deleted message(s)?")

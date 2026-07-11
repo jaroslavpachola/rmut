@@ -198,6 +198,8 @@ mod tests {
             tagged: false,
             to: vec![],
             cc: vec![],
+            lines: Some(0),
+            list: None,
         }
     }
 

@@ -243,18 +243,18 @@ For Gmail/O365 accounts, where app passwords are dying out.
       rewritten (RO/AF), quoting preserved; refuses when the spool
       changed since the mirror (refresh with G, sync again)
 
-## R16 — index polish: %l and %L (1.15)
+## R16 — index polish: %l and %L (done, 1.15)
 
-Small, closes the two documented index_format gaps.
+Small, closed the two documented index_format gaps.
 
-- [ ] `%l`: message line count — cheap for local maildirs (count on
-      envelope parse, cache in the envelope); header-only IMAP cache
-      files show the `%?l?…&…?` else branch until the body is fetched
-- [ ] `%L`: mutt's list-name detection — show the List-Id (or the
-      To/Cc list address) instead of the author for mailing-list
-      traffic; needs List-Id/List-Post in the envelope
-- [ ] Importer: stop annotating imported index_format strings with
-      the "%l is never set" caveat once both render
+- [x] `%l`: body line count, counted on envelope parse and cached;
+      header-only IMAP cache files show the `%?l?…&…?` else branch
+      until the body is fetched (and update on first view)
+- [x] `%L`: list-name detection via List-Id — "To <name>" (the header
+      display name, else the id's first label) instead of the author
+      for mailing-list traffic; falls back to %F
+- [x] Importer: imported index_format strings no longer carry the
+      "%l is never set" caveat
 
 ## R17 — sidebar (1.16)
 

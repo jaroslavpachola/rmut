@@ -1,9 +1,10 @@
 //! Mutt-like index format strings: `%[-][min][.max]X` where X is
-//! `C` number, `Z` status/flag/mark chars, `d` date, `F` from (`L` is
-//! its list-aware alias), `c` size, `l` lines (unknown, always empty),
-//! `s` subject, `%` a literal percent. `-` left-aligns, `min` pads,
-//! `.max` truncates (all in characters). Mutt conditionals work too:
-//! `%?X?then&else?` renders `then` when field X is set and non-zero.
+//! `C` number, `Z` status/flag/mark chars, `d` date, `F` from, `L`
+//! its list-aware variant ("To <list>" for List-Id mail), `c` size,
+//! `l` body lines, `s` subject, `%` a literal percent. `-`
+//! left-aligns, `min` pads, `.max` truncates (all in characters).
+//! Mutt conditionals work too: `%?X?then&else?` renders `then` when
+//! field X is set and non-zero.
 
 pub const DEFAULT_FORMAT: &str = "%4C %Z %-6d %-20.20F %5c %s";
 
@@ -17,6 +18,12 @@ pub struct IndexFields<'a> {
     pub date: &'a str,
     pub from: &'a str,
     pub size: &'a str,
+    /// Body line count; None (header-only cache file) makes `%l`
+    /// empty, so `%?l?…&…?` shows its else branch.
+    pub lines: Option<usize>,
+    /// Mailing-list name (List-Id); `%L` shows "To <name>" instead of
+    /// the author when set.
+    pub list: Option<&'a str>,
     pub subject: &'a str,
 }
 
@@ -27,11 +34,13 @@ fn value_of(spec: char, f: &IndexFields) -> String {
         'C' => f.number.to_string(),
         'Z' => format!("{}{}{}", f.status, f.flag, f.mark),
         'd' => f.date.to_string(),
-        'F' | 'L' => f.from.to_string(),
+        'F' => f.from.to_string(),
+        'L' => match f.list {
+            Some(list) => format!("To {list}"),
+            None => f.from.to_string(),
+        },
         'c' => f.size.to_string(),
-        // Line counts are not tracked; conditionals on %l therefore
-        // take their else branch (usually %c).
-        'l' => String::new(),
+        'l' => f.lines.map(|n| n.to_string()).unwrap_or_default(),
         's' => f.subject.to_string(),
         '%' => "%".to_string(),
         other => format!("%{other}"),
@@ -122,6 +131,8 @@ mod tests {
             date: "Jul 06",
             from: "Jane Doe",
             size: "1.2K",
+            lines: None,
+            list: None,
             subject: "Lunch",
         }
     }
@@ -137,11 +148,31 @@ mod tests {
     #[test]
     fn conditionals_and_list_alias() {
         let f = fields();
-        // %l is never known: the else branch (size) wins.
+        // Unknown line count (header-only cache): the else branch wins.
         assert_eq!(render("(%?l?%4l&%5c?)", &f), "( 1.2K)");
         assert_eq!(render("%?s?have&none?", &f), "have");
         assert_eq!(render("%?l?lines?", &f), "");
         assert_eq!(render("%-10.10L|", &f), "Jane Doe  |");
+        // A known count renders and satisfies the conditional.
+        let counted = IndexFields {
+            lines: Some(42),
+            ..fields()
+        };
+        assert_eq!(render("(%?l?%4l&%5c?)", &counted), "(  42)");
+        assert_eq!(render("%l", &counted), "42");
+        // A zero-line body is "unset" for the conditional, like mutt.
+        let empty = IndexFields {
+            lines: Some(0),
+            ..fields()
+        };
+        assert_eq!(render("%?l?%l&-?", &empty), "-");
+        // %L prefers the mailing list over the author.
+        let listed = IndexFields {
+            list: Some("dev"),
+            ..fields()
+        };
+        assert_eq!(render("%-10.10L|", &listed), "To dev    |");
+        assert_eq!(render("%F", &listed), "Jane Doe");
     }
 
     #[test]

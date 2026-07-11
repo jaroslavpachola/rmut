@@ -133,6 +133,8 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 ),
                 from: &env.from,
                 size: &humanize_size(env.file.size),
+                lines: env.lines,
+                list: env.list.as_deref(),
                 subject: &subject,
             },
         );

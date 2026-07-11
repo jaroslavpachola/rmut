@@ -25,6 +25,12 @@ pub struct Envelope {
     /// index mark.
     pub to: Vec<String>,
     pub cc: Vec<String>,
+    /// Body line count for `%l`; None for header-only IMAP cache
+    /// files, whose `%?l?…&…?` else branch shows until the body is
+    /// fetched.
+    pub lines: Option<usize>,
+    /// Mailing-list name from List-Id, for `%L` ("To <name>").
+    pub list: Option<String>,
 }
 
 pub fn envelope(file: MailFile) -> Result<Envelope> {
@@ -58,6 +64,14 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     {
         references.push(id);
     }
+    let lines = if headers.get_first_value("X-Rmut-Partial").is_some() {
+        None // header-only IMAP cache file: the body is elsewhere
+    } else {
+        Some(body_lines(&raw))
+    };
+    let list = headers
+        .get_first_value("List-Id")
+        .and_then(|v| list_name(&v));
     Ok(Envelope {
         file,
         from,
@@ -68,7 +82,46 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         tagged: false,
         to,
         cc,
+        lines,
+        list,
     })
+}
+
+/// Lines in the body part (after the first blank line), counted on the
+/// raw bytes — cheap enough to do for every envelope.
+pub fn body_lines(raw: &[u8]) -> usize {
+    let mut offset = None;
+    let mut i = 0;
+    while i < raw.len() {
+        let Some(end) = raw[i..].iter().position(|&b| b == b'\n').map(|p| i + p) else {
+            break;
+        };
+        let line = &raw[i..end];
+        if line.is_empty() || line == b"\r" {
+            offset = Some(end + 1);
+            break;
+        }
+        i = end + 1;
+    }
+    let Some(offset) = offset else { return 0 };
+    let body = &raw[offset..];
+    body.iter().filter(|&&b| b == b'\n').count()
+        + usize::from(!body.is_empty() && !body.ends_with(b"\n"))
+}
+
+/// A short list name from a List-Id value: the display name when
+/// there is one ("Dev talk <dev.lists.example.com>"), otherwise the
+/// id's first dot-separated label.
+fn list_name(value: &str) -> Option<String> {
+    if let Some((name, _)) = value.split_once('<') {
+        let name = name.trim().trim_matches('"').trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    let inner = value.trim().trim_start_matches('<').trim_end_matches('>');
+    let label = inner.split('.').next().unwrap_or(inner).trim();
+    (!label.is_empty()).then(|| label.to_string())
 }
 
 /// Bare lowercase addresses in an address header value.
@@ -406,6 +459,43 @@ mod tests {
         assert_eq!(parse_msg_ids("<a@x> <b@y>"), vec!["<a@x>", "<b@y>"]);
         assert_eq!(parse_msg_ids("junk <a@x> junk"), vec!["<a@x>"]);
         assert!(parse_msg_ids("no ids here <broken").is_empty());
+    }
+
+    #[test]
+    fn envelope_counts_lines_and_finds_the_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = |name: &str, content: &str| {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            envelope(crate::maildir::MailFile {
+                path,
+                is_new: false,
+                flags: Default::default(),
+                size: 0,
+            })
+            .unwrap()
+        };
+        let env = file(
+            "listed",
+            "From: a@x\r\nList-Id: Dev talk <dev.lists.example.com>\r\nSubject: s\r\n\r\none\r\ntwo\r\nthree",
+        );
+        assert_eq!(env.lines, Some(3)); // last line unterminated
+        assert_eq!(env.list.as_deref(), Some("Dev talk"));
+        let env = file(
+            "bare-list",
+            "From: a@x\r\nList-Id: <announce.example.com>\r\nSubject: s\r\n\r\nhi\r\n",
+        );
+        assert_eq!(env.list.as_deref(), Some("announce"));
+        assert_eq!(env.lines, Some(1));
+        let env = file("plain", "From: a@x\r\nSubject: s\r\n\r\n");
+        assert!(env.list.is_none());
+        assert_eq!(env.lines, Some(0));
+        // Header-only IMAP cache file: the count is unknown.
+        let env = file(
+            "partial",
+            "X-Rmut-Partial: 1\r\nFrom: a@x\r\nSubject: s\r\n\r\n",
+        );
+        assert_eq!(env.lines, None);
     }
 
     #[test]

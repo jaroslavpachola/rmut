@@ -2150,6 +2150,12 @@ impl App {
             && remote::is_partial(path)
         {
             remote.fetch_body(path).context("cannot fetch message")?;
+            // The body is here now: %l can show its line count.
+            if let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
+                && let Ok(raw) = std::fs::read(path)
+            {
+                m.env.lines = Some(message::body_lines(&raw));
+            }
         }
         let mut view = message::load_with(path, &self.config.filters)?;
         // PGP messages: decrypt/verify via gpg, prepend the verdict

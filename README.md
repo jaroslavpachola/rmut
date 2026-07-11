@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.14** — everything from the 1.0 roadmap plus R5–R15: mutt-style
+**1.15** — everything from the 1.0 roadmap plus R5–R16: mutt-style
 index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
@@ -29,9 +29,10 @@ the other configured mailboxes, IMAP IDLE, and **address completion**
 (R12): Tab at the To prompt completes aliases and query_command
 results, **macros** (R13): a key replays a sequence, prompts included,
 **OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
-`token_command`, and **mbox** (R15): system spools with sync
-write-back. A pty-driven e2e suite (including fake IMAP/SMTP servers
-and a stub gpg) lives in `tests/e2e/`.
+`token_command`, **mbox** (R15): system spools with sync write-back,
+and **index polish** (R16): `%l` line counts and list-aware `%L`. A
+pty-driven e2e suite (including fake IMAP/SMTP servers and a stub gpg)
+lives in `tests/e2e/`.
 
 ## Install & run
 
@@ -211,7 +212,9 @@ query_command = "khard email --parsable %s"   # Tab completion lookup
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
-                                         # %F/%L from %c size %s subject
+                                         # %F from (%L: "To <list>" for
+                                         # List-Id mail) %c size %l body
+                                         # lines %s subject, and
                                          # %?X?then&else? conditionals
 sort = "threads"             # initial sort; reverse-date, size, ...
 sort_aux = "last-date-sent"  # threads ordered by their newest message
