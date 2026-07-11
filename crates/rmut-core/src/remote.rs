@@ -285,6 +285,17 @@ impl Remote {
         Ok(out)
     }
 
+    /// Unseen count of one folder of this account, for the sidebar:
+    /// the open folder from its cache, others via STATUS (0 on error).
+    pub fn unseen(&mut self, mailbox: &str) -> usize {
+        let folder = clean_mailbox(mailbox);
+        if folder == self.mailbox {
+            maildir::new_count(&self.cache)
+        } else {
+            self.client.status_unseen(&folder).unwrap_or(0) as usize
+        }
+    }
+
     /// Fcc: file the sent message into the account's Sent folder.
     /// Returns the folder name for the status line.
     /// APPEND a message into another folder of this account (`s` save).

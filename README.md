@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.15** — everything from the 1.0 roadmap plus R5–R16: mutt-style
+**1.16** — everything from the 1.0 roadmap plus R5–R17: mutt-style
 index
 with delete/flag/read toggles and real maildir sync, sort orders,
 limit/search patterns, mailbox switching, wrapped pager, attachment
@@ -30,7 +30,8 @@ the other configured mailboxes, IMAP IDLE, and **address completion**
 results, **macros** (R13): a key replays a sequence, prompts included,
 **OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
 `token_command`, **mbox** (R15): system spools with sync write-back,
-and **index polish** (R16): `%l` line counts and list-aware `%L`. A
+**index polish** (R16): `%l` line counts and list-aware `%L`, and a
+**sidebar** (R17): the configured mailboxes with new-mail counts. A
 pty-driven e2e suite (including fake IMAP/SMTP servers and a stub gpg)
 lives in `tests/e2e/`.
 
@@ -61,7 +62,9 @@ before purging deleted messages, like mutt), `o` sort
 Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
 + `n` next, `c` open mailbox by path, `y` folder browser (with
 new/unseen counts; folders holding new mail show bold), `G` check
-for new mail now, `v` attachments, `m` compose, `r` reply, `g` group
+for new mail now, `B` toggle the sidebar (Ctrl+N/Ctrl+P move its
+highlight, Ctrl+O opens the highlighted mailbox), `v` attachments,
+`m` compose, `r` reply, `g` group
 reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
 the raw message to a shell command, `b` bounce (resend as-is to new
 recipients, with a Resent-\* block), `e` edit the message as a new
@@ -229,6 +232,10 @@ context = 3                  # overlapping lines when paging
 
 [ui]
 theme = "default"            # or "mono"
+
+[sidebar]                    # left pane: mail.mailboxes with new-mail
+visible = false              # counts (B toggles at runtime; bold =
+width = 24                   # has new mail, > marks the open one)
 
 [colors]                     # status_fg status_bg deleted flagged
 deleted = "red"              # tagged header

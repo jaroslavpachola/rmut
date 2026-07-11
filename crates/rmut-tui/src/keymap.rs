@@ -151,6 +151,10 @@ pub enum IndexAction {
     Pipe,
     Bounce,
     Resend,
+    SidebarToggle,
+    SidebarNext,
+    SidebarPrev,
+    SidebarOpen,
     Help,
 }
 
@@ -221,6 +225,10 @@ impl IndexAction {
             Pipe => "pipe",
             Bounce => "bounce",
             Resend => "resend",
+            SidebarToggle => "sidebar-toggle",
+            SidebarNext => "sidebar-next",
+            SidebarPrev => "sidebar-prev",
+            SidebarOpen => "sidebar-open",
             Help => "help",
         }
     }
@@ -264,6 +272,10 @@ impl IndexAction {
             Pipe => "pipe raw message to a shell command",
             Bounce => "bounce (resend) message to new recipients",
             Resend => "edit the message as a new draft",
+            SidebarToggle => "show/hide the mailbox sidebar",
+            SidebarNext => "highlight the next sidebar mailbox",
+            SidebarPrev => "highlight the previous sidebar mailbox",
+            SidebarOpen => "open the highlighted sidebar mailbox",
             Help => "this help",
         }
     }
@@ -307,6 +319,10 @@ impl IndexAction {
             Pipe,
             Bounce,
             Resend,
+            SidebarToggle,
+            SidebarNext,
+            SidebarPrev,
+            SidebarOpen,
             Help,
         ]
     }
@@ -496,6 +512,10 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ch('|'), Pipe),
         (KeyPattern::ch('b'), Bounce),
         (KeyPattern::ch('e'), Resend),
+        (KeyPattern::ch('B'), SidebarToggle),
+        (KeyPattern::ctrl('n'), SidebarNext),
+        (KeyPattern::ctrl('p'), SidebarPrev),
+        (KeyPattern::ctrl('o'), SidebarOpen),
         (KeyPattern::ch('?'), Help),
     ]
 }

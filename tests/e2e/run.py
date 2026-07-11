@@ -366,7 +366,7 @@ L = "l~f jane<enter>"
     r.keys(b"?")
     r.expect("write changes to the maildir")
     r.keys(b"  ")  # two pages down: the action list has grown
-    r.expect("Patterns")
+    r.expect("(limit/search)")
     r.keys(b"q")
     # the macro replays its sequence through the limit prompt
     r.keys(b"L")
@@ -375,6 +375,41 @@ L = "l~f jane<enter>"
     # new-mail detection: drop a message into new/ and wait for the poll
     write_msgs(md, ["petr"])
     r.expect("new mail in", "+1", timeout=8)
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_sidebar(tmp):
+    """R17: the sidebar lists mailboxes with counts; move, open, toggle."""
+    md = make_maildir(tmp, "md")
+    md2 = make_maildir(tmp, "md2")
+    write_msgs(md, ["jane", "ci"])
+    write_msgs(md2, ["petr"])  # lands in new/: md2 counts 1
+    cfg = os.path.join(tmp, "sidebar-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            f"""
+[mail]
+mailboxes = ["{md}", "{md2}"]
+poll_seconds = 1
+[sidebar]
+visible = true
+width = 20
+"""
+        )
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect(">md", "md2 (1)", "Lunch on Friday?")
+    r.keys(b"\x0e\x0f")  # ctrl+n highlights md2, ctrl+o opens it
+    r.expect("Schůzka zítra", "[Msgs:1 New:1]")
+    # Let a poll set the watch baseline in md2, then mail lands in md.
+    r.settle(1.5)
+    write_msgs(md, ["petr"])
+    r.expect("new mail in", timeout=8)
+    r.keys(b"B")     # hide the sidebar...
+    r.keys(b"\x0e")  # ...then sidebar keys explain themselves
+    r.expect("sidebar is hidden")
+    r.keys(b"B")     # showing again repaints the whole pane fresh:
+    r.expect(">md2", "md (1)")
     r.keys(b"q")
     r.close()
 
@@ -1071,6 +1106,7 @@ SCENARIOS = [
     scenario_threads_and_fold,
     scenario_compose_send_postpone,
     scenario_config,
+    scenario_sidebar,
     scenario_send_via_config_sendmail,
     scenario_imap,
     scenario_mbox,

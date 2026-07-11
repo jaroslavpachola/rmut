@@ -62,6 +62,7 @@ pub struct Config {
     pub index: Index,
     pub pager: Pager,
     pub ui: Ui,
+    pub sidebar: Sidebar,
     pub colors: HashMap<String, String>,
     /// MIME type → shell command that renders the part (stdin → stdout),
     /// e.g. "text/html" = "w3m -dump -T text/html". Used when a message
@@ -155,6 +156,24 @@ pub struct Pager {
 #[serde(default)]
 pub struct Ui {
     pub theme: Option<String>,
+}
+
+/// The optional left pane listing `mail.mailboxes` with new-mail
+/// counts (toggle with B at runtime).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Sidebar {
+    pub visible: bool,
+    pub width: u16,
+}
+
+impl Default for Sidebar {
+    fn default() -> Self {
+        Sidebar {
+            visible: false,
+            width: 24,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -236,6 +236,12 @@ pub struct App {
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
     pending_keys: std::collections::VecDeque<KeyEvent>,
+    /// The left mailbox pane: (spec, new/unseen count) entries.
+    pub sidebar: Vec<(String, usize)>,
+    pub sidebar_sel: usize,
+    /// Which entry is the open mailbox (for its > marker).
+    pub sidebar_open: Option<usize>,
+    pub sidebar_visible: bool,
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
@@ -295,6 +301,7 @@ impl App {
         if let Ok(email) = std::env::var("EMAIL") {
             me.push(email.to_lowercase());
         }
+        let config_sidebar_visible = config.sidebar.visible;
         let mut app = App {
             dir: dir.to_path_buf(),
             title: dir.display().to_string(),
@@ -326,6 +333,10 @@ impl App {
             idle: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
+            sidebar: Vec::new(),
+            sidebar_sel: 0,
+            sidebar_open: None,
+            sidebar_visible: config_sidebar_visible,
             mailbox_new: HashMap::new(),
             tag_next: false,
             quit: false,
@@ -352,6 +363,12 @@ impl App {
     /// Open a mailbox by spec: an `imap:account[/folder]` string (the
     /// folder is mirrored into a cache maildir) or a local path.
     pub fn open_spec(spec: &str, config: Config) -> Result<Self> {
+        let mut app = Self::open_spec_inner(spec, config)?;
+        app.refresh_sidebar();
+        Ok(app)
+    }
+
+    fn open_spec_inner(spec: &str, config: Config) -> Result<Self> {
         match remote::parse_spec(spec) {
             Some((account_name, mailbox)) => {
                 let account = config
@@ -498,11 +515,44 @@ impl App {
             }
         }
         self.check_other_mailboxes();
+        self.refresh_sidebar();
         let current = dir_mtimes(&self.dir);
         if current == self.dir_mtimes {
             return;
         }
         self.rescan();
+    }
+
+    /// Rebuild the sidebar entries: the configured mailboxes with
+    /// their new/unseen counts (local: new/ scan; the open account's
+    /// IMAP folders: STATUS), the open mailbox always included.
+    fn refresh_sidebar(&mut self) {
+        if !self.sidebar_visible {
+            return;
+        }
+        let keep = self.sidebar.get(self.sidebar_sel).map(|e| e.0.clone());
+        let mut entries: Vec<(String, usize)> = Vec::new();
+        for spec in self.config.mail.mailboxes.clone() {
+            let count = match remote::parse_spec(&spec) {
+                Some((account, folder)) => match &mut self.remote {
+                    Some(remote) if remote.account.name == account => remote.unseen(folder),
+                    _ => 0, // other accounts: no connection just for a count
+                },
+                None => maildir::new_count(&expand_tilde(&spec)),
+            };
+            entries.push((spec, count));
+        }
+        let (title, dir) = (self.title.clone(), self.dir.clone());
+        let open = |e: &(String, usize)| e.0 == title || expand_tilde(&e.0) == dir;
+        if !entries.iter().any(&open) {
+            entries.insert(0, (self.title.clone(), self.new_count()));
+        }
+        self.sidebar_open = entries.iter().position(&open);
+        self.sidebar_sel = keep
+            .and_then(|k| entries.iter().position(|e| e.0 == k))
+            .or(self.sidebar_open)
+            .unwrap_or(0);
+        self.sidebar = entries;
     }
 
     /// Watch the other configured local mailboxes for growth in their
@@ -969,6 +1019,30 @@ impl App {
             }
             IndexAction::Folders => self.open_folder_browser(),
             IndexAction::Print => self.confirm_print(),
+            IndexAction::SidebarToggle => {
+                self.sidebar_visible = !self.sidebar_visible;
+                self.refresh_sidebar();
+            }
+            IndexAction::SidebarNext | IndexAction::SidebarPrev => {
+                if !self.sidebar_visible {
+                    self.status = Some("the sidebar is hidden — B shows it".into());
+                } else if !self.sidebar.is_empty() {
+                    self.sidebar_sel = if action == IndexAction::SidebarNext {
+                        (self.sidebar_sel + 1).min(self.sidebar.len() - 1)
+                    } else {
+                        self.sidebar_sel.saturating_sub(1)
+                    };
+                }
+            }
+            IndexAction::SidebarOpen => {
+                if !self.sidebar_visible {
+                    self.status = Some("the sidebar is hidden — B shows it".into());
+                } else if self.pending_count() > 0 {
+                    self.status = Some("pending changes — sync with $ first".into());
+                } else if let Some((spec, _)) = self.sidebar.get(self.sidebar_sel).cloned() {
+                    self.open_mailbox_spec(&spec);
+                }
+            }
             IndexAction::Help => self.open_help(),
         }
     }
@@ -1334,7 +1408,12 @@ impl App {
 
     fn open_mailbox_spec(&mut self, spec: &str) {
         match App::open_spec(spec, self.config.clone()) {
-            Ok(app) => *self = app,
+            Ok(mut app) => {
+                // The runtime sidebar toggle survives a mailbox switch.
+                app.sidebar_visible = self.sidebar_visible;
+                app.refresh_sidebar();
+                *self = app;
+            }
             Err(err) => self.status = Some(format!("cannot open {spec}: {err:#}")),
         }
     }

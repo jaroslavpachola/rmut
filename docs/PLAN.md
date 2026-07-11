@@ -256,15 +256,17 @@ Small, closed the two documented index_format gaps.
 - [x] Importer: imported index_format strings no longer carry the
       "%l is never set" caveat
 
-## R17 — sidebar (1.16)
+## R17 — sidebar (done, 1.16)
 
-- [ ] Optional left pane listing the configured mailboxes with
-      new/unseen counts (the folder browser's data, always visible);
-      toggle key + `[sidebar]` config (width, visible)
-- [ ] Highlight the open mailbox; ctrl+up/down or remappable keys to
-      move and open without leaving the index
-- [ ] Reuse the R11 counting (local new/ scan, IMAP STATUS) with the
-      poll keeping counts fresh
+- [x] Optional left pane listing `mail.mailboxes` with new/unseen
+      counts (the open mailbox always included, marked `>`); `B`
+      toggles at runtime, `[sidebar]` config (visible, width); bold
+      when a mailbox holds new mail
+- [x] Ctrl+N/Ctrl+P move the highlight, Ctrl+O opens it without
+      leaving the index (all remappable); the toggle state survives
+      mailbox switches
+- [x] R11's counting reused (local new/ scan, IMAP STATUS for the
+      open account's folders), refreshed by the regular poll
 
 ## R18 — notmuch search (1.17)
 

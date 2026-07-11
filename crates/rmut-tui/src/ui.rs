@@ -52,6 +52,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_pager(frame, pager_area, pager, app.theme.header);
         }
     } else {
+        // The sidebar takes a left slice of the index view.
+        let content_area = if matches!(app.mode, Mode::Index) && app.sidebar_visible {
+            let width = app
+                .config
+                .sidebar
+                .width
+                .clamp(10, (content_area.width / 2).max(10));
+            let [side_area, rest] =
+                Layout::horizontal([Constraint::Length(width), Constraint::Min(1)])
+                    .areas(content_area);
+            draw_sidebar(frame, side_area, app);
+            rest
+        } else {
+            content_area
+        };
         match &app.mode {
             Mode::Index => draw_index(frame, content_area, app),
             Mode::Pager(_) => unreachable!(),
@@ -61,6 +76,56 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
     draw_bottom_line(frame, status_area, app, content_area.height);
+}
+
+// ---- sidebar ----
+
+/// A short label for a sidebar entry: the folder part of an `imap:`
+/// spec, the last path component of a local maildir.
+fn sidebar_label(spec: &str) -> &str {
+    if let Some(rest) = spec.strip_prefix("imap:") {
+        return rest;
+    }
+    spec.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(spec)
+}
+
+fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
+    let width = area.width as usize;
+    let mut lines = Vec::new();
+    for (i, (spec, new)) in app.sidebar.iter().enumerate().take(area.height as usize) {
+        let open = app.sidebar_open == Some(i);
+        let mut text = format!("{}{}", if open { ">" } else { " " }, sidebar_label(spec));
+        if *new > 0 {
+            text += &format!(" ({new})");
+        }
+        let mut chars: Vec<char> = text.chars().collect();
+        chars.truncate(width.saturating_sub(1));
+        let text: String = chars.into_iter().collect();
+        let mut style = Style::new();
+        if i == app.sidebar_sel {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        if *new > 0 {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{:<w$}\u{2502}", text, w = width.saturating_sub(1)),
+            style,
+        )));
+    }
+    // Continue the separator down the empty rows.
+    for _ in lines.len()..area.height as usize {
+        lines.push(Line::from(format!(
+            "{:<w$}\u{2502}",
+            "",
+            w = width.saturating_sub(1)
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ---- index ----
