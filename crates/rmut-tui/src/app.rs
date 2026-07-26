@@ -119,6 +119,8 @@ pub enum LineKind {
     PipePart,
     /// The `Q` query menu's search term.
     Query,
+    /// The notmuch query (`X`).
+    Notmuch,
     ChangeDir,
     SavePart,
     SaveMsg,
@@ -161,6 +163,7 @@ impl LineKind {
             | LineKind::CreateDir => "mailbox",
             LineKind::SavePart | LineKind::AttachFile => "file",
             LineKind::Pipe | LineKind::PipePart => "command",
+            LineKind::Notmuch => "notmuch",
             LineKind::ComposeSubject
             | LineKind::EditSubject
             | LineKind::AliasNick
@@ -1360,6 +1363,7 @@ impl App {
             LineKind::Pipe => self.pipe_message(input),
             LineKind::PipePart => self.pipe_part(input),
             LineKind::Query => self.run_query(input),
+            LineKind::Notmuch => self.notmuch_search(input),
             LineKind::BounceTo => self.bounce_to_submitted(input),
             LineKind::AttachFile => self.attach_file_submitted(input),
             LineKind::AliasNick => self.create_alias(input),
@@ -1423,6 +1427,17 @@ impl App {
                     self.status = Some("no query_command configured".into());
                 } else {
                     self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
+                }
+            }
+            IndexAction::Notmuch => {
+                if self.config.mail.notmuch == Some(false) {
+                    self.status = Some("notmuch is disabled in the config".into());
+                } else {
+                    self.prompt = Some(Prompt::line(
+                        "Notmuch query: ",
+                        String::new(),
+                        LineKind::Notmuch,
+                    ));
                 }
             }
             IndexAction::Quit => {
@@ -2199,6 +2214,75 @@ impl App {
             return;
         }
         self.mode = Mode::Query { results, sel: 0 };
+    }
+
+    /// `X` submitted: `notmuch search --output=files` into a virtual
+    /// read-only mailbox — the hits are symlinked into a cache
+    /// maildir (the real copies stay where they are), so viewing,
+    /// replying, copying, and piping work while flag changes and
+    /// deletes stay refused.
+    fn notmuch_search(&mut self, query: &str) {
+        if query.is_empty() {
+            return;
+        }
+        let out = Command::new("notmuch")
+            .args(["search", "--output=files", "--limit=1000", "--", query])
+            .output();
+        let out = match out {
+            Ok(out) if out.status.success() => out,
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                self.status = Some(format!("notmuch: {}", err.trim()));
+                return;
+            }
+            Err(err) => {
+                self.status = Some(format!("notmuch: {err}"));
+                return;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let files: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+        if files.is_empty() {
+            self.status = Some("notmuch: no matches".into());
+            return;
+        }
+        if !self.ready_to_leave() {
+            return;
+        }
+        let dir = remote::cache_base().join("notmuch");
+        let build = || -> Result<()> {
+            for sub in ["cur", "new", "tmp"] {
+                std::fs::create_dir_all(dir.join(sub))?;
+            }
+            for entry in std::fs::read_dir(dir.join("cur"))?.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+            for (i, file) in files.iter().enumerate() {
+                let base = Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("{i}"));
+                // A unique prefix avoids collisions across source
+                // dirs; the :2, flag suffix stays parseable.
+                let _ = std::os::unix::fs::symlink(
+                    file,
+                    dir.join("cur").join(format!("{i:04}.{base}")),
+                );
+            }
+            Ok(())
+        };
+        if let Err(err) = build() {
+            self.status = Some(format!("notmuch mirror: {err:#}"));
+            return;
+        }
+        let count = files.len();
+        self.open_mailbox_spec(&dir.display().to_string());
+        if self.dir == dir {
+            // The virtual mailbox: never write through the symlinks.
+            self.read_only = true;
+            self.title = format!("notmuch: {query}");
+            self.status = Some(format!("{count} matching message(s)"));
+        }
     }
 
     fn handle_query_key(&mut self, key: KeyEvent) {

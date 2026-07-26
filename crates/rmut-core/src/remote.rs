@@ -80,9 +80,9 @@ pub fn clean_mailbox(name: &str) -> String {
     }
 }
 
-/// `$XDG_CACHE_HOME/rmut` (or `~/.cache/rmut`), shared by the IMAP
-/// and mbox mirrors.
-pub(crate) fn cache_base() -> PathBuf {
+/// `$XDG_CACHE_HOME/rmut` (or `~/.cache/rmut`), shared by the IMAP,
+/// mbox, and notmuch mirrors.
+pub fn cache_base() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .ok()
         .filter(|s| !s.is_empty())

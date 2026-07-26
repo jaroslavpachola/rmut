@@ -1477,6 +1477,54 @@ def scenario_pager_polish(tmp):
     r.close()
 
 
+def scenario_notmuch(tmp):
+    """R18: X runs notmuch (stubbed here) and opens the hits as a
+    read-only virtual mailbox — view and copy work, delete refuses,
+    and leaving the view restores a writable mailbox."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["ci"])
+    store = make_maildir(tmp, "store")  # where the "database" hits live
+    write_msgs(store, ["jane", "alice"])
+    bindir = os.path.join(tmp, "bin")
+    os.makedirs(bindir)
+    with open(os.path.join(bindir, "notmuch"), "w") as f:
+        f.write(f"#!/bin/sh\nls {store}/cur/* | sort\n")
+    os.chmod(os.path.join(bindir, "notmuch"), 0o755)
+    dest = make_maildir(tmp, "dest")
+    r = Rmut(md, base_env(tmp, {"PATH": f"{bindir}:{os.environ['PATH']}"}))
+    r.expect("CI failed on main")
+    r.keys(b"X")
+    r.expect("Notmuch query:")
+    r.keys(b"from:jane\r")
+    r.expect("notmuch:", "2 matching message(s)")
+    r.keys(b"\r")  # newest hit (alice) opens through the symlink
+    r.expect("Count me in too!")
+    r.keys(b"d")  # the virtual mailbox never writes
+    r.expect("Mailbox is read-only.")
+    r.keys(b"q")
+    r.keys(b"C")  # copying out still works — the original is read
+    r.keys(f"{dest}\r".encode())
+    wait_for(
+        lambda: any(os.listdir(os.path.join(dest, s)) for s in ("cur", "new")),
+        desc="message copied out of the notmuch view",
+    )
+    # Back in a real mailbox the delete works again (read-only was
+    # only the virtual view's).
+    r.keys(b"c")
+    r.keys(f"{md}\r".encode())
+    r.keys(b"d$y")
+    wait_for(
+        lambda: not any(
+            "1751750100" in f
+            for s in ("cur", "new")
+            for f in os.listdir(os.path.join(md, s))
+        ),
+        desc="delete works after leaving the notmuch view",
+    )
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1714,6 +1762,7 @@ SCENARIOS = [
     scenario_odds,
     scenario_pager_quotes,
     scenario_pager_polish,
+    scenario_notmuch,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

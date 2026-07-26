@@ -92,7 +92,9 @@ pub fn scan(dir: &Path) -> Result<Vec<MailFile>> {
             .with_context(|| format!("reading {}", sub.display()))?;
         for entry in entries {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
+            // Through symlinks (the notmuch view is one per hit);
+            // broken links and directories fall out here.
+            if !entry.path().is_file() {
                 continue;
             }
             let name = entry.file_name();
@@ -104,7 +106,7 @@ pub fn scan(dir: &Path) -> Result<Vec<MailFile>> {
                 path: entry.path(),
                 is_new,
                 flags: Flags::from_filename(&name),
-                size: size_from_name(&name).unwrap_or(entry.metadata()?.len()),
+                size: size_from_name(&name).unwrap_or(std::fs::metadata(entry.path())?.len()),
             });
         }
     }

@@ -141,6 +141,10 @@ pub struct Mail {
     /// the editor buffer. Off, the prompts set To/Subject and
     /// attachments go through the compose menu's a.
     pub edit_headers: Option<bool>,
+    /// notmuch(1) search (`X`): false disables the key; unset/true
+    /// leaves it on (notmuch itself must be installed; keep the
+    /// database fresh with `notmuch new` in a hook or cron).
+    pub notmuch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

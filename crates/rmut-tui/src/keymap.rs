@@ -164,6 +164,7 @@ pub enum IndexAction {
     SidebarOpen,
     CreateAlias,
     Query,
+    Notmuch,
     Help,
 }
 
@@ -256,6 +257,7 @@ impl IndexAction {
             SidebarOpen => "sidebar-open",
             CreateAlias => "create-alias",
             Query => "query",
+            Notmuch => "notmuch",
             Help => "help",
         }
     }
@@ -312,6 +314,7 @@ impl IndexAction {
             SidebarOpen => "open the highlighted sidebar mailbox",
             CreateAlias => "add the sender to the alias file",
             Query => "look up addresses with query_command",
+            Notmuch => "notmuch search into a read-only view",
             Help => "this help",
         }
     }
@@ -368,6 +371,7 @@ impl IndexAction {
             SidebarOpen,
             CreateAlias,
             Query,
+            Notmuch,
             Help,
         ]
     }
@@ -603,6 +607,7 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ctrl('o'), SidebarOpen),
         (KeyPattern::ch('a'), CreateAlias),
         (KeyPattern::ch('Q'), Query),
+        (KeyPattern::ch('X'), Notmuch),
         (KeyPattern::ch('?'), Help),
     ]
 }

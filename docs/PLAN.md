@@ -270,19 +270,21 @@ Small, closed the two documented index_format gaps.
 - [x] R11's counting reused (local new/ scan, IMAP STATUS for the
       open account's folders), refreshed by the regular poll
 
-## R18 — notmuch search
+## R18 — notmuch search (done, 1.28)
 
 Shell out to notmuch(1), mutt-kz style — no linking, no new deps.
 
-- [ ] `[mail] notmuch = true` (or auto-detect the database): a search
-      key runs `notmuch search --output=files <query>` and opens the
-      hits as a virtual read-only mailbox (symlink/copy into a temp
-      maildir, like the mbox mirror)
-- [ ] Message operations that make sense there: view, reply, copy,
-      pipe; flag changes and deletes are disabled (the real copies
-      live elsewhere)
-- [ ] Document the setup: notmuch new in a hook or cron, rmut for
-      reading
+- [x] `X` prompts for a query and runs
+      `notmuch search --output=files --limit=1000`; the hits open as
+      a virtual read-only mailbox (symlinks into a cache maildir,
+      like the mbox mirror); `[mail] notmuch = false` disables the
+      key, otherwise notmuch just has to be installed
+- [x] Message operations that make sense there work: view, reply,
+      copy, pipe; flag changes and deletes refuse (the R26 read-only
+      machinery — the real copies live elsewhere), and leaving the
+      view restores a writable mailbox
+- [x] Setup documented in the man page: notmuch new in a hook or
+      cron, rmut for reading; the maildir scan follows symlinks now
 
 ## R19 — daily-driver hardening (done, 1.17)
 
@@ -420,8 +422,8 @@ Mutt's prompts are a real line editor; rmut's only appended.
 is empty, so R27–R30 below collect what daily use and a fresh look at
 mutt still surface — the pager's missing colors, header weeding,
 compose paper cuts, and big-mailbox speed. Ranked; R18 (notmuch)
-stays open and slots after R28; daily-use findings still outrank
-everything.
+slotted in after R28 and shipped with 1.28; daily-use findings still
+outrank everything.
 
 ## R27 — pager colors and motion (done, 1.26)
 
