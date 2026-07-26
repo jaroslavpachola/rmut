@@ -186,6 +186,19 @@ pub struct Compose {
     /// Original message to attach as message/rfc822 (forward =
     /// "attach", mutt's mime_forward).
     pub attach: Option<PathBuf>,
+    /// Header block withheld from the editor (edit_headers = false);
+    /// draft_full puts it back for send/postpone/attachments.
+    pub hidden_head: Option<String>,
+}
+
+/// The draft as a full message: the file as edited, with any withheld
+/// header block put back in front.
+fn draft_full(c: &Compose) -> std::io::Result<String> {
+    let text = std::fs::read_to_string(&c.path)?;
+    Ok(match &c.hidden_head {
+        Some(head) => format!("{}\n\n{}", head.trim_end(), text),
+        None => text,
+    })
 }
 
 const SEND_PROMPT: &str =
@@ -1733,17 +1746,35 @@ impl App {
             },
             &body,
         );
-        match write_draft(&text) {
-            Ok(path) => {
+        match self.stage_draft(&text) {
+            Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: None,
                     security: self.default_security(),
                     attach,
+                    hidden_head,
                 });
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
         }
+    }
+
+    /// mutt's edit_headers, but true by default: the header block is
+    /// part of the editor buffer.
+    fn edit_headers(&self) -> bool {
+        self.config.mail.edit_headers.unwrap_or(true)
+    }
+
+    /// Write a fresh draft file for the editor: the whole text, or —
+    /// with edit_headers = false — only the body, the header block
+    /// withheld for draft_full to rejoin.
+    fn stage_draft(&self, text: &str) -> Result<(PathBuf, Option<String>)> {
+        if self.edit_headers() {
+            return Ok((write_draft(text)?, None));
+        }
+        let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+        Ok((write_draft(body)?, Some(head.to_string())))
     }
 
     /// From line for a new draft: reverse_name picks the address the
@@ -1803,7 +1834,7 @@ impl App {
     fn reprompt_send(&mut self) {
         let (security, attachments) = match &self.compose {
             Some(c) => {
-                let files = std::fs::read_to_string(&c.path)
+                let files = draft_full(c)
                     .map(|text| compose::extract_attachments(&text).1.len())
                     .unwrap_or(0);
                 (c.security, files + usize::from(c.attach.is_some()))
@@ -1831,7 +1862,7 @@ impl App {
         if !input.is_empty() {
             if !expand_tilde(input).is_file() {
                 self.status = Some(format!("{input} is not a file"));
-            } else if let Some(c) = &self.compose {
+            } else if let Some(c) = &mut self.compose {
                 // Quote paths with spaces the way extract_attachments
                 // reads them back.
                 let value = if input.contains(char::is_whitespace) && !input.starts_with('"') {
@@ -1839,13 +1870,20 @@ impl App {
                 } else {
                     input.to_string()
                 };
-                let result = std::fs::read_to_string(&c.path).and_then(|text| {
-                    let updated = match text.split_once("\n\n") {
-                        Some((head, body)) => format!("{head}\nAttach: {value}\n\n{body}"),
-                        None => format!("{}\nAttach: {value}\n", text.trim_end()),
-                    };
-                    std::fs::write(&c.path, updated)
-                });
+                let result = match &mut c.hidden_head {
+                    // Withheld headers: the Attach: line joins them.
+                    Some(head) => {
+                        *head = format!("{}\nAttach: {value}", head.trim_end());
+                        Ok(())
+                    }
+                    None => std::fs::read_to_string(&c.path).and_then(|text| {
+                        let updated = match text.split_once("\n\n") {
+                            Some((head, body)) => format!("{head}\nAttach: {value}\n\n{body}"),
+                            None => format!("{}\nAttach: {value}\n", text.trim_end()),
+                        };
+                        std::fs::write(&c.path, updated)
+                    }),
+                };
                 if let Err(err) = result {
                     self.status = Some(format!("cannot attach: {err}"));
                 }
@@ -1860,7 +1898,7 @@ impl App {
         let Some(c) = &self.compose else {
             return;
         };
-        let text = std::fs::read_to_string(&c.path).unwrap_or_default();
+        let text = draft_full(c).unwrap_or_default();
         let (_, files) = compose::extract_attachments(&text);
         let mut lines = vec!["Draft attachments".to_string(), String::new()];
         if let Some(orig) = &c.attach {
@@ -1912,7 +1950,7 @@ impl App {
         let Some(compose_state) = self.compose.take() else {
             return;
         };
-        let raw = match std::fs::read_to_string(&compose_state.path) {
+        let raw = match draft_full(&compose_state) {
             Ok(r) => r,
             Err(err) => {
                 self.status = Some(format!("cannot read draft: {err}"));
@@ -2118,7 +2156,9 @@ impl App {
             }
         };
         let result = target.and_then(|dir| {
-            let bytes = std::fs::read(&compose_state.path)?;
+            // The full message, headers included, so the recall (and
+            // the postponed picker's subject) sees them.
+            let bytes = draft_full(&compose_state)?.into_bytes();
             let flags = maildir::Flags {
                 draft: true,
                 seen: true,
@@ -2174,14 +2214,15 @@ impl App {
     fn recall_file(&mut self, source: PathBuf) {
         let result = std::fs::read_to_string(&source)
             .map_err(anyhow::Error::from)
-            .and_then(|content| write_draft(&content));
+            .and_then(|content| self.stage_draft(&content));
         match result {
-            Ok(path) => {
+            Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: Some(source),
                     security: self.default_security(),
                     attach: None,
+                    hidden_head,
                 });
             }
             Err(err) => self.status = Some(format!("cannot recall: {err:#}")),
@@ -2497,13 +2538,14 @@ impl App {
             },
             &body,
         );
-        match write_draft(&text) {
-            Ok(path) => {
+        match self.stage_draft(&text) {
+            Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: None,
                     security: self.default_security(),
                     attach: None,
+                    hidden_head,
                 });
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),

@@ -1073,6 +1073,51 @@ email = "second@example.com"
     r.close()
 
 
+def scenario_edit_headers(tmp):
+    """[mail] edit_headers = false: the editor sees only the body;
+    headers come from the prompts, attachments via the send prompt."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-eh.eml")
+    sendmail = os.path.join(tmp, "sendmail-eh.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    seen = os.path.join(tmp, "editor-saw.txt")
+    editor = os.path.join(tmp, "eh-editor.sh")
+    with open(editor, "w") as f:
+        f.write(f'#!/bin/sh\ncp "$1" {seen}\nprintf "only the body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    attachment = os.path.join(tmp, "note.txt")
+    with open(attachment, "w") as f:
+        f.write("attach me\n")
+    cfg = os.path.join(tmp, "eh-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[identity]\nname = "Jarda"\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                'edit_headers = false\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"petr@example.com\rheadless subject\r")
+    r.expect("Send message?")
+    saw = open(seen).read()
+    assert "To:" not in saw and "Subject:" not in saw, f"headers leaked: {saw!r}"
+    r.keys(b"a")
+    r.keys(attachment.encode() + b"\r")
+    r.expect("[1 attachment(s)]")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="sendmail ran")
+    sent = open(sent_file).read()
+    assert "To: petr@example.com" in sent, sent
+    assert "Subject: headless subject" in sent, sent
+    assert "only the body" in sent, sent
+    assert 'filename="note.txt"' in sent, sent
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_message_commands(tmp):
     """R8: | pipe, C copy, Attach: pseudo-headers, b bounce, e resend."""
     md = make_maildir(tmp, "md")
@@ -1223,6 +1268,7 @@ SCENARIOS = [
     scenario_trash_and_alias,
     scenario_pgp,
     scenario_print,
+    scenario_edit_headers,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

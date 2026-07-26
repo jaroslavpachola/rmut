@@ -132,6 +132,11 @@ pub struct Mail {
     /// `imap:account/folder` of the open account) instead of being
     /// erased; purging inside the trash itself deletes for real.
     pub trash: Option<String>,
+    /// mutt's edit_headers, but true by default: the draft's header
+    /// block (From/To/Cc/Subject, Attach: lines) is part of the
+    /// editor buffer. false hides it — the prompts set To/Subject,
+    /// attachments go through the send prompt's (a)ttach.
+    pub edit_headers: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
