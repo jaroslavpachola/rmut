@@ -135,12 +135,45 @@ pub fn finalize(draft: &str, from: &str, msg_id: &str, date: &str) -> Result<Str
 /// A file named in an `Attach:` pseudo-header of the draft.
 pub struct Attachment {
     pub path: PathBuf,
+    /// Content-type override (compose menu ctrl+t); guessed from the
+    /// extension otherwise.
+    pub mime: Option<String>,
     pub description: Option<String>,
 }
 
-/// Pull mutt-style `Attach: <path> [description]` pseudo-headers out of
-/// a draft's header block; quotes allow a path with spaces, `~/` means
-/// $HOME. Returns the draft without those lines.
+/// A `type/subtype` token (letters, digits, `.+-`), so a content-type
+/// between the path and the description is recognizable.
+fn looks_like_mime(token: &str) -> bool {
+    match token.split_once('/') {
+        Some((t, s)) if !t.is_empty() && !s.is_empty() => token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '+' | '-')),
+        _ => false,
+    }
+}
+
+/// One Attach: line back from its parts (quotes around a path with
+/// spaces, then the optional type and description).
+pub fn attach_line(a: &Attachment) -> String {
+    let p = a.path.display().to_string();
+    let mut line = if p.contains(' ') {
+        format!("Attach: \"{p}\"")
+    } else {
+        format!("Attach: {p}")
+    };
+    if let Some(m) = &a.mime {
+        line += &format!(" {m}");
+    }
+    if let Some(d) = &a.description {
+        line += &format!(" {d}");
+    }
+    line
+}
+
+/// Pull mutt-style `Attach: <path> [type/subtype] [description]`
+/// pseudo-headers out of a draft's header block; quotes allow a path
+/// with spaces, `~/` means $HOME. Returns the draft without those
+/// lines.
 pub fn extract_attachments(draft: &str) -> (String, Vec<Attachment>) {
     let (head, body) = match draft.split_once("\n\n") {
         Some((h, b)) => (h, Some(b)),
@@ -163,9 +196,22 @@ pub fn extract_attachments(draft: &str) -> (String, Vec<Attachment>) {
             Some(rest) => rest.split_once('"').unwrap_or((rest, "")),
             None => value.split_once(char::is_whitespace).unwrap_or((value, "")),
         };
-        let desc = desc.trim();
+        let mut desc = desc.trim();
+        let mut mime = None;
+        match desc.split_once(char::is_whitespace) {
+            Some((first, rest)) if looks_like_mime(first) => {
+                mime = Some(first.to_string());
+                desc = rest.trim();
+            }
+            None if looks_like_mime(desc) => {
+                mime = Some(desc.to_string());
+                desc = "";
+            }
+            _ => {}
+        }
         attachments.push(Attachment {
             path: expand_home(path),
+            mime,
             description: (!desc.is_empty()).then(|| desc.to_string()),
         });
     }
@@ -242,7 +288,7 @@ pub fn mixed_entity(body: &str, files: &[Attachment], original: Option<&[u8]>) -
             .unwrap_or("attachment");
         let mut p = format!(
             "Content-Type: {}\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n",
-            content_type(&a.path),
+            a.mime.as_deref().unwrap_or_else(|| content_type(&a.path)),
         );
         if let Some(d) = &a.description {
             p += &format!("Content-Description: {d}\r\n");
@@ -529,6 +575,32 @@ mod tests {
     }
 
     #[test]
+    fn attach_lines_carry_a_type_override() {
+        let draft = "Attach: /tmp/x.bin application/x-custom raw dump\n\
+                     Attach: /tmp/y.txt see notes\n\n";
+        let (_, files) = extract_attachments(draft);
+        assert_eq!(files[0].mime.as_deref(), Some("application/x-custom"));
+        assert_eq!(files[0].description.as_deref(), Some("raw dump"));
+        // "see notes" is not a type/subtype token.
+        assert_eq!(files[1].mime, None);
+        assert_eq!(files[1].description.as_deref(), Some("see notes"));
+        // attach_line writes back what extract_attachments reads.
+        let line = attach_line(&files[0]);
+        assert_eq!(line, "Attach: /tmp/x.bin application/x-custom raw dump");
+        let (_, roundtrip) = extract_attachments(&format!("{line}\n\n"));
+        assert_eq!(roundtrip[0].mime.as_deref(), Some("application/x-custom"));
+        // A quoted path with spaces survives too.
+        let spaced = Attachment {
+            path: PathBuf::from("/tmp/two words.png"),
+            mime: Some("image/png".into()),
+            description: None,
+        };
+        let (_, files) = extract_attachments(&format!("{}\n\n", attach_line(&spaced)));
+        assert_eq!(files[0].path, PathBuf::from("/tmp/two words.png"));
+        assert_eq!(files[0].mime.as_deref(), Some("image/png"));
+    }
+
+    #[test]
     fn extract_attachments_leaves_plain_drafts_alone() {
         let draft = "To: a@x\nSubject: s\n\nAttach: not a header, body text\n";
         let (out, files) = extract_attachments(draft);
@@ -545,6 +617,7 @@ mod tests {
         std::fs::write(dir.join("blob.bin"), &blob).unwrap();
         let files = [Attachment {
             path: dir.join("blob.bin"),
+            mime: None,
             description: Some("raw bytes".into()),
         }];
         let orig = b"From: jane@x\r\nSubject: hi\r\n\r\noriginal body\r\n";
@@ -578,6 +651,7 @@ mod tests {
     fn mixed_entity_reports_a_missing_file() {
         let files = [Attachment {
             path: PathBuf::from("/nonexistent/nope.pdf"),
+            mime: None,
             description: None,
         }];
         let err = mixed_entity("hi", &files, None).unwrap_err();

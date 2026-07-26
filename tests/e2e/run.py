@@ -1525,6 +1525,115 @@ def scenario_notmuch(tmp):
     r.close()
 
 
+def scenario_compose_round2(tmp):
+    """R29: fast_reply skips the To/Subject prompts, the compose menu
+    edits an attachment's description (d), content-type (ctrl+t) and
+    the Fcc (f), mime_forward=ask asks, autoedit goes straight to the
+    editor; verified in the sent files and the Fcc maildir."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(tmp, "notes.txt"), "w") as f:
+        f.write("attach body text\n")
+    fcc = make_maildir(tmp, "fcc")
+    sent_file = os.path.join(tmp, "sent-c2.eml")
+    sendmail = os.path.join(tmp, "sendmail-c2.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "c2-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "reply body here\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "c2-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+            f'fast_reply = true\nforward = "ask"\n'
+        )
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    r.keys(b"r")  # fast_reply: straight to the include question
+    r.expect("Include message in reply?")
+    r.keys(b"\r")
+    r.expect("y:Send")
+    r.keys(b"a")
+    r.keys(f"{tmp}/notes.txt\r".encode())
+    r.keys(b"j")  # onto the attachment row
+    r.keys(b"d")
+    r.keys(b"quarterly data\r")
+    r.expect("(quarterly data)")
+    r.keys(b"\x14\x15")  # ctrl+t, clear the guessed type
+    r.keys(b"application/x-custom\r")
+    r.keys(b"f\x15")  # Fcc, clear the default
+    r.keys(f"{fcc}\r".encode())
+    r.keys(b"y")
+    wait_for(
+        lambda: os.path.exists(sent_file)
+        and "To: Jane Doe <jane@example.com>" in open(sent_file).read()
+        and "Subject: Re: Lunch on Friday?" in open(sent_file).read()
+        and "Content-Type: application/x-custom" in open(sent_file).read()
+        and "Content-Description: quarterly data" in open(sent_file).read(),
+        desc="fast reply sent with edited attachment fields",
+    )
+    wait_for(
+        lambda: any(os.listdir(os.path.join(fcc, s)) for s in ("cur", "new")),
+        desc="Fcc copy in the chosen maildir",
+    )
+    # mime_forward = ask: the forward flow asks, yes attaches whole.
+    r.keys(b"f")
+    r.expect("To:")
+    r.keys(b"petr@example.com\r")  # fast_reply skips the Subject prompt
+    # The "Forward as attachment?" question comes next (its cells
+    # overlap the To echo, so assert the outcome on disk instead).
+    r.keys(b"y")
+    r.settle()
+    r.keys(b"y")  # send from the compose menu
+    wait_for(
+        lambda: "message/rfc822" in open(sent_file).read(),
+        desc="ask-forward attached the original",
+    )
+    r.keys(b"q")
+    r.close()
+
+    # autoedit (with edit_headers): no prompts at all, the editor sets
+    # the headers itself.
+    sent2 = os.path.join(tmp, "sent-auto.eml")
+    sendmail2 = os.path.join(tmp, "sendmail-auto.sh")
+    with open(sendmail2, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent2}\nexit 0\n")
+    os.chmod(sendmail2, 0o755)
+    editor2 = os.path.join(tmp, "auto-editor.sh")
+    with open(editor2, "w") as f:
+        f.write(
+            '#!/bin/sh\nsed -i "s/^To:.*/To: auto@example.com/" "$1"\n'
+            'sed -i "s/^Subject:.*/Subject: automatic/" "$1"\n'
+            'printf "auto body\\n" >> "$1"\n'
+        )
+    os.chmod(editor2, 0o755)
+    cfg2 = os.path.join(tmp, "auto-config.toml")
+    with open(cfg2, "w") as f:
+        f.write(
+            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[mail]\nsendmail = "{sendmail2}"\neditor = "{editor2}"\n'
+            f'autoedit = true\nedit_headers = true\n'
+        )
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg2}))
+    r.expect("Msgs:1")
+    r.keys(b"m")  # no To/Subject prompts: editor, then the menu
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(
+        lambda: os.path.exists(sent2)
+        and "To: auto@example.com" in open(sent2).read()
+        and "Subject: automatic" in open(sent2).read()
+        and "auto body" in open(sent2).read(),
+        desc="autoedit message sent",
+    )
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1763,6 +1872,7 @@ SCENARIOS = [
     scenario_pager_quotes,
     scenario_pager_polish,
     scenario_notmuch,
+    scenario_compose_round2,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

@@ -145,6 +145,16 @@ pub struct Mail {
     /// leaves it on (notmuch itself must be installed; keep the
     /// database fresh with `notmuch new` in a hook or cron).
     pub notmuch: Option<bool>,
+    /// mutt's $fast_reply: replies skip the To and Subject prompts,
+    /// forwards skip Subject (the ask-yes questions still run).
+    pub fast_reply: bool,
+    /// mutt's $autoedit (needs edit_headers): skip every initial
+    /// prompt and question, straight into the editor; the compose
+    /// menu follows as usual.
+    pub autoedit: bool,
+    /// mutt's $copy: false skips the sent copy (Fcc) entirely; an
+    /// Fcc set in the compose menu still wins.
+    pub copy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -461,19 +461,23 @@ tints quotes, hits, and URLs.
 - [x] `~` tilde padding below end-of-message (`[pager] tilde`,
       mutt's $tilde; off by default like mutt); imported
 
-## R29 — compose round 2
+## R29 — compose round 2 (done, 1.29)
 
-- [ ] `$fast_reply` (skip the To/Subject prompts on reply/forward)
-      and `$autoedit` (skip straight into the editor, compose menu
-      after), both imported
-- [ ] Compose menu: `d` edits an attachment's description, ctrl+t
-      its content-type (mutt's edit-type); both land in the Attach:
-      line
-- [ ] `mime_forward = "ask"`: the forward flow asks
-      "Forward as attachment?" (yes = today's mime_forward, no =
-      inline quote); `$forward_decode` decodes when inline
-- [ ] `f` edits Fcc in the compose menu; `$copy = no` (imported)
-      skips the sent copy entirely
+- [x] `$fast_reply` (replies skip the To/Subject prompts, forwards
+      the Subject; the ask-yes questions still run) and `$autoedit`
+      (with edit_headers: no prompts or questions at all, straight
+      into the editor, compose menu after), both imported
+- [x] Compose menu: `d` edits an attachment's description, ctrl+t
+      its content-type (mutt's edit-type); both live on the Attach:
+      line as `Attach: path [type/subtype] [description]` and reach
+      the sent MIME part
+- [x] `mime_forward = "ask"` (`[mail] forward = "ask"`): the forward
+      flow asks "Forward as attachment?" (yes = attach whole, no =
+      inline quote); mutt's ask-yes/ask-no import; $forward_decode
+      is inherent (inline quotes are always decoded)
+- [x] `f` edits Fcc in the compose menu (a maildir path; empty =
+      keep no copy); `$copy = no` (imported as `[mail] copy =
+      false`) skips the sent copy by default, an explicit Fcc wins
 
 ## R30 — big mailboxes
 

@@ -90,6 +90,12 @@ struct State {
     pager_index_lines: Option<u64>,
     pager_context: Option<u64>,
     forward_attach: bool,
+    /// mime_forward = ask-yes/ask-no.
+    forward_ask: bool,
+    fast_reply: bool,
+    autoedit: bool,
+    /// `set nocopy`: skip the sent copy.
+    no_copy: bool,
     save_default: Option<String>,
     filters: BTreeMap<String, String>,
     imap_user: Option<String>,
@@ -494,10 +500,41 @@ impl State {
                 }
             }
             "mime_forward" => {
-                if is_yes(&v) {
+                let m = v.to_lowercase();
+                if m.starts_with("ask") {
+                    self.forward_ask = true;
+                } else if is_yes(&v) {
                     self.forward_attach = true;
                 } else {
                     self.satisfy(line, "inline forwarding is rmut's default");
+                }
+            }
+            "fast_reply" => {
+                if is_yes(&v) {
+                    self.fast_reply = true;
+                } else {
+                    self.satisfy(line, "prompting is rmut's default");
+                }
+            }
+            "autoedit" => {
+                if is_yes(&v) {
+                    self.autoedit = true;
+                } else {
+                    self.satisfy(line, "prompting is rmut's default");
+                }
+            }
+            "copy" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "the sent copy is rmut's default");
+                } else {
+                    self.no_copy = true;
+                }
+            }
+            "forward_decode" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "inline forwards always quote the decoded text");
+                } else {
+                    self.skip(line, "rmut always decodes when quoting a forward");
                 }
             }
             "mime_forward_rest" => {
@@ -819,6 +856,10 @@ impl State {
             || self.trash.is_some()
             || self.save_default.is_some()
             || self.forward_attach
+            || self.forward_ask
+            || self.fast_reply
+            || self.autoedit
+            || self.no_copy
             || self.edit_headers_on
         {
             out += "\n[mail]\n";
@@ -853,8 +894,19 @@ impl State {
             if let Some(save) = &self.save_default {
                 out += &format!("save = {}\n", quote(&self.expand_mailbox(save)));
             }
-            if self.forward_attach {
+            if self.forward_ask {
+                out += "forward = \"ask\"\n";
+            } else if self.forward_attach {
                 out += "forward = \"attach\"\n";
+            }
+            if self.fast_reply {
+                out += "fast_reply = true\n";
+            }
+            if self.autoedit {
+                out += "autoedit = true\n";
+            }
+            if self.no_copy {
+                out += "copy = false\n";
             }
             if self.edit_headers_on {
                 out += "edit_headers = true\n";
@@ -1626,6 +1678,21 @@ mod tests {
         assert_eq!(cfg.pager.wrap, Some(78));
         assert!(cfg.pager.tilde);
         assert!(toml.contains("hdr_order"));
+    }
+
+    #[test]
+    fn compose_round_two_translates() {
+        let (cfg, _) = to_config(concat!(
+            "set fast_reply = yes\n",
+            "set autoedit\n",
+            "set nocopy\n",
+            "set mime_forward = ask-yes\n",
+            "set forward_decode\n", // satisfied: always decoded
+        ));
+        assert!(cfg.mail.fast_reply);
+        assert!(cfg.mail.autoedit);
+        assert_eq!(cfg.mail.copy, Some(false));
+        assert_eq!(cfg.mail.forward.as_deref(), Some("ask"));
     }
 
     #[test]

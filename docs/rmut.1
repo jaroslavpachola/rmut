@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.28.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.29.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -258,6 +258,13 @@ attaches a file,
 detaches the selected file
 .RB ( j / k
 move),
+.B d
+edits the selected attachment's description and
+.B Ctrl+T
+its content-type (both stored on the Attach: line as
+"Attach: path [type/subtype] [description]"),
+.B f
+edits the Fcc (empty keeps no sent copy),
 .B p
 opens the PGP menu (encrypt/sign/both/clear),
 .B P
@@ -265,6 +272,12 @@ postpones, and
 .B q
 asks "Postpone this message?" \(em no discards. Recalling with
 several postponed drafts offers a picker.
+.PP
+Related [mail] switches: fast_reply skips the To/Subject prompts on
+replies (Subject on forwards); autoedit (with edit_headers) skips
+every prompt and question, straight into the editor;
+forward = "ask" asks "Forward as attachment?" per forward;
+copy = false keeps no sent copy by default.
 .SH PATTERNS
 Limit and search take mutt-style patterns:
 .PP

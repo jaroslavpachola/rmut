@@ -138,6 +138,10 @@ pub enum LineKind {
     EditCc,
     EditBcc,
     EditSubject,
+    /// Compose menu attachment edits (d / ctrl+t) and the Fcc (f).
+    EditDesc,
+    EditType,
+    EditFcc,
 }
 
 impl LineKind {
@@ -160,14 +164,17 @@ impl LineKind {
             | LineKind::SaveMsg
             | LineKind::CopyMsg
             | LineKind::BrowseDir
-            | LineKind::CreateDir => "mailbox",
+            | LineKind::CreateDir
+            | LineKind::EditFcc => "mailbox",
             LineKind::SavePart | LineKind::AttachFile => "file",
             LineKind::Pipe | LineKind::PipePart => "command",
             LineKind::Notmuch => "notmuch",
             LineKind::ComposeSubject
             | LineKind::EditSubject
             | LineKind::AliasNick
-            | LineKind::Query => "other",
+            | LineKind::Query
+            | LineKind::EditDesc
+            | LineKind::EditType => "other",
         }
     }
 }
@@ -190,6 +197,8 @@ pub enum KeyKind {
     ReplyTo,
     /// mutt's $abort_nosubject (ask-yes): no subject, abort?
     NoSubject,
+    /// mime_forward = "ask": forward the original as an attachment?
+    ForwardAttach,
     /// mutt's $include (ask-yes): quote the original in the reply?
     IncludeReply,
     /// Compose menu q, like mutt: postpone (yes) or discard (no)?
@@ -274,6 +283,8 @@ pub struct ComposeSetup {
     to: Option<String>,
     /// Parked here while the include-original question is up.
     subject: Option<String>,
+    /// mime_forward = "ask": the question's answer, once given.
+    fwd_attach: Option<bool>,
 }
 
 /// PGP treatment for an outgoing draft, chosen at the send prompt.
@@ -308,6 +319,9 @@ pub struct Compose {
     /// Header block withheld from the editor (edit_headers = false);
     /// draft_full puts it back for send/postpone/attachments.
     pub hidden_head: Option<String>,
+    /// Fcc chosen in the compose menu (`f`): None = the default sent
+    /// copy, Some("") = keep no copy, Some(path) = that maildir.
+    pub fcc: Option<String>,
 }
 
 /// First value of a (single-line) header in a draft head block.
@@ -396,6 +410,8 @@ pub struct App {
     bounce_to: Option<String>,
     /// The sender address waiting for a create-alias nick.
     alias_addr: Option<String>,
+    /// Attach-line index waiting for a d / ctrl+t compose-menu edit.
+    attach_edit: Option<usize>,
     /// Background IDLE watcher for the open IMAP folder.
     idle: Option<remote::IdleWatch>,
     /// Address completion state at the To prompt (Tab cycles).
@@ -601,6 +617,7 @@ impl App {
             pending_raw_edit: None,
             bounce_to: None,
             alias_addr: None,
+            attach_edit: None,
             idle: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
@@ -1170,6 +1187,32 @@ impl App {
                     }
                 }
             }
+            KeyKind::ForwardAttach => {
+                let subject = self
+                    .compose_setup
+                    .as_mut()
+                    .and_then(|s| s.subject.take())
+                    .unwrap_or_default();
+                match code {
+                    KeyCode::Char('n') => {
+                        if let Some(s) = &mut self.compose_setup {
+                            s.fwd_attach = Some(false);
+                        }
+                        self.finish_compose_setup(&subject, true);
+                    }
+                    // ask-yes: Enter takes the attachment.
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        if let Some(s) = &mut self.compose_setup {
+                            s.fwd_attach = Some(true);
+                        }
+                        self.finish_compose_setup(&subject, true);
+                    }
+                    _ => {
+                        self.compose_setup = None;
+                        self.status = Some("forward cancelled".into());
+                    }
+                }
+            }
             KeyKind::Print => {
                 if code == KeyCode::Char('y') {
                     self.print_current();
@@ -1379,6 +1422,13 @@ impl App {
                 self.set_draft_header("Bcc", &alias::expand(input, &alias::load_default()))
             }
             LineKind::EditSubject => self.set_draft_header("Subject", input),
+            LineKind::EditDesc => self.set_attach_field(input, false),
+            LineKind::EditType => self.set_attach_field(input, true),
+            LineKind::EditFcc => {
+                if let Some(c) = &mut self.compose {
+                    c.fcc = Some(input.trim().to_string());
+                }
+            }
         }
     }
 
@@ -2537,6 +2587,33 @@ impl App {
     }
 
     fn continue_setup(&mut self, kind: ComposeKind, base: Option<ComposeBase>) {
+        // mutt's $autoedit (with edit_headers): no prompts, no
+        // questions — the defaults land in the draft and the editor
+        // opens; everything stays editable there and in the menu.
+        if self.config.mail.autoedit && self.edit_headers() {
+            let to = match (&kind, &base) {
+                (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => b.reply_to.clone(),
+                _ => String::new(),
+            };
+            let subject = match (&kind, &base) {
+                (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => {
+                    compose::reply_subject(&b.subject)
+                }
+                (ComposeKind::Forward, Some(b)) => {
+                    compose::forward_subject(&b.from_addr, &b.subject)
+                }
+                _ => String::new(),
+            };
+            self.compose_setup = Some(ComposeSetup {
+                kind,
+                base,
+                to: Some(to),
+                subject: None,
+                fwd_attach: None,
+            });
+            self.finish_compose_setup(&subject, true);
+            return;
+        }
         let ask_reply_to = matches!(kind, ComposeKind::Reply | ComposeKind::GroupReply)
             && base.as_ref().is_some_and(|b| b.has_reply_to);
         self.compose_setup = Some(ComposeSetup {
@@ -2544,6 +2621,7 @@ impl App {
             base,
             to: None,
             subject: None,
+            fwd_attach: None,
         });
         if ask_reply_to {
             // mutt's $reply_to = ask-yes.
@@ -2582,6 +2660,23 @@ impl App {
                 .unwrap_or_default(),
             ComposeKind::New | ComposeKind::Forward => String::new(),
         };
+        // mutt's $fast_reply: replies take the prefills without the
+        // To and Subject prompts (forwards still need a recipient).
+        if self.config.mail.fast_reply
+            && matches!(setup.kind, ComposeKind::Reply | ComposeKind::GroupReply)
+            && setup.base.is_some()
+        {
+            let subject = setup
+                .base
+                .as_ref()
+                .map(|b| compose::reply_subject(&b.subject))
+                .unwrap_or_default();
+            if let Some(setup) = &mut self.compose_setup {
+                setup.to = Some(to_prefill);
+            }
+            self.subject_submitted(&subject);
+            return;
+        }
         self.prompt = Some(Prompt::line("To: ", to_prefill, LineKind::ComposeTo));
     }
 
@@ -2598,6 +2693,11 @@ impl App {
             (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.from_addr, &b.subject),
             _ => String::new(),
         };
+        // $fast_reply also skips the Subject prompt on forwards.
+        if self.config.mail.fast_reply && !subject_prefill.is_empty() {
+            self.subject_submitted(&subject_prefill);
+            return;
+        }
         self.prompt = Some(Prompt::line(
             "Subject: ",
             subject_prefill,
@@ -2622,6 +2722,11 @@ impl App {
         let is_reply = self.compose_setup.as_ref().is_some_and(|s| {
             matches!(s.kind, ComposeKind::Reply | ComposeKind::GroupReply) && s.base.is_some()
         });
+        let ask_fwd = self.config.mail.forward.as_deref() == Some("ask")
+            && self
+                .compose_setup
+                .as_ref()
+                .is_some_and(|s| s.kind == ComposeKind::Forward && s.base.is_some());
         if is_reply {
             if let Some(setup) = &mut self.compose_setup {
                 setup.subject = Some(subject);
@@ -2629,6 +2734,15 @@ impl App {
             self.prompt = Some(Prompt::Key {
                 label: "Include message in reply? (y/n): ".into(),
                 kind: KeyKind::IncludeReply,
+            });
+        } else if ask_fwd {
+            // mime_forward = "ask": whole original vs inline quote.
+            if let Some(setup) = &mut self.compose_setup {
+                setup.subject = Some(subject);
+            }
+            self.prompt = Some(Prompt::Key {
+                label: "Forward as attachment? (y/n): ".into(),
+                kind: KeyKind::ForwardAttach,
             });
         } else {
             self.finish_compose_setup(&subject, true);
@@ -2675,7 +2789,9 @@ impl App {
                         }
                     }
                 }
-                ComposeKind::Forward if self.forward_attaches() => {
+                ComposeKind::Forward
+                    if setup.fwd_attach.unwrap_or_else(|| self.forward_attaches()) =>
+                {
                     // The original goes along whole; nothing to quote.
                     attach = Some(b.path.clone());
                 }
@@ -2706,6 +2822,7 @@ impl App {
                     security: self.default_security(),
                     attach,
                     hidden_head,
+                    fcc: None,
                 });
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
@@ -2870,17 +2987,18 @@ impl App {
             .map(|c| c.security.label())
             .filter(|l| !l.is_empty())
             .unwrap_or("none");
-        let fcc = match &self.remote {
-            Some(remote) => format!(
-                "imap:{}/{}",
-                remote.account.name, remote.account.sent_folder
-            ),
-            None => self
-                .config
-                .mail
-                .sent
-                .clone()
-                .unwrap_or_else(|| "(nearby Sent maildir)".into()),
+        let fcc = match self.compose.as_ref().and_then(|c| c.fcc.clone()) {
+            Some(fcc) if fcc.is_empty() => "(no copy)".into(),
+            Some(fcc) => fcc,
+            None if self.config.mail.copy == Some(false) => "(no copy)".into(),
+            None => {
+                let default = self.default_fcc();
+                if default.is_empty() {
+                    "(nearby Sent maildir)".into()
+                } else {
+                    default
+                }
+            }
         };
         vec![
             ("From", from),
@@ -2924,7 +3042,9 @@ impl App {
                 "{:<28} {:>8}  {}{}",
                 a.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                 size,
-                compose::content_type(&a.path),
+                a.mime
+                    .as_deref()
+                    .unwrap_or_else(|| compose::content_type(&a.path)),
                 a.description
                     .as_deref()
                     .map(|d| format!("  ({d})"))
@@ -2952,10 +3072,23 @@ impl App {
                     self.pending_editor = Some(c);
                 }
             }
+            // Before plain t: ctrl+t edits the selected attachment's
+            // content-type (mutt's edit-type).
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.prompt_attach_edit(true);
+            }
             KeyCode::Char('t') => self.edit_header_prompt("To"),
             KeyCode::Char('c') => self.edit_header_prompt("Cc"),
             KeyCode::Char('b') => self.edit_header_prompt("Bcc"),
             KeyCode::Char('s') => self.edit_header_prompt("Subject"),
+            KeyCode::Char('d') => self.prompt_attach_edit(false),
+            KeyCode::Char('f') => {
+                let buf = match self.compose.as_ref().and_then(|c| c.fcc.clone()) {
+                    Some(fcc) => fcc,
+                    None => self.default_fcc(),
+                };
+                self.prompt = Some(Prompt::line("Fcc: ", buf, LineKind::EditFcc));
+            }
             KeyCode::Char('a') => {
                 self.prompt = Some(Prompt::line(
                     "Attach file: ",
@@ -3020,7 +3153,11 @@ impl App {
             let Some(a) = compose::extract_attachments(&full).1.into_iter().nth(k) else {
                 return;
             };
-            let mimetype = compose::content_type(&a.path);
+            let mimetype = a
+                .mime
+                .clone()
+                .unwrap_or_else(|| compose::content_type(&a.path).to_string());
+            let mimetype = mimetype.as_str();
             let name = a.path.display().to_string();
             match self.config.filters.get(mimetype).cloned() {
                 Some(command) => match run_file_filter(&command, &a.path) {
@@ -3046,6 +3183,88 @@ impl App {
         let mut lines = vec![title, String::new()];
         lines.extend(text.lines().map(String::from));
         self.mode = Mode::Help { lines, scroll: 0 };
+    }
+
+    /// The sent copy's default target, as the Fcc line shows it.
+    fn default_fcc(&self) -> String {
+        match &self.remote {
+            Some(remote) => format!(
+                "imap:{}/{}",
+                remote.account.name, remote.account.sent_folder
+            ),
+            None => self.config.mail.sent.clone().unwrap_or_default(),
+        }
+    }
+
+    /// d / ctrl+t on the compose menu: prompt for the selected
+    /// attachment's description or content-type.
+    fn prompt_attach_edit(&mut self, is_type: bool) {
+        let Mode::Compose { sel } = self.mode else {
+            return;
+        };
+        let fixed = 1 + usize::from(self.compose.as_ref().is_some_and(|c| c.attach.is_some()));
+        if sel < fixed {
+            self.status = Some("only Attach: files can be edited".into());
+            return;
+        }
+        let k = sel - fixed;
+        let attachment = self
+            .compose
+            .as_ref()
+            .and_then(|c| draft_full(c).ok())
+            .map(|full| compose::extract_attachments(&full).1)
+            .and_then(|mut atts| (k < atts.len()).then(|| atts.swap_remove(k)));
+        let Some(a) = attachment else { return };
+        self.attach_edit = Some(k);
+        if is_type {
+            let buf = a
+                .mime
+                .clone()
+                .unwrap_or_else(|| compose::content_type(&a.path).to_string());
+            self.prompt = Some(Prompt::line("Content-Type: ", buf, LineKind::EditType));
+        } else {
+            let buf = a.description.clone().unwrap_or_default();
+            self.prompt = Some(Prompt::line("Description: ", buf, LineKind::EditDesc));
+        }
+    }
+
+    /// The submitted d / ctrl+t edit: rewrite the k-th Attach: line
+    /// with the new description or content-type.
+    fn set_attach_field(&mut self, input: &str, is_type: bool) {
+        let Some(k) = self.attach_edit.take() else {
+            return;
+        };
+        let value = input.trim().to_string();
+        self.edit_draft_head(|head| {
+            let mut seen = 0usize;
+            head.lines()
+                .map(|l| {
+                    let is_attach = l
+                        .split_once(':')
+                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
+                    if is_attach {
+                        // Count like extract_attachments (empty-value
+                        // lines don't), so k matches the menu entry.
+                        let (_, mut atts) = compose::extract_attachments(l);
+                        if let Some(mut a) = atts.pop() {
+                            let idx = seen;
+                            seen += 1;
+                            if idx == k {
+                                let new = (!value.is_empty()).then(|| value.clone());
+                                if is_type {
+                                    a.mime = new;
+                                } else {
+                                    a.description = new;
+                                }
+                                return compose::attach_line(&a);
+                            }
+                        }
+                    }
+                    l.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
     }
 
     fn edit_header_prompt(&mut self, name: &'static str) {
@@ -3215,33 +3434,62 @@ impl App {
         match send_result {
             Ok(()) => {
                 let mut note = String::from("message sent");
-                match &mut self.remote {
-                    // Fcc goes to the account's Sent folder on the server.
-                    Some(remote) => match remote.append_sent(final_text.as_bytes()) {
-                        Ok(folder) => note += &format!(", copy in {folder}"),
-                        Err(_) => note += ", Fcc to Sent failed",
-                    },
-                    None => {
-                        let sent_dir = self
-                            .config
-                            .mail
-                            .sent
-                            .as_deref()
-                            .map(expand_tilde)
-                            .filter(|p| p.join("cur").is_dir())
-                            .or_else(|| maildir::find_special(&self.dir, &["sent", "sent-mail"]));
-                        match sent_dir {
-                            Some(sent) => {
-                                let flags = maildir::Flags {
-                                    seen: true,
-                                    ..Default::default()
-                                };
-                                match maildir::deliver(&sent, final_text.as_bytes(), flags) {
-                                    Ok(_) => note += ", copy in Sent",
-                                    Err(_) => note += ", Fcc to Sent failed",
+                // The menu's Fcc wins; empty means keep no copy, and
+                // $copy = no makes that the default.
+                let skip_copy = compose_state.fcc.as_deref() == Some("")
+                    || (compose_state.fcc.is_none() && self.config.mail.copy == Some(false));
+                if skip_copy {
+                    // Nothing kept, on request.
+                } else if let Some(fcc) = compose_state
+                    .fcc
+                    .as_deref()
+                    .filter(|f| Some(*f) != Some(self.default_fcc().as_str()))
+                {
+                    // An explicit Fcc: a local maildir path.
+                    let dir = expand_tilde(fcc);
+                    let flags = maildir::Flags {
+                        seen: true,
+                        ..Default::default()
+                    };
+                    if dir.join("cur").is_dir()
+                        && maildir::deliver(&dir, final_text.as_bytes(), flags).is_ok()
+                    {
+                        note += &format!(", copy in {fcc}");
+                    } else {
+                        note += &format!(", Fcc to {fcc} failed");
+                    }
+                } else {
+                    match &mut self.remote {
+                        // Fcc goes to the account's Sent folder on the
+                        // server.
+                        Some(remote) => match remote.append_sent(final_text.as_bytes()) {
+                            Ok(folder) => note += &format!(", copy in {folder}"),
+                            Err(_) => note += ", Fcc to Sent failed",
+                        },
+                        None => {
+                            let sent_dir = self
+                                .config
+                                .mail
+                                .sent
+                                .as_deref()
+                                .map(expand_tilde)
+                                .filter(|p| p.join("cur").is_dir())
+                                .or_else(|| {
+                                    maildir::find_special(&self.dir, &["sent", "sent-mail"])
+                                });
+                            match sent_dir {
+                                Some(sent) => {
+                                    let flags = maildir::Flags {
+                                        seen: true,
+                                        ..Default::default()
+                                    };
+                                    match maildir::deliver(&sent, final_text.as_bytes(), flags) {
+                                        Ok(_) => note += ", copy in Sent",
+                                        Err(_) => note += ", Fcc to Sent failed",
+                                    }
                                 }
+                                None => note += " (no Sent maildir, no copy kept)",
                             }
-                            None => note += " (no Sent maildir, no copy kept)",
                         }
                     }
                 }
@@ -3424,6 +3672,7 @@ impl App {
                     security: self.default_security(),
                     attach: None,
                     hidden_head,
+                    fcc: None,
                 });
             }
             Err(err) => self.status = Some(format!("cannot recall: {err:#}")),
@@ -3834,6 +4083,7 @@ impl App {
                     security: self.default_security(),
                     attach: None,
                     hidden_head,
+                    fcc: None,
                 });
             }
             Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
