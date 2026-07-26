@@ -210,8 +210,9 @@ type guessed from the extension, the rest of the line an optional
 description). After the editor you land in mutt's **compose menu**:
 the draft's From/To/Cc/Bcc/Subject/Fcc/Security above the attachment
 table (body, forwarded original, every `Attach:` file with size and
-type). `y` sends, `e` reopens the editor, `t`/`c`/`b`/`s` edit the
-headers, `a` attaches without a trip through the editor, `D` detaches
+type). `y` sends, `e` reopens the editor, Enter views the selected
+entry (text directly, other types via `[filters]`), `t`/`c`/`b`/`s`
+edit the headers, `a` attaches without a trip through the editor, `D` detaches
 the selected file, `p` opens the security menu, `P` postpones, and
 `q` asks "Postpone this message?" (no discards). PGP signing and encryption wrap the whole multipart, attachments
 included — this also works for forwards with `forward = "attach"`.

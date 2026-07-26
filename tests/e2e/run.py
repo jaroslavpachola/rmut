@@ -1114,6 +1114,12 @@ def scenario_edit_headers(tmp):
     r.keys(b"a")
     r.keys(attachment.encode() + b"\r")
     r.expect("text/plain")  # listed in the compose menu
+    r.keys(b"\r")  # Enter views the selected entry: the body text
+    r.expect("Message body", "only the body")
+    r.keys(b"q")  # back to the menu
+    r.keys(b"j\r")  # and the attached file
+    r.expect("attach me")
+    r.keys(b"q")
     r.keys(b"y")
     wait_for(lambda: os.path.exists(sent_file), desc="sendmail ran")
     sent = open(sent_file).read()

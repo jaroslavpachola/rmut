@@ -355,6 +355,52 @@ Make it installable without a checkout.
 - [x] Release automation: tag `vX.Y.Z` → GitHub release with a
       prebuilt x86_64-linux binary + man page tarball
 
+**Mutt-parity round** (2026-07, after 1.20): defaults and flows
+aligned with mutt — edit_headers (off), mutt's index_format and
+date, $resolve advance, first-new positioning, forward_format,
+$mark_old aging, pager + markers and $pager_stop, the ask-yes
+compose questions (Reply-To / include / no-subject), e edits the raw
+message (Alt+e resends), and the compose menu (with Enter viewing
+the selected entry). R23–R26 below are the UX gaps left from that
+audit, ranked; daily-use findings still outrank them all.
+
+## R23 — prompt line editor
+
+Mutt's prompts are a real line editor; rmut's only append at the end.
+
+- [ ] Cursor movement and mid-line editing at every prompt:
+      left/right, Home/End (and ctrl+a/ctrl+e), insert and delete at
+      the cursor, ctrl+w word delete, the cursor drawn where it is
+- [ ] History per prompt kind (patterns, addresses, mailboxes,
+      subjects, commands): up/down recalls, newest first, in-memory
+      for the session
+
+## R24 — pager body search
+
+- [ ] `/` inside the pager searches the displayed text
+      (case-insensitive, regex like patterns), scrolls to the first
+      hit; `n` repeats, `N` reverses; remappable pager actions
+- [ ] The index `/` stays message-level; a `?` help note for both
+
+## R25 — triage keys
+
+- [ ] Tab / Alt+Tab in the index: jump to the next / previous
+      new-or-unread message, wrapping with a status note (mutt's
+      next-new-then-unread)
+- [ ] Pattern-wide operations: `D` delete-pattern, `U`
+      undelete-pattern, `T` tag-pattern, ctrl+t untag-pattern —
+      prompt for a pattern, apply to every match, report the count
+
+## R26 — browser, attachments, and odds
+
+- [ ] Folder browser: descend into directories, open any path,
+      create a maildir
+- [ ] Attachment menu: pipe a part to a command (`|`), print (`p`)
+- [ ] Read-only mode (`rmut -R`) with a status-line indicator
+- [ ] Query menu: `Q` lists query_command results to pick from
+- [ ] status_format `%>` right-alignment and `%P` position, so
+      mutt's exact default status line renders
+
 ## Non-goals
 
 S/MIME, POP3, scoring — still out; revisit only if daily use proves

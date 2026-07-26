@@ -13,7 +13,7 @@ const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply 
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const COMPOSE_HELP: &str =
-    "y:Send e:Edit t:To c:Cc b:Bcc s:Subj a:Attach D:Detach p:PGP P:Postpone q:Quit";
+    "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach D:Detach p:PGP P:Postpone q:Quit";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 

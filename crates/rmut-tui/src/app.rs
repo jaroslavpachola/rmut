@@ -2204,6 +2204,7 @@ impl App {
                     kind: LineKind::AttachFile,
                 });
             }
+            KeyCode::Enter => self.view_compose_entry(),
             KeyCode::Char('D') => self.detach_selected(),
             KeyCode::Char('p') => {
                 self.prompt = Some(Prompt::Key {
@@ -2223,6 +2224,69 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Enter in the compose menu: show the selected entry — the
+    /// draft body, the forwarded original, or an attached file (text
+    /// directly, other types through their [filters] command).
+    fn view_compose_entry(&mut self) {
+        let Mode::Compose { sel } = self.mode else {
+            return;
+        };
+        let Some(c) = &self.compose else {
+            return;
+        };
+        let has_orig = c.attach.is_some();
+        let (title, text) = if sel == 0 {
+            // The body is the file as edited, minus a header block
+            // when edit_headers keeps one in the file.
+            let content = std::fs::read_to_string(&c.path).unwrap_or_default();
+            let body = match &c.hidden_head {
+                Some(_) => content,
+                None => match content.split_once("\n\n") {
+                    Some((_, b)) => b.to_string(),
+                    None => content,
+                },
+            };
+            ("Message body".to_string(), body)
+        } else if has_orig && sel == 1 {
+            let path = c.attach.clone().unwrap_or_default();
+            (
+                "Forwarded original".to_string(),
+                message::body_text(&path).unwrap_or_default(),
+            )
+        } else {
+            let k = sel - 1 - usize::from(has_orig);
+            let full = draft_full(c).unwrap_or_default();
+            let Some(a) = compose::extract_attachments(&full).1.into_iter().nth(k) else {
+                return;
+            };
+            let mimetype = compose::content_type(&a.path);
+            let name = a.path.display().to_string();
+            match self.config.filters.get(mimetype).cloned() {
+                Some(command) => match run_file_filter(&command, &a.path) {
+                    Ok(text) => (name, text),
+                    Err(err) => {
+                        self.status = Some(format!("filter failed: {err:#}"));
+                        return;
+                    }
+                },
+                None if mimetype.starts_with("text/") => match std::fs::read_to_string(&a.path) {
+                    Ok(text) => (name, text),
+                    Err(err) => {
+                        self.status = Some(format!("cannot read {name}: {err}"));
+                        return;
+                    }
+                },
+                None => {
+                    self.status = Some(format!("no [filters] entry for {mimetype}"));
+                    return;
+                }
+            }
+        };
+        let mut lines = vec![title, String::new()];
+        lines.extend(text.lines().map(String::from));
+        self.mode = Mode::Help { lines, scroll: 0 };
     }
 
     fn edit_header_prompt(&mut self, name: &'static str) {
@@ -3556,6 +3620,20 @@ fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
     let status = child.wait()?;
     anyhow::ensure!(status.success(), "{command} exited with {status}");
     Ok(())
+}
+
+/// One [filters] command over a file on disk (compose menu view):
+/// the file is its stdin, its stdout is the rendered text.
+fn run_file_filter(command: &str, path: &Path) -> Result<String> {
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::from(file))
+        .output()
+        .with_context(|| format!("running {command}"))?;
+    anyhow::ensure!(out.status.success(), "{command} exited with {}", out.status);
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// With `rcpts` the addresses go on the command line (a bounce keeps
