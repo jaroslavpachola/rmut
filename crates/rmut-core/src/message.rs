@@ -11,7 +11,11 @@ use crate::maildir::MailFile;
 #[derive(Debug, Clone)]
 pub struct Envelope {
     pub file: MailFile,
+    /// Short display form of the sender (name when there is one).
     pub from: String,
+    /// The whole decoded From header, so `~f` can match the address
+    /// too, like mutt (empty in entries from a pre-1.24 header cache).
+    pub from_full: String,
     pub subject: String,
     /// Unix epoch seconds from the Date header, 0 if missing/unparsable.
     pub date: i64,
@@ -37,10 +41,12 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     let raw = fs::read(&file.path).with_context(|| format!("reading {}", file.path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", file.path.display()))?;
     let headers = mail.get_headers();
-    let from = headers
-        .get_first_value("From")
-        .map(|f| short_from(&f))
-        .unwrap_or_else(|| "(unknown)".into());
+    let from_full = headers.get_first_value("From").unwrap_or_default();
+    let from = if from_full.trim().is_empty() {
+        "(unknown)".into()
+    } else {
+        short_from(&from_full)
+    };
     let subject = headers
         .get_first_value("Subject")
         .filter(|s| !s.trim().is_empty())
@@ -75,6 +81,7 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     Ok(Envelope {
         file,
         from,
+        from_full,
         subject,
         date,
         msg_id,

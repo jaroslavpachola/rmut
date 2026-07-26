@@ -191,6 +191,7 @@ mod tests {
                 size: 0,
             },
             from: "x".into(),
+            from_full: "x".into(),
             subject: id.into(),
             date,
             msg_id: (!id.is_empty()).then(|| format!("<{id}>")),

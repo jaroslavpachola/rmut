@@ -18,6 +18,10 @@ use crate::message::{self, Envelope};
 struct Entry {
     key: String,
     from: String,
+    /// Absent in pre-1.24 caches; those entries just match `~f`
+    /// against the short form until the file is re-parsed.
+    #[serde(default)]
+    from_full: String,
     subject: String,
     date: i64,
     msg_id: Option<String>,
@@ -38,6 +42,7 @@ impl Entry {
         Entry {
             key,
             from: env.from.clone(),
+            from_full: env.from_full.clone(),
             subject: env.subject.clone(),
             date: env.date,
             msg_id: env.msg_id.clone(),
@@ -53,6 +58,7 @@ impl Entry {
         Envelope {
             file,
             from: self.from.clone(),
+            from_full: self.from_full.clone(),
             subject: self.subject.clone(),
             date: self.date,
             msg_id: self.msg_id.clone(),

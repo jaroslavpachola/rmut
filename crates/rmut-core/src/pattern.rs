@@ -364,9 +364,11 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
         Pattern::All(terms) => terms.iter().all(|t| eval(t, ctx)),
         Pattern::Any(terms) => terms.iter().any(|t| eval(t, ctx)),
         Pattern::Not(term) => !eval(term, ctx),
-        Pattern::From(m) => m.is_match(&env.from),
+        Pattern::From(m) => m.is_match(&env.from) || m.is_match(&env.from_full),
         Pattern::Subject(m) => m.is_match(&env.subject),
-        Pattern::Default(m) => m.is_match(&env.subject) || m.is_match(&env.from),
+        Pattern::Default(m) => {
+            m.is_match(&env.subject) || m.is_match(&env.from) || m.is_match(&env.from_full)
+        }
         Pattern::To(m) => env.to.iter().any(|a| m.is_match(a)),
         Pattern::Cc(m) => env.cc.iter().any(|a| m.is_match(a)),
         Pattern::Recipient(m) => env.to.iter().chain(&env.cc).any(|a| m.is_match(a)),
@@ -407,7 +409,8 @@ mod tests {
                 flags,
                 size: 0,
             },
-            from: from.into(),
+            from: crate::message::short_from(from),
+            from_full: from.into(),
             subject: subject.into(),
             date: 0,
             msg_id: None,
@@ -462,6 +465,34 @@ mod tests {
         assert!(matches(&ok("~N"), &e, &[]));
         assert!(!matches(&ok("~F"), &e, &[]));
         assert!(matches(&[], &e, &[])); // empty pattern matches everything
+    }
+
+    #[test]
+    fn from_matches_the_whole_header() {
+        // Like mutt: ~f (and a bare word) match the address too, not
+        // just the displayed name.
+        let e = env(
+            "Jane Doe <jane@example.com>",
+            "Lunch",
+            false,
+            Flags::default(),
+        );
+        assert!(matches(&ok("~f jane@example.com"), &e, &[]));
+        assert!(matches(&ok("~f example"), &e, &[]));
+        assert!(matches(&ok("~f \"jane doe\""), &e, &[]));
+        assert!(matches(&ok("example.com"), &e, &[]));
+        assert!(!matches(&ok("~f petr@example.com"), &e, &[]));
+        // A pre-1.24 header cache entry has no full header stored;
+        // the short form still matches.
+        let mut old = env(
+            "Jane Doe <jane@example.com>",
+            "Lunch",
+            false,
+            Flags::default(),
+        );
+        old.from_full = String::new();
+        assert!(matches(&ok("~f doe"), &old, &[]));
+        assert!(!matches(&ok("~f jane@example.com"), &old, &[]));
     }
 
     #[test]
