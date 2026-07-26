@@ -277,8 +277,10 @@ def scenario_compose_send_postpone(tmp):
     assert "From: jarda@example.com" in sent
     assert "Message-ID:" in sent and "Date:" in sent
     assert "Hello from e2e" in sent
-    # reply: accept prefilled To/Subject, then discard at the send prompt
-    r.keys(b"r\r\rq")
+    # reply: accept prefilled To/Subject, include the original
+    # (Enter = yes at mutt's $include question), discard at the send
+    # prompt
+    r.keys(b"r\r\r\rq")
     r.expect("message discarded")
 
     def reply_draft():
@@ -403,7 +405,7 @@ L = "l~f jane<enter>"
     # help screen shows the remapped key and, after paging, the patterns
     r.keys(b"?")
     r.expect("write changes to the maildir")
-    r.keys(b"  ")  # two pages down: the action list has grown
+    r.keys(b"   ")  # three pages down: the action list has grown
     r.expect("~p addressed to me")  # the patterns block is on screen
     r.keys(b"q")
     # the macro replays its sequence through the limit prompt
@@ -1041,7 +1043,7 @@ email = "second@example.com"
              desc="recipient identity applied")
     # reverse_name: the reply From is the address the mail came to,
     # with the display name the sender used
-    r.keys(b"r\r\ry")
+    r.keys(b"r\r\r\ry")  # the extra Enter answers the include question
     wait_for(lambda: "From: Boss Me <jarda@example.com>" in open(sent_file).read(),
              desc="reverse_name applied")
     # folder rule: the same compose from md2 uses its identity
@@ -1123,6 +1125,79 @@ def scenario_edit_headers(tmp):
     r.close()
 
 
+def scenario_mutt_flow(tmp):
+    """Mutt-default behaviors: the Reply-To/include/no-subject
+    questions, e edits the raw message, Space past the end advances,
+    and unread new mail ages to O on quit (mark_old)."""
+    md = make_maildir(tmp, "md")
+    with open(os.path.join(md, "cur", "1751790000.9.host:2,S"), "w") as f:
+        f.write("From: Jane Doe <jane@example.com>\r\n"
+                "Reply-To: list@example.com\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: via list\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <rt1@example.com>\r\n\r\nshort body\r\n")
+    write_msgs(md, ["petr"])  # read via the pager below
+    # The newest message stays untouched: the mark_old candidate.
+    with open(os.path.join(md, "new", "1751953000.5.host"), "w") as f:
+        f.write("From: quiet@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: never read\r\nDate: Wed, 8 Jul 2026 09:00:00 +0200\r\n"
+                "Message-ID: <mf5@example.com>\r\n\r\nnothing to see\r\n")
+    sent_file = os.path.join(tmp, "sent-mf.eml")
+    sendmail = os.path.join(tmp, "sendmail-mf.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "mf-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "edited-by-e2e\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "mf-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:3")
+    # $reply_to ask-yes, then $abort_nosubject ask-yes (Enter = abort)
+    r.keys(b"=r")
+    r.expect("Reply to list@example.com? (y/n):")
+    r.keys(b"y")
+    r.keys(b"\r")      # accept To = list@example.com
+    r.keys(b"\x15\r")  # clear the prefilled subject -> the question
+    r.expect("No subject, abort? (y/n):")
+    r.keys(b"\r")
+    r.expect("aborted (no subject)")
+    # again: n at the Reply-To question replies to From, n at the
+    # include question leaves the original out
+    r.keys(b"r")
+    r.keys(b"n")       # -> To prefilled with the From header
+    r.keys(b"\r\r")    # accept To and subject
+    r.expect("Include message in reply? (y/n):")
+    r.keys(b"n")
+    r.expect("Send message?")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="reply sent")
+    sent = open(sent_file).read()
+    assert "To: Jane Doe <jane@example.com>" in sent, sent
+    assert "list@example.com" not in sent.split("\n\n")[0], sent
+    assert "> short body" not in sent, sent
+    # e edits the raw message in place (the editor appends a body line)
+    r.keys(b"=e")
+    r.expect("message edited")
+    r.keys(b"\r")
+    r.expect("edited-by-e2e")
+    # $pager_stop = no: Space at the end opens the next message
+    r.keys(b" ")
+    r.expect("sejdeme se")
+    r.keys(b"i")
+    # $mark_old: the untouched new message ages on quit — moved to
+    # cur/ without gaining the seen flag
+    r.keys(b"q")
+    wait_for(lambda: "1751953000.5.host:2," in os.listdir(os.path.join(md, "cur")),
+             desc="unread new message aged to old")
+    assert os.listdir(os.path.join(md, "new")) == []
+    r.close()
+
+
 def scenario_message_commands(tmp):
     """R8: | pipe, C copy, Attach: pseudo-headers, b bounce, e resend."""
     md = make_maildir(tmp, "md")
@@ -1194,7 +1269,7 @@ def scenario_message_commands(tmp):
     assert "-oi petr@example.com" in open(args_file).read()
     # e resends: the message becomes a fresh draft through the editor
     # (the same editor script attaches the blob again, hence 2 mixed)
-    r.keys(b"ey")
+    r.keys(b"\x1bey")  # resend is Alt+e now; e edits the raw message
     wait_for(
         lambda: open(sent_file).read().count("Content-Type: multipart/mixed") == 2,
         desc="resent message delivered",
@@ -1280,6 +1355,7 @@ SCENARIOS = [
     scenario_pgp,
     scenario_print,
     scenario_edit_headers,
+    scenario_mutt_flow,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

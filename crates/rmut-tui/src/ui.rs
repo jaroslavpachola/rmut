@@ -271,11 +271,21 @@ fn pager_lines(
     for line in view.body.lines() {
         // Marker lines like the PGP verdict get the header treatment.
         let marker = line.starts_with("[-- ") && line.ends_with(" --]");
-        for wrapped in wrap_line(line, width) {
-            lines.push(if marker {
-                Line::styled(wrapped, Style::new().fg(header_color).bold())
+        // mutt's $markers (on by default): wrapped continuations carry
+        // a leading +, so the wrap width leaves it a column.
+        for (i, wrapped) in wrap_line(line, width.saturating_sub(1))
+            .into_iter()
+            .enumerate()
+        {
+            let text = if i > 0 {
+                format!("+{wrapped}")
             } else {
-                Line::raw(wrapped)
+                wrapped
+            };
+            lines.push(if marker {
+                Line::styled(text, Style::new().fg(header_color).bold())
+            } else {
+                Line::raw(text)
             });
         }
     }
@@ -294,7 +304,7 @@ pub fn pager_line_count(view: &MessageView, width: usize, full_headers: bool) ->
         + view
             .body
             .lines()
-            .map(|l| wrap_line(l, width).len())
+            .map(|l| wrap_line(l, width.saturating_sub(1)).len())
             .sum::<usize>()
 }
 

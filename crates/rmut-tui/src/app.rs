@@ -115,6 +115,12 @@ pub enum KeyKind {
     Purge {
         quit: bool,
     },
+    /// mutt's $reply_to (ask-yes): reply to the Reply-To address?
+    ReplyTo,
+    /// mutt's $abort_nosubject (ask-yes): no subject, abort?
+    NoSubject,
+    /// mutt's $include (ask-yes): quote the original in the reply?
+    IncludeReply,
 }
 
 pub enum Prompt {
@@ -142,6 +148,12 @@ pub enum ComposeKind {
 pub struct ComposeBase {
     path: PathBuf,
     reply_to: String,
+    /// The From header as written, the reply target when the
+    /// Reply-To question is answered no.
+    from_hdr: String,
+    /// The message has a Reply-To differing from From — worth the
+    /// mutt $reply_to (ask-yes) question.
+    has_reply_to: bool,
     orig_to: String,
     orig_cc: String,
     /// Bare author address, for the forward subject's %a.
@@ -157,6 +169,8 @@ pub struct ComposeSetup {
     kind: ComposeKind,
     base: Option<ComposeBase>,
     to: Option<String>,
+    /// Parked here while the include-original question is up.
+    subject: Option<String>,
 }
 
 /// PGP treatment for an outgoing draft, chosen at the send prompt.
@@ -253,6 +267,9 @@ pub struct App {
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
+    /// Message whose raw bytes go through $EDITOR next loop tick
+    /// (mutt's edit function).
+    pending_raw_edit: Option<PathBuf>,
     /// Recipients waiting for the bounce confirmation.
     bounce_to: Option<String>,
     /// The sender address waiting for a create-alias nick.
@@ -383,6 +400,7 @@ impl App {
             compose_setup: None,
             compose: None,
             pending_editor: None,
+            pending_raw_edit: None,
             bounce_to: None,
             alias_addr: None,
             idle: None,
@@ -534,6 +552,9 @@ impl App {
             }
             if let Some(compose) = self.pending_editor.take() {
                 self.edit_draft(&mut terminal, compose);
+            }
+            if let Some(path) = self.pending_raw_edit.take() {
+                self.edit_raw(&mut terminal, path);
             }
         }
         Ok(())
@@ -830,6 +851,39 @@ impl App {
                 KeyCode::Char('n') => self.continue_setup(ComposeKind::New, None),
                 _ => {}
             },
+            KeyKind::ReplyTo => match code {
+                KeyCode::Char('y') | KeyCode::Enter => self.open_to_prompt(true),
+                KeyCode::Char('n') => self.open_to_prompt(false),
+                _ => {
+                    self.compose_setup = None;
+                    self.status = Some("reply cancelled".into());
+                }
+            },
+            KeyKind::NoSubject => match code {
+                // ask-yes: Enter aborts, like mutt.
+                KeyCode::Char('n') => self.subject_ready(String::new()),
+                _ => {
+                    self.compose_setup = None;
+                    self.status = Some("aborted (no subject)".into());
+                }
+            },
+            KeyKind::IncludeReply => {
+                let subject = self
+                    .compose_setup
+                    .as_mut()
+                    .and_then(|s| s.subject.take())
+                    .unwrap_or_default();
+                match code {
+                    KeyCode::Char('n') => self.finish_compose_setup(&subject, false),
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        self.finish_compose_setup(&subject, true)
+                    }
+                    _ => {
+                        self.compose_setup = None;
+                        self.status = Some("reply cancelled".into());
+                    }
+                }
+            }
             KeyKind::Print => {
                 if code == KeyCode::Char('y') {
                     self.print_current();
@@ -984,7 +1038,7 @@ impl App {
             LineKind::AttachFile => self.attach_file_submitted(input),
             LineKind::AliasNick => self.create_alias(input),
             LineKind::ComposeTo => self.setup_to_submitted(input),
-            LineKind::ComposeSubject => self.finish_compose_setup(input),
+            LineKind::ComposeSubject => self.subject_submitted(input),
         }
     }
 
@@ -1026,10 +1080,12 @@ impl App {
             IndexAction::Pipe => self.prompt_pipe(),
             IndexAction::Bounce => self.prompt_bounce(),
             IndexAction::Resend => self.resend_current(),
+            IndexAction::Edit => self.start_raw_edit(),
             IndexAction::CreateAlias => self.prompt_create_alias(),
             IndexAction::Quit => {
                 // Like mutt: flag changes are written silently; only
                 // pending deletions raise a question (the purge one).
+                self.mark_old_unread();
                 if self.deleted_count() > 0 {
                     self.prompt_purge(true);
                 } else {
@@ -1258,6 +1314,11 @@ impl App {
                 self.resend_current();
                 return;
             }
+            PagerAction::Edit => {
+                self.mode = Mode::Index;
+                self.start_raw_edit();
+                return;
+            }
             PagerAction::CreateAlias => {
                 self.prompt_create_alias();
                 return;
@@ -1279,6 +1340,17 @@ impl App {
         };
         let lines = crate::ui::pager_line_count(&pager.view, width, pager.full_headers);
         let max_scroll = lines.saturating_sub(page);
+        // mutt's $pager_stop = no: paging past the end opens the next
+        // message.
+        if action == PagerAction::PageDown && pager.scroll >= max_scroll {
+            if self.sel + 1 < self.visible.len() {
+                self.sel += 1;
+                self.open_selected();
+            } else {
+                self.status = Some("last message".into());
+            }
+            return;
+        }
         match action {
             PagerAction::Headers => {
                 pager.full_headers = !pager.full_headers;
@@ -1540,6 +1612,22 @@ impl App {
         self.mode = Mode::Folders { dirs, sel };
     }
 
+    /// mutt's $mark_old (on by default): when leaving the mailbox,
+    /// unread new mail ages to old — moved out of new/ without the
+    /// seen flag, shown as O and no longer counted as new.
+    fn mark_old_unread(&mut self) {
+        for m in &mut self.msgs {
+            if m.env.file.is_new
+                && !m.env.file.flags.seen
+                && !m.env.file.flags.deleted
+                && let Ok(path) = maildir::store_flags(&m.env.file)
+            {
+                m.env.file.path = path;
+                m.env.file.is_new = false;
+            }
+        }
+    }
+
     /// Leaving the mailbox (c, sidebar open, folder browser): flag
     /// changes are written silently like q; only pending deletions
     /// block the switch. True when it is safe to go.
@@ -1558,6 +1646,7 @@ impl App {
     }
 
     fn open_mailbox_spec(&mut self, spec: &str) {
+        self.mark_old_unread();
         // Another folder of the open account reuses the live session
         // (a SELECT) instead of a fresh connect+login round; a dead
         // session falls through to the full open below.
@@ -1613,17 +1702,21 @@ impl App {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let reply_to = {
+        let from_hdr = get("From");
+        let (reply_to, has_reply_to) = {
             let rt = get("Reply-To");
             if rt.trim().is_empty() {
-                get("From")
+                (from_hdr.clone(), false)
             } else {
-                rt
+                let differs = rt.trim() != from_hdr.trim();
+                (rt, differs)
             }
         };
         Some(ComposeBase {
             path: env.file.path.clone(),
             reply_to,
+            from_hdr,
+            has_reply_to,
             orig_to: get("To"),
             orig_cc: get("Cc"),
             from_addr: compose::addresses(&get("From"))
@@ -1661,18 +1754,51 @@ impl App {
     }
 
     fn continue_setup(&mut self, kind: ComposeKind, base: Option<ComposeBase>) {
-        let to_prefill = match kind {
-            ComposeKind::Reply | ComposeKind::GroupReply => base
-                .as_ref()
-                .map(|b| b.reply_to.clone())
-                .unwrap_or_default(),
-            ComposeKind::New | ComposeKind::Forward => String::new(),
-        };
+        let ask_reply_to = matches!(kind, ComposeKind::Reply | ComposeKind::GroupReply)
+            && base.as_ref().is_some_and(|b| b.has_reply_to);
         self.compose_setup = Some(ComposeSetup {
             kind,
             base,
             to: None,
+            subject: None,
         });
+        if ask_reply_to {
+            // mutt's $reply_to = ask-yes.
+            let addr = self
+                .compose_setup
+                .as_ref()
+                .and_then(|s| s.base.as_ref())
+                .map(|b| b.reply_to.clone())
+                .unwrap_or_default();
+            self.prompt = Some(Prompt::Key {
+                label: format!("Reply to {addr}? (y/n): "),
+                kind: KeyKind::ReplyTo,
+            });
+            return;
+        }
+        self.open_to_prompt(true);
+    }
+
+    /// The To prompt, prefilled for replies with Reply-To (the
+    /// question's yes) or the plain From (its no).
+    fn open_to_prompt(&mut self, use_reply_to: bool) {
+        let Some(setup) = &self.compose_setup else {
+            return;
+        };
+        let to_prefill = match setup.kind {
+            ComposeKind::Reply | ComposeKind::GroupReply => setup
+                .base
+                .as_ref()
+                .map(|b| {
+                    if use_reply_to {
+                        b.reply_to.clone()
+                    } else {
+                        b.from_hdr.clone()
+                    }
+                })
+                .unwrap_or_default(),
+            ComposeKind::New | ComposeKind::Forward => String::new(),
+        };
         self.prompt = Some(Prompt::Line {
             label: "To: ".into(),
             buf: to_prefill,
@@ -1700,7 +1826,37 @@ impl App {
         });
     }
 
-    fn finish_compose_setup(&mut self, subject: &str) {
+    /// After the Subject prompt: mutt's $abort_nosubject (ask-yes) on
+    /// an empty subject, then on replies mutt's $include (ask-yes).
+    fn subject_submitted(&mut self, input: &str) {
+        if input.trim().is_empty() {
+            self.prompt = Some(Prompt::Key {
+                label: "No subject, abort? (y/n): ".into(),
+                kind: KeyKind::NoSubject,
+            });
+            return;
+        }
+        self.subject_ready(input.to_string());
+    }
+
+    fn subject_ready(&mut self, subject: String) {
+        let is_reply = self.compose_setup.as_ref().is_some_and(|s| {
+            matches!(s.kind, ComposeKind::Reply | ComposeKind::GroupReply) && s.base.is_some()
+        });
+        if is_reply {
+            if let Some(setup) = &mut self.compose_setup {
+                setup.subject = Some(subject);
+            }
+            self.prompt = Some(Prompt::Key {
+                label: "Include message in reply? (y/n): ".into(),
+                kind: KeyKind::IncludeReply,
+            });
+        } else {
+            self.finish_compose_setup(&subject, true);
+        }
+    }
+
+    fn finish_compose_setup(&mut self, subject: &str, include: bool) {
         let Some(setup) = self.compose_setup.take() else {
             return;
         };
@@ -1713,8 +1869,11 @@ impl App {
         if let Some(b) = &setup.base {
             match setup.kind {
                 ComposeKind::Reply | ComposeKind::GroupReply => {
-                    let orig = message::body_text(&b.path).unwrap_or_default();
-                    body = compose::quote(&compose::attribution(&b.from_display, b.date), &orig);
+                    if include {
+                        let orig = message::body_text(&b.path).unwrap_or_default();
+                        body =
+                            compose::quote(&compose::attribution(&b.from_display, b.date), &orig);
+                    }
                     in_reply_to = b.msg_id.clone();
                     let mut refs = b.references.clone();
                     if let Some(id) = &b.msg_id
@@ -2525,6 +2684,91 @@ impl App {
         match result {
             Ok(()) => self.status = Some(format!("message bounced to {to}")),
             Err(err) => self.status = Some(format!("bounce failed: {err:#}")),
+        }
+    }
+
+    /// mutt's edit function (`e`): the selected message's raw bytes go
+    /// through $EDITOR, and a changed result replaces the original —
+    /// in place for maildirs, append + delete-mark on IMAP.
+    fn start_raw_edit(&mut self) {
+        if self.mbox.is_some() {
+            self.status = Some("editing in place is not supported for mbox spools".into());
+            return;
+        }
+        if self.full_message_bytes().is_none() {
+            return;
+        }
+        self.pending_raw_edit = self.selected_path();
+    }
+
+    fn edit_raw(&mut self, terminal: &mut DefaultTerminal, path: PathBuf) {
+        let original = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.status = Some(format!("cannot read message: {err}"));
+                return;
+            }
+        };
+        let temp = match write_draft("").and_then(|p| {
+            std::fs::write(&p, &original)?;
+            Ok(p)
+        }) {
+            Ok(p) => p,
+            Err(err) => {
+                self.status = Some(format!("cannot write edit copy: {err:#}"));
+                return;
+            }
+        };
+        let editor = self.config.mail.editor.clone().unwrap_or_else(|| {
+            std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".into())
+        });
+        ratatui::restore();
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{editor} \"$1\""))
+            .arg("rmut-editor")
+            .arg(&temp)
+            .status();
+        *terminal = ratatui::init();
+        let _ = terminal.clear();
+        let edited = std::fs::read(&temp).unwrap_or_default();
+        let _ = std::fs::remove_file(&temp);
+        if !matches!(status, Ok(s) if s.success()) {
+            self.status = Some("editor failed — message unchanged".into());
+            return;
+        }
+        if edited == original {
+            self.status = Some("message unchanged".into());
+            return;
+        }
+        match &mut self.remote {
+            Some(remote) => {
+                // Like mutt on IMAP: the edited copy is appended and
+                // the original marked deleted, purged on the next $.
+                let flags = self.msgs[self.visible[self.sel]].env.file.flags;
+                let mailbox = remote.mailbox.clone();
+                if let Err(err) = remote.append_to(&mailbox, flags, &edited) {
+                    self.status = Some(format!("cannot store the edited copy: {err:#}"));
+                    return;
+                }
+                if let Some(m) = self.cur_mut() {
+                    m.env.file.flags.deleted = true;
+                    m.dirty = true;
+                }
+                self.check_new_mail();
+                self.status =
+                    Some("edited copy appended — original marked deleted ($ purges)".into());
+            }
+            None => {
+                if let Err(err) = std::fs::write(&path, &edited) {
+                    self.status = Some(format!("cannot write message: {err}"));
+                    return;
+                }
+                self.rescan();
+                self.status = Some("message edited".into());
+            }
         }
     }
 

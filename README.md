@@ -82,16 +82,22 @@ highlight, Ctrl+O opens the highlighted mailbox), `v` attachments,
 `m` compose, `r` reply, `g` group
 reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
 the raw message to a shell command, `b` bounce (resend as-is to new
-recipients, with a Resent-\* block), `e` edit the message as a new
-draft, `a` add the sender to the alias file (nick prompted, local
+recipients, with a Resent-\* block), `e` edit the raw message (mutt's
+edit; the changed result replaces the original), Alt+e edit as a new
+draft (resend), `a` add the sender to the alias file (nick prompted, local
 part prefilled), `p` print (pipes the message to `mail.print`,
 default `lpr`), `q` quit (writes changes; asks before purging
-deletions, like mutt), `x` abort without saving.
+deletions, like mutt), `x` abort without saving. Leaving a mailbox
+ages unread new mail to old (`O`), mutt's mark_old.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
 `v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `p` print,
-`s` save, `C`/`|`/`b`/`e` copy/pipe/bounce/resend, `q`/`i` back.
+`s` save, `C`/`|`/`b` copy/pipe/bounce, `e`/Alt+e edit raw/resend,
+`q`/`i` back. Space past the end opens the next message and wrapped
+lines carry a leading `+` marker, like mutt. Replies ask mutt's
+ask-yes questions: Reply-To (when the header is set), "No subject,
+abort?", and "Include message in reply?"; Enter takes the yes.
 
 Attachments: `Enter` view a text part, `s` save part to a file.
 

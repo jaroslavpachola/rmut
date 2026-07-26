@@ -103,13 +103,16 @@ toggle the tag; apply the next function to tagged messages
 write changes to the mailbox
 .TP
 .B q x
-quit (asks before purging deletions) / quit without saving
+quit (asks before purging deletions) / quit without saving. Leaving
+a mailbox ages unread new mail to old \(em shown as O, no longer
+counted as new (mutt's mark_old).
 .TP
 .B m r g f
 compose, reply, reply to all, forward
 .TP
-.B e b
-edit the message as a new draft (resend); bounce to new recipients
+.B e Alt+e b
+edit the raw message (mutt's edit; the changed result replaces the
+original); edit as a new draft (resend); bounce to new recipients
 .TP
 .B o
 choose sort order
@@ -153,7 +156,9 @@ back to the index
 scroll one line
 .TP
 .B Space \-
-page down / up (also PgDn / PgUp, Home / End for top / bottom)
+page down / up (also PgDn / PgUp, Home / End for top / bottom);
+Space past the end opens the next message (mutt's pager_stop
+default), and wrapped lines carry a leading + (mutt's markers)
 .TP
 .B J K
 open next / previous message
@@ -167,6 +172,11 @@ toggle full headers
 .BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
 .BR b ", " e " and " a
 work as in the index.
+.SS Compose questions
+Like mutt's ask-yes defaults: replying to a message with a Reply-To
+asks "Reply to ...?" (no falls back to From), an empty Subject asks
+"No subject, abort?", and replies ask "Include message in reply?"
+before quoting the original. Enter takes the default (yes).
 .SS Send prompt
 After editing a draft:
 .B (y)es

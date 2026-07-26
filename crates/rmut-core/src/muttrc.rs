@@ -1188,6 +1188,8 @@ fn index_function(name: &str) -> Option<&'static str> {
         "tag-prefix" => "tag-prefix",
         "save-message" => "save",
         "print-message" => "print",
+        "edit" => "edit",
+        "resend-message" => "resend",
         "help" => "help",
         _ => return None,
     })
@@ -1213,6 +1215,8 @@ fn pager_function(name: &str) -> Option<&'static str> {
         "forward-message" => "forward",
         "save-message" => "save",
         "print-message" => "print",
+        "edit" => "edit",
+        "resend-message" => "resend",
         "help" => "help",
         _ => return None,
     })
