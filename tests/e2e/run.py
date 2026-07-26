@@ -249,7 +249,9 @@ def scenario_compose_send_postpone(tmp):
     os.chmod(query, 0o755)
     cfg = os.path.join(tmp, "compose-config.toml")
     with open(cfg, "w") as f:
-        f.write(f'[mail]\nquery_command = "{query} %s"\n')
+        # edit_headers: this scenario asserts on the header block the
+        # editor sees (mutt's edit_headers style).
+        f.write(f'[mail]\nquery_command = "{query} %s"\nedit_headers = true\n')
     env = base_env(tmp, {
         "EDITOR": editor,
         "RMUT_SENDMAIL": sendmail,
@@ -1074,8 +1076,9 @@ email = "second@example.com"
 
 
 def scenario_edit_headers(tmp):
-    """[mail] edit_headers = false: the editor sees only the body;
-    headers come from the prompts, attachments via the send prompt."""
+    """The default (edit_headers off, like mutt): the editor sees only
+    the body; headers come from the prompts, attachments via the send
+    prompt."""
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane"])
     sent_file = os.path.join(tmp, "sent-eh.eml")
@@ -1094,8 +1097,7 @@ def scenario_edit_headers(tmp):
     cfg = os.path.join(tmp, "eh-config.toml")
     with open(cfg, "w") as f:
         f.write(f'[identity]\nname = "Jarda"\nemail = "jarda@example.com"\n'
-                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
-                'edit_headers = false\n')
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:1")
     r.keys(b"m")
@@ -1136,7 +1138,13 @@ def scenario_message_commands(tmp):
         f.write(f'#!/bin/sh\nprintf "hello attach\\n" >> "$1"\n'
                 f'sed -i "1a Attach: {tmp}/blob.bin raw bytes" "$1"\n')
     os.chmod(editor, 0o755)
-    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail}))
+    cfg = os.path.join(tmp, "cmds-config.toml")
+    with open(cfg, "w") as f:
+        # the editor script writes an Attach: pseudo-header into the
+        # draft's header block, so it must be in the buffer
+        f.write("[mail]\nedit_headers = true\n")
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                                "RMUT_CONFIG": cfg}))
     r.expect("Msgs:1")
     # | pipes the raw message to a shell command
     piped = os.path.join(tmp, "piped.eml")

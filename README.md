@@ -184,10 +184,11 @@ by prefix, plus hits from `query_command` when one is configured
 message, then `address<TAB>name` lines). Repeated Tab cycles through
 multiple matches.
 
-To attach files, add `Attach:` pseudo-headers to the draft in the
-editor (mutt's edit_headers style — the default; `edit_headers =
-false` keeps the header block out of the editor, with headers coming
-from the prompts and attachments from the send prompt's `a`):
+By default (like mutt) the editor gets only the message body —
+headers come from the prompts, and attachments are added with `a` at
+the send prompt. With `edit_headers = true` the draft's header block
+is part of the editor buffer, where you can adjust To/Cc/Subject
+directly and attach files with `Attach:` pseudo-headers:
 
 ```
 To: jane@example.com
@@ -242,8 +243,8 @@ query_command = "khard email --parsable %s"   # Tab completion lookup
 trash = "~/Maildir/.Trash"   # purged mail moves here (mutt's $trash;
                              # imap:acct/Trash for IMAP mailboxes);
                              # purging inside it deletes for real
-edit_headers = true          # false: the editor gets only the body
-                             # (headers come from the prompts)
+edit_headers = false         # true: the header block is part of the
+                             # editor buffer (To/Cc/Subject, Attach:)
 
 [index]
 format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date

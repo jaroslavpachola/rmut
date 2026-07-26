@@ -1760,10 +1760,10 @@ impl App {
         }
     }
 
-    /// mutt's edit_headers, but true by default: the header block is
-    /// part of the editor buffer.
+    /// mutt's edit_headers (default false, like mutt): whether the
+    /// header block is part of the editor buffer.
     fn edit_headers(&self) -> bool {
-        self.config.mail.edit_headers.unwrap_or(true)
+        self.config.mail.edit_headers.unwrap_or(false)
     }
 
     /// Write a fresh draft file for the editor: the whole text, or —

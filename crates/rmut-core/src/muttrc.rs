@@ -70,8 +70,8 @@ struct State {
     print: Option<String>,
     query_command: Option<String>,
     trash: Option<String>,
-    /// `set edit_headers = no` (mutt's default is no; rmut's is yes).
-    edit_headers_off: bool,
+    /// `set edit_headers` (off is mutt's and rmut's default).
+    edit_headers_on: bool,
     sort: Option<String>,
     sort_aux: Option<String>,
     date_format: Option<String>,
@@ -394,9 +394,9 @@ impl State {
             "trash" => self.trash = Some(v),
             "edit_headers" => {
                 if is_yes(&v) {
-                    self.satisfy(line, "headers in the editor is rmut's default");
+                    self.edit_headers_on = true;
                 } else {
-                    self.edit_headers_off = true;
+                    self.satisfy(line, "off is rmut's default too");
                 }
             }
             "status_format" => self.status_format = Some(v),
@@ -769,7 +769,7 @@ impl State {
             || self.trash.is_some()
             || self.save_default.is_some()
             || self.forward_attach
-            || self.edit_headers_off
+            || self.edit_headers_on
         {
             out += "\n[mail]\n";
             if !mailboxes.is_empty() {
@@ -806,8 +806,8 @@ impl State {
             if self.forward_attach {
                 out += "forward = \"attach\"\n";
             }
-            if self.edit_headers_off {
-                out += "edit_headers = false\n";
+            if self.edit_headers_on {
+                out += "edit_headers = true\n";
             }
         }
         if self.index_format.is_some()
@@ -1514,7 +1514,7 @@ mod tests {
             "set mime_forward_rest   = yes\n",
             "set query_command       = \"khard email --parsable %s\"\n",
             "set trash               = +Trash\n",
-            "set edit_headers        = no\n",
+            "set edit_headers        = yes\n",
             "save-hook . +General\n",
             "set folder = ~/Mail\n",
             "bind index G imap-fetch-mail\n",
@@ -1531,9 +1531,9 @@ mod tests {
         );
         assert_eq!(cfg.mail.save.as_deref(), Some("~/Mail/General"));
         assert_eq!(cfg.mail.trash.as_deref(), Some("~/Mail/Trash"));
-        assert_eq!(cfg.mail.edit_headers, Some(false));
-        // edit_headers = yes matches rmut's default.
-        let (cfg2, _) = to_config("set edit_headers = yes\n");
+        assert_eq!(cfg.mail.edit_headers, Some(true));
+        // edit_headers = no matches rmut's default.
+        let (cfg2, _) = to_config("set edit_headers = no\n");
         assert!(cfg2.mail.edit_headers.is_none());
         assert_eq!(
             cfg.keys.index.get("fetch-mail").map(String::as_str),
