@@ -447,7 +447,22 @@ impl Remote {
     /// the last known UID; anything else triggers a full reconcile.
     pub fn check_new(&mut self) -> Result<usize> {
         match self.retry(|client, _, _| client.noop_changes())? {
-            Changes::None => Ok(0),
+            // A silent NOOP is no proof of nothing: the EXISTS for an
+            // arrival may have ridden along an earlier command's
+            // response (an Fcc APPEND, a STORE) and been discarded.
+            // Probe the UID horizon with a cheap flags fetch instead.
+            Changes::None => {
+                let last = self.last_uid;
+                let max = self.retry(|client, _, _| {
+                    Ok(client
+                        .uid_fetch_flags(&format!("{}:*", last + 1))?
+                        .iter()
+                        .map(|m| m.uid)
+                        .max()
+                        .unwrap_or(0))
+                })?;
+                if max > last { self.fetch_new() } else { Ok(0) }
+            }
             Changes::NewOnly => self.fetch_new(),
             Changes::Full => self.refresh(),
         }
@@ -814,10 +829,42 @@ mod tests {
             "* 2 EXISTS\r\n* OK [UIDVALIDITY 42] ok\r\n".into(),
         ));
         script.push(Expect::new("NOOP", String::new()));
+        // A silent NOOP still probes the UID horizon.
+        script.push(Expect::new(
+            "UID FETCH 12:* (UID FLAGS)",
+            "* 2 FETCH (UID 11 FLAGS ())\r\n".into(),
+        ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
             let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             assert_eq!(remote.check_new().unwrap(), 0);
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn silent_noop_still_catches_arrivals() {
+        // The EXISTS may have ridden along an earlier command's
+        // response (e.g. the Fcc APPEND after sending to yourself)
+        // and been discarded: NOOP then reports nothing, but the
+        // UID-horizon probe finds the arrival anyway.
+        let mut script = open_script(); // mirrors UIDs 10 and 11
+        script.push(Expect::new("NOOP", String::new()));
+        script.push(Expect::new(
+            "UID FETCH 12:* (UID FLAGS)",
+            "* 3 FETCH (UID 12 FLAGS ())\r\n".into(),
+        ));
+        script.push(Expect::new(
+            "UID FETCH 12:* (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+            fetch_reply(12, "", "Subject: surprise\r\n\r\n"),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
+            assert_eq!(remote.check_new().unwrap(), 1);
+            let files = maildir::scan(&remote.cache).unwrap();
+            assert_eq!(files.len(), 3);
+            assert!(files.iter().any(|f| uid_of(&f.path) == Some(12)));
         });
         handle.join().unwrap();
     }
