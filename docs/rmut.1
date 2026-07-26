@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.23.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.24.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -98,6 +98,14 @@ toggle read/unread
 .TP
 .B t ;
 toggle the tag; apply the next function to tagged messages
+.TP
+.B Tab Alt+Tab
+jump to the next / previous new-or-unread message, wrapping around
+(mutt's next-new-then-unread)
+.TP
+.B D U T Ctrl+T
+prompt for a pattern and delete / undelete / tag / untag every
+matching message (within the active limit), reporting the count
 .TP
 .B $
 write changes to the mailbox

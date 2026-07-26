@@ -95,6 +95,11 @@ pub enum LineKind {
     Search,
     /// The pager's text search (`/` inside a message).
     PagerSearch,
+    /// Pattern-wide operations (D/U/T/ctrl+t): every match gets the op.
+    DeletePattern,
+    UndeletePattern,
+    TagPattern,
+    UntagPattern,
     ChangeDir,
     SavePart,
     SaveMsg,
@@ -118,7 +123,13 @@ impl LineKind {
     /// History bucket, mutt-style: one shared list per input class.
     fn history_bucket(self) -> &'static str {
         match self {
-            LineKind::Limit | LineKind::Search | LineKind::PagerSearch => "pattern",
+            LineKind::Limit
+            | LineKind::Search
+            | LineKind::PagerSearch
+            | LineKind::DeletePattern
+            | LineKind::UndeletePattern
+            | LineKind::TagPattern
+            | LineKind::UntagPattern => "pattern",
             LineKind::ComposeTo
             | LineKind::BounceTo
             | LineKind::EditTo
@@ -1209,6 +1220,22 @@ impl App {
                     self.status = Some("No search pattern.".into());
                 }
             }
+            LineKind::DeletePattern => self.apply_pattern(input, "deleted", |m| {
+                if !m.env.file.flags.deleted {
+                    m.env.file.flags.deleted = true;
+                    m.dirty = true;
+                }
+            }),
+            LineKind::UndeletePattern => self.apply_pattern(input, "undeleted", |m| {
+                if m.env.file.flags.deleted {
+                    m.env.file.flags.deleted = false;
+                    m.dirty = true;
+                }
+            }),
+            LineKind::TagPattern => self.apply_pattern(input, "tagged", |m| m.env.tagged = true),
+            LineKind::UntagPattern => {
+                self.apply_pattern(input, "untagged", |m| m.env.tagged = false)
+            }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::SavePart => self.save_part(input),
             LineKind::SaveMsg => self.copy_message(input, true),
@@ -1370,6 +1397,36 @@ impl App {
                 self.prompt = Some(Prompt::line("Search: ", String::new(), LineKind::Search));
             }
             IndexAction::SearchNext => self.search_next(),
+            IndexAction::NextNew => self.jump_new(true),
+            IndexAction::PrevNew => self.jump_new(false),
+            IndexAction::DeletePattern => {
+                self.prompt = Some(Prompt::line(
+                    "Delete messages matching: ",
+                    String::new(),
+                    LineKind::DeletePattern,
+                ));
+            }
+            IndexAction::UndeletePattern => {
+                self.prompt = Some(Prompt::line(
+                    "Undelete messages matching: ",
+                    String::new(),
+                    LineKind::UndeletePattern,
+                ));
+            }
+            IndexAction::TagPattern => {
+                self.prompt = Some(Prompt::line(
+                    "Tag messages matching: ",
+                    String::new(),
+                    LineKind::TagPattern,
+                ));
+            }
+            IndexAction::UntagPattern => {
+                self.prompt = Some(Prompt::line(
+                    "Untag messages matching: ",
+                    String::new(),
+                    LineKind::UntagPattern,
+                ));
+            }
             IndexAction::Attachments => self.open_attachments(),
             IndexAction::ChangeMailbox => {
                 if self.ready_to_leave() {
@@ -3534,6 +3591,55 @@ impl App {
         self.status = Some("not found".into());
     }
 
+    /// Tab / Alt+Tab: jump to the next (previous) new-or-unread
+    /// message, wrapping around with a note (mutt's
+    /// next-new-then-unread).
+    fn jump_new(&mut self, forward: bool) {
+        let n = self.visible.len();
+        if n == 0 {
+            return;
+        }
+        for (vi, wrapped) in wrap_order(n, self.sel, forward) {
+            let m = &self.msgs[self.visible[vi]];
+            if m.env.file.is_new || !m.env.file.flags.seen {
+                if wrapped {
+                    self.status = Some("search wrapped".into());
+                }
+                self.select(vi);
+                return;
+            }
+        }
+        self.status = Some("no new or unread messages".into());
+    }
+
+    /// Apply `f` to every message matching `input`, within the active
+    /// limit (members of folded threads included — folding is display
+    /// only), and report the count.
+    fn apply_pattern(&mut self, input: &str, verb: &'static str, f: impl Fn(&mut Msg)) {
+        if input.is_empty() {
+            return;
+        }
+        let patterns = match pattern::parse(input) {
+            Ok(p) => p,
+            Err(err) => {
+                self.status = Some(format!("bad pattern: {err}"));
+                return;
+            }
+        };
+        let mut count = 0;
+        for i in 0..self.msgs.len() {
+            let in_limit = match &self.limit {
+                Some((_, l)) => pattern::matches(l, &self.msgs[i].env, &self.me),
+                None => true,
+            };
+            if in_limit && pattern::matches(&patterns, &self.msgs[i].env, &self.me) {
+                f(&mut self.msgs[i]);
+                count += 1;
+            }
+        }
+        self.status = Some(format!("{count} {verb}"));
+    }
+
     /// Write all pending changes to the maildir: T-flagged messages are
     /// removed, other dirty messages are renamed with their new flags.
     /// For an IMAP mailbox the changes go to the server first (UID
@@ -3890,6 +3996,22 @@ fn run_sendmail(bytes: &[u8], configured: Option<&str>, rcpts: Option<&[String]>
     Ok(())
 }
 
+/// Visit order for a wrapping scan over `n` entries starting after
+/// (before, when backwards) `sel`: each index paired with a flag set
+/// once the walk passed the end (start). The starting index comes
+/// last, so a lone match under the cursor still counts as a wrap.
+fn wrap_order(n: usize, sel: usize, forward: bool) -> Vec<(usize, bool)> {
+    (1..=n)
+        .map(|step| {
+            if forward {
+                ((sel + step) % n, sel + step >= n)
+            } else {
+                ((sel + n - (step % n)) % n, step > sel)
+            }
+        })
+        .collect()
+}
+
 /// The first line matching `m` strictly after (before, when searching
 /// backwards) `from`, wrapping around; the flag reports the wrap. The
 /// starting line itself is only reached by going all the way around.
@@ -3899,18 +4021,9 @@ fn search_lines(
     from: usize,
     forward: bool,
 ) -> Option<(usize, bool)> {
-    let n = lines.len();
-    for off in 1..=n {
-        let (idx, wrapped) = if forward {
-            ((from + off) % n, from + off >= n)
-        } else {
-            ((from + n - (off % n)) % n, off > from)
-        };
-        if m.is_match(&lines[idx]) {
-            return Some((idx, wrapped));
-        }
-    }
-    None
+    wrap_order(lines.len(), from, forward)
+        .into_iter()
+        .find(|&(idx, _)| m.is_match(&lines[idx]))
 }
 
 #[cfg(test)]
@@ -3947,5 +4060,23 @@ mod tests {
         // A regex argument works like the patterns do.
         let re = Matcher::new("^bet.");
         assert_eq!(search_lines(&lines, &re, 0, true), Some((2, false)));
+    }
+
+    #[test]
+    fn wrap_order_visits_everything_once() {
+        use super::wrap_order;
+        // Forward from 1 of 4: 2, 3, then around to 0 and back to 1.
+        assert_eq!(
+            wrap_order(4, 1, true),
+            vec![(2, false), (3, false), (0, true), (1, true)]
+        );
+        // Backwards from 1: 0, then around past the start.
+        assert_eq!(
+            wrap_order(4, 1, false),
+            vec![(0, false), (3, true), (2, true), (1, true)]
+        );
+        assert_eq!(wrap_order(0, 0, true), vec![]);
+        // A single entry: the walk comes straight back, marked wrapped.
+        assert_eq!(wrap_order(1, 0, true), vec![(0, true)]);
     }
 }

@@ -404,8 +404,8 @@ L = "l~f jane<enter>"
     # help screen shows the remapped key and, after paging, the patterns
     r.keys(b"?")
     r.expect("write changes to the maildir")
-    r.keys(b"   ")  # three pages down: the action list has grown
-    r.expect("~p addressed to me")  # the patterns block is on screen
+    r.keys(b"\x1b[F")  # End: the patterns block sits at the bottom
+    r.expect("~p addressed to me")
     r.keys(b"q")
     # the macro replays its sequence through the limit prompt
     r.keys(b"L")
@@ -1220,6 +1220,75 @@ def scenario_pager_search(tmp):
     r.close()
 
 
+def scenario_triage(tmp):
+    """R25: Tab/Alt+Tab jump to the next/previous new-or-unread
+    message (wrapping), and D/U/T/ctrl+t apply delete/undelete/tag/
+    untag to every pattern match; verified on disk after the purge."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "ci"])  # both seen
+    with open(os.path.join(md, "cur/1751882400.7.host:2,"), "w") as f:
+        f.write(
+            "From: Ops Bot <ops@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: Disk almost full\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <msg7@example.com>\r\n\r\n"
+            "Please replace the disk before nine.\r\n"
+        )
+    with open(os.path.join(md, "cur/1752022800.8.host:2,"), "w") as f:
+        f.write(
+            "From: Night Runner <night@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: Night build done\r\nDate: Thu, 9 Jul 2026 01:00:00 +0200\r\n"
+            "Message-ID: <msg8@example.com>\r\n\r\n"
+            "The night build finished green.\r\n"
+        )
+
+    def on_disk(base):
+        return any(
+            f.startswith(base)
+            for sub in ("cur", "new")
+            for f in os.listdir(os.path.join(md, sub))
+        )
+
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:4", "Disk almost full", "Night build done")
+    # No new mail, so the index starts on the last message (night,
+    # unread). Tab wraps around to the other unread one (urgent).
+    r.keys(b"\t\r")
+    r.expect("Please replace the disk before nine.")
+    r.keys(b"q")
+    r.keys(b"\t\r")  # forward, no wrap: night is still unread
+    r.expect("The night build finished green.")
+    r.keys(b"q")
+    # Mark jane unread again, jump back to her with Alt+Tab from the end.
+    r.keys(b"=jN*")
+    r.keys(b"\x1b\t\r")
+    r.expect("Are you free for lunch on Friday?")
+    r.keys(b"q")
+    # Tag everything, untag the ops message, delete the tagged rest.
+    r.keys(b"T")
+    r.keys(b"!~s zzznothing\r")
+    r.expect("4 tagged")
+    r.keys(b"\x14")  # ctrl+t untag-pattern
+    r.keys(b"~f ops\r")
+    r.expect("1 untagged")
+    r.keys(b";d")  # deletes the 3 still-tagged (ci, jane, night)
+    # Undelete jane by pattern, re-delete the ops message by pattern.
+    r.keys(b"U")
+    r.keys(b"~s lunch\r")
+    r.keys(b"D")
+    r.keys(b"~f ops\r")
+    r.settle()
+    r.keys(b"$y")  # purge ci, night, urgent
+    wait_for(
+        lambda: not on_disk("1751750100.3")
+        and not on_disk("1752022800.8")
+        and not on_disk("1751882400.7"),
+        desc="pattern-deleted messages purged",
+    )
+    assert on_disk("1751790000.1"), "undelete-pattern should have saved jane"
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1453,6 +1522,7 @@ SCENARIOS = [
     scenario_mutt_flow,
     scenario_line_editor,
     scenario_pager_search,
+    scenario_triage,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

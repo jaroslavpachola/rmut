@@ -389,14 +389,16 @@ Mutt's prompts are a real line editor; rmut's only appended.
       page note the difference; the pattern shares the index search's
       prompt history
 
-## R25 — triage keys
+## R25 — triage keys (done, 1.24)
 
-- [ ] Tab / Alt+Tab in the index: jump to the next / previous
+- [x] Tab / Alt+Tab in the index: jump to the next / previous
       new-or-unread message, wrapping with a status note (mutt's
-      next-new-then-unread)
-- [ ] Pattern-wide operations: `D` delete-pattern, `U`
+      next-new-then-unread); remappable (next-new / previous-new),
+      the importer maps mutt's next-new-then-unread family
+- [x] Pattern-wide operations: `D` delete-pattern, `U`
       undelete-pattern, `T` tag-pattern, ctrl+t untag-pattern —
-      prompt for a pattern, apply to every match, report the count
+      prompt for a pattern, apply to every match within the active
+      limit (folded-away thread members included), report the count
 
 ## R26 — browser, attachments, and odds
 

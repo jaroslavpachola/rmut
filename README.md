@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.23** — everything from the 1.0 roadmap plus R5–R17, hardening
+**1.24** — everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -47,7 +47,10 @@ raw message) plus the full **compose menu** after the editor, and a
 real **prompt line editor** (R23): cursor movement and mid-line
 editing (ctrl+a/e/u/k/w, arrows, Del) with per-kind history on
 Up/Down, and **pager body search** (R24): `/` searches the displayed
-text with `n`/`N` stepping through the hits, wrapping around.
+text with `n`/`N` stepping through the hits, wrapping around, and
+**triage keys** (R25): Tab/Alt+Tab jump to the next/previous
+new-or-unread message, and `D`/`U`/`T`/Ctrl+T apply
+delete/undelete/tag/untag to every pattern match.
 A pty-driven e2e suite (including fake IMAP/SMTP servers and a
 stub gpg) lives in `tests/e2e/`.
 
