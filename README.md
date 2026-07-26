@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.19** — everything from the 1.0 roadmap plus R5–R17, hardening
+**1.20** — everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -38,16 +38,23 @@ a header cache for large maildirs, mbox rewrite backups, and **flow
 niceties** (R20): attach/review at the send prompt, create-alias,
 $trash, a postponed-draft picker, and **display customization** (R21):
 pattern→color index rules, mutt's status_format, `%M` collapsed
-counts. A pty-driven e2e suite (including fake IMAP/SMTP servers and a
+counts, and **distribution** (R22): CI, crates.io packages, a man page
+(`docs/rmut.1`), and tagged releases with a prebuilt x86_64-linux
+binary. A pty-driven e2e suite (including fake IMAP/SMTP servers and a
 stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
 
 ```sh
-cargo install --path crates/rmut-tui   # installs the `rmut` binary
+cargo install rmut-tui                 # installs the `rmut` binary
+# or from a checkout:
+cargo install --path crates/rmut-tui
 # or during development:
 cargo run -p rmut-tui -- ~/Maildir     # or: just run ~/Maildir
 ```
+
+Tagged releases on GitHub carry a prebuilt x86_64-linux binary with
+the man page; `man docs/rmut.1` previews the manual from a checkout.
 
 ```
 usage: rmut [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)

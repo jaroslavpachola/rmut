@@ -18,3 +18,8 @@ e2e:
     python3 tests/e2e/run.py
 
 check: test lint e2e
+
+# crates.io: core must land first, the tui depends on it
+publish:
+    cargo publish -p rmut-core
+    cargo publish -p rmut-tui

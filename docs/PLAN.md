@@ -339,18 +339,21 @@ Patterns v2 made mutt's coloring model implementable.
 - [x] `%M` collapsed-thread count in index_format; the "(n hidden)"
       subject suffix steps aside when the format places %M itself
 
-## R22 — distribution
+## R22 — distribution (done, 1.20)
 
 Make it installable without a checkout.
 
-- [ ] CI: GitHub Actions running `just check` (fmt, clippy -D,
+- [x] CI: GitHub Actions running `just check` (fmt, clippy -D,
       tests, e2e) on push/PR
 - [ ] Publish rmut-core + rmut-tui to crates.io
-      (`cargo install rmut-tui`)
-- [ ] A man page (rmut.1, generated or hand-rolled) covering keys,
-      config, and the muttrc importer; `--help` stays the short form
-- [ ] Release automation: tag → GitHub release with a prebuilt
-      x86_64-linux binary
+      (`cargo install rmut-tui`) — metadata ready and
+      `cargo package` verified; `just publish` after `cargo login`
+      (core first, the tui depends on it)
+- [x] A man page (rmut.1, hand-rolled) covering keys, config,
+      patterns, formats, and the muttrc importer; `--help` stays the
+      short form
+- [x] Release automation: tag `vX.Y.Z` → GitHub release with a
+      prebuilt x86_64-linux binary + man page tarball
 
 ## Non-goals
 

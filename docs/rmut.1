@@ -1,0 +1,494 @@
+.TH RMUT 1 "July 2026" "rmut 1.20.0" "User Commands"
+.SH NAME
+rmut \- a mutt-like terminal mail client
+.SH SYNOPSIS
+.B rmut
+.RI [ MAILDIR " | " MBOX " | " imap:ACCOUNT [/ FOLDER ]]
+.br
+.B rmut \-\-import\-muttrc
+.RI [ MUTTRC ]
+.br
+.B rmut
+.B \-V
+|
+.B \-h
+.SH DESCRIPTION
+.B rmut
+is a terminal mail client with mutt keybindings, built in Rust.
+It reads maildirs, mbox files and IMAP folders, sends through
+sendmail(1) or SMTP, threads messages, filters them with mutt-style
+patterns, and signs/encrypts with gpg(1).
+.PP
+Without an argument it opens the first mailbox from
+.B mail.mailboxes
+in the configuration, then
+.BR $MAIL ,
+then
+.IR ~/Maildir .
+.SH OPTIONS
+.TP
+.BI \-\-import\-muttrc " \fR[\fPMUTTRC\fR]\fP"
+Translate a muttrc (default
+.I ~/.muttrc
+or
+.IR ~/.mutt/muttrc )
+into rmut TOML on stdout, for review and saving as the configuration.
+Directives with no rmut equivalent are kept as comments.
+.TP
+.B \-V
+Print the version.
+.TP
+.B \-h
+Print a short usage summary.
+.SH MAILBOXES
+.TP
+.I MAILDIR
+A maildir path. Flag changes and deletions sync on
+.BR $ .
+.TP
+.I MBOX
+An mbox file such as
+.IR /var/mail/$USER .
+The file is mirrored into a cache maildir;
+.B $
+rewrites the mbox in place under an exclusive flock (a backup copy is
+kept in the cache during the rewrite) and refuses when the spool
+changed since the mirror \(em refresh with
+.B G
+and sync again.
+.TP
+.IB imap: ACCOUNT [/ FOLDER ]
+An IMAP folder of a configured
+.B [[accounts]]
+entry (INBOX when
+.I FOLDER
+is omitted), over TLS with local caching.
+.B $
+maps flag changes and deletions back to the server. Dead connections
+reconnect transparently; new mail arrives via IDLE or the regular
+poll.
+.SH KEYS
+The bindings below are the defaults; the
+.B [keys]
+configuration remaps them, macros may shadow them, and
+.B ?
+always shows the live keymap.
+.SS Index
+.TP 12
+.B j k Up Down
+next / previous message
+.TP
+.B PgUp PgDn Ctrl+B Ctrl+F
+page up / down
+.TP
+.B = *
+first / last message (also Home / End)
+.TP
+.B Enter
+view message
+.TP
+.B d u
+mark for deletion / unmark
+.TP
+.B F
+toggle flagged mark
+.TP
+.B N
+toggle read/unread
+.TP
+.B t ;
+toggle the tag; apply the next function to tagged messages
+.TP
+.B $
+write changes to the mailbox
+.TP
+.B q x
+quit (asks before purging deletions) / quit without saving
+.TP
+.B m r g f
+compose, reply, reply to all, forward
+.TP
+.B e b
+edit the message as a new draft (resend); bounce to new recipients
+.TP
+.B o
+choose sort order
+.TP
+.B l /  n
+limit by pattern; search by pattern; repeat last search
+.TP
+.B c y
+open a mailbox by path; browse nearby mailboxes
+.TP
+.B G
+check for new mail now
+.TP
+.B v
+list message parts (attachments)
+.TP
+.B Alt+v Alt+V
+fold/unfold current thread; fold/unfold all threads
+.TP
+.B s C
+save (copy and mark deleted) / copy to a mailbox
+.TP
+.B | p
+pipe raw message to a shell command; pipe to the print command
+.TP
+.B a
+add the sender to the alias file
+.TP
+.B B Ctrl+N Ctrl+P Ctrl+O
+toggle the sidebar; move its highlight; open the highlighted mailbox
+.SS Pager
+.TP 12
+.B q i Esc
+back to the index
+.TP
+.B j k Enter Backspace
+scroll one line
+.TP
+.B Space \-
+page down / up (also PgDn / PgUp, Home / End for top / bottom)
+.TP
+.B J K
+open next / previous message
+.TP
+.B d
+delete and advance
+.TP
+.B h
+toggle full headers
+.PP
+.BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
+.BR b ", " e " and " a
+work as in the index.
+.SS Send prompt
+After editing a draft:
+.B (y)es
+send,
+.B (e)dit
+again,
+.B (a)ttach
+a file,
+.B (v)iew
+attachments,
+.B (s)ecurity
+(PGP sign/encrypt),
+.B (p)ostpone,
+.B (q)
+discard. Recalling with several postponed drafts offers a picker.
+.SH PATTERNS
+Limit and search take mutt-style patterns:
+.PP
+.nf
+  ~f x  from       ~s x  subject     ~b x  body
+  ~t x  to         ~c x  cc          ~C x  to or cc
+  ~e x  sender     ~d spec  date     word  subject or from
+  ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
+  ~p addressed to me
+.fi
+.PP
+.I x
+is a case-insensitive regex; "quotes" keep spaces. Date specs:
+.BR 24/12/2026 ,
+.BR 1/6/2026\-30/6/2026 ,
+.BR 24/12\- ,
+.BR <1w ", " >2d ", " =3d .
+Terms AND;
+.B !
+negates,
+.B |
+ORs,
+.B ()
+groups:
+.B !~D (~f jane | ~t jane) ~d <1m
+.SH CONFIGURATION
+TOML, read from
+.B $RMUT_CONFIG
+or
+.IR ~/.config/rmut/config.toml .
+A missing file means defaults; a broken file is ignored with a
+warning. All sections and keys are optional.
+.SS [identity]
+.TP
+.B name, email
+The From identity.
+.TP
+.B reverse_name
+A reply's From becomes whichever of your addresses the original was
+sent to (mutt's reverse_name).
+.SS [[identities]]
+Conditional identities, applied in order over
+.B [identity]
+and the account identity \(em the minimal folder-/send-hook. Keys:
+.B folder
+(glob on the open mailbox, path or imap: spec),
+.B recipient
+(glob on any draft recipient),
+.BR name ", " email .
+With both globs set both must match; unset name/email keep the value
+from the layer below.
+.SS [mail]
+.TP
+.B mailboxes
+Mailboxes for the folder browser, new-mail watching and the sidebar;
+the first is the default mailbox.
+.TP
+.B sent, postponed
+Mailboxes receiving sent copies and postponed drafts.
+.TP
+.B sendmail
+The delivery command (default
+.IR /usr/sbin/sendmail );
+SMTP is used instead for imap: mailboxes with an smtp_host.
+.TP
+.B editor
+Draft editor; default $VISUAL, $EDITOR, then vi.
+.TP
+.B poll_seconds
+New-mail poll interval.
+.TP
+.B print
+Command the printed message is piped to (default lpr).
+.TP
+.B save
+Default target offered by
+.BR s .
+.TP
+.B forward
+"inline" (quoted text, the default) or "attach" (the original goes
+along as a message/rfc822 part, mutt's mime_forward).
+.TP
+.B query_command
+External address lookup for Tab completion at the To prompt (%s is
+the word, or it is appended), e.g. "khard email \-\-parsable %s".
+.TP
+.B trash
+Purged messages move here (a maildir path or imap:account/folder of
+the open account) instead of being erased; purging inside the trash
+deletes for real (mutt's $trash).
+.SS [index]
+.TP
+.B format
+The index line, see
+.B FORMAT STRINGS
+below.
+.TP
+.B sort
+Initial sort: date, from, subject, size or threads, with an optional
+"reverse\-" prefix.
+.TP
+.B sort_aux
+"last\-date\-sent" orders threads by their newest message.
+.TP
+.B date_format
+chrono strftime string for the date column (default "%b %d").
+.SS [pager]
+.TP
+.B index_lines
+Lines of the message index kept visible above the pager.
+.TP
+.B context
+Lines of overlap when paging (mutt's pager_context).
+.SS [ui]
+.TP
+.B theme
+"default" or "mono".
+.TP
+.B status_format
+The bottom status line, see
+.B FORMAT STRINGS
+below.
+.SS [sidebar]
+.TP
+.B visible, width
+The left mailbox pane (toggle at runtime with
+.BR B ).
+.SS [colors]
+Slot overrides: status_fg, status_bg, deleted, flagged, header.
+.SS [[color_index]]
+Pattern rules for index lines:
+.B pattern
+plus
+.B fg
+and/or
+.BR bg .
+The first matching rule wins over the slot colors; broken rules warn
+and drop.
+.SS [filters]
+MIME type \(-> shell command rendering the part (stdin to stdout),
+e.g. "text/html" = "w3m \-dump \-T text/html". Used when a message
+has no text/plain part, and in the attachment viewer.
+.SS [keys.index], [keys.pager]
+Remaps,
+.IR action " = " key ,
+e.g. sync = "w". Action names appear in the
+.B ?
+help; keys are a single character,
+.BR ctrl+x / alt+x ,
+or a name: enter, esc, space, tab, backspace, up, down, pgup, pgdn,
+home, end.
+.SS [macros.index], [macros.pager]
+.IR key " = " sequence
+\(em the key replays the sequence (literal characters plus key names
+in angle brackets: <enter>, <esc>, <ctrl+x>, ...). Macros feed the
+input queue, so they can drive prompts, and shadow a binding on the
+same key.
+.SS [[accounts]]
+.TP
+.B name, user
+The account, opened as imap:name/FOLDER.
+.TP
+.B password_command
+Shell command whose first stdout line is the password (pass(1)-style;
+wins over
+.BR password ).
+.TP
+.B password
+Plaintext password \(em keep the file at mode 600.
+.TP
+.B imap_host, imap_port, imap_tls
+IMAP server; port 993 with TLS from the first byte by default,
+STARTTLS on any other port.
+.TP
+.B smtp_host, smtp_port, smtp_tls
+SMTP submission; port 587 with STARTTLS by default, implicit TLS on
+port 465.
+.TP
+.B auth, token_command
+"password" (default), "xoauth2" or "oauthbearer"; the OAuth
+mechanisms authenticate with a fresh access token from
+.B token_command
+(refresh is that tool's business \(em oauth2ms, mutt_oauth2.py).
+.TP
+.B sent_folder
+IMAP folder receiving the Fcc copy of sent mail (default Sent).
+.TP
+.B identity
+From identity when composing from this account's mailboxes, e.g.
+identity = { name = "Jane Work", email = "jane@work.example.com" }.
+.SS [pgp]
+.TP
+.B command
+The gpg executable (default gpg). Decrypt/verify happens
+automatically when a viewed message is PGP; signing and encrypting
+are chosen at the send prompt. Passphrases are gpg-agent's business
+\(em rmut never sees them.
+.TP
+.B sign_key
+Signing key for \-\-local\-user; gpg's default key when unset.
+.TP
+.B sign_by_default, encrypt_by_default
+Preselect signing/encrypting for new drafts.
+.SH FORMAT STRINGS
+.B index.format
+takes
+.BI % [\-][ min ][. max ] X
+specifiers:
+.B \-
+left-aligns,
+.I min
+pads,
+.I .max
+truncates.
+.B %C
+number,
+.B %Z
+status/flag/mark characters,
+.B %d
+date,
+.B %F
+from,
+.B %L
+list-aware from ("To <list>" for List-Id mail),
+.B %c
+size,
+.B %l
+body lines,
+.B %M
+messages hidden under a collapsed thread,
+.B %s
+subject,
+.B %%
+a literal percent. Mutt conditionals work:
+.B %?X?then&else?
+renders
+.I then
+when field X is set and non-zero. The default is
+"%4C %Z %\-6d %\-20.20F %5c %s".
+.PP
+.B ui.status_format
+shares the syntax with these specifiers:
+.B %f
+mailbox,
+.B %m
+messages,
+.B %M
+shown-when-limited,
+.B %n
+new,
+.B %u
+unread,
+.B %d
+deleted,
+.B %F
+flagged,
+.B %t
+tagged,
+.B %s
+sort,
+.B %V
+limit pattern,
+.B %r
+pending-changes mark,
+.B %v
+version. The default reproduces the classic line:
+"\-\-\-rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?".
+.SH MUTTRC IMPORT
+.B rmut \-\-import\-muttrc
+prints a translated configuration to stdout:
+.PP
+.nf
+  rmut \-\-import\-muttrc > ~/.config/rmut/config.toml
+.fi
+.PP
+It understands identities, mailboxes, sendmail, editor, IMAP/SMTP
+accounts (including imap_authenticators/smtp_authenticators for
+OAuth), aliases, bindings, macros made of plain keys, color index
+rules, index_format, status_format, trash and more. Anything without
+an rmut equivalent is kept as a comment for review; stored passwords
+next to an OAuth setup are redacted.
+.SH FILES
+.TP
+.I ~/.config/rmut/config.toml
+The configuration
+.RB ( $RMUT_CONFIG
+overrides).
+.TP
+.I ~/.config/rmut/aliases
+Mutt-style alias file, lines of "alias nick address..."
+.RB ( $RMUT_ALIASES
+overrides).
+.TP
+.I ~/.cache/rmut/
+IMAP caches, mbox mirrors and the header cache
+.RB ( $XDG_CACHE_HOME
+overrides the parent).
+.SH ENVIRONMENT
+.TP
+.B RMUT_CONFIG, RMUT_ALIASES
+Alternate configuration and alias files.
+.TP
+.B MAIL
+Fallback mailbox when none is configured.
+.TP
+.B VISUAL, EDITOR
+Draft editor when
+.B mail.editor
+is unset.
+.SH SEE ALSO
+.BR mutt (1),
+.BR sendmail (8),
+.BR gpg (1),
+.BR pass (1)

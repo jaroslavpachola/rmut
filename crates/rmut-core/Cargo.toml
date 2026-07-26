@@ -3,7 +3,11 @@ name = "rmut-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
 description = "Core mail handling for rmut: maildir scanning, message parsing"
+keywords = ["mail", "maildir", "mbox", "imap", "smtp"]
+categories = ["email"]
 
 [dependencies]
 anyhow = { workspace = true }
