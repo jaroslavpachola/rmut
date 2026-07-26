@@ -294,7 +294,8 @@ Initial sort: date, from, subject, size or threads, with an optional
 "last\-date\-sent" orders threads by their newest message.
 .TP
 .B date_format
-chrono strftime string for the date column (default "%b %d").
+chrono strftime string for the date column (default "%b %e", like
+mutt's index date).
 .SS [pager]
 .TP
 .B index_lines
@@ -426,8 +427,8 @@ a literal percent. Mutt conditionals work:
 .B %?X?then&else?
 renders
 .I then
-when field X is set and non-zero. The default is
-"%4C %Z %\-6d %\-20.20F %5c %s".
+when field X is set and non-zero. The default matches mutt's:
+"%4C %Z %\-6d %\-15.15L (%?l?%4l&%4c?) %s".
 .PP
 .B ui.status_format
 shares the syntax with these specifiers:

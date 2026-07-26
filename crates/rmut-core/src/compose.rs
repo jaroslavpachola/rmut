@@ -53,13 +53,10 @@ pub fn reply_subject(orig: &str) -> String {
     }
 }
 
-pub fn forward_subject(orig: &str) -> String {
-    let t = orig.trim();
-    if t.to_lowercase().starts_with("fwd:") {
-        t.to_string()
-    } else {
-        format!("Fwd: {t}")
-    }
+/// mutt's default $forward_format, "[%a: %s]" — the author's address
+/// and the original subject.
+pub fn forward_subject(from_addr: &str, orig: &str) -> String {
+    format!("[{from_addr}: {}]", orig.trim())
 }
 
 fn format_date(epoch: i64) -> String {
@@ -412,8 +409,10 @@ mod tests {
     fn subjects_do_not_stack_prefixes() {
         assert_eq!(reply_subject("Lunch"), "Re: Lunch");
         assert_eq!(reply_subject("RE: Lunch"), "RE: Lunch");
-        assert_eq!(forward_subject("Lunch"), "Fwd: Lunch");
-        assert_eq!(forward_subject("fwd: Lunch"), "fwd: Lunch");
+        assert_eq!(
+            forward_subject("jane@example.com", "Lunch"),
+            "[jane@example.com: Lunch]"
+        );
     }
 
     #[test]

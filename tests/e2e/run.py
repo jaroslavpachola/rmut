@@ -218,6 +218,9 @@ def scenario_threads_and_fold(tmp):
     r.expect("Msgs:4")
     r.keys(b"ot")
     r.expect("sorted by threads", "└>")
+    # The cursor starts on Petr (first new, like mutt); move to Alice
+    # in Jane's thread before folding.
+    r.keys(b"*k")
     r.keys(b"\x1bv")  # Alt+v: fold the thread under the cursor (Alice -> Jane's thread)
     r.expect("(1 hidden)")
     r.keys(b"\x1bv")
@@ -825,7 +828,7 @@ def scenario_mbox(tmp):
     r.expect("fresh in the spool")
     r.keys(b"i")
     r.keys(b"F")   # flag it: the ! mark shows in its index line
-    r.expect("! Jul 07 Petr")
+    r.expect("! Jul  7 Petr")
     r.keys(b"=d")  # first (jane), mark deleted
     r.keys(b"$")
     r.expect("Purge 1 deleted message(s)?")

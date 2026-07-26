@@ -22,7 +22,7 @@
 //! print = "lpr"
 //!
 //! [index]
-//! format = "%4C %Z %-6d %-20.20F %5c %s"
+//! format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"
 //!
 //! [ui]
 //! theme = "default"   # or "mono"
@@ -150,7 +150,8 @@ pub struct Index {
     /// of the default oldest-first.
     pub sort_aux: Option<String>,
     /// chrono strftime string for the index date column (mutt's
-    /// date_format), e.g. "%d.%m.%Y"; default "%b %d".
+    /// date_format), e.g. "%d.%m.%Y"; default "%b %e", like mutt's
+    /// index date.
     pub date_format: Option<String>,
 }
 

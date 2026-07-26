@@ -247,7 +247,7 @@ edit_headers = false         # true: the header block is part of the
                              # editor buffer (To/Cc/Subject, Attach:)
 
 [index]
-format = "%4C %Z %-6d %-20.20F %5c %s"   # %C num %Z flags %d date
+format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default
                                          # %F from (%L: "To <list>" for
                                          # List-Id mail) %c size %l body
                                          # lines %M collapsed count

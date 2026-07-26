@@ -144,6 +144,8 @@ pub struct ComposeBase {
     reply_to: String,
     orig_to: String,
     orig_cc: String,
+    /// Bare author address, for the forward subject's %a.
+    from_addr: String,
     from_display: String,
     subject: String,
     date: i64,
@@ -296,7 +298,11 @@ impl App {
         // Mutt's default sort: date, oldest first.
         msgs.sort_by_key(|m| m.env.date);
         let visible: Vec<usize> = (0..msgs.len()).collect();
-        let sel = visible.len().saturating_sub(1);
+        // Like mutt: start on the first new message, else the last.
+        let sel = msgs
+            .iter()
+            .position(|m| m.env.file.is_new)
+            .unwrap_or(visible.len().saturating_sub(1));
         let (theme, mut warnings) = Theme::from_config(&config);
         let (keymap, key_warnings) = Keymap::with_config(
             &config.keys.index,
@@ -1058,6 +1064,8 @@ impl App {
                 } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.deleted = false;
                     m.dirty = true;
+                    // mutt's $resolve (on by default): advance.
+                    self.select(self.sel.saturating_add(1));
                 }
             }
             IndexAction::Flag => {
@@ -1066,6 +1074,7 @@ impl App {
                 } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.flagged = !m.env.file.flags.flagged;
                     m.dirty = true;
+                    self.select(self.sel.saturating_add(1));
                 }
             }
             IndexAction::ToggleNew => {
@@ -1078,6 +1087,7 @@ impl App {
                     m.env.file.flags.seen = !m.env.file.flags.seen;
                     m.env.file.is_new = false;
                     m.dirty = true;
+                    self.select(self.sel.saturating_add(1));
                 }
             }
             IndexAction::Sync => {
@@ -1616,6 +1626,10 @@ impl App {
             reply_to,
             orig_to: get("To"),
             orig_cc: get("Cc"),
+            from_addr: compose::addresses(&get("From"))
+                .into_iter()
+                .next()
+                .unwrap_or_default(),
             from_display: env.from.clone(),
             subject: env.subject.clone(),
             date: env.date,
@@ -1676,7 +1690,7 @@ impl App {
             (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => {
                 compose::reply_subject(&b.subject)
             }
-            (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.subject),
+            (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.from_addr, &b.subject),
             _ => String::new(),
         };
         self.prompt = Some(Prompt::Line {

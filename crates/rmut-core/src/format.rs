@@ -6,7 +6,9 @@
 //! Mutt conditionals work too: `%?X?then&else?` renders `then` when
 //! field X is set and non-zero.
 
-pub const DEFAULT_FORMAT: &str = "%4C %Z %-6d %-20.20F %5c %s";
+/// Mutt's default index_format, with its inline `%{%b %e}` date as
+/// `%-6d` (the date_format default is "%b %e").
+pub const DEFAULT_FORMAT: &str = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s";
 
 /// Renders exactly rmut's classic status line; override with
 /// `[ui] status_format`. Status specifiers: %f mailbox, %m messages,
@@ -160,7 +162,7 @@ mod tests {
     fn default_format_matches_layout() {
         assert_eq!(
             render(DEFAULT_FORMAT, &fields()),
-            "   7 N!T Jul 06 Jane Doe              1.2K Lunch"
+            "   7 N!T Jul 06 Jane Doe        (1.2K) Lunch"
         );
     }
 

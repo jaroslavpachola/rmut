@@ -185,11 +185,11 @@ pub fn format_index_date(epoch: i64) -> String {
 }
 
 /// Index date column, with an optional strftime override (mutt's
-/// date_format); "%b %d" when unset.
+/// date_format); "%b %e" when unset, like mutt's default index date.
 pub fn format_index_date_with(epoch: i64, format: Option<&str>) -> String {
     match Local.timestamp_opt(epoch, 0) {
         chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
-            dt.format(format.unwrap_or("%b %d")).to_string()
+            dt.format(format.unwrap_or("%b %e")).to_string()
         }
         chrono::LocalResult::None => "      ".into(),
     }
