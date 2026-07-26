@@ -135,7 +135,7 @@ pub struct Mail {
     /// mutt's edit_headers (default false, like mutt): true puts the
     /// draft's header block (From/To/Cc/Subject, Attach: lines) into
     /// the editor buffer. Off, the prompts set To/Subject and
-    /// attachments go through the send prompt's (a)ttach.
+    /// attachments go through the compose menu's a.
     pub edit_headers: Option<bool>,
 }
 
@@ -262,7 +262,7 @@ pub struct Pgp {
     pub command: String,
     /// Signing key for --local-user; gpg's default key when unset.
     pub sign_key: Option<String>,
-    /// Preselect signing / encrypting for new drafts (the send prompt's
+    /// Preselect signing / encrypting for new drafts (the compose menu's
     /// security menu can still change it per message).
     pub sign_by_default: bool,
     pub encrypt_by_default: bool,

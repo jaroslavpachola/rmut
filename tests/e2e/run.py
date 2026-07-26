@@ -280,7 +280,7 @@ def scenario_compose_send_postpone(tmp):
     # reply: accept prefilled To/Subject, include the original
     # (Enter = yes at mutt's $include question), discard at the send
     # prompt
-    r.keys(b"r\r\r\rq")
+    r.keys(b"r\r\r\rqn")  # q asks to postpone; n discards
     r.expect("message discarded")
 
     def reply_draft():
@@ -299,7 +299,7 @@ def scenario_compose_send_postpone(tmp):
     assert "> Are you free for lunch on Friday?" in body
     # postpone, recall, send
     postponed_cur = os.path.join(md, ".rmut-postponed", "cur")
-    r.keys(b"mx@y\rposty\rp")
+    r.keys(b"mx@y\rposty\rP")  # P postpones from the compose menu
     r.expect("postponed to")
     assert os.listdir(postponed_cur)
     r.keys(b"mry")  # recall prompt -> recall -> editor -> send
@@ -336,18 +336,17 @@ def scenario_compose_send_postpone(tmp):
     r.keys(b"a")
     r.expect("Attach file:")
     r.keys(notes.encode() + b"\r")
-    r.expect("[1 attachment(s)]")
-    r.keys(b"v")
-    r.expect("Draft attachments", "notes.txt", "text/plain")
-    r.keys(b"qy")  # back to the send prompt, send
+    # the compose menu lists the new attachment
+    r.expect("notes.txt", "text/plain")
+    r.keys(b"y")
     wait_for(lambda: "Subject: attprompt" in open(sent_file).read(),
              desc="attach-prompt send")
     assert 'filename="notes.txt"' in open(sent_file).read()
     # R20: two postponed drafts -> the recall picker
-    r.keys(b"mx@y\rdraft-one\rp")
+    r.keys(b"mx@y\rdraft-one\rP")
     r.expect("postponed to")
     r.keys(b"mn")  # postponed exist: answer (n)ew first
-    r.keys(b"x@y\rdraft-two\rp")
+    r.keys(b"x@y\rdraft-two\rP")
     wait_for(lambda: len(os.listdir(postponed_cur)) == 2, desc="two drafts")
     r.keys(b"mr")  # recall -> the picker (newest first)
     r.expect("postponed drafts [Found:2]", "draft-one", "draft-two")
@@ -485,7 +484,7 @@ editor = "{editor}"
     r.keys(b"m")
     r.expect("To:")
     r.keys(b"a@b\rhello\r")
-    r.expect("Send message?")
+    r.expect("y:Send")  # the compose menu
     r.keys(b"y")
     r.expect("message sent")
     r.settle()
@@ -948,9 +947,10 @@ def scenario_pgp(tmp):
     r.keys(b"m")
     r.expect("To:")
     r.keys(b"bob@example.org\rsigned subject\r")  # editor appends the body
-    r.expect("Send message?")
-    r.keys(b"ss")  # security menu -> sign
-    r.expect("[PGP: sign]")
+    r.expect("y:Send")  # the compose menu
+    r.keys(b"ps")  # p opens the security menu -> sign; the signed
+    # output is asserted on the sent file below (cell-diff redraws
+    # make the menu's Security value unreliable to screen-scrape)
     r.keys(b"y")
     wait_for(lambda: os.path.exists(sent_file), desc="sendmail invoked")
     r.expect("message sent")
@@ -1108,12 +1108,12 @@ def scenario_edit_headers(tmp):
     r.keys(b"m")
     r.expect("To:")
     r.keys(b"petr@example.com\rheadless subject\r")
-    r.expect("Send message?")
+    r.expect("y:Send")  # the compose menu
     saw = open(seen).read()
     assert "To:" not in saw and "Subject:" not in saw, f"headers leaked: {saw!r}"
     r.keys(b"a")
     r.keys(attachment.encode() + b"\r")
-    r.expect("[1 attachment(s)]")
+    r.expect("text/plain")  # listed in the compose menu
     r.keys(b"y")
     wait_for(lambda: os.path.exists(sent_file), desc="sendmail ran")
     sent = open(sent_file).read()
@@ -1173,7 +1173,7 @@ def scenario_mutt_flow(tmp):
     r.keys(b"\r\r")    # accept To and subject
     r.expect("Include message in reply? (y/n):")
     r.keys(b"n")
-    r.expect("Send message?")
+    r.expect("y:Send")  # the compose menu
     r.keys(b"y")
     wait_for(lambda: os.path.exists(sent_file), desc="reply sent")
     sent = open(sent_file).read()
@@ -1244,7 +1244,7 @@ def scenario_message_commands(tmp):
     r.keys(b"m")
     r.expect("To:")
     r.keys(b"petr@example.com\rwith attachment\r")
-    r.expect("[1 attachment(s)]")
+    r.expect("blob.bin")  # the compose menu lists the editor's Attach:
     r.keys(b"y")
     wait_for(lambda: os.path.exists(sent_file), desc="sendmail invoked")
     r.expect("message sent")

@@ -12,6 +12,8 @@ const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:D
 const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply f:Fwd d:Del s:Save h:Hdrs v:Parts p:Print";
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
+const COMPOSE_HELP: &str =
+    "y:Send e:Edit t:To c:Cc b:Bcc s:Subj a:Attach D:Detach p:PGP P:Postpone q:Quit";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 
@@ -27,6 +29,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Index => INDEX_HELP,
         Mode::Pager(_) => PAGER_HELP,
         Mode::Attach { .. } => ATTACH_HELP,
+        Mode::Compose { .. } => COMPOSE_HELP,
         Mode::Folders { .. } => FOLDERS_HELP,
         Mode::Postponed { .. } => POSTPONED_HELP,
         Mode::Help { .. } => HELP_HELP,
@@ -72,6 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         match &app.mode {
             Mode::Index => draw_index(frame, content_area, app),
             Mode::Pager(_) => unreachable!(),
+            Mode::Compose { sel } => draw_compose(frame, content_area, app, *sel),
             Mode::Attach { parts, sel, .. } => draw_attach(frame, content_area, parts, *sel),
             Mode::Folders { dirs, sel } => draw_folders(frame, content_area, dirs, *sel),
             Mode::Postponed { drafts, sel } => draw_postponed(frame, content_area, drafts, *sel),
@@ -79,6 +83,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
     draw_bottom_line(frame, status_area, app, content_area.height);
+}
+
+/// Mutt's compose menu: header lines, then the attachment table with
+/// the selection highlighted.
+fn draw_compose(frame: &mut Frame, area: Rect, app: &App, sel: usize) {
+    let mut lines: Vec<Line> = Vec::new();
+    let header_color = app.theme.header;
+    for (name, value) in app.compose_header_lines() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{name:>9}: "), Style::new().fg(header_color).bold()),
+            Span::raw(value),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "-- Attachments",
+        Style::new().fg(header_color).bold(),
+    ));
+    for (i, entry) in app.compose_entries().into_iter().enumerate() {
+        let text = format!(" {:>2} {entry}", i + 1);
+        lines.push(if i == sel {
+            Line::styled(text, Style::new().add_modifier(Modifier::REVERSED))
+        } else {
+            Line::raw(text)
+        });
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ---- sidebar ----
@@ -451,6 +482,10 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
             let height = content_height.saturating_sub(app.config.pager.index_lines);
             pager_status(app, pager, height, area.width as usize)
         }
+        Mode::Compose { .. } => format!(
+            "---rmut: compose [Atts:{}]",
+            app.compose_entries().len().saturating_sub(1)
+        ),
         Mode::Attach { parts, .. } => format!("---rmut: attachments [Parts:{}]", parts.len()),
         Mode::Folders { dirs, .. } => format!("---rmut: mailboxes [Found:{}]", dirs.len()),
         Mode::Postponed { drafts, .. } => {

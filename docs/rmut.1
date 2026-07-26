@@ -177,21 +177,30 @@ Like mutt's ask-yes defaults: replying to a message with a Reply-To
 asks "Reply to ...?" (no falls back to From), an empty Subject asks
 "No subject, abort?", and replies ask "Include message in reply?"
 before quoting the original. Enter takes the default (yes).
-.SS Send prompt
-After editing a draft:
-.B (y)es
-send,
-.B (e)dit
-again,
-.B (a)ttach
-a file,
-.B (v)iew
-attachments,
-.B (s)ecurity
-(PGP sign/encrypt),
-.B (p)ostpone,
-.B (q)
-discard. Recalling with several postponed drafts offers a picker.
+.SS Compose menu
+After the editor, the draft lands in mutt's compose menu: the header
+block (From/To/Cc/Bcc/Subject/Fcc/Security) above the attachment
+table (the body, a forwarded original, every Attach: file with size
+and type).
+.B y
+sends,
+.B e
+reopens the editor,
+.BR t / c / b / s
+edit To/Cc/Bcc/Subject (address prompts Tab-complete),
+.B a
+attaches a file,
+.B D
+detaches the selected file
+.RB ( j / k
+move),
+.B p
+opens the PGP menu (encrypt/sign/both/clear),
+.B P
+postpones, and
+.B q
+asks "Postpone this message?" \(em no discards. Recalling with
+several postponed drafts offers a picker.
 .SH PATTERNS
 Limit and search take mutt-style patterns:
 .PP
@@ -287,8 +296,8 @@ deletes for real (mutt's $trash).
 mutt's edit_headers (default false, like mutt): true puts the
 draft's header block (From/To/Cc/Subject, Attach: lines) into the
 editor buffer for direct editing. Off, the prompts set To and
-Subject, and attachments go through the send prompt's
-.BR (a)ttach .
+Subject, and attachments go through the compose menu's
+.BR a .
 .SS [index]
 .TP
 .B format
@@ -395,7 +404,7 @@ identity = { name = "Jane Work", email = "jane@work.example.com" }.
 .B command
 The gpg executable (default gpg). Decrypt/verify happens
 automatically when a viewed message is PGP; signing and encrypting
-are chosen at the send prompt. Passphrases are gpg-agent's business
+are chosen in the compose menu (p). Passphrases are gpg-agent's business
 \(em rmut never sees them.
 .TP
 .B sign_key

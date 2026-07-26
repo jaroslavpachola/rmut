@@ -158,9 +158,9 @@ PGP messages are handled on view by shelling out to gpg(1):
 PGP/MIME (RFC 3156) and inline/clearsigned messages are decrypted
 and/or verified, with a `[-- PGP: ... --]` verdict line at the top of
 the pager (good/BAD/unverified signature). Outgoing mail is treated
-per message: at the send prompt, `s` opens the security menu —
+per message: in the compose menu, `p` opens the security menu —
 (e)ncrypt, (s)ign, (b)oth, (c)lear — and the chosen state shows in the
-prompt. Signing uses `sign_key` (or gpg's default key); encryption
+menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption
 looks keys up by recipient address and always encrypts to the sender
 too, so the Fcc copy stays readable. Passphrases are gpg-agent's
 business — rmut never sees them.
@@ -178,8 +178,8 @@ defaults to the identity in effect — `[identity]` overlaid by the open
 account's `identity` and any matching `[[identities]]` rules, with
 `reverse_name` picking the address a replied-to message came to — or
 falls back to `$EMAIL` / `user@hostname`; the draft's own From line
-always wins, and rmut prefills it whenever an identity applies. At
-the send prompt, `p` postpones the draft into a nearby Drafts maildir
+always wins, and rmut prefills it whenever an identity applies. In
+the compose menu, `P` postpones the draft into a nearby Drafts maildir
 (or `.rmut-postponed`); the next `m` offers to recall it. Sent mail is
 copied to a nearby Sent maildir when one exists (local mailboxes).
 Aliases are read from `$RMUT_ALIASES` or `~/.config/rmut/aliases`, one
@@ -192,7 +192,7 @@ multiple matches.
 
 By default (like mutt) the editor gets only the message body —
 headers come from the prompts, and attachments are added with `a` at
-the send prompt. With `edit_headers = true` the draft's header block
+the compose menu. With `edit_headers = true` the draft's header block
 is part of the editor buffer, where you can adjust To/Cc/Subject
 directly and attach files with `Attach:` pseudo-headers:
 
@@ -207,10 +207,13 @@ see attached
 
 Each one becomes a base64 part of a multipart/mixed message (content
 type guessed from the extension, the rest of the line an optional
-description); the send prompt shows the attachment count. At the send
-prompt, `a` adds an `Attach:` line without a trip through the editor
-and `v` lists the attachments (name, size, type) before you commit to
-`y`. PGP signing and encryption wrap the whole multipart, attachments
+description). After the editor you land in mutt's **compose menu**:
+the draft's From/To/Cc/Bcc/Subject/Fcc/Security above the attachment
+table (body, forwarded original, every `Attach:` file with size and
+type). `y` sends, `e` reopens the editor, `t`/`c`/`b`/`s` edit the
+headers, `a` attaches without a trip through the editor, `D` detaches
+the selected file, `p` opens the security menu, `P` postpones, and
+`q` asks "Postpone this message?" (no discards). PGP signing and encryption wrap the whole multipart, attachments
 included — this also works for forwards with `forward = "attach"`.
 
 With several postponed drafts, recalling (`m`, then `r`) opens a

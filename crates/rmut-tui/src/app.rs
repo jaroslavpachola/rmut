@@ -39,6 +39,11 @@ pub struct Pager {
 pub enum Mode {
     Index,
     Pager(Pager),
+    /// Mutt's compose menu: the draft's headers and attachment list,
+    /// reviewed between the editor and y (send).
+    Compose {
+        sel: usize,
+    },
     Attach {
         msg_path: PathBuf,
         parts: Vec<message::Part>,
@@ -100,12 +105,16 @@ pub enum LineKind {
     AttachFile,
     /// The nick for create-alias; the address waits in `alias_addr`.
     AliasNick,
+    /// Compose menu header edits (t/c/b/s), back to the menu after.
+    EditTo,
+    EditCc,
+    EditBcc,
+    EditSubject,
 }
 
 #[derive(Clone, Copy)]
 pub enum KeyKind {
     Sort,
-    Send,
     Security,
     Recall,
     Print,
@@ -121,6 +130,8 @@ pub enum KeyKind {
     NoSubject,
     /// mutt's $include (ask-yes): quote the original in the reply?
     IncludeReply,
+    /// Compose menu q, like mutt: postpone (yes) or discard (no)?
+    PostponeAsk,
 }
 
 pub enum Prompt {
@@ -207,6 +218,16 @@ pub struct Compose {
     pub hidden_head: Option<String>,
 }
 
+/// First value of a (single-line) header in a draft head block.
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| v.trim().to_string())
+    })
+}
+
 /// The draft as a full message: the file as edited, with any withheld
 /// header block put back in front.
 fn draft_full(c: &Compose) -> std::io::Result<String> {
@@ -216,9 +237,6 @@ fn draft_full(c: &Compose) -> std::io::Result<String> {
         None => text,
     })
 }
-
-const SEND_PROMPT: &str =
-    "Send message? (y)es (e)dit (a)ttach (v)iew att. (s)ecurity (p)ostpone (q)discard";
 
 /// Tab-completion state at an address prompt: candidates for the token
 /// at `start`, `expect` being the whole buffer after the last
@@ -569,6 +587,8 @@ impl App {
             self.handle_index_key(key, page);
         } else if matches!(self.mode, Mode::Pager(_)) {
             self.handle_pager_key(key, width, page);
+        } else if matches!(self.mode, Mode::Compose { .. }) {
+            self.handle_compose_key(key);
         } else if matches!(self.mode, Mode::Attach { .. }) {
             self.handle_attach_key(key);
         } else if matches!(self.mode, Mode::Help { .. }) {
@@ -718,7 +738,7 @@ impl App {
                 self.mode = Mode::Index;
                 // Leaving the attachment review resumes the send flow.
                 if self.compose.is_some() {
-                    self.reprompt_send();
+                    self.open_compose_menu();
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(max_scroll),
@@ -749,7 +769,7 @@ impl App {
                     // Escaping a sub-prompt of the send flow (attach
                     // file) returns to the send prompt.
                     if self.compose.is_some() {
-                        self.reprompt_send();
+                        self.open_compose_menu();
                     }
                 }
                 KeyCode::Backspace => {
@@ -804,36 +824,6 @@ impl App {
                 }
                 _ => {}
             },
-            KeyKind::Send => match code {
-                KeyCode::Char('y') => self.send_draft(),
-                KeyCode::Char('e') => {
-                    if let Some(c) = self.compose.take() {
-                        self.pending_editor = Some(c);
-                    }
-                }
-                KeyCode::Char('a') => {
-                    self.prompt = Some(Prompt::Line {
-                        label: "Attach file: ".into(),
-                        buf: String::new(),
-                        kind: LineKind::AttachFile,
-                    });
-                }
-                KeyCode::Char('v') => self.review_attachments(),
-                KeyCode::Char('p') => self.postpone_draft(),
-                KeyCode::Char('s') => {
-                    self.prompt = Some(Prompt::Key {
-                        label: "Security: (e)ncrypt (s)ign (b)oth (c)lear: ".into(),
-                        kind: KeyKind::Security,
-                    });
-                }
-                KeyCode::Char('q') => {
-                    if let Some(c) = self.compose.take() {
-                        let _ = std::fs::remove_file(&c.path);
-                        self.status = Some("message discarded".into());
-                    }
-                }
-                _ => self.reprompt_send(),
-            },
             KeyKind::Security => {
                 if let Some(c) = &mut self.compose {
                     c.security = match code {
@@ -844,8 +834,21 @@ impl App {
                         _ => c.security,
                     };
                 }
-                self.reprompt_send();
             }
+            KeyKind::PostponeAsk => match code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.mode = Mode::Index;
+                    self.postpone_draft();
+                }
+                KeyCode::Char('n') => {
+                    self.mode = Mode::Index;
+                    if let Some(c) = self.compose.take() {
+                        let _ = std::fs::remove_file(&c.path);
+                        self.status = Some("message discarded".into());
+                    }
+                }
+                _ => {} // back to the menu
+            },
             KeyKind::Recall => match code {
                 KeyCode::Char('r') => self.recall_postponed(),
                 KeyCode::Char('n') => self.continue_setup(ComposeKind::New, None),
@@ -910,7 +913,14 @@ impl App {
             Some(Prompt::Line { buf, kind, .. }) => (buf.clone(), *kind),
             _ => return,
         };
-        let is_addr = matches!(kind, LineKind::ComposeTo | LineKind::BounceTo);
+        let is_addr = matches!(
+            kind,
+            LineKind::ComposeTo
+                | LineKind::BounceTo
+                | LineKind::EditTo
+                | LineKind::EditCc
+                | LineKind::EditBcc
+        );
         let is_mbox = matches!(
             kind,
             LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg
@@ -1039,6 +1049,16 @@ impl App {
             LineKind::AliasNick => self.create_alias(input),
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.subject_submitted(input),
+            LineKind::EditTo => {
+                self.set_draft_header("To", &alias::expand(input, &alias::load_default()))
+            }
+            LineKind::EditCc => {
+                self.set_draft_header("Cc", &alias::expand(input, &alias::load_default()))
+            }
+            LineKind::EditBcc => {
+                self.set_draft_header("Bcc", &alias::expand(input, &alias::load_default()))
+            }
+            LineKind::EditSubject => self.set_draft_header("Subject", input),
         }
     }
 
@@ -1993,7 +2013,7 @@ impl App {
         match status {
             Ok(s) if s.success() => {
                 self.compose = Some(compose);
-                self.reprompt_send();
+                self.open_compose_menu();
             }
             _ => {
                 self.status = Some(format!(
@@ -2004,28 +2024,254 @@ impl App {
         }
     }
 
-    fn reprompt_send(&mut self) {
-        let (security, attachments) = match &self.compose {
-            Some(c) => {
-                let files = draft_full(c)
-                    .map(|text| compose::extract_attachments(&text).1.len())
-                    .unwrap_or(0);
-                (c.security, files + usize::from(c.attach.is_some()))
-            }
-            None => (Security::None, 0),
+    /// Mutt's compose menu: entered after the editor, and again after
+    /// every sub-prompt, until y sends, P/q postpones, or q discards.
+    fn open_compose_menu(&mut self) {
+        if self.compose.is_some() {
+            let sel = match self.mode {
+                Mode::Compose { sel } => sel,
+                _ => 0,
+            };
+            self.mode = Mode::Compose { sel };
+        }
+    }
+
+    /// The draft's header block, wherever it currently lives.
+    fn draft_head(&self) -> String {
+        let Some(c) = &self.compose else {
+            return String::new();
         };
-        let mut label = SEND_PROMPT.to_string();
-        if attachments > 0 {
-            label += &format!(" [{attachments} attachment(s)]");
+        match &c.hidden_head {
+            Some(head) => head.clone(),
+            None => {
+                let text = std::fs::read_to_string(&c.path).unwrap_or_default();
+                match text.split_once("\n\n") {
+                    Some((head, _)) => head.to_string(),
+                    None => text.trim_end().to_string(),
+                }
+            }
         }
-        if security != Security::None {
-            label += &format!(" [PGP: {}]", security.label());
+    }
+
+    /// Rewrite the draft's header block in place (hidden or in-file).
+    fn edit_draft_head(&mut self, f: impl Fn(&str) -> String) {
+        let Some(c) = &mut self.compose else {
+            return;
+        };
+        match &mut c.hidden_head {
+            Some(head) => *head = f(head),
+            None => {
+                if let Ok(text) = std::fs::read_to_string(&c.path) {
+                    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+                    let _ = std::fs::write(&c.path, format!("{}\n\n{body}", f(head)));
+                }
+            }
         }
-        label += ": ";
-        self.prompt = Some(Prompt::Key {
-            label,
-            kind: KeyKind::Send,
+    }
+
+    /// Replace (or add, or with an empty value drop) one header.
+    fn set_draft_header(&mut self, name: &str, value: &str) {
+        let value = value.trim().to_string();
+        let name = name.to_string();
+        self.edit_draft_head(|head| {
+            let mut lines: Vec<&str> = head
+                .lines()
+                .filter(|l| {
+                    !l.split_once(':')
+                        .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(&name))
+                })
+                .collect();
+            let added = format!("{name}: {value}");
+            if !value.is_empty() {
+                lines.push(&added);
+            }
+            lines.join("\n")
         });
+    }
+
+    fn draft_header(&self, name: &str) -> String {
+        header_value(&self.draft_head(), name).unwrap_or_default()
+    }
+
+    /// Header lines the compose menu shows; From falls back to the
+    /// identity that send would use.
+    pub fn compose_header_lines(&self) -> Vec<(&'static str, String)> {
+        let head = self.draft_head();
+        let get = |n: &str| header_value(&head, n).unwrap_or_default();
+        let from = match header_value(&head, "From") {
+            Some(f) => f,
+            None => self
+                .current_identity(&[])
+                .from_line()
+                .unwrap_or_else(|| default_from(&maildir::hostname())),
+        };
+        let security = self
+            .compose
+            .as_ref()
+            .map(|c| c.security.label())
+            .filter(|l| !l.is_empty())
+            .unwrap_or("none");
+        let fcc = match &self.remote {
+            Some(remote) => format!(
+                "imap:{}/{}",
+                remote.account.name, remote.account.sent_folder
+            ),
+            None => self
+                .config
+                .mail
+                .sent
+                .clone()
+                .unwrap_or_else(|| "(nearby Sent maildir)".into()),
+        };
+        vec![
+            ("From", from),
+            ("To", get("To")),
+            ("Cc", get("Cc")),
+            ("Bcc", get("Bcc")),
+            ("Subject", get("Subject")),
+            ("Fcc", fcc),
+            ("Security", security.to_string()),
+        ]
+    }
+
+    /// Attachment-table entries: the body, the forwarded original,
+    /// then every Attach: file, in detach order.
+    pub fn compose_entries(&self) -> Vec<String> {
+        let Some(c) = &self.compose else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let body_size = std::fs::metadata(&c.path).map(|m| m.len()).unwrap_or(0);
+        out.push(format!(
+            "{:<28} {:>8}  text/plain",
+            "(message body)",
+            crate::ui::humanize_size(body_size)
+        ));
+        if let Some(orig) = &c.attach {
+            let size = std::fs::metadata(orig).map(|m| m.len()).unwrap_or(0);
+            out.push(format!(
+                "{:<28} {:>8}  message/rfc822  forwarded original",
+                orig.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                crate::ui::humanize_size(size)
+            ));
+        }
+        let text = draft_full(c).unwrap_or_default();
+        for a in compose::extract_attachments(&text).1 {
+            let size = match std::fs::metadata(&a.path) {
+                Ok(m) => crate::ui::humanize_size(m.len()),
+                Err(_) => "missing!".into(),
+            };
+            out.push(format!(
+                "{:<28} {:>8}  {}{}",
+                a.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                size,
+                compose::content_type(&a.path),
+                a.description
+                    .as_deref()
+                    .map(|d| format!("  ({d})"))
+                    .unwrap_or_default(),
+            ));
+        }
+        out
+    }
+
+    fn handle_compose_key(&mut self, key: KeyEvent) {
+        let entries = self.compose_entries().len();
+        let Mode::Compose { sel } = &mut self.mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => *sel = (*sel + 1).min(entries.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => *sel = sel.saturating_sub(1),
+            KeyCode::Char('y') => {
+                self.mode = Mode::Index;
+                self.send_draft();
+            }
+            KeyCode::Char('e') => {
+                self.mode = Mode::Index;
+                if let Some(c) = self.compose.take() {
+                    self.pending_editor = Some(c);
+                }
+            }
+            KeyCode::Char('t') => self.edit_header_prompt("To"),
+            KeyCode::Char('c') => self.edit_header_prompt("Cc"),
+            KeyCode::Char('b') => self.edit_header_prompt("Bcc"),
+            KeyCode::Char('s') => self.edit_header_prompt("Subject"),
+            KeyCode::Char('a') => {
+                self.prompt = Some(Prompt::Line {
+                    label: "Attach file: ".into(),
+                    buf: String::new(),
+                    kind: LineKind::AttachFile,
+                });
+            }
+            KeyCode::Char('D') => self.detach_selected(),
+            KeyCode::Char('p') => {
+                self.prompt = Some(Prompt::Key {
+                    label: "Security: (e)ncrypt (s)ign (b)oth (c)lear: ".into(),
+                    kind: KeyKind::Security,
+                });
+            }
+            KeyCode::Char('P') => {
+                self.mode = Mode::Index;
+                self.postpone_draft();
+            }
+            KeyCode::Char('q') => {
+                self.prompt = Some(Prompt::Key {
+                    label: "Postpone this message? (y/n): ".into(),
+                    kind: KeyKind::PostponeAsk,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn edit_header_prompt(&mut self, name: &'static str) {
+        let kind = match name {
+            "To" => LineKind::EditTo,
+            "Cc" => LineKind::EditCc,
+            "Bcc" => LineKind::EditBcc,
+            _ => LineKind::EditSubject,
+        };
+        self.prompt = Some(Prompt::Line {
+            label: format!("{name}: "),
+            buf: self.draft_header(name),
+            kind,
+        });
+    }
+
+    /// D in the compose menu: drop the selected Attach: line (the
+    /// body and a forwarded original cannot be detached).
+    fn detach_selected(&mut self) {
+        let Mode::Compose { sel } = self.mode else {
+            return;
+        };
+        let fixed = 1 + usize::from(self.compose.as_ref().is_some_and(|c| c.attach.is_some()));
+        if sel < fixed {
+            self.status = Some("only Attach: files can be detached".into());
+            return;
+        }
+        let k = sel - fixed;
+        self.edit_draft_head(|head| {
+            let mut seen = 0usize;
+            head.lines()
+                .filter(|l| {
+                    let is_attach = l
+                        .split_once(':')
+                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
+                    if is_attach {
+                        seen += 1;
+                        seen - 1 != k
+                    } else {
+                        true
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        let len = self.compose_entries().len();
+        if let Mode::Compose { sel } = &mut self.mode {
+            *sel = (*sel).min(len.saturating_sub(1));
+        }
     }
 
     /// Add an `Attach:` line to the draft's header block without a
@@ -2062,48 +2308,7 @@ impl App {
                 }
             }
         }
-        self.reprompt_send();
-    }
-
-    /// A read-only listing of the draft's attachments (send prompt
-    /// `v`); closing it returns to the send prompt.
-    fn review_attachments(&mut self) {
-        let Some(c) = &self.compose else {
-            return;
-        };
-        let text = draft_full(c).unwrap_or_default();
-        let (_, files) = compose::extract_attachments(&text);
-        let mut lines = vec!["Draft attachments".to_string(), String::new()];
-        if let Some(orig) = &c.attach {
-            lines.push(format!(
-                "  {:<28} message/rfc822  forwarded original",
-                orig.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("(original)"),
-            ));
-        }
-        for a in &files {
-            let size = std::fs::metadata(&a.path).map(|m| m.len());
-            let size = match size {
-                Ok(n) => crate::ui::humanize_size(n),
-                Err(_) => "missing!".into(),
-            };
-            lines.push(format!(
-                "  {:<28} {:>8}  {}{}",
-                a.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
-                size,
-                compose::content_type(&a.path),
-                a.description
-                    .as_deref()
-                    .map(|d| format!("  ({d})"))
-                    .unwrap_or_default(),
-            ));
-        }
-        if files.is_empty() && c.attach.is_none() {
-            lines.push("  (none — a at the send prompt adds one)".into());
-        }
-        lines.extend([String::new(), "q returns to the send prompt".into()]);
-        self.mode = Mode::Help { lines, scroll: 0 };
+        self.open_compose_menu();
     }
 
     /// Initial security for a fresh draft, from the [pgp] config.
@@ -2146,7 +2351,7 @@ impl App {
             Err(err) => {
                 self.status = Some(format!("{err} — press e to edit"));
                 self.compose = Some(compose_state);
-                self.reprompt_send();
+                self.open_compose_menu();
                 return;
             }
         };
@@ -2156,7 +2361,7 @@ impl App {
                 Err(err) => {
                     self.status = Some(format!("cannot attach the original: {err}"));
                     self.compose = Some(compose_state);
-                    self.reprompt_send();
+                    self.open_compose_menu();
                     return;
                 }
             },
@@ -2172,7 +2377,7 @@ impl App {
             Err(err) => {
                 self.status = Some(format!("{err:#} — e edits, s changes security"));
                 self.compose = Some(compose_state);
-                self.reprompt_send();
+                self.open_compose_menu();
                 return;
             }
         };
@@ -2226,7 +2431,7 @@ impl App {
             Err(err) => {
                 self.status = Some(format!("send failed: {err:#}"));
                 self.compose = Some(compose_state);
-                self.reprompt_send();
+                self.open_compose_menu();
             }
         }
     }
