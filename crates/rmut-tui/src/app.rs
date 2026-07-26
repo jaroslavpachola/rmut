@@ -1067,9 +1067,7 @@ impl App {
             IndexAction::SearchNext => self.search_next(),
             IndexAction::Attachments => self.open_attachments(),
             IndexAction::ChangeMailbox => {
-                if self.pending_count() > 0 {
-                    self.status = Some("pending changes — sync with $ first".into());
-                } else {
+                if self.ready_to_leave() {
                     self.prompt = Some(Prompt::Line {
                         label: "Open mailbox: ".into(),
                         buf: String::new(),
@@ -1097,9 +1095,9 @@ impl App {
             IndexAction::SidebarOpen => {
                 if !self.sidebar_visible {
                     self.status = Some("the sidebar is hidden — B shows it".into());
-                } else if self.pending_count() > 0 {
-                    self.status = Some("pending changes — sync with $ first".into());
-                } else if let Some((spec, _)) = self.sidebar.get(self.sidebar_sel).cloned() {
+                } else if self.ready_to_leave()
+                    && let Some((spec, _)) = self.sidebar.get(self.sidebar_sel).cloned()
+                {
                     self.open_mailbox_spec(&spec);
                 }
             }
@@ -1408,8 +1406,7 @@ impl App {
     }
 
     fn open_folder_browser(&mut self) {
-        if self.pending_count() > 0 {
-            self.status = Some("pending changes — sync with $ first".into());
+        if !self.ready_to_leave() {
             return;
         }
         // Local entries carry their new/ count; imap: specs of other
@@ -1468,6 +1465,23 @@ impl App {
             .position(|d| d.0 == self.title || expand_tilde(&d.0) == self.dir)
             .unwrap_or(0);
         self.mode = Mode::Folders { dirs, sel };
+    }
+
+    /// Leaving the mailbox (c, sidebar open, folder browser): flag
+    /// changes are written silently like q; only pending deletions
+    /// block the switch. True when it is safe to go.
+    fn ready_to_leave(&mut self) -> bool {
+        if self.deleted_count() > 0 {
+            self.status = Some("deleted messages pending — sync with $ or undelete first".into());
+            return false;
+        }
+        if self.pending_count() > 0 {
+            self.sync(false);
+            if self.pending_count() > 0 {
+                return false; // sync failed; its status says why
+            }
+        }
+        true
     }
 
     fn open_mailbox_spec(&mut self, spec: &str) {

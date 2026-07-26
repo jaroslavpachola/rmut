@@ -1037,6 +1037,16 @@ email = "second@example.com"
     r.keys(b"mx@y.example.com\rhello\ry")
     wait_for(lambda: "From: Jarda <second@example.com>" in open(sent_file).read(),
              desc="folder identity applied")
+    # bugfix: a pending flag change (reading new mail, N, F) must not
+    # block c/y/ctrl+o — it syncs silently on the way out, like q
+    r.keys(b"N")
+    r.keys(b"c")
+    r.expect("Open mailbox:", absent=("pending changes",))
+    r.keys(f"{md}\r".encode())
+    r.expect("status?")
+    wait_for(lambda: all("S" not in f.split(":2,")[-1]
+                         for f in os.listdir(os.path.join(md2, "cur"))),
+             desc="flag change written when switching away")
     r.keys(b"q")
     r.close()
 
