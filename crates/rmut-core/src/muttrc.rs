@@ -57,8 +57,13 @@ struct State {
     poll_seconds: Option<u64>,
     index_format: Option<String>,
     colors: BTreeMap<&'static str, String>,
+    /// `color quoted`/`quotedN` depth palette, keyed by N.
+    quoted_colors: BTreeMap<usize, String>,
     /// `color index FG BG PATTERN` rules, in muttrc order.
     color_index_rules: Vec<(String, String, String)>,
+    /// `color body FG BG REGEX` rules, in muttrc order.
+    color_body_rules: Vec<(String, String, String)>,
+    quote_regexp: Option<String>,
     status_format: Option<String>,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
@@ -461,6 +466,7 @@ impl State {
                 Ok(n) => self.pager_context = Some(n),
                 Err(_) => self.skip(line, "not a number"),
             },
+            "quote_regexp" => self.quote_regexp = Some(v.to_string()),
             "mime_forward" => {
                 if is_yes(&v) {
                     self.forward_attach = true;
@@ -675,10 +681,28 @@ impl State {
         } else {
             fg.clone()
         };
+        // `color quoted` / `color quotedN`: the depth palette.
+        if let Some(n) = object.strip_prefix("quoted")
+            && let Ok(depth) = if n.is_empty() { Ok(0usize) } else { n.parse() }
+        {
+            self.quoted_colors.insert(depth, vivid);
+            return;
+        }
         match (object.as_str(), args.get(3).map(String::as_str)) {
             ("status", _) => {
                 self.colors.insert("status_fg", fg);
                 self.colors.insert("status_bg", bg);
+            }
+            ("search", _) => {
+                if fg != "default" {
+                    self.colors.insert("search_fg", fg.clone());
+                }
+                if bg != "default" {
+                    self.colors.insert("search_bg", bg.clone());
+                }
+            }
+            ("body", Some(regex)) => {
+                self.color_body_rules.push((regex.to_string(), fg, bg));
             }
             ("header" | "hdrdefault", _) => {
                 self.colors.insert("header", fg);
@@ -830,13 +854,19 @@ impl State {
                 out += &format!("date_format = {}\n", quote(df));
             }
         }
-        if self.pager_index_lines.is_some() || self.pager_context.is_some() {
+        if self.pager_index_lines.is_some()
+            || self.pager_context.is_some()
+            || self.quote_regexp.is_some()
+        {
             out += "\n[pager]\n";
             if let Some(n) = self.pager_index_lines {
                 out += &format!("index_lines = {n}\n");
             }
             if let Some(n) = self.pager_context {
                 out += &format!("context = {n}\n");
+            }
+            if let Some(re) = &self.quote_regexp {
+                out += &format!("quote_regexp = {}\n", quote(re));
             }
         }
         if !self.filters.is_empty() {
@@ -845,14 +875,32 @@ impl State {
                 out += &format!("{} = {}\n", quote(mime), quote(command));
             }
         }
-        if !self.colors.is_empty() {
+        if !self.colors.is_empty() || !self.quoted_colors.is_empty() {
             out += "\n[colors]\n";
             for (k, v) in &self.colors {
                 out += &format!("{k} = {}\n", quote(v));
             }
+            for (n, v) in &self.quoted_colors {
+                let key = if *n == 0 {
+                    "quoted".to_string()
+                } else {
+                    format!("quoted{n}")
+                };
+                out += &format!("{key} = {}\n", quote(v));
+            }
         }
         for (pattern, fg, bg) in &self.color_index_rules {
             out += "\n[[color_index]]\n";
+            out += &format!("pattern = {}\n", quote(pattern));
+            if fg != "default" {
+                out += &format!("fg = {}\n", quote(fg));
+            }
+            if bg != "default" {
+                out += &format!("bg = {}\n", quote(bg));
+            }
+        }
+        for (pattern, fg, bg) in &self.color_body_rules {
+            out += "\n[[color_body]]\n";
             out += &format!("pattern = {}\n", quote(pattern));
             if fg != "default" {
                 out += &format!("fg = {}\n", quote(fg));
@@ -1209,8 +1257,12 @@ fn pager_function(name: &str) -> Option<&'static str> {
         "previous-line" => "up",
         "next-page" => "page-down",
         "previous-page" => "page-up",
+        "half-down" => "half-down",
+        "half-up" => "half-up",
         "top" => "top",
         "bottom" => "bottom",
+        "toggle-quoted" => "toggle-quoted",
+        "skip-quoted" => "skip-quoted",
         "next-entry" | "next-undeleted" => "next",
         "previous-entry" | "previous-undeleted" => "previous",
         "delete-message" => "delete",
@@ -1461,6 +1513,42 @@ mod tests {
             Some("lightmagenta")
         );
         assert!(toml.contains("color indicator"));
+    }
+
+    #[test]
+    fn pager_colors_and_motion_translate() {
+        let (cfg, toml) = to_config(concat!(
+            "color quoted cyan default\n",
+            "color quoted1 yellow default\n",
+            "color body magenta default \"https?://[^ ]+\"\n",
+            "color search black yellow\n",
+            "set quote_regexp=\"^( *[>|])+\"\n",
+            "bind pager \\Cd half-down\n",
+            "bind pager T toggle-quoted\n",
+            "bind pager S skip-quoted\n",
+        ));
+        assert_eq!(cfg.colors.get("quoted").map(String::as_str), Some("cyan"));
+        assert_eq!(
+            cfg.colors.get("quoted1").map(String::as_str),
+            Some("yellow")
+        );
+        assert_eq!(
+            cfg.colors.get("search_bg").map(String::as_str),
+            Some("yellow")
+        );
+        assert_eq!(cfg.color_body.len(), 1);
+        assert_eq!(cfg.color_body[0].pattern, "https?://[^ ]+");
+        assert_eq!(cfg.color_body[0].fg.as_deref(), Some("magenta"));
+        assert_eq!(cfg.pager.quote_regexp.as_deref(), Some("^( *[>|])+"));
+        assert_eq!(
+            cfg.keys.pager.get("half-down").map(String::as_str),
+            Some("ctrl+d")
+        );
+        assert_eq!(
+            cfg.keys.pager.get("toggle-quoted").map(String::as_str),
+            Some("T")
+        );
+        assert!(toml.contains("[[color_body]]"));
     }
 
     #[test]

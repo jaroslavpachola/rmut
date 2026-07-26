@@ -34,6 +34,9 @@ pub struct Pager {
     pub view: message::MessageView,
     pub scroll: usize,
     pub full_headers: bool,
+    /// mutt's toggle-quoted (`T`): quoted lines are dropped from the
+    /// display while set.
+    pub hide_quoted: bool,
 }
 
 pub enum Mode {
@@ -356,8 +359,13 @@ pub struct App {
     pub sort_rev: bool,
     pub limit: Option<(String, Vec<Pattern>)>,
     pub last_search: Option<Vec<Pattern>>,
-    /// The pager's text search, kept across messages so n/N carry over.
-    pager_search: Option<pattern::Matcher>,
+    /// The pager's text search, kept across messages so n/N carry
+    /// over; the pager highlights its hits.
+    pub(crate) pager_search: Option<pattern::Matcher>,
+    /// Compiled $quote_regexp classifying quoted body lines.
+    pub(crate) quote_re: regex_lite::Regex,
+    /// Compiled [[color_body]] rules: regex + style, in config order.
+    pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     /// Width and content rows from the last key dispatch, for actions
     /// (prompt submissions) that arrive without a size at hand.
     view_size: (usize, usize),
@@ -410,6 +418,11 @@ pub struct App {
     /// mtimes of new/ and cur/ used for new-mail detection.
     dir_mtimes: (Option<SystemTime>, Option<SystemTime>),
     quit: bool,
+}
+
+/// mutt's $quote_regexp default.
+pub(crate) fn default_quote_re() -> regex_lite::Regex {
+    regex_lite::Regex::new(r"^([ \t]*[|>:}#])+").expect("default quote_regexp compiles")
 }
 
 fn dir_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
@@ -466,6 +479,38 @@ impl App {
             }
             index_rules.push((patterns, style));
         }
+        // Compile [[color_body]] rules (plain regexes) the same way.
+        let mut body_rules = Vec::new();
+        for rule in &config.color_body {
+            let re = match regex_lite::Regex::new(&rule.pattern) {
+                Ok(re) => re,
+                Err(err) => {
+                    warnings.push(format!("bad color_body regex {:?}: {err}", rule.pattern));
+                    continue;
+                }
+            };
+            let mut style = ratatui::style::Style::new();
+            for (name, is_fg) in [(&rule.fg, true), (&rule.bg, false)] {
+                if let Some(name) = name {
+                    match crate::theme::parse_color(name) {
+                        Some(color) if is_fg => style = style.fg(color),
+                        Some(color) => style = style.bg(color),
+                        None => warnings.push(format!("unknown color_body color {name:?}")),
+                    }
+                }
+            }
+            body_rules.push((re, style));
+        }
+        let quote_re = match &config.pager.quote_regexp {
+            Some(spec) => match regex_lite::Regex::new(spec) {
+                Ok(re) => re,
+                Err(err) => {
+                    warnings.push(format!("bad quote_regexp {spec:?}: {err}"));
+                    default_quote_re()
+                }
+            },
+            None => default_quote_re(),
+        };
         let status = (!warnings.is_empty()).then(|| warnings.join("; "));
         let count = msgs.len();
         let mut me: Vec<String> = config
@@ -503,6 +548,8 @@ impl App {
             limit: None,
             last_search: None,
             pager_search: None,
+            quote_re,
+            body_rules,
             view_size: (80, 24),
             thread_depth: vec![0; count],
             thread_root: (0..count).collect(),
@@ -1654,7 +1701,13 @@ impl App {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = crate::ui::pager_line_count(&pager.view, width, pager.full_headers);
+        let lines = crate::ui::pager_line_count(
+            &pager.view,
+            width,
+            pager.full_headers,
+            &self.quote_re,
+            pager.hide_quoted,
+        );
         let max_scroll = lines.saturating_sub(page);
         // mutt's $pager_stop = no: paging past the end opens the next
         // message.
@@ -1680,8 +1733,47 @@ impl App {
             PagerAction::Up => pager.scroll = pager.scroll.saturating_sub(1),
             PagerAction::PageDown => pager.scroll = (pager.scroll + step).min(max_scroll),
             PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(step),
+            PagerAction::HalfDown => {
+                pager.scroll = (pager.scroll + (page / 2).max(1)).min(max_scroll)
+            }
+            PagerAction::HalfUp => pager.scroll = pager.scroll.saturating_sub((page / 2).max(1)),
             PagerAction::Top => pager.scroll = 0,
             PagerAction::Bottom => pager.scroll = max_scroll,
+            PagerAction::ToggleQuoted => {
+                pager.hide_quoted = !pager.hide_quoted;
+                // The row count changed: keep the scroll in range.
+                let lines = crate::ui::pager_line_count(
+                    &pager.view,
+                    width,
+                    pager.full_headers,
+                    &self.quote_re,
+                    pager.hide_quoted,
+                );
+                pager.scroll = pager.scroll.min(lines.saturating_sub(page));
+            }
+            PagerAction::SkipQuoted => {
+                let rows = crate::ui::pager_rows(
+                    &pager.view,
+                    width,
+                    pager.full_headers,
+                    &self.quote_re,
+                    pager.hide_quoted,
+                );
+                let quoted = |i: usize| matches!(rows[i].kind, crate::ui::RowKind::Quoted(_));
+                // Past the next quoted block: find it, then leave it.
+                let mut i = pager.scroll;
+                while i < rows.len() && !quoted(i) {
+                    i += 1;
+                }
+                while i < rows.len() && quoted(i) {
+                    i += 1;
+                }
+                if i < rows.len() {
+                    pager.scroll = i.min(max_scroll.max(pager.scroll));
+                } else {
+                    self.status = Some("No more quoted text.".into());
+                }
+            }
             _ => {}
         }
     }
@@ -1703,7 +1795,13 @@ impl App {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = crate::ui::pager_text_lines(&pager.view, width, pager.full_headers);
+        let lines = crate::ui::pager_text_lines(
+            &pager.view,
+            width,
+            pager.full_headers,
+            &self.quote_re,
+            pager.hide_quoted,
+        );
         match search_lines(&lines, &matcher, pager.scroll, forward) {
             Some((hit, wrapped)) => {
                 // The hit becomes the top line even near the end (past
@@ -1824,6 +1922,7 @@ impl App {
                                 },
                                 scroll: 0,
                                 full_headers: false,
+                                hide_quoted: false,
                             });
                         }
                         Err(err) => self.status = Some(format!("filter failed: {err:#}")),
@@ -1847,6 +1946,7 @@ impl App {
                     },
                     scroll: 0,
                     full_headers: false,
+                    hide_quoted: false,
                 });
             }
             Err(err) => self.status = Some(format!("cannot decode part: {err:#}")),
@@ -3695,6 +3795,7 @@ impl App {
                     view,
                     scroll: 0,
                     full_headers: false,
+                    hide_quoted: false,
                 });
             }
             Err(err) => self.status = Some(format!("cannot open message: {err:#}")),

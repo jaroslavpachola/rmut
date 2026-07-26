@@ -33,6 +33,28 @@ impl Matcher {
             None => text.to_lowercase().contains(&self.raw.to_lowercase()),
         }
     }
+
+    /// Byte ranges of every match in `text`, for highlighters. The
+    /// substring fallback compares ASCII-case-insensitively (which
+    /// keeps offsets valid, unlike full lowercasing).
+    pub fn find_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        if let Some(re) = &self.re {
+            return re.find_iter(text).map(|m| (m.start(), m.end())).collect();
+        }
+        let hay = text.to_ascii_lowercase();
+        let needle = self.raw.to_ascii_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(pos) = hay[from..].find(&needle) {
+            let start = from + pos;
+            out.push((start, start + needle.len()));
+            from = start + needle.len();
+        }
+        out
+    }
 }
 
 impl PartialEq for Matcher {

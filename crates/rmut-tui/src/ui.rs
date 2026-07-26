@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use rmut_core::format::{self, IndexFields};
@@ -56,7 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             content_area
         };
         if let Mode::Pager(pager) = &app.mode {
-            draw_pager(frame, pager_area, pager, app.theme.header);
+            draw_pager(frame, pager_area, app, pager);
         }
     } else {
         // The sidebar takes a left slice of the index view.
@@ -287,26 +287,78 @@ pub fn humanize_size(bytes: u64) -> String {
 
 // ---- pager ----
 
-fn pager_lines(
+/// How one pager display row gets colored.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RowKind {
+    Header,
+    /// `[-- ... --]` notices (PGP verdicts, missing parts).
+    Marker,
+    /// Quoted body text, 1-based nesting depth.
+    Quoted(usize),
+    Text,
+}
+
+pub struct Row {
+    pub text: String,
+    pub kind: RowKind,
+}
+
+/// Quote depth of a body line under $quote_regexp: the number of
+/// quote characters in the prefix match, 0 for unquoted text.
+pub fn quote_depth(line: &str, re: &regex_lite::Regex) -> usize {
+    match re.find(line) {
+        Some(m) if m.start() == 0 => m
+            .as_str()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .count()
+            .max(1),
+        _ => 0,
+    }
+}
+
+/// The pager display: header block, separator, wrapped body (with
+/// mutt's `+` continuation markers), each row classified for
+/// coloring. The scroll math, the body search, and the drawing all
+/// share this — T (hide_quoted) drops quoted rows here, so every
+/// consumer agrees on what a line number means.
+pub fn pager_rows(
     view: &MessageView,
     width: usize,
     full_headers: bool,
-    header_color: Color,
-) -> Vec<Line<'static>> {
+    quote_re: &regex_lite::Regex,
+    hide_quoted: bool,
+) -> Vec<Row> {
     let headers = if full_headers { &view.all } else { &view.brief };
-    let mut lines: Vec<Line> = Vec::new();
-    for (name, value) in headers {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{name}: "), Style::new().fg(header_color).bold()),
-            Span::raw(value.clone()),
-        ]));
-    }
-    lines.push(Line::raw(""));
+    let mut rows: Vec<Row> = headers
+        .iter()
+        .map(|(name, value)| Row {
+            text: format!("{name}: {value}"),
+            kind: RowKind::Header,
+        })
+        .collect();
+    rows.push(Row {
+        text: String::new(),
+        kind: RowKind::Text,
+    });
     for line in view.body.lines() {
         // Marker lines like the PGP verdict get the header treatment.
         let marker = line.starts_with("[-- ") && line.ends_with(" --]");
-        // mutt's $markers (on by default): wrapped continuations carry
-        // a leading +, so the wrap width leaves it a column.
+        let depth = if marker {
+            0
+        } else {
+            quote_depth(line, quote_re)
+        };
+        if hide_quoted && depth > 0 {
+            continue;
+        }
+        let kind = if marker {
+            RowKind::Marker
+        } else if depth > 0 {
+            RowKind::Quoted(depth)
+        } else {
+            RowKind::Text
+        };
         for (i, wrapped) in wrap_line(line, width.saturating_sub(1))
             .into_iter()
             .enumerate()
@@ -316,44 +368,35 @@ fn pager_lines(
             } else {
                 wrapped
             };
-            lines.push(if marker {
-                Line::styled(text, Style::new().fg(header_color).bold())
-            } else {
-                Line::raw(text)
-            });
+            rows.push(Row { text, kind });
         }
     }
-    lines
+    rows
 }
 
-/// The pager's display as plain text, one entry per screen line —
-/// the same lines `pager_lines` styles (headers, separator, wrapped
-/// body with + continuations). The body search runs over this.
-pub fn pager_text_lines(view: &MessageView, width: usize, full_headers: bool) -> Vec<String> {
-    let headers = if full_headers { &view.all } else { &view.brief };
-    let mut lines: Vec<String> = headers
-        .iter()
-        .map(|(name, value)| format!("{name}: {value}"))
-        .collect();
-    lines.push(String::new());
-    for line in view.body.lines() {
-        for (i, wrapped) in wrap_line(line, width.saturating_sub(1))
-            .into_iter()
-            .enumerate()
-        {
-            lines.push(if i > 0 {
-                format!("+{wrapped}")
-            } else {
-                wrapped
-            });
-        }
-    }
-    lines
+/// The pager's display as plain text — what the body search runs over.
+pub fn pager_text_lines(
+    view: &MessageView,
+    width: usize,
+    full_headers: bool,
+    quote_re: &regex_lite::Regex,
+    hide_quoted: bool,
+) -> Vec<String> {
+    pager_rows(view, width, full_headers, quote_re, hide_quoted)
+        .into_iter()
+        .map(|row| row.text)
+        .collect()
 }
 
-/// Total pager lines at the given width: header block + separator + body.
-pub fn pager_line_count(view: &MessageView, width: usize, full_headers: bool) -> usize {
-    pager_text_lines(view, width, full_headers).len()
+/// Total pager lines at the given width.
+pub fn pager_line_count(
+    view: &MessageView,
+    width: usize,
+    full_headers: bool,
+    quote_re: &regex_lite::Regex,
+    hide_quoted: bool,
+) -> usize {
+    pager_rows(view, width, full_headers, quote_re, hide_quoted).len()
 }
 
 /// Word-wrap one body line to `width` columns (hard break when a single
@@ -387,18 +430,83 @@ pub fn wrap_line(line: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn draw_pager(frame: &mut Frame, area: Rect, pager: &Pager, header_color: Color) {
-    let visible: Vec<Line> = pager_lines(
+fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
+    let rows = pager_rows(
         &pager.view,
         area.width as usize,
         pager.full_headers,
-        header_color,
-    )
-    .into_iter()
-    .skip(pager.scroll)
-    .take(area.height as usize)
-    .collect();
+        &app.quote_re,
+        pager.hide_quoted,
+    );
+    let visible: Vec<Line> = rows
+        .iter()
+        .skip(pager.scroll)
+        .take(area.height as usize)
+        .map(|row| style_row(row, app))
+        .collect();
     frame.render_widget(Paragraph::new(visible), area);
+}
+
+/// One pager row as styled spans: the base from its kind, then
+/// [[color_body]] spans, then search hits on top (body rows only).
+fn style_row(row: &Row, app: &App) -> Line<'static> {
+    let header_style = Style::new().fg(app.theme.header).bold();
+    match row.kind {
+        RowKind::Header => match row.text.split_once(": ") {
+            Some((name, value)) => Line::from(vec![
+                Span::styled(format!("{name}: "), header_style),
+                Span::raw(value.to_string()),
+            ]),
+            None => Line::styled(row.text.clone(), header_style),
+        },
+        RowKind::Marker => Line::styled(row.text.clone(), header_style),
+        RowKind::Quoted(depth) => {
+            let base = match app.theme.quoted.len() {
+                0 => Style::new(),
+                n => Style::new().fg(app.theme.quoted[(depth - 1) % n]),
+            };
+            body_line(&row.text, base, app)
+        }
+        RowKind::Text => body_line(&row.text, Style::new(), app),
+    }
+}
+
+fn body_line(text: &str, base: Style, app: &App) -> Line<'static> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    if chars.is_empty() {
+        return Line::raw(String::new());
+    }
+    let mut styles = vec![base; chars.len()];
+    let paint = |styles: &mut Vec<Style>, start: usize, end: usize, patch: Style| {
+        for (i, (off, _)) in chars.iter().enumerate() {
+            if *off >= start && *off < end {
+                styles[i] = styles[i].patch(patch);
+            }
+        }
+    };
+    for (re, style) in &app.body_rules {
+        for m in re.find_iter(text) {
+            paint(&mut styles, m.start(), m.end(), *style);
+        }
+    }
+    if let Some(matcher) = &app.pager_search {
+        for (start, end) in matcher.find_ranges(text) {
+            paint(&mut styles, start, end, app.theme.search);
+        }
+    }
+    // Group equal-style runs into spans.
+    let mut spans: Vec<Span> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_style = styles[0];
+    for (i, (_, c)) in chars.iter().enumerate() {
+        if styles[i] != cur_style {
+            spans.push(Span::styled(std::mem::take(&mut cur), cur_style));
+            cur_style = styles[i];
+        }
+        cur.push(*c);
+    }
+    spans.push(Span::styled(cur, cur_style));
+    Line::from(spans)
 }
 
 // ---- help ----
@@ -623,7 +731,14 @@ fn index_status(app: &App, width: usize, rows: usize) -> String {
 }
 
 fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> String {
-    let total = pager_line_count(&pager.view, width, pager.full_headers).max(1);
+    let total = pager_line_count(
+        &pager.view,
+        width,
+        pager.full_headers,
+        &app.quote_re,
+        pager.hide_quoted,
+    )
+    .max(1);
     let shown = (pager.scroll + content_height as usize).min(total);
     let subject = pager
         .view
@@ -643,7 +758,49 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{humanize_size, wrap_line};
+    use super::{RowKind, humanize_size, pager_rows, quote_depth, wrap_line};
+    use crate::app::default_quote_re;
+    use rmut_core::message::MessageView;
+
+    #[test]
+    fn quote_depth_counts_prefix_marks() {
+        let re = default_quote_re();
+        assert_eq!(quote_depth("plain text", &re), 0);
+        assert_eq!(quote_depth("> quoted", &re), 1);
+        assert_eq!(quote_depth("> > deeper", &re), 2);
+        assert_eq!(quote_depth(">>tight", &re), 2);
+        assert_eq!(quote_depth("  | indented pipe", &re), 1);
+        // A > later in the line is not a quote.
+        assert_eq!(quote_depth("2 > 1", &re), 0);
+    }
+
+    #[test]
+    fn rows_classify_and_hide_quoted() {
+        let view = MessageView {
+            brief: vec![("From".into(), "jane@example.com".into())],
+            all: vec![("From".into(), "jane@example.com".into())],
+            body: "top\n> one\n> > two\n[-- marker --]\ntail".into(),
+        };
+        let re = default_quote_re();
+        let rows = pager_rows(&view, 80, false, &re, false);
+        let kinds: Vec<RowKind> = rows.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                RowKind::Header,
+                RowKind::Text, // separator
+                RowKind::Text,
+                RowKind::Quoted(1),
+                RowKind::Quoted(2),
+                RowKind::Marker,
+                RowKind::Text,
+            ]
+        );
+        // T drops the quoted rows for every consumer at once.
+        let hidden = pager_rows(&view, 80, false, &re, true);
+        assert_eq!(hidden.len(), rows.len() - 2);
+        assert!(hidden.iter().all(|r| !matches!(r.kind, RowKind::Quoted(_))));
+    }
 
     #[test]
     fn wrap_short_line_untouched() {

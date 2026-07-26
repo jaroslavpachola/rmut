@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.25.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.26.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -190,6 +190,14 @@ page down / up (also PgDn / PgUp, Home / End for top / bottom);
 Space past the end opens the next message (mutt's pager_stop
 default), and wrapped lines carry a leading + (mutt's markers)
 .TP
+.B Ctrl+D Ctrl+U
+scroll half a page down / up
+.TP
+.B T S
+show/hide quoted text; skip past the quoted text below. Quoted
+lines are tinted by depth (see quote_regexp and the quoted colors);
+search hits are highlighted
+.TP
 .B J K
 open next / previous message
 .TP
@@ -369,6 +377,11 @@ Lines of the message index kept visible above the pager.
 .TP
 .B context
 Lines of overlap when paging (mutt's pager_context).
+.TP
+.B quote_regexp
+Regex classifying quoted body lines (mutt's $quote_regexp; default
+"^([ \\t]*[|>:}#])+"). The depth \(em the number of quote characters
+in the match \(em picks the quoted color.
 .SS [ui]
 .TP
 .B theme
@@ -385,6 +398,9 @@ The left mailbox pane (toggle at runtime with
 .BR B ).
 .SS [colors]
 Slot overrides: status_fg, status_bg, deleted, flagged, header.
+Quoted text tints by depth with quoted, quoted1, quoted2, ...
+(default: cyan for every depth); pager search hits use search_fg /
+search_bg (default: reverse video).
 .SS [[color_index]]
 Pattern rules for index lines:
 .B pattern
@@ -394,6 +410,15 @@ and/or
 .BR bg .
 The first matching rule wins over the slot colors; broken rules warn
 and drop.
+.SS [[color_body]]
+Regex rules for pager body spans (mutt's `color body`):
+.B pattern
+is a plain regex (not a message pattern) plus
+.B fg
+and/or
+.BR bg ,
+applied in order to every match on a displayed line \(em URLs, diff
+lines, and the like.
 .SS [filters]
 MIME type \(-> shell command rendering the part (stdin to stdout),
 e.g. "text/html" = "w3m \-dump \-T text/html". Used when a message

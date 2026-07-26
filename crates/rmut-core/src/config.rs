@@ -66,6 +66,10 @@ pub struct Config {
     pub colors: HashMap<String, String>,
     /// Pattern → color rules for index lines, evaluated in order.
     pub color_index: Vec<ColorRule>,
+    /// Regex → color rules for pager body spans (mutt's `color body`),
+    /// applied in order; `pattern` here is a plain regex, not a
+    /// message pattern.
+    pub color_body: Vec<ColorRule>,
     /// MIME type → shell command that renders the part (stdin → stdout),
     /// e.g. "text/html" = "w3m -dump -T text/html". Used when a message
     /// has no text/plain part, and in the attachment viewer.
@@ -162,6 +166,9 @@ pub struct Pager {
     pub index_lines: u16,
     /// Lines of overlap when paging (mutt's pager_context).
     pub context: usize,
+    /// mutt's $quote_regexp: classifies quoted body lines (depth =
+    /// quote characters in the match). Default `^([ \t]*[|>:}#])+`.
+    pub quote_regexp: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

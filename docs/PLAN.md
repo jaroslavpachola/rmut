@@ -423,23 +423,24 @@ compose paper cuts, and big-mailbox speed. Ranked; R18 (notmuch)
 stays open and slots after R28; daily-use findings still outrank
 everything.
 
-## R27 — pager colors and motion
+## R27 — pager colors and motion (done, 1.26)
 
-The last big *visual* gap: rmut's pager is monochrome where mutt
+The last big *visual* gap: rmut's pager was monochrome where mutt
 tints quotes, hits, and URLs.
 
-- [ ] Quoted-line coloring: mutt's $quote_regexp default
+- [x] Quoted-line coloring: mutt's $quote_regexp default
       (`^([ \t]*[|>:}#])+`) classifies quoted lines, nesting depth
-      cycles `color quoted`/`quoted1`… slots; `[colors] quoted`
-      overrides, importer takes `color quotedN` and `quote_regexp`
-- [ ] `[[color_body]]` rules: regex + fg/bg applied to matching body
+      cycles the `[colors]` quoted/quoted1… palette (default cyan);
+      `[pager] quote_regexp` overrides, importer takes
+      `color quotedN` and `set quote_regexp`
+- [x] `[[color_body]]` rules: regex + fg/bg applied to matching body
       spans in the pager (URLs, diff lines); imported from
       `color body FG BG REGEX`
-- [ ] Search-hit highlighting: the R24 pager search paints its
-      matches (`color search` slot, reverse by default) and the hit
-      the cursor is on
-- [ ] Motion: ctrl+d/ctrl+u half-page, `T` hides quoted lines,
-      `S` skips past the current quoted block (all remappable,
+- [x] Search-hit highlighting: the R24 pager search paints every
+      match (search_fg/search_bg, reverse video by default,
+      imported from `color search`)
+- [x] Motion: ctrl+d/ctrl+u half-page, `T` hides quoted lines,
+      `S` skips past the quoted block below (all remappable, the
       importer maps half-down/half-up/toggle-quoted/skip-quoted)
 
 ## R28 — header weeding and pager polish

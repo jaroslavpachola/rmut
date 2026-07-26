@@ -1401,6 +1401,46 @@ def scenario_odds(tmp):
     r.close()
 
 
+def scenario_pager_quotes(tmp):
+    """R27: quoted-line handling in the pager — S skips past the
+    quoted block, T hides quoted lines (the tail behind a long quote
+    becomes visible), and quoted text is tinted (raw ANSI check)."""
+    md = make_maildir(tmp, "md")
+    quotes1 = "".join(f"> quoted filler {i:02}\r\n" for i in range(1, 36))
+    with open(os.path.join(md, "cur/1751790000.1.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: Quote heavy\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+            "Message-ID: <qh@example.com>\r\n\r\n"
+            "intro-line-one\r\n" + quotes1 + "tail-after-quotes\r\n"
+        )
+    quotes2 = "".join(f"> block {i:02}\r\n" for i in range(1, 36))
+    with open(os.path.join(md, "cur/1751876400.2.host:2,S"), "w") as f:
+        f.write(
+            "From: Petr <petr@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: Skip test\r\nDate: Tue, 7 Jul 2026 10:00:00 +0200\r\n"
+            "Message-ID: <st@example.com>\r\n\r\n"
+            "start-line\r\n" + quotes2 + "after-skip-target\r\n"
+        )
+    r = Rmut(md, base_env(tmp))
+    r.expect("Quote heavy", "Skip test")
+    r.keys(b"\r")  # newest: Skip test
+    r.expect("start-line")
+    # The default theme tints quoted lines cyan (crossterm emits it as
+    # 38;5;6 on the default background) — check the raw output, since
+    # assertions otherwise strip ANSI.
+    assert "\x1b[38;5;6;49m" in r.buf, "quoted lines should be tinted"
+    r.keys(b"S")  # skip past the quoted block: its end scrolls to top
+    r.expect("after-skip-target")
+    r.keys(b"K")  # previous message (Quote heavy)
+    r.expect("intro-line-one")
+    r.keys(b"T")  # hide quoted: the tail fits on screen now
+    r.expect("tail-after-quotes")
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1636,6 +1676,7 @@ SCENARIOS = [
     scenario_pager_search,
     scenario_triage,
     scenario_odds,
+    scenario_pager_quotes,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,
