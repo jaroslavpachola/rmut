@@ -1181,6 +1181,45 @@ def scenario_line_editor(tmp):
     r.close()
 
 
+def scenario_pager_search(tmp):
+    """R24: / inside the pager searches the displayed text
+    (case-insensitive), n/N step through the hits and wrap with a
+    status note; a miss reports Not found."""
+    md = make_maildir(tmp, "md")
+    lines = [f"filler {i:02}" for i in range(1, 41)]
+    lines[29] = "the target alpha"
+    lines[37] = "the target beta"
+    with open(os.path.join(md, "cur/1751790000.9.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: A long report\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+            "Message-ID: <long@example.com>\r\n\r\n"
+            + "\r\n".join(lines) + "\r\n"
+        )
+    r = Rmut(md, base_env(tmp))
+    r.expect("A long report")
+    r.keys(b"\r")
+    r.expect("filler 01")  # the hits start off-screen (40 body lines, 28 rows)
+    r.keys(b"/")
+    r.expect("Search for:")
+    r.keys(b"TARGET\r")  # case-insensitive, like the index patterns
+    r.expect("the target alpha")
+    r.keys(b"n")
+    r.expect("the target beta")
+    r.keys(b"n")  # past the last hit: around to the first
+    r.expect("Search wrapped to top.")
+    # j clears the status (else "bottom." diffs against "top." and only
+    # changed cells reach the pty); the first N re-finds alpha above.
+    r.keys(b"jNN")  # backwards from the first hit: around to the last
+    r.expect("Search wrapped to bottom.")
+    r.keys(b"/")
+    r.keys(b"zebra\r")
+    r.expect("Not found.")
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1413,6 +1452,7 @@ SCENARIOS = [
     scenario_edit_headers,
     scenario_mutt_flow,
     scenario_line_editor,
+    scenario_pager_search,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

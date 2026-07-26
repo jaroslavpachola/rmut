@@ -20,14 +20,14 @@ pub struct Matcher {
 }
 
 impl Matcher {
-    fn new(raw: &str) -> Matcher {
+    pub fn new(raw: &str) -> Matcher {
         Matcher {
             raw: raw.to_string(),
             re: regex_lite::Regex::new(&format!("(?i){raw}")).ok(),
         }
     }
 
-    fn is_match(&self, text: &str) -> bool {
+    pub fn is_match(&self, text: &str) -> bool {
         match &self.re {
             Some(re) => re.is_match(text),
             None => text.to_lowercase().contains(&self.raw.to_lowercase()),

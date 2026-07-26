@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.22.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.23.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -168,6 +168,14 @@ delete and advance
 .TP
 .B h
 toggle full headers
+.TP
+.B / n N
+search the displayed text (case-insensitive, regex like the
+patterns; unlike the index /, which matches whole messages);
+.B n
+repeats forward,
+.B N
+backwards, both wrap around with a note
 .PP
 .BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
 .BR b ", " e " and " a

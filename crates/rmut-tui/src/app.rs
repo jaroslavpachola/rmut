@@ -93,6 +93,8 @@ impl SortKey {
 pub enum LineKind {
     Limit,
     Search,
+    /// The pager's text search (`/` inside a message).
+    PagerSearch,
     ChangeDir,
     SavePart,
     SaveMsg,
@@ -116,7 +118,7 @@ impl LineKind {
     /// History bucket, mutt-style: one shared list per input class.
     fn history_bucket(self) -> &'static str {
         match self {
-            LineKind::Limit | LineKind::Search => "pattern",
+            LineKind::Limit | LineKind::Search | LineKind::PagerSearch => "pattern",
             LineKind::ComposeTo
             | LineKind::BounceTo
             | LineKind::EditTo
@@ -318,6 +320,11 @@ pub struct App {
     pub sort_rev: bool,
     pub limit: Option<(String, Vec<Pattern>)>,
     pub last_search: Option<Vec<Pattern>>,
+    /// The pager's text search, kept across messages so n/N carry over.
+    pager_search: Option<pattern::Matcher>,
+    /// Width and content rows from the last key dispatch, for actions
+    /// (prompt submissions) that arrive without a size at hand.
+    view_size: (usize, usize),
     /// Per-message thread depth/root (aligned with `msgs`; identity when
     /// not sorted by threads).
     pub thread_depth: Vec<usize>,
@@ -457,6 +464,8 @@ impl App {
             sort_rev: false,
             limit: None,
             last_search: None,
+            pager_search: None,
+            view_size: (80, 24),
             thread_depth: vec![0; count],
             thread_root: (0..count).collect(),
             collapsed: HashSet::new(),
@@ -632,6 +641,7 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent, width: usize, height: usize) {
         // Rows available for content: total minus help line and status line.
         let page = height.saturating_sub(2).max(1);
+        self.view_size = (width, page);
         if self.prompt.is_some() {
             self.handle_prompt_key(key);
         } else if matches!(self.mode, Mode::Index) {
@@ -1189,6 +1199,16 @@ impl App {
                 }
                 self.search_next();
             }
+            LineKind::PagerSearch => {
+                if !input.is_empty() {
+                    self.pager_search = Some(pattern::Matcher::new(input));
+                }
+                if self.pager_search.is_some() {
+                    self.pager_search_step(true);
+                } else {
+                    self.status = Some("No search pattern.".into());
+                }
+            }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::SavePart => self.save_part(input),
             LineKind::SaveMsg => self.copy_message(input, true),
@@ -1436,6 +1456,22 @@ impl App {
                 }
                 return;
             }
+            PagerAction::Search => {
+                self.prompt = Some(Prompt::line(
+                    "Search for: ",
+                    String::new(),
+                    LineKind::PagerSearch,
+                ));
+                return;
+            }
+            PagerAction::SearchNext => {
+                self.pager_search_step(true);
+                return;
+            }
+            PagerAction::SearchPrev => {
+                self.pager_search_step(false);
+                return;
+            }
             PagerAction::Attachments => {
                 self.open_attachments();
                 return;
@@ -1522,13 +1558,53 @@ impl App {
                 pager.full_headers = !pager.full_headers;
                 pager.scroll = 0;
             }
-            PagerAction::Down => pager.scroll = (pager.scroll + 1).min(max_scroll),
+            // max(scroll): a search may have over-scrolled past
+            // max_scroll; stay put rather than jump back up.
+            PagerAction::Down => {
+                pager.scroll = (pager.scroll + 1).min(max_scroll.max(pager.scroll))
+            }
             PagerAction::Up => pager.scroll = pager.scroll.saturating_sub(1),
             PagerAction::PageDown => pager.scroll = (pager.scroll + step).min(max_scroll),
             PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(step),
             PagerAction::Top => pager.scroll = 0,
             PagerAction::Bottom => pager.scroll = max_scroll,
             _ => {}
+        }
+    }
+
+    /// Move the pager to the next (or previous) line matching the
+    /// stored search, wrapping around with a note; the hit becomes the
+    /// top line, like mutt.
+    fn pager_search_step(&mut self, forward: bool) {
+        let Some(matcher) = self.pager_search.clone() else {
+            // n/N with nothing searched yet: ask for the pattern first.
+            self.prompt = Some(Prompt::line(
+                "Search for: ",
+                String::new(),
+                LineKind::PagerSearch,
+            ));
+            return;
+        };
+        let (width, _) = self.view_size;
+        let Mode::Pager(pager) = &mut self.mode else {
+            return;
+        };
+        let lines = crate::ui::pager_text_lines(&pager.view, width, pager.full_headers);
+        match search_lines(&lines, &matcher, pager.scroll, forward) {
+            Some((hit, wrapped)) => {
+                // The hit becomes the top line even near the end (past
+                // max_scroll), like mutt — otherwise close-to-the-end
+                // hits would be indistinguishable and n would stall.
+                pager.scroll = hit;
+                if wrapped {
+                    self.status = Some(if forward {
+                        "Search wrapped to top.".into()
+                    } else {
+                        "Search wrapped to bottom.".into()
+                    });
+                }
+            }
+            None => self.status = Some("Not found.".into()),
         }
     }
 
@@ -3814,6 +3890,29 @@ fn run_sendmail(bytes: &[u8], configured: Option<&str>, rcpts: Option<&[String]>
     Ok(())
 }
 
+/// The first line matching `m` strictly after (before, when searching
+/// backwards) `from`, wrapping around; the flag reports the wrap. The
+/// starting line itself is only reached by going all the way around.
+fn search_lines(
+    lines: &[String],
+    m: &pattern::Matcher,
+    from: usize,
+    forward: bool,
+) -> Option<(usize, bool)> {
+    let n = lines.len();
+    for off in 1..=n {
+        let (idx, wrapped) = if forward {
+            ((from + off) % n, from + off >= n)
+        } else {
+            ((from + n - (off % n)) % n, off > from)
+        };
+        if m.is_match(&lines[idx]) {
+            return Some((idx, wrapped));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::subject_key;
@@ -3823,5 +3922,30 @@ mod tests {
         assert_eq!(subject_key("Re: Re: Lunch"), "lunch");
         assert_eq!(subject_key("FWD: re: x"), "x");
         assert_eq!(subject_key("Redo"), "redo");
+    }
+
+    #[test]
+    fn search_lines_steps_and_wraps() {
+        use super::search_lines;
+        use rmut_core::pattern::Matcher;
+        let lines: Vec<String> = ["alpha", "the needle", "beta", "a Needle too"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let m = Matcher::new("needle");
+        // Forward from the top: the next hit, no wrap; case-insensitive.
+        assert_eq!(search_lines(&lines, &m, 0, true), Some((1, false)));
+        assert_eq!(search_lines(&lines, &m, 1, true), Some((3, false)));
+        // Past the last hit it wraps to the first.
+        assert_eq!(search_lines(&lines, &m, 3, true), Some((1, true)));
+        // Backwards, with and without the wrap.
+        assert_eq!(search_lines(&lines, &m, 3, false), Some((1, false)));
+        assert_eq!(search_lines(&lines, &m, 1, false), Some((3, true)));
+        // No match, and the empty pager.
+        assert_eq!(search_lines(&lines, &Matcher::new("zzz"), 0, true), None);
+        assert_eq!(search_lines(&[], &m, 0, true), None);
+        // A regex argument works like the patterns do.
+        let re = Matcher::new("^bet.");
+        assert_eq!(search_lines(&lines, &re, 0, true), Some((2, false)));
     }
 }

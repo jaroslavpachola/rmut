@@ -9,7 +9,7 @@ use rmut_core::message::{self, MessageView, Part};
 use crate::app::{App, Mode, Pager, Prompt};
 
 const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts p:Print $:Sync";
-const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg r:Reply f:Fwd d:Del s:Save h:Hdrs v:Parts p:Print";
+const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg /:Find r:Reply f:Fwd d:Del s:Save h:Hdrs v:Parts p:Print";
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const COMPOSE_HELP: &str =
@@ -323,20 +323,34 @@ fn pager_lines(
     lines
 }
 
+/// The pager's display as plain text, one entry per screen line —
+/// the same lines `pager_lines` styles (headers, separator, wrapped
+/// body with + continuations). The body search runs over this.
+pub fn pager_text_lines(view: &MessageView, width: usize, full_headers: bool) -> Vec<String> {
+    let headers = if full_headers { &view.all } else { &view.brief };
+    let mut lines: Vec<String> = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect();
+    lines.push(String::new());
+    for line in view.body.lines() {
+        for (i, wrapped) in wrap_line(line, width.saturating_sub(1))
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(if i > 0 {
+                format!("+{wrapped}")
+            } else {
+                wrapped
+            });
+        }
+    }
+    lines
+}
+
 /// Total pager lines at the given width: header block + separator + body.
 pub fn pager_line_count(view: &MessageView, width: usize, full_headers: bool) -> usize {
-    let headers = if full_headers {
-        view.all.len()
-    } else {
-        view.brief.len()
-    };
-    headers
-        + 1
-        + view
-            .body
-            .lines()
-            .map(|l| wrap_line(l, width.saturating_sub(1)).len())
-            .sum::<usize>()
+    pager_text_lines(view, width, full_headers).len()
 }
 
 /// Word-wrap one body line to `width` columns (hard break when a single

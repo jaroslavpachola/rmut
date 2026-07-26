@@ -377,12 +377,17 @@ Mutt's prompts are a real line editor; rmut's only appended.
       stepping back restores the line being typed; 100 entries,
       in-memory for the session
 
-## R24 — pager body search
+## R24 — pager body search (done, 1.23)
 
-- [ ] `/` inside the pager searches the displayed text
-      (case-insensitive, regex like patterns), scrolls to the first
-      hit; `n` repeats, `N` reverses; remappable pager actions
-- [ ] The index `/` stays message-level; a `?` help note for both
+- [x] `/` inside the pager searches the displayed text
+      (case-insensitive, regex like patterns), scrolls the hit to the
+      top line (even past the usual bottom, like mutt); `n` repeats,
+      `N` reverses, both wrap with a status note; remappable pager
+      actions (search/search-next/search-prev), the importer maps
+      mutt's search/search-next/search-opposite
+- [x] The index `/` stays message-level; the `?` help and the man
+      page note the difference; the pattern shares the index search's
+      prompt history
 
 ## R25 — triage keys
 
