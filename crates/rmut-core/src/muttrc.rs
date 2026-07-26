@@ -1192,6 +1192,7 @@ fn index_function(name: &str) -> Option<&'static str> {
         "imap-fetch-mail" | "fetch-mail" => "fetch-mail",
         "tag-entry" | "tag-message" => "tag",
         "tag-prefix" => "tag-prefix",
+        "query" => "query",
         "save-message" => "save",
         "print-message" => "print",
         "edit" => "edit",

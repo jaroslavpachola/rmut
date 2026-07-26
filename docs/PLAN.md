@@ -400,15 +400,21 @@ Mutt's prompts are a real line editor; rmut's only appended.
       prompt for a pattern, apply to every match within the active
       limit (folded-away thread members included), report the count
 
-## R26 — browser, attachments, and odds
+## R26 — browser, attachments, and odds (done, 1.25)
 
-- [ ] Folder browser: descend into directories, open any path,
-      create a maildir
-- [ ] Attachment menu: pipe a part to a command (`|`), print (`p`)
-- [ ] Read-only mode (`rmut -R`) with a status-line indicator
-- [ ] Query menu: `Q` lists query_command results to pick from
-- [ ] status_format `%>` right-alignment and `%P` position, so
-      mutt's exact default status line renders
+- [x] Folder browser: `c` browses any directory, Enter descends into
+      plain ones (`..` up) and opens maildirs, `C` creates a maildir
+      (relative to the browsed directory)
+- [x] Attachment menu: `|` pipes the decoded part to a command, `p`
+      prints it via the print command (confirmed)
+- [x] Read-only mode (`rmut -R`): nothing written, not even read
+      marks; mutating keys refuse with a note, `%r` shows `%`
+- [x] Query menu: `Q` prompts, lists query_command results, Enter
+      composes to the pick (To prefilled, normal chain after)
+- [x] status_format `%>X` right-alignment and `%P` position
+      (all/top/bot/NN%), so mutt's exact default status line
+      renders; a status message shortens a full-width line instead
+      of falling off the edge
 
 ## Non-goals
 

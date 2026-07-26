@@ -1,8 +1,9 @@
-.TH RMUT 1 "July 2026" "rmut 1.24.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.25.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
 .B rmut
+.RB [ \-R ]
 .RI [ MAILDIR " | " MBOX " | " imap:ACCOUNT [/ FOLDER ]]
 .br
 .B rmut \-\-import\-muttrc
@@ -26,6 +27,11 @@ in the configuration, then
 then
 .IR ~/Maildir .
 .SH OPTIONS
+.TP
+.B \-R
+Open the mailbox read-only: nothing is ever written, not even read
+marks; delete, flag, and sync refuse with a note, and the status
+line's %r shows a %.
 .TP
 .BI \-\-import\-muttrc " \fR[\fPMUTTRC\fR]\fP"
 Translate a muttrc (default
@@ -133,13 +139,25 @@ open a mailbox by path; browse nearby mailboxes. At the path prompt
 Tab completes the configured mailboxes, the open account's folders
 and nearby maildirs (repeated Tab cycles); Tab on an empty prompt
 opens the folder browser. The save/copy prompts complete the same
-way.
+way. Inside the browser
+.B c
+prompts for any directory to browse, Enter opens a maildir or
+descends into a plain one (`..' goes up), and
+.B C
+creates a maildir (relative paths land in the browsed directory).
 .TP
 .B G
 check for new mail now
 .TP
 .B v
-list message parts (attachments)
+list message parts (attachments); in that menu Enter views a text
+part (or one with a matching [filters] entry),
+.B s
+saves,
+.B |
+pipes the decoded part to a shell command, and
+.B p
+prints it via print
 .TP
 .B Alt+v Alt+V
 fold/unfold current thread; fold/unfold all threads
@@ -152,6 +170,10 @@ pipe raw message to a shell command; pipe to the print command
 .TP
 .B a
 add the sender to the alias file
+.TP
+.B Q
+look up addresses with query_command: the matches list in a menu,
+Enter starts a message to the picked address
 .TP
 .B B Ctrl+N Ctrl+P Ctrl+O
 toggle the sidebar; move its highlight; open the highlighted mailbox
@@ -497,10 +519,16 @@ sort,
 .B %V
 limit pattern,
 .B %r
-pending-changes mark,
+mailbox mark (* pending changes, % read-only),
+.B %P
+index position (all/top/bot/NN%),
 .B %v
-version. The default reproduces the classic line:
-"\-\-\-rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?".
+version. A single
+.B %>X
+pushes everything after it to the right edge, filling the gap with
+X, so mutt's default status line renders as-is. The default
+reproduces the classic line:
+"\-\-\-rmut%r: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?".
 .SH MUTTRC IMPORT
 .B rmut \-\-import\-muttrc
 prints a translated configuration to stdout:

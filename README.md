@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.24** — everything from the 1.0 roadmap plus R5–R17, hardening
+**1.25** — everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -50,7 +50,11 @@ Up/Down, and **pager body search** (R24): `/` searches the displayed
 text with `n`/`N` stepping through the hits, wrapping around, and
 **triage keys** (R25): Tab/Alt+Tab jump to the next/previous
 new-or-unread message, and `D`/`U`/`T`/Ctrl+T apply
-delete/undelete/tag/untag to every pattern match.
+delete/undelete/tag/untag to every pattern match, and the
+**browser-and-odds round** (R26): the folder browser descends into
+directories and creates maildirs, the attachment menu pipes and
+prints parts, `rmut -R` opens read-only, `Q` queries addresses into
+a compose, and status_format gains `%>` right-alignment and `%P`.
 A pty-driven e2e suite (including fake IMAP/SMTP servers and a
 stub gpg) lives in `tests/e2e/`.
 

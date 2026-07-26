@@ -10,12 +10,13 @@ use crate::app::{App, Mode, Pager, Prompt};
 
 const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts p:Print $:Sync";
 const PAGER_HELP: &str = "?:Help q:Back j/k:Scroll Space/-:Page J/K:Msg /:Find r:Reply f:Fwd d:Del s:Save h:Hdrs v:Parts p:Print";
-const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save";
-const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
+const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save |:Pipe p:Print";
+const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open c:Browse C:Create";
 const COMPOSE_HELP: &str =
     "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach D:Detach p:PGP P:Postpone q:Quit";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
+const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [help_area, content_area, status_area] = Layout::vertical([
@@ -32,6 +33,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Compose { .. } => COMPOSE_HELP,
         Mode::Folders { .. } => FOLDERS_HELP,
         Mode::Postponed { .. } => POSTPONED_HELP,
+        Mode::Query { .. } => QUERY_HELP,
         Mode::Help { .. } => HELP_HELP,
     };
     frame.render_widget(Line::from(help).style(app.theme.bar_style()), help_area);
@@ -77,8 +79,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Mode::Pager(_) => unreachable!(),
             Mode::Compose { sel } => draw_compose(frame, content_area, app, *sel),
             Mode::Attach { parts, sel, .. } => draw_attach(frame, content_area, parts, *sel),
-            Mode::Folders { dirs, sel } => draw_folders(frame, content_area, dirs, *sel),
+            Mode::Folders { dirs, sel, .. } => draw_folders(frame, content_area, dirs, *sel),
             Mode::Postponed { drafts, sel } => draw_postponed(frame, content_area, drafts, *sel),
+            Mode::Query { results, sel } => draw_list(frame, content_area, results, *sel),
             Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
         }
     }
@@ -437,8 +440,11 @@ fn draw_attach(frame: &mut Frame, area: Rect, parts: &[Part], sel: usize) {
 
 fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[(String, usize)], sel: usize) {
     let width = area.width as usize;
+    let rows = area.height as usize;
+    // Keep the selection on screen in deep directory listings.
+    let offset = (sel + 1).saturating_sub(rows);
     let mut lines = Vec::new();
-    for (i, (dir, new)) in dirs.iter().enumerate().take(area.height as usize) {
+    for (i, (dir, new)) in dirs.iter().enumerate().skip(offset).take(rows) {
         let mut text = format!("{:>3} {}", i + 1, dir);
         if *new > 0 {
             text += &format!(" ({new} new)");
@@ -450,6 +456,22 @@ fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[(String, usize)], sel: us
         }
         if *new > 0 {
             style = style.add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A plain numbered pick-list (query results).
+fn draw_list(frame: &mut Frame, area: Rect, items: &[String], sel: usize) {
+    let width = area.width as usize;
+    let mut lines = Vec::new();
+    for (i, item) in items.iter().enumerate().take(area.height as usize) {
+        let text = format!("{:>3} {}", i + 1, item);
+        let text = format!("{text:<width$}");
+        let mut style = Style::new();
+        if i == sel {
+            style = style.add_modifier(Modifier::REVERSED);
         }
         lines.push(Line::from(Span::styled(text, style)));
     }
@@ -511,24 +533,32 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
         Mode::Postponed { drafts, .. } => {
             format!("---rmut: postponed drafts [Found:{}]", drafts.len())
         }
+        Mode::Query { results, .. } => format!("---rmut: query results [Found:{}]", results.len()),
         Mode::Help { .. } => "---rmut: help".to_string(),
-        Mode::Index => index_status(app),
+        Mode::Index => index_status(app, area.width as usize, content_height as usize),
     };
     let text = match &app.status {
-        Some(msg) => format!("{text} -- {msg}"),
+        Some(msg) => {
+            // Keep the message visible even when a %>-filled status
+            // line already spans the width: the base yields.
+            let msg = format!(" -- {msg}");
+            let avail = (area.width as usize).saturating_sub(msg.chars().count());
+            let base: String = text.chars().take(avail).collect();
+            format!("{base}{msg}")
+        }
         None => text,
     };
     frame.render_widget(Line::from(text).style(app.theme.bar_style()), area);
 }
 
-fn index_status(app: &App) -> String {
+fn index_status(app: &App, width: usize, rows: usize) -> String {
     let fmt = app
         .config
         .ui
         .status_format
         .as_deref()
         .unwrap_or(format::DEFAULT_STATUS_FORMAT);
-    format::render_with(fmt, &|spec| match spec {
+    format::render_status(fmt, width, &|spec| match spec {
         'f' => app.title.clone(),
         'm' => app.msgs.len().to_string(),
         // Shown message count, only when a limit narrows the view.
@@ -565,13 +595,28 @@ fn index_status(app: &App) -> String {
             .map(|(s, _)| s.clone())
             .unwrap_or_default(),
         'r' => {
-            if app.pending_count() > 0 {
+            if app.read_only {
+                "%".to_string() // mutt's readonly mark
+            } else if app.pending_count() > 0 {
                 "*".to_string()
             } else {
                 String::new()
             }
         }
         'v' => env!("CARGO_PKG_VERSION").to_string(),
+        // Index scroll position, like mutt's %P.
+        'P' => {
+            let len = app.visible.len();
+            if len <= rows {
+                "all".into()
+            } else if app.index_offset == 0 {
+                "top".into()
+            } else if app.index_offset + rows >= len {
+                "bot".into()
+            } else {
+                format!("{}%", (app.index_offset + rows) * 100 / len)
+            }
+        }
         '%' => "%".to_string(),
         other => format!("%{other}"),
     })

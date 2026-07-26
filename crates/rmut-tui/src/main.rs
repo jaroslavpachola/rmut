@@ -10,8 +10,12 @@ use anyhow::{Result, bail};
 
 use crate::app::App;
 
-const USAGE: &str = "usage: rmut [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
+const USAGE: &str =
+    "usage: rmut [-R] [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
        rmut --import-muttrc [MUTTRC]
+
+-R opens the mailbox read-only: nothing is ever written, not even
+read marks.
 
 Opens the given maildir or IMAP folder (INBOX when FOLDER is omitted;
 the account comes from [[accounts]] in the config), or falls back to
@@ -35,8 +39,10 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let mut spec: Option<String> = None;
     let mut import = false;
+    let mut read_only = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
+            "-R" | "--read-only" => read_only = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -63,6 +69,7 @@ fn run() -> Result<ExitCode> {
     let opened = App::open_spec(&spec, config);
     eprint!("\r\x1b[K"); // clear the leftover progress line
     let mut app = opened?;
+    app.read_only = read_only;
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }

@@ -83,9 +83,9 @@ def write_msgs(maildir, names):
 
 
 class Rmut:
-    def __init__(self, maildir, env=None, rows=30, cols=160):
+    def __init__(self, maildir, env=None, rows=30, cols=160, args=()):
         self.buf = ""
-        cmd = [RMUT, maildir]
+        cmd = [RMUT, *args, maildir]
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.environ["TERM"] = "xterm-256color"
@@ -1289,6 +1289,118 @@ def scenario_triage(tmp):
     r.close()
 
 
+def scenario_odds(tmp):
+    """R26: -R read-only (nothing written, %r shows %), the browser
+    descends/creates maildirs, Q queries addresses into a compose,
+    attachment pipe/print, and a %>/%P status_format."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["petr"])  # new/, stays new under -R
+
+    # Read-only pass: viewing must not mark read, d must refuse.
+    r = Rmut(md, base_env(tmp), args=("-R",))
+    r.expect("rmut%:")  # the %r read-only mark in the status line
+    r.keys(b"\r")
+    r.expect("sejdeme se zítra v 9:00")
+    r.keys(b"q")
+    r.keys(b"d")
+    r.expect("Mailbox is read-only.")
+    r.keys(b"q")
+    r.close()
+    time.sleep(0.3)
+    assert os.listdir(os.path.join(md, "new")), "-R must not move new mail"
+
+    # Normal pass, with a query_command, a print command, and a
+    # right-aligned status line ending in %P.
+    query = os.path.join(tmp, "query.sh")
+    with open(query, "w") as f:
+        f.write('#!/bin/sh\nprintf "found:\\njane.q@example.com\\tJane Query\\n"\n')
+    os.chmod(query, 0o755)
+    sent_file = os.path.join(tmp, "sent-odds.eml")
+    sendmail = os.path.join(tmp, "sendmail-odds.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "odds-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "odds body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "odds-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+            f'query_command = "{query} %s"\n'
+            f'print = "cat >> {os.path.join(tmp, "printed.out")}"\n'
+            f'[ui]\nstatus_format = "rmutST %f m:%m%>*%P"\n'
+        )
+    # An attachment to pipe and print.
+    with open(os.path.join(md, "cur/1751883000.6.host:2,S"), "w") as f:
+        f.write(
+            "From: Sender <sender@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: With data\r\nDate: Tue, 7 Jul 2026 13:00:00 +0200\r\n"
+            "Message-ID: <att@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="mx"\r\n\r\n'
+            "--mx\r\nContent-Type: text/plain\r\n\r\nsee attachment\r\n"
+            "--mx\r\nContent-Type: application/octet-stream\r\n"
+            'Content-Disposition: attachment; filename="data.bin"\r\n'
+            "Content-Transfer-Encoding: base64\r\n\r\n"
+            + base64.b64encode(b"odds-payload-42\n").decode() + "\r\n--mx--\r\n"
+        )
+    # A directory tree for the browser: tree/proj/inbox2 (a maildir
+    # holding one message).
+    inbox2 = make_maildir(tmp, "tree/proj/inbox2")
+    write_msgs(inbox2, ["jane"])
+
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("rmutST", "m:2", "**all")  # %> fill and %P position
+    # Attachment pipe and print.
+    r.keys(b"*v")  # newest message (With data), attachment menu
+    r.expect("data.bin")
+    r.keys(b"j|")
+    r.keys(f"cat > {tmp}/part.out\r".encode())
+    wait_for(
+        lambda: os.path.exists(f"{tmp}/part.out")
+        and open(f"{tmp}/part.out", "rb").read() == b"odds-payload-42\n",
+        desc="piped attachment bytes",
+    )
+    r.keys(b"py")  # print part, confirmed
+    wait_for(
+        lambda: os.path.exists(f"{tmp}/printed.out")
+        and b"odds-payload-42" in open(f"{tmp}/printed.out", "rb").read(),
+        desc="printed attachment bytes",
+    )
+    r.keys(b"q")
+    # Browser: browse the tree, descend, create a maildir, open one.
+    r.keys(b"y")
+    r.keys(b"c\x15")  # browse prompt, clear the prefill
+    r.keys(f"{tmp}/tree\r".encode())
+    r.expect("proj/")
+    r.keys(b"j\r")  # descend into proj
+    r.expect("proj/inbox2")
+    r.keys(b"C")
+    r.keys(b"fresh\r")
+    r.expect("proj/fresh")  # created and re-listed
+    r.keys(b"j\r")  # fresh sorts first: open the empty new maildir
+    r.expect("No mail in mailbox.")
+    # Query menu: pick the result, send to it.
+    r.keys(b"Q")
+    r.keys(b"jan\r")
+    r.expect("Jane Query <jane.q@example.com>")
+    r.keys(b"\r")  # compose to the pick; To is prefilled
+    r.keys(b"\r")  # accept To
+    r.keys(b"query subject\r")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(
+        lambda: os.path.exists(sent_file)
+        and "To: Jane Query <jane.q@example.com>" in open(sent_file).read()
+        and "Subject: query subject" in open(sent_file).read(),
+        desc="query-composed mail sent",
+    )
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1523,6 +1635,7 @@ SCENARIOS = [
     scenario_line_editor,
     scenario_pager_search,
     scenario_triage,
+    scenario_odds,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

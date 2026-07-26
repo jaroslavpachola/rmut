@@ -13,10 +13,11 @@ pub const DEFAULT_FORMAT: &str = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s";
 /// Renders exactly rmut's classic status line; override with
 /// `[ui] status_format`. Status specifiers: %f mailbox, %m messages,
 /// %M shown-when-limited, %n new, %u unread, %d deleted, %F flagged,
-/// %t tagged, %s sort, %V limit pattern, %r pending-changes mark,
-/// %v version.
+/// %t tagged, %s sort, %V limit pattern, %r mailbox mark (* pending
+/// changes, % read-only), %P index position, %v version; `%>X` fills
+/// the rest of the width with X, right-aligning what follows.
 pub const DEFAULT_STATUS_FORMAT: &str =
-    "---rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?";
+    "---rmut%r: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?";
 
 pub struct IndexFields<'a> {
     pub number: usize,
@@ -62,6 +63,22 @@ fn value_of(spec: char, f: &IndexFields) -> String {
 
 pub fn render(fmt: &str, f: &IndexFields) -> String {
     render_with(fmt, &|spec| value_of(spec, f))
+}
+
+/// `render_with` plus mutt's `%>X`: everything after it is pushed to
+/// the right edge of `width`, the gap filled with X (the status line
+/// uses this; only the first `%>` counts).
+pub fn render_status(fmt: &str, width: usize, value_of: &dyn Fn(char) -> String) -> String {
+    let Some((left_fmt, rest)) = fmt.split_once("%>") else {
+        return render_with(fmt, value_of);
+    };
+    let mut rest = rest.chars();
+    let fill = rest.next().unwrap_or(' ');
+    let left = render_with(left_fmt, value_of);
+    let right = render_with(rest.as_str(), value_of);
+    let used = left.chars().count() + right.chars().count();
+    let gap = fill.to_string().repeat(width.saturating_sub(used));
+    format!("{left}{gap}{right}")
 }
 
 /// The `%[-][min][.max]X` + `%?X?then&else?` machinery over any
@@ -141,6 +158,22 @@ pub fn render_with(fmt: &str, value_of: &dyn Fn(char) -> String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_right_align_fills_the_width() {
+        let v = |c: char| match c {
+            'a' => "A".to_string(),
+            'b' => "BB".to_string(),
+            _ => String::new(),
+        };
+        assert_eq!(render_status("%a%>-%b", 8, &v), "A-----BB");
+        // Space fill, mutt's usual "%> ".
+        assert_eq!(render_status("%a%> %b", 6, &v), "A   BB");
+        // Without %> it renders plainly, no padding.
+        assert_eq!(render_status("%a %b", 8, &v), "A BB");
+        // Too narrow: the gap just collapses.
+        assert_eq!(render_status("%a%>-%b", 2, &v), "ABB");
+    }
 
     fn fields() -> IndexFields<'static> {
         IndexFields {

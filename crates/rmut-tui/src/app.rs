@@ -53,13 +53,22 @@ pub enum Mode {
     },
     Folders {
         /// Paths or `imap:` specs (ready for `open_mailbox_spec`) with
-        /// their new/unseen counts.
+        /// their new/unseen counts. A trailing `/` marks a plain
+        /// directory (Enter descends); `..` goes up.
         dirs: Vec<(String, usize)>,
         sel: usize,
+        /// Directory being browsed; None for the mailbox candidate
+        /// list the browser opens with.
+        root: Option<PathBuf>,
     },
     /// Picking one of several postponed drafts to recall.
     Postponed {
         drafts: Vec<(PathBuf, String)>,
+        sel: usize,
+    },
+    /// query_command results (`Q`); Enter composes to the pick.
+    Query {
+        results: Vec<String>,
         sel: usize,
     },
     Help {
@@ -100,6 +109,13 @@ pub enum LineKind {
     UndeletePattern,
     TagPattern,
     UntagPattern,
+    /// Folder browser: directory to list, and maildir to create.
+    BrowseDir,
+    CreateDir,
+    /// Pipe the selected attachment part to a command.
+    PipePart,
+    /// The `Q` query menu's search term.
+    Query,
     ChangeDir,
     SavePart,
     SaveMsg,
@@ -135,10 +151,17 @@ impl LineKind {
             | LineKind::EditTo
             | LineKind::EditCc
             | LineKind::EditBcc => "address",
-            LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg => "mailbox",
+            LineKind::ChangeDir
+            | LineKind::SaveMsg
+            | LineKind::CopyMsg
+            | LineKind::BrowseDir
+            | LineKind::CreateDir => "mailbox",
             LineKind::SavePart | LineKind::AttachFile => "file",
-            LineKind::Pipe => "command",
-            LineKind::ComposeSubject | LineKind::EditSubject | LineKind::AliasNick => "other",
+            LineKind::Pipe | LineKind::PipePart => "command",
+            LineKind::ComposeSubject
+            | LineKind::EditSubject
+            | LineKind::AliasNick
+            | LineKind::Query => "other",
         }
     }
 }
@@ -149,6 +172,8 @@ pub enum KeyKind {
     Security,
     Recall,
     Print,
+    /// Confirm printing the selected attachment part.
+    PrintPart,
     /// Confirm sending the message in `App::bounce_to`.
     Bounce,
     /// Confirm expunging deleted messages; `quit` leaves afterwards.
@@ -378,6 +403,8 @@ pub struct App {
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
+    /// `rmut -R`: nothing is ever written, not even read marks.
+    pub read_only: bool,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
@@ -501,6 +528,7 @@ impl App {
             sidebar_open: None,
             sidebar_visible: config_sidebar_visible,
             mailbox_new: HashMap::new(),
+            read_only: false,
             tag_next: false,
             quit: false,
         };
@@ -667,6 +695,8 @@ impl App {
             self.handle_help_key(key, page);
         } else if matches!(self.mode, Mode::Postponed { .. }) {
             self.handle_postponed_key(key);
+        } else if matches!(self.mode, Mode::Query { .. }) {
+            self.handle_query_key(key);
         } else {
             self.handle_folders_key(key);
         }
@@ -1062,6 +1092,11 @@ impl App {
                     self.print_current();
                 }
             }
+            KeyKind::PrintPart => {
+                if code == KeyCode::Char('y') {
+                    self.print_part();
+                }
+            }
             KeyKind::Bounce => {
                 let to = self.bounce_to.take();
                 if code == KeyCode::Char('y')
@@ -1093,7 +1128,7 @@ impl App {
         );
         let is_mbox = matches!(
             kind,
-            LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg
+            LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg | LineKind::BrowseDir
         );
         if !is_addr && !is_mbox {
             return;
@@ -1237,10 +1272,14 @@ impl App {
                 self.apply_pattern(input, "untagged", |m| m.env.tagged = false)
             }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
+            LineKind::BrowseDir => self.browse_dir(input),
+            LineKind::CreateDir => self.create_maildir(input),
             LineKind::SavePart => self.save_part(input),
             LineKind::SaveMsg => self.copy_message(input, true),
             LineKind::CopyMsg => self.copy_message(input, false),
             LineKind::Pipe => self.pipe_message(input),
+            LineKind::PipePart => self.pipe_part(input),
+            LineKind::Query => self.run_query(input),
             LineKind::BounceTo => self.bounce_to_submitted(input),
             LineKind::AttachFile => self.attach_file_submitted(input),
             LineKind::AliasNick => self.create_alias(input),
@@ -1299,6 +1338,13 @@ impl App {
             IndexAction::Resend => self.resend_current(),
             IndexAction::Edit => self.start_raw_edit(),
             IndexAction::CreateAlias => self.prompt_create_alias(),
+            IndexAction::Query => {
+                if self.config.mail.query_command.is_none() {
+                    self.status = Some("no query_command configured".into());
+                } else {
+                    self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
+                }
+            }
             IndexAction::Quit => {
                 // Like mutt: flag changes are written silently; only
                 // pending deletions raise a question (the purge one).
@@ -1323,7 +1369,8 @@ impl App {
             IndexAction::FoldThread => self.toggle_collapse(false),
             IndexAction::FoldAll => self.toggle_collapse(true),
             IndexAction::Delete => {
-                if apply_tagged {
+                if self.deny_readonly() {
+                } else if apply_tagged {
                     self.each_tagged(|m| m.env.file.flags.deleted = true);
                 } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.deleted = true;
@@ -1332,7 +1379,8 @@ impl App {
                 }
             }
             IndexAction::Undelete => {
-                if apply_tagged {
+                if self.deny_readonly() {
+                } else if apply_tagged {
                     self.each_tagged(|m| m.env.file.flags.deleted = false);
                 } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.deleted = false;
@@ -1342,7 +1390,8 @@ impl App {
                 }
             }
             IndexAction::Flag => {
-                if apply_tagged {
+                if self.deny_readonly() {
+                } else if apply_tagged {
                     self.each_tagged(|m| m.env.file.flags.flagged = !m.env.file.flags.flagged);
                 } else if let Some(m) = self.cur_mut() {
                     m.env.file.flags.flagged = !m.env.file.flags.flagged;
@@ -1351,7 +1400,8 @@ impl App {
                 }
             }
             IndexAction::ToggleNew => {
-                if apply_tagged {
+                if self.deny_readonly() {
+                } else if apply_tagged {
                     self.each_tagged(|m| {
                         m.env.file.flags.seen = !m.env.file.flags.seen;
                         m.env.file.is_new = false;
@@ -1400,18 +1450,22 @@ impl App {
             IndexAction::NextNew => self.jump_new(true),
             IndexAction::PrevNew => self.jump_new(false),
             IndexAction::DeletePattern => {
-                self.prompt = Some(Prompt::line(
-                    "Delete messages matching: ",
-                    String::new(),
-                    LineKind::DeletePattern,
-                ));
+                if !self.deny_readonly() {
+                    self.prompt = Some(Prompt::line(
+                        "Delete messages matching: ",
+                        String::new(),
+                        LineKind::DeletePattern,
+                    ));
+                }
             }
             IndexAction::UndeletePattern => {
-                self.prompt = Some(Prompt::line(
-                    "Undelete messages matching: ",
-                    String::new(),
-                    LineKind::UndeletePattern,
-                ));
+                if !self.deny_readonly() {
+                    self.prompt = Some(Prompt::line(
+                        "Undelete messages matching: ",
+                        String::new(),
+                        LineKind::UndeletePattern,
+                    ));
+                }
             }
             IndexAction::TagPattern => {
                 self.prompt = Some(Prompt::line(
@@ -1501,6 +1555,9 @@ impl App {
                 return;
             }
             PagerAction::Delete => {
+                if self.deny_readonly() {
+                    return;
+                }
                 if let Some(m) = self.cur_mut() {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
@@ -1690,6 +1747,19 @@ impl App {
                 };
             }
             KeyCode::Enter => self.view_part(),
+            KeyCode::Char('|') => {
+                self.prompt = Some(Prompt::line(
+                    "Pipe part to command: ",
+                    String::new(),
+                    LineKind::PipePart,
+                ));
+            }
+            KeyCode::Char('p') => {
+                self.prompt = Some(Prompt::Key {
+                    label: "Print part? (y/n): ".into(),
+                    kind: KeyKind::PrintPart,
+                });
+            }
             KeyCode::Char('s') => {
                 if let Mode::Attach { parts, sel, .. } = &self.mode {
                     let default = parts[*sel]
@@ -1783,6 +1853,53 @@ impl App {
         }
     }
 
+    /// The selected attachment's decoded bytes, from the menu state.
+    fn selected_part_bytes(&mut self) -> Option<Vec<u8>> {
+        let (msg_path, index) = match &self.mode {
+            Mode::Attach { msg_path, sel, .. } => (msg_path.clone(), *sel),
+            _ => return None,
+        };
+        match message::part_bytes(&msg_path, index) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                self.status = Some(format!("cannot decode part: {err:#}"));
+                None
+            }
+        }
+    }
+
+    /// `|` on the attachment menu: the decoded part to a command.
+    fn pipe_part(&mut self, command: &str) {
+        if command.is_empty() {
+            self.status = Some("no command given".into());
+            return;
+        }
+        let Some(bytes) = self.selected_part_bytes() else {
+            return;
+        };
+        match pipe_to(command, &bytes) {
+            Ok(()) => self.status = Some(format!("piped to {command}")),
+            Err(err) => self.status = Some(format!("pipe failed: {err:#}")),
+        }
+    }
+
+    /// `p` on the attachment menu: the decoded part to print_command.
+    fn print_part(&mut self) {
+        let Some(bytes) = self.selected_part_bytes() else {
+            return;
+        };
+        let command = self
+            .config
+            .mail
+            .print
+            .clone()
+            .unwrap_or_else(|| "lpr".into());
+        match pipe_to(&command, &bytes) {
+            Ok(()) => self.status = Some(format!("printed via {command}")),
+            Err(err) => self.status = Some(format!("print failed: {err:#}")),
+        }
+    }
+
     fn save_part(&mut self, input: &str) {
         let (msg_path, index) = match &self.mode {
             Mode::Attach { msg_path, sel, .. } => (msg_path.clone(), *sel),
@@ -1812,7 +1929,7 @@ impl App {
     fn handle_folders_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Mode::Folders { dirs, sel } = &mut self.mode {
+                if let Mode::Folders { dirs, sel, .. } = &mut self.mode {
                     *sel = (*sel + 1).min(dirs.len().saturating_sub(1));
                 }
             }
@@ -1822,13 +1939,158 @@ impl App {
                 }
             }
             KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
+            KeyCode::Char('c') => {
+                let buf = match &self.mode {
+                    Mode::Folders {
+                        root: Some(root), ..
+                    } => root.display().to_string(),
+                    _ => self.dir.parent().unwrap_or(&self.dir).display().to_string(),
+                };
+                self.prompt = Some(Prompt::line("Browse directory: ", buf, LineKind::BrowseDir));
+            }
+            KeyCode::Char('C') => {
+                self.prompt = Some(Prompt::line(
+                    "Create maildir: ",
+                    String::new(),
+                    LineKind::CreateDir,
+                ));
+            }
             KeyCode::Enter => {
-                let spec = match &self.mode {
-                    Mode::Folders { dirs, sel } => dirs.get(*sel).map(|d| d.0.clone()),
+                let (spec, root) = match &self.mode {
+                    Mode::Folders { dirs, sel, root } => {
+                        (dirs.get(*sel).map(|d| d.0.clone()), root.clone())
+                    }
+                    _ => (None, None),
+                };
+                let Some(spec) = spec else { return };
+                if spec == ".." {
+                    if let Some(parent) = root.as_ref().and_then(|r| r.parent()) {
+                        self.browse_dir(&parent.display().to_string());
+                    }
+                    return;
+                }
+                match spec.strip_suffix('/') {
+                    // A plain directory: descend instead of opening.
+                    Some(dir) => self.browse_dir(dir),
+                    None => self.open_mailbox_spec(&spec),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// List `input` in the folder browser: subdirectories only,
+    /// maildirs openable with their new counts, plain directories
+    /// marked with a trailing `/` to descend into, `..` on top.
+    fn browse_dir(&mut self, input: &str) {
+        let root = expand_tilde(input);
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(err) => {
+                self.status = Some(format!("cannot browse {}: {err}", root.display()));
+                return;
+            }
+        };
+        let inside_maildir = root.join("cur").is_dir();
+        let mut dirs: Vec<(String, usize)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if inside_maildir && matches!(name.as_str(), "cur" | "new" | "tmp") {
+                continue;
+            }
+            if path.join("cur").is_dir() {
+                // Maildir++-style dot folders are maildirs, keep them.
+                dirs.push((path.display().to_string(), maildir::new_count(&path)));
+            } else if !name.starts_with('.') {
+                dirs.push((format!("{}/", path.display()), 0));
+            }
+        }
+        dirs.sort();
+        dirs.insert(0, ("..".into(), 0));
+        self.mode = Mode::Folders {
+            dirs,
+            sel: 0,
+            root: Some(root),
+        };
+    }
+
+    /// Create a maildir (cur/new/tmp) at `input`, relative to the
+    /// browsed directory when the path isn't absolute.
+    fn create_maildir(&mut self, input: &str) {
+        if input.is_empty() {
+            return;
+        }
+        let root = match &self.mode {
+            Mode::Folders { root, .. } => root.clone(),
+            _ => None,
+        };
+        let given = expand_tilde(input);
+        let path = if given.is_absolute() {
+            given
+        } else {
+            root.clone()
+                .or_else(|| self.dir.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| self.dir.clone())
+                .join(given)
+        };
+        for sub in ["cur", "new", "tmp"] {
+            if let Err(err) = std::fs::create_dir_all(path.join(sub)) {
+                self.status = Some(format!("cannot create {}: {err}", path.display()));
+                return;
+            }
+        }
+        self.status = Some(format!("created maildir {}", path.display()));
+        if let Some(root) = root {
+            // Re-list so the new maildir shows up.
+            self.browse_dir(&root.display().to_string());
+        }
+    }
+
+    /// `Q` submitted: run query_command and list what it found.
+    fn run_query(&mut self, input: &str) {
+        if input.is_empty() {
+            return;
+        }
+        let Some(command) = self.config.mail.query_command.clone() else {
+            return;
+        };
+        let results = alias::query(&command, input);
+        if results.is_empty() {
+            self.status = Some("query returned nothing".into());
+            return;
+        }
+        self.mode = Mode::Query { results, sel: 0 };
+    }
+
+    fn handle_query_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Query { results, sel } = &mut self.mode {
+                    *sel = (*sel + 1).min(results.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Query { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
+            KeyCode::Enter | KeyCode::Char('m') => {
+                let addr = match &self.mode {
+                    Mode::Query { results, sel } => results.get(*sel).cloned(),
                     _ => None,
                 };
-                if let Some(spec) = spec {
-                    self.open_mailbox_spec(&spec);
+                let Some(addr) = addr else { return };
+                self.mode = Mode::Index;
+                // The normal compose chain, with To prefilled.
+                self.start_compose(ComposeKind::New);
+                if let Some(Prompt::Line { buf, cursor, .. }) = &mut self.prompt {
+                    *buf = addr;
+                    *cursor = buf.chars().count();
                 }
             }
             _ => {}
@@ -1904,13 +2166,20 @@ impl App {
             .iter()
             .position(|d| d.0 == self.title || expand_tilde(&d.0) == self.dir)
             .unwrap_or(0);
-        self.mode = Mode::Folders { dirs, sel };
+        self.mode = Mode::Folders {
+            dirs,
+            sel,
+            root: None,
+        };
     }
 
     /// mutt's $mark_old (on by default): when leaving the mailbox,
     /// unread new mail ages to old — moved out of new/ without the
     /// seen flag, shown as O and no longer counted as new.
     fn mark_old_unread(&mut self) {
+        if self.read_only {
+            return;
+        }
         for m in &mut self.msgs {
             if m.env.file.is_new
                 && !m.env.file.flags.seen
@@ -3007,6 +3276,10 @@ impl App {
         if self.visible.get(self.sel).is_none() {
             return;
         }
+        // Save marks the original deleted; a plain copy is fine.
+        if delete && self.deny_readonly() {
+            return;
+        }
         let buf = self.config.mail.save.clone().unwrap_or_default();
         self.prompt = Some(Prompt::line(
             if delete {
@@ -3226,6 +3499,9 @@ impl App {
     /// through $EDITOR, and a changed result replaces the original —
     /// in place for maildirs, append + delete-mark on IMAP.
     fn start_raw_edit(&mut self) {
+        if self.deny_readonly() {
+            return;
+        }
         if self.mbox.is_some() {
             self.status = Some("editing in place is not supported for mbox spools".into());
             return;
@@ -3356,7 +3632,19 @@ impl App {
             .map(|&i| self.msgs[i].env.file.path.clone())
     }
 
+    /// True (with a status note) when a mutating operation must be
+    /// refused because of `rmut -R`.
+    fn deny_readonly(&mut self) -> bool {
+        if self.read_only {
+            self.status = Some("Mailbox is read-only.".into());
+        }
+        self.read_only
+    }
+
     fn mark_read(&mut self) {
+        if self.read_only {
+            return;
+        }
         if let Some(m) = self.cur_mut()
             && (m.env.file.is_new || !m.env.file.flags.seen)
         {
@@ -3686,6 +3974,9 @@ impl App {
     /// `purge` expunges deleted messages; without it they stay marked
     /// and only flag changes are written.
     fn sync(&mut self, purge: bool) {
+        if self.deny_readonly() {
+            return;
+        }
         // $trash: purged messages move there first; a failed copy
         // aborts the purge. Purging inside the trash deletes for real.
         if purge
