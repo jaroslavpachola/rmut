@@ -118,7 +118,11 @@ choose sort order
 limit by pattern; search by pattern; repeat last search
 .TP
 .B c y
-open a mailbox by path; browse nearby mailboxes
+open a mailbox by path; browse nearby mailboxes. At the path prompt
+Tab completes the configured mailboxes, the open account's folders
+and nearby maildirs (repeated Tab cycles); Tab on an empty prompt
+opens the folder browser. The save/copy prompts complete the same
+way.
 .TP
 .B G
 check for new mail now

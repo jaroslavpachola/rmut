@@ -985,6 +985,13 @@ def scenario_identities(tmp):
                 "Subject: status?\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <rev1@example.com>\r\n\r\nAny update?\r\n")
     write_msgs(md2, ["ci"])
+    # A third sibling for Tab completion: md/md2/md3 share a prefix.
+    md3 = make_maildir(tmp, "md3")
+    with open(os.path.join(md3, "cur", "1751790500.7.host:2,S"), "w") as f:
+        f.write("From: Tab Test <tab@example.com>\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: Tab landed here\r\nDate: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
+                "Message-ID: <tab1@example.com>\r\n\r\nvia completion\r\n")
     sent_file = os.path.join(tmp, "sent-ids.eml")
     sendmail = os.path.join(tmp, "sendmail-ids.sh")
     with open(sendmail, "w") as f:
@@ -1031,7 +1038,7 @@ email = "second@example.com"
              desc="reverse_name applied")
     # folder rule: the same compose from md2 uses its identity
     r.keys(b"c")
-    r.expect("Open mailbox:")
+    r.expect("Open mailbox (Tab completes):")
     r.keys(f"{md2}\r".encode())
     r.expect("CI failed on main")
     r.keys(b"mx@y.example.com\rhello\ry")
@@ -1041,12 +1048,24 @@ email = "second@example.com"
     # block c/y/ctrl+o — it syncs silently on the way out, like q
     r.keys(b"N")
     r.keys(b"c")
-    r.expect("Open mailbox:", absent=("pending changes",))
+    r.expect("Open mailbox (Tab completes):", absent=("pending changes",))
     r.keys(f"{md}\r".encode())
     r.expect("status?")
     wait_for(lambda: all("S" not in f.split(":2,")[-1]
                          for f in os.listdir(os.path.join(md2, "cur"))),
              desc="flag change written when switching away")
+    # Tab at the mailbox prompt: empty opens the folder browser, a
+    # prefix completes and repeated Tab cycles the candidates
+    r.keys(b"c")
+    r.expect("Open mailbox (Tab completes):")
+    r.keys(b"\t")
+    r.expect("j/k:Move Enter:Open")
+    r.keys(b"q")
+    r.keys(b"c")
+    r.keys(os.path.join(tmp, "md").encode() + b"\t")
+    r.expect("match 1/3 (Tab cycles)")
+    r.keys(b"\t\t\r")  # cycle md -> md2 -> md3, open it
+    r.expect("Tab landed here")
     r.keys(b"q")
     r.close()
 

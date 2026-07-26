@@ -824,15 +824,28 @@ impl App {
         }
     }
 
-    /// Tab at an address prompt: complete the token under the cursor
-    /// against aliases and query_command; repeated Tab cycles the
-    /// candidates.
+    /// Tab at a prompt: at an address prompt, complete the token under
+    /// the cursor against aliases and query_command; at a mailbox
+    /// prompt (c, save, copy), complete the buffer against the folder
+    /// candidates — and with nothing typed at the c prompt, open the
+    /// folder browser instead. Repeated Tab cycles the candidates.
     fn tab_complete(&mut self) {
         let (buf_now, kind) = match &self.prompt {
             Some(Prompt::Line { buf, kind, .. }) => (buf.clone(), *kind),
             _ => return,
         };
-        if !matches!(kind, LineKind::ComposeTo | LineKind::BounceTo) {
+        let is_addr = matches!(kind, LineKind::ComposeTo | LineKind::BounceTo);
+        let is_mbox = matches!(
+            kind,
+            LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg
+        );
+        if !is_addr && !is_mbox {
+            return;
+        }
+        if matches!(kind, LineKind::ChangeDir) && buf_now.trim().is_empty() {
+            self.prompt = None;
+            self.complete = None;
+            self.open_folder_browser();
             return;
         }
         let set_buf = |app: &mut App, text: &str| {
@@ -853,7 +866,11 @@ impl App {
             return;
         }
         self.complete = None;
-        let after_comma = buf_now.rfind(',').map(|i| i + 1).unwrap_or(0);
+        let after_comma = if is_addr {
+            buf_now.rfind(',').map(|i| i + 1).unwrap_or(0)
+        } else {
+            0
+        };
         let start =
             after_comma + buf_now[after_comma..].len() - buf_now[after_comma..].trim_start().len();
         let word = buf_now[start..].trim().to_string();
@@ -861,11 +878,31 @@ impl App {
             self.status = Some("nothing to complete".into());
             return;
         }
-        let candidates = alias::complete(
-            &word,
-            &alias::load_default(),
-            self.config.mail.query_command.as_deref(),
-        );
+        let candidates = if is_addr {
+            alias::complete(
+                &word,
+                &alias::load_default(),
+                self.config.mail.query_command.as_deref(),
+            )
+        } else {
+            let specs = match self.folder_candidates() {
+                Ok(specs) => specs,
+                Err(err) => {
+                    self.status = Some(format!("cannot list folders: {err:#}"));
+                    return;
+                }
+            };
+            // Match the typed prefix against the spec as written and
+            // tilde-expanded, so ~/Mail and /home/jane/Mail both hit.
+            let wexp = expand_tilde(&word).display().to_string();
+            specs
+                .into_iter()
+                .map(|(spec, _)| spec)
+                .filter(|s| {
+                    s.starts_with(&word) || expand_tilde(s).display().to_string().starts_with(&wexp)
+                })
+                .collect()
+        };
         match candidates.len() {
             0 => self.status = Some(format!("no matches for {word}")),
             n => {
@@ -1069,7 +1106,7 @@ impl App {
             IndexAction::ChangeMailbox => {
                 if self.ready_to_leave() {
                     self.prompt = Some(Prompt::Line {
-                        label: "Open mailbox: ".into(),
+                        label: "Open mailbox (Tab completes): ".into(),
                         buf: String::new(),
                         kind: LineKind::ChangeDir,
                     });
@@ -1405,10 +1442,11 @@ impl App {
         }
     }
 
-    fn open_folder_browser(&mut self) {
-        if !self.ready_to_leave() {
-            return;
-        }
+    /// Mailbox specs for the folder browser and for Tab completion at
+    /// a mailbox prompt: the configured mailboxes, the open account's
+    /// folders (IMAP LIST), and maildirs discovered next to the open
+    /// one.
+    fn folder_candidates(&mut self) -> Result<Vec<(String, usize)>> {
         // Local entries carry their new/ count; imap: specs of other
         // accounts show without one (no connection just for a count).
         let mut dirs: Vec<(String, usize)> = self
@@ -1427,20 +1465,15 @@ impl App {
             })
             .collect();
         match &mut self.remote {
-            Some(remote) => match remote.folders() {
-                Ok(folders) => {
-                    let account = remote.account.name.clone();
-                    dirs.extend(
-                        folders
-                            .into_iter()
-                            .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
-                    );
-                }
-                Err(err) => {
-                    self.status = Some(format!("cannot list folders: {err:#}"));
-                    return;
-                }
-            },
+            Some(remote) => {
+                let account = remote.account.name.clone();
+                dirs.extend(
+                    remote
+                        .folders()?
+                        .into_iter()
+                        .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
+                );
+            }
             None => dirs.extend(
                 maildir::discover(&self.dir)
                     .iter()
@@ -1456,6 +1489,20 @@ impl App {
                 false
             }
         });
+        Ok(dirs)
+    }
+
+    fn open_folder_browser(&mut self) {
+        if !self.ready_to_leave() {
+            return;
+        }
+        let dirs = match self.folder_candidates() {
+            Ok(dirs) => dirs,
+            Err(err) => {
+                self.status = Some(format!("cannot list folders: {err:#}"));
+                return;
+            }
+        };
         if dirs.is_empty() {
             self.status = Some("no maildirs found next to this one".into());
             return;

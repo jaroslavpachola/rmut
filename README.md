@@ -73,7 +73,9 @@ read, `t` tag + `;` apply the next d/u/F/N to all tagged, `s` save
 before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
 Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
-+ `n` next, `c` open mailbox by path, `y` folder browser (with
++ `n` next, `c` open mailbox by path (Tab completes mailboxes,
+account folders and nearby maildirs; empty Tab opens the folder
+browser), `y` folder browser (with
 new/unseen counts; folders holding new mail show bold), `G` check
 for new mail now, `B` toggle the sidebar (Ctrl+N/Ctrl+P move its
 highlight, Ctrl+O opens the highlighted mailbox), `v` attachments,
