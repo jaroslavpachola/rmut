@@ -60,11 +60,14 @@ fn run() -> Result<ExitCode> {
         None => default_mailbox(&config)?,
     };
 
-    let mut app = App::open_spec(&spec, config)?;
+    let opened = App::open_spec(&spec, config);
+    eprint!("\r\x1b[K"); // clear the leftover progress line
+    let mut app = opened?;
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }
     let terminal = ratatui::init();
+    app::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = app.run(terminal);
     ratatui::restore();
     result.map(|()| ExitCode::SUCCESS)

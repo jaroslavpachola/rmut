@@ -746,6 +746,9 @@ smtp_tls = false
         "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
     })
     r = Rmut("imap:test", env)
+    # The pre-TUI open narrates its progress on stderr.
+    r.expect("connecting to 127.0.0.1...")
+    r.expect("fetching message headers... 0/2")
     # Index built from header-only cache files; the login went through
     # SASL XOAUTH2 with the token_command's output.
     r.expect("imap:test/INBOX", "Msgs:2", "New:1", "remote one", "remote two")

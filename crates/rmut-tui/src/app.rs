@@ -413,7 +413,7 @@ impl App {
                     .with_context(|| format!("no account {account_name} in config"))?
                     .clone();
                 let password = account_password(&account)?;
-                let remote = Remote::open(&account, mailbox, &password)?;
+                let remote = Remote::open(&account, mailbox, &password, Box::new(progress))?;
                 let cache = remote.cache.clone();
                 let mut app = App::open(&cache, config)?;
                 app.title = remote.spec.clone();
@@ -483,6 +483,9 @@ impl App {
         let poll_every = Duration::from_secs(self.config.mail.poll_seconds.unwrap_or(5).max(1));
         let mut last_poll = Instant::now();
         while !self.quit {
+            if PROGRESS_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                terminal.clear()?;
+            }
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             // Macro-queued keys run first, without waiting for input.
             let key = match self.pending_keys.pop_front() {
@@ -2970,6 +2973,39 @@ fn default_from(hostname: &str) -> String {
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     format!("{user}@{hostname}")
+}
+
+/// Set once the ratatui alternate screen is up: progress switches
+/// from stderr lines (the initial open runs before ratatui::init) to
+/// direct writes on the terminal's bottom row.
+pub static TUI_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A progress line clobbered the bottom row behind ratatui's back;
+/// the next draw must repaint everything.
+static PROGRESS_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Transient "what am I doing" line for blocking IMAP work
+/// (connecting, fetching flags/headers), so the UI never looks stuck.
+pub fn progress(msg: &str) {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+    if TUI_ACTIVE.load(Ordering::Relaxed) {
+        use ratatui::crossterm::{cursor, queue, style, terminal};
+        let mut out = std::io::stdout();
+        if let Ok((_, rows)) = terminal::size()
+            && queue!(
+                out,
+                cursor::MoveTo(0, rows.saturating_sub(1)),
+                terminal::Clear(terminal::ClearType::CurrentLine),
+                style::Print(msg)
+            )
+            .is_ok()
+        {
+            let _ = out.flush();
+            PROGRESS_DIRTY.store(true, Ordering::Relaxed);
+        }
+    } else {
+        eprint!("\r\x1b[K{msg}");
+    }
 }
 
 /// Run the account's password command once per session. OAuth tokens

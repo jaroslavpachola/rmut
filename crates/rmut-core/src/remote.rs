@@ -21,6 +21,11 @@ use crate::net;
 
 const PARTIAL_MARKER: &[u8] = b"X-Rmut-Partial: 1\r\n";
 
+/// Sink for transient "what am I doing" lines during blocking IMAP
+/// work (connecting, fetching flags/headers); the UI decides how to
+/// show them.
+pub type Progress = Box<dyn FnMut(&str) + Send>;
+
 pub struct Remote {
     /// `imap:account/mailbox`, for the status line and folder browser.
     pub spec: String,
@@ -33,6 +38,7 @@ pub struct Remote {
     uidvalidity: u32,
     /// Highest UID mirrored so far; arrivals are fetched from here.
     last_uid: u32,
+    progress: Progress,
 }
 
 /// `imap:account[/mailbox]` → (account, mailbox); INBOX when omitted.
@@ -157,7 +163,15 @@ fn connect_client(account: &Account, secret: &str) -> Result<Client> {
 
 impl Remote {
     /// Connect, log in, select, and bring the cache maildir up to date.
-    pub fn open(account: &Account, mailbox: &str, password: &str) -> Result<Remote> {
+    pub fn open(
+        account: &Account,
+        mailbox: &str,
+        password: &str,
+        mut progress: Progress,
+    ) -> Result<Remote> {
+        if let Some(host) = account.imap_host.as_deref() {
+            progress(&format!("connecting to {host}..."));
+        }
         let client = connect_client(account, password)?;
         let mut remote = Remote {
             spec: String::new(),
@@ -168,6 +182,7 @@ impl Remote {
             secret: password.to_string(),
             uidvalidity: 0,
             last_uid: 0,
+            progress,
         };
         remote.point_at(mailbox)?;
         Ok(remote)
@@ -184,7 +199,9 @@ impl Remote {
     /// UIDVALIDITY check, and the initial reconcile.
     fn point_at(&mut self, mailbox: &str) -> Result<()> {
         let mailbox = clean_mailbox(mailbox);
+        (self.progress)(&format!("opening {mailbox}..."));
         let select = self.client.select(&mailbox)?;
+        (self.progress)(&format!("{mailbox}: {} messages", select.exists));
         let cache = cache_dir(&self.account.name, &mailbox);
         maildir::create(&cache)?;
         let uv_file = cache.join(".uidvalidity");
@@ -225,12 +242,15 @@ impl Remote {
     /// Run an IMAP operation, reconnecting and retrying once when the
     /// connection died under us (laptop sleep, server timeout). Every
     /// operation this wraps is idempotent.
-    fn retry<T>(&mut self, mut op: impl FnMut(&mut Client, &Path) -> Result<T>) -> Result<T> {
-        match op(&mut self.client, &self.cache) {
+    fn retry<T>(
+        &mut self,
+        mut op: impl FnMut(&mut Client, &Path, &mut Progress) -> Result<T>,
+    ) -> Result<T> {
+        match op(&mut self.client, &self.cache, &mut self.progress) {
             Err(err) if net::is_connection_error(&err) => {
                 self.reconnect()
                     .with_context(|| format!("reconnect after: {err:#}"))?;
-                op(&mut self.client, &self.cache)
+                op(&mut self.client, &self.cache, &mut self.progress)
             }
             other => other,
         }
@@ -245,13 +265,18 @@ impl Remote {
         Ok(arrived)
     }
 
-    fn reconcile(client: &mut Client, cache: &Path) -> Result<(usize, u32)> {
+    fn reconcile(
+        client: &mut Client,
+        cache: &Path,
+        progress: &mut Progress,
+    ) -> Result<(usize, u32)> {
         let mut by_uid: HashMap<u32, MailFile> = HashMap::new();
         for file in maildir::scan(cache)? {
             if let Some(uid) = uid_of(&file.path) {
                 by_uid.insert(uid, file);
             }
         }
+        progress("fetching message flags...");
         let metas = client.uid_fetch_flags("1:*")?;
         let mut new_uids: Vec<u32> = Vec::new();
         let mut on_server: HashSet<u32> = HashSet::new();
@@ -274,7 +299,10 @@ impl Remote {
                 let _ = fs::remove_file(&file.path);
             }
         }
+        let total = new_uids.len();
+        let mut done = 0usize;
         for chunk in new_uids.chunks(100) {
+            progress(&format!("fetching message headers... {done}/{total}"));
             let set = chunk
                 .iter()
                 .map(u32::to_string)
@@ -283,6 +311,10 @@ impl Remote {
             for fetched in client.uid_fetch_headers(&set)? {
                 write_partial(cache, &fetched)?;
             }
+            done += chunk.len();
+        }
+        if total > 0 {
+            progress(&format!("fetched {total} message header(s)"));
         }
         let max_uid = metas.iter().map(|m| m.uid).max().unwrap_or(0);
         Ok((new_uids.len(), max_uid))
@@ -291,7 +323,7 @@ impl Remote {
     /// Mirror only arrivals: everything above the last mirrored UID.
     fn fetch_new(&mut self) -> Result<usize> {
         let last = self.last_uid;
-        let (arrived, max_uid) = self.retry(|client, cache| {
+        let (arrived, max_uid) = self.retry(|client, cache, _| {
             let mut arrived = 0usize;
             let mut max_uid = last;
             for fetched in client.uid_fetch_headers(&format!("{}:*", last + 1))? {
@@ -312,14 +344,17 @@ impl Remote {
     /// Replace a header-only cache file with the full message.
     pub fn fetch_body(&mut self, path: &Path) -> Result<()> {
         let uid = uid_of(path).context("not a cached IMAP message")?;
-        let body = self.retry(|client, _| client.uid_fetch_full(uid))?;
+        let body = self.retry(|client, _, progress| {
+            progress("fetching message...");
+            client.uid_fetch_full(uid)
+        })?;
         fs::write(path, &body).with_context(|| format!("writing {}", path.display()))
     }
 
     /// Push a local flag change (from `$` sync) to the server.
     pub fn push_flags(&mut self, path: &Path, flags: Flags) -> Result<()> {
         let uid = uid_of(path).context("not a cached IMAP message")?;
-        self.retry(|client, _| client.uid_store_flags(uid, flags))
+        self.retry(|client, _, _| client.uid_store_flags(uid, flags))
     }
 
     /// UID COPY the cached messages into another folder of this
@@ -333,7 +368,7 @@ impl Remote {
         ensure!(uids.len() == paths.len(), "unrecognized cache filename");
         let folder = clean_mailbox(mailbox);
         let set = uids.join(",");
-        self.retry(|client, _| client.uid_copy(&set, &folder))
+        self.retry(|client, _, _| client.uid_copy(&set, &folder))
     }
 
     /// Mark the given cached messages \Deleted and expunge them.
@@ -345,7 +380,7 @@ impl Remote {
             .collect();
         ensure!(uids.len() == paths.len(), "unrecognized cache filename");
         let set = uids.join(",");
-        self.retry(|client, _| {
+        self.retry(|client, _, _| {
             client.uid_delete(&set)?;
             client.expunge()
         })
@@ -357,7 +392,7 @@ impl Remote {
     /// just shows as 0.
     pub fn folders(&mut self) -> Result<Vec<(String, usize)>> {
         let open = self.mailbox.clone();
-        self.retry(move |client, cache| {
+        self.retry(move |client, cache, _| {
             let names: Vec<String> = client
                 .list()?
                 .into_iter()
@@ -384,7 +419,7 @@ impl Remote {
         if folder == self.mailbox {
             maildir::new_count(&self.cache)
         } else {
-            self.retry(|client, _| client.status_unseen(&folder))
+            self.retry(|client, _, _| client.status_unseen(&folder))
                 .unwrap_or(0) as usize
         }
     }
@@ -394,7 +429,7 @@ impl Remote {
     /// APPEND a message into another folder of this account (`s` save).
     pub fn append_to(&mut self, mailbox: &str, flags: Flags, body: &[u8]) -> Result<String> {
         let folder = clean_mailbox(mailbox);
-        self.retry(|client, _| client.append(&folder, flags, body))?;
+        self.retry(|client, _, _| client.append(&folder, flags, body))?;
         Ok(folder)
     }
 
@@ -404,14 +439,14 @@ impl Remote {
             seen: true,
             ..Default::default()
         };
-        self.retry(|client, _| client.append(&folder, flags, body))?;
+        self.retry(|client, _, _| client.append(&folder, flags, body))?;
         Ok(folder)
     }
 
     /// Poll the server. Arrivals alone are fetched incrementally from
     /// the last known UID; anything else triggers a full reconcile.
     pub fn check_new(&mut self) -> Result<usize> {
-        match self.retry(|client, _| client.noop_changes())? {
+        match self.retry(|client, _, _| client.noop_changes())? {
             Changes::None => Ok(0),
             Changes::NewOnly => self.fetch_new(),
             Changes::Full => self.refresh(),
@@ -635,7 +670,7 @@ mod tests {
     fn open_mirrors_headers_into_cache() {
         let (port, handle) = testserver::imap(open_script());
         let ((), _tmp) = with_cache_home(|| {
-            let remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             let files = maildir::scan(&remote.cache).unwrap();
             assert_eq!(files.len(), 2);
             let seen = files.iter().find(|f| uid_of(&f.path) == Some(10)).unwrap();
@@ -670,7 +705,7 @@ mod tests {
         ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             remote.switch("Archive").unwrap();
             assert_eq!(remote.spec, "imap:test/Archive");
             assert_eq!(remote.uidvalidity, 7);
@@ -695,7 +730,7 @@ mod tests {
         ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             let arrived = remote.refresh().unwrap();
             assert_eq!(arrived, 1);
             let files = maildir::scan(&remote.cache).unwrap();
@@ -723,7 +758,7 @@ mod tests {
         ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             let files = maildir::scan(&remote.cache).unwrap();
             let file = files.iter().find(|f| uid_of(&f.path) == Some(10)).unwrap();
             remote.fetch_body(&file.path).unwrap();
@@ -748,7 +783,7 @@ mod tests {
         script.push(Expect::new("APPEND \"Sent\" (\\Seen)", String::new()));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             let flags = Flags {
                 seen: true,
                 flagged: true,
@@ -781,7 +816,7 @@ mod tests {
         script.push(Expect::new("NOOP", String::new()));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             assert_eq!(remote.check_new().unwrap(), 0);
         });
         handle.join().unwrap();
@@ -798,7 +833,7 @@ mod tests {
         ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             let err = remote.check_new().unwrap_err();
             assert!(
                 format!("{err:#}").contains("UIDVALIDITY changed"),
@@ -825,7 +860,7 @@ mod tests {
         ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             assert_eq!(remote.check_new().unwrap(), 1);
             assert_eq!(remote.check_new().unwrap(), 0);
             let files = maildir::scan(&remote.cache).unwrap();
@@ -848,7 +883,7 @@ mod tests {
                 auth: Some("xoauth2".into()),
                 ..account(port)
             };
-            let remote = Remote::open(&acct, "INBOX", "tok").unwrap();
+            let remote = Remote::open(&acct, "INBOX", "tok", Box::new(|_| {})).unwrap();
             assert_eq!(maildir::scan(&remote.cache).unwrap().len(), 2);
         });
         handle.join().unwrap();
@@ -867,7 +902,7 @@ mod tests {
         ));
         let (port, handle) = testserver::imap(script);
         let ((), _tmp) = with_cache_home(|| {
-            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
             let folders = remote.folders().unwrap();
             // INBOX (selected) counts its cache maildir: UID 11 is new.
             assert_eq!(folders, vec![("INBOX".into(), 1), ("Archive".into(), 5)]);
@@ -921,10 +956,10 @@ mod tests {
         let ((), _tmp) = with_cache_home(|| {
             let acct = account(port);
             let cache = {
-                let first = Remote::open(&acct, "INBOX", "pw").unwrap();
+                let first = Remote::open(&acct, "INBOX", "pw", Box::new(|_| {})).unwrap();
                 first.cache.clone()
             };
-            let _second = Remote::open(&acct, "INBOX", "pw").unwrap();
+            let _second = Remote::open(&acct, "INBOX", "pw", Box::new(|_| {})).unwrap();
             let uids: Vec<_> = maildir::scan(&cache)
                 .unwrap()
                 .iter()
