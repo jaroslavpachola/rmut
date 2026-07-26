@@ -158,10 +158,34 @@ fn connect_client(account: &Account, secret: &str) -> Result<Client> {
 impl Remote {
     /// Connect, log in, select, and bring the cache maildir up to date.
     pub fn open(account: &Account, mailbox: &str, password: &str) -> Result<Remote> {
-        let mailbox = &clean_mailbox(mailbox);
-        let mut client = connect_client(account, password)?;
-        let select = client.select(mailbox)?;
-        let cache = cache_dir(&account.name, mailbox);
+        let client = connect_client(account, password)?;
+        let mut remote = Remote {
+            spec: String::new(),
+            account: account.clone(),
+            mailbox: String::new(),
+            cache: PathBuf::new(),
+            client,
+            secret: password.to_string(),
+            uidvalidity: 0,
+            last_uid: 0,
+        };
+        remote.point_at(mailbox)?;
+        Ok(remote)
+    }
+
+    /// Reuse this session for another folder of the same account — a
+    /// SELECT on the live connection instead of a fresh connect+login
+    /// round. On failure the caller falls back to a full open.
+    pub fn switch(&mut self, mailbox: &str) -> Result<()> {
+        self.point_at(mailbox)
+    }
+
+    /// Point the session at `mailbox`: SELECT, cache setup with the
+    /// UIDVALIDITY check, and the initial reconcile.
+    fn point_at(&mut self, mailbox: &str) -> Result<()> {
+        let mailbox = clean_mailbox(mailbox);
+        let select = self.client.select(&mailbox)?;
+        let cache = cache_dir(&self.account.name, &mailbox);
         maildir::create(&cache)?;
         let uv_file = cache.join(".uidvalidity");
         let cached_uv: u32 = fs::read_to_string(&uv_file)
@@ -175,18 +199,13 @@ impl Remote {
             }
             fs::write(&uv_file, format!("{}\n", select.uidvalidity))?;
         }
-        let mut remote = Remote {
-            spec: format!("imap:{}/{mailbox}", account.name),
-            account: account.clone(),
-            mailbox: mailbox.to_string(),
-            cache,
-            client,
-            secret: password.to_string(),
-            uidvalidity: select.uidvalidity,
-            last_uid: 0,
-        };
-        remote.refresh()?;
-        Ok(remote)
+        self.spec = format!("imap:{}/{mailbox}", self.account.name);
+        self.mailbox = mailbox;
+        self.cache = cache;
+        self.uidvalidity = select.uidvalidity;
+        self.last_uid = 0;
+        self.refresh()?;
+        Ok(())
     }
 
     /// One transparent reconnect after a dropped connection: fresh
@@ -628,6 +647,36 @@ mod tests {
             // The partial file still parses as a message.
             let env = crate::message::envelope(seen.clone()).unwrap();
             assert_eq!(env.subject, "first");
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn switch_selects_on_the_same_connection() {
+        // One scripted connection: a second connect+login would hang
+        // the test server, so passing proves the session is reused.
+        let mut script = open_script();
+        script.push(Expect::new(
+            "SELECT \"Archive\"",
+            "* 1 EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n".into(),
+        ));
+        script.push(Expect::new(
+            "UID FETCH 1:* (UID FLAGS)",
+            "* 1 FETCH (UID 3 FLAGS (\\Seen))\r\n".into(),
+        ));
+        script.push(Expect::new(
+            "UID FETCH 3 (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+            fetch_reply(3, "\\Seen", "Subject: archived\r\n\r\n"),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw").unwrap();
+            remote.switch("Archive").unwrap();
+            assert_eq!(remote.spec, "imap:test/Archive");
+            assert_eq!(remote.uidvalidity, 7);
+            let files = maildir::scan(&remote.cache).unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(uid_of(&files[0].path), Some(3));
         });
         handle.join().unwrap();
     }

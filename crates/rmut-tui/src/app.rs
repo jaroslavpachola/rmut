@@ -1532,6 +1532,36 @@ impl App {
     }
 
     fn open_mailbox_spec(&mut self, spec: &str) {
+        // Another folder of the open account reuses the live session
+        // (a SELECT) instead of a fresh connect+login round; a dead
+        // session falls through to the full open below.
+        if let Some((account_name, mailbox)) = remote::parse_spec(spec)
+            && self
+                .remote
+                .as_ref()
+                .is_some_and(|r| r.account.name == account_name)
+            && self.remote.as_mut().unwrap().switch(mailbox).is_ok()
+        {
+            let remote = self.remote.take().unwrap();
+            match App::open(&remote.cache.clone(), self.config.clone()) {
+                Ok(mut app) => {
+                    app.title = remote.spec.clone();
+                    if let Ok(password) = account_password(&remote.account) {
+                        app.idle = Some(remote::idle_watch(
+                            &remote.account,
+                            &remote.mailbox,
+                            &password,
+                        ));
+                    }
+                    app.remote = Some(remote);
+                    app.sidebar_visible = self.sidebar_visible;
+                    app.refresh_sidebar();
+                    *self = app;
+                }
+                Err(err) => self.status = Some(format!("cannot open {spec}: {err:#}")),
+            }
+            return;
+        }
         match App::open_spec(spec, self.config.clone()) {
             Ok(mut app) => {
                 // The runtime sidebar toggle survives a mailbox switch.
