@@ -433,17 +433,23 @@ pub fn wrap_line(line: &str, width: usize) -> Vec<String> {
 fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
     let rows = pager_rows(
         &pager.view,
-        area.width as usize,
+        app.pager_wrap(area.width as usize),
         pager.full_headers,
         &app.quote_re,
         pager.hide_quoted,
     );
-    let visible: Vec<Line> = rows
+    let mut visible: Vec<Line> = rows
         .iter()
         .skip(pager.scroll)
         .take(area.height as usize)
         .map(|row| style_row(row, app))
         .collect();
+    // mutt's $tilde: mark the void below end-of-message.
+    if app.config.pager.tilde {
+        while visible.len() < area.height as usize {
+            visible.push(Line::raw("~"));
+        }
+    }
     frame.render_widget(Paragraph::new(visible), area);
 }
 
@@ -730,10 +736,16 @@ fn index_status(app: &App, width: usize, rows: usize) -> String {
     })
 }
 
+/// The classic pager bottom line; override with `[pager] format`.
+const DEFAULT_PAGER_FORMAT: &str = "---Message %C/%m: %s -- %P";
+
+/// mutt's $pager_format: %C message number, %m count, %n sender,
+/// %s subject, %Z status chars, %P percent through the message,
+/// %f mailbox, plus the conditional and %> machinery.
 fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> String {
     let total = pager_line_count(
         &pager.view,
-        width,
+        app.pager_wrap(width),
         pager.full_headers,
         &app.quote_re,
         pager.hide_quoted,
@@ -747,13 +759,33 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
         .find(|(n, _)| n == "Subject" || n == "Content-Type")
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
-    format!(
-        "---Message {}/{}: {} -- {}%",
-        app.sel + 1,
-        app.visible.len(),
-        subject,
-        shown * 100 / total,
-    )
+    let msg = app.visible.get(app.sel).map(|&i| &app.msgs[i]);
+    let fmt = app
+        .config
+        .pager
+        .format
+        .as_deref()
+        .unwrap_or(DEFAULT_PAGER_FORMAT);
+    format::render_status(fmt, width, &|spec| match spec {
+        'C' => (app.sel + 1).to_string(),
+        'm' => app.visible.len().to_string(),
+        's' => subject.to_string(),
+        'n' => msg.map(|m| m.env.from.clone()).unwrap_or_default(),
+        'Z' => msg
+            .map(|m| {
+                let f = &m.env.file;
+                format!(
+                    "{}{} ",
+                    f.flags.status_char(f.is_new),
+                    if f.flags.flagged { '!' } else { ' ' }
+                )
+            })
+            .unwrap_or_default(),
+        'P' => format!("{}%", shown * 100 / total),
+        'f' => app.title.clone(),
+        '%' => "%".to_string(),
+        other => format!("%{other}"),
+    })
 }
 
 #[cfg(test)]

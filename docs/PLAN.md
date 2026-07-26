@@ -443,17 +443,21 @@ tints quotes, hits, and URLs.
       `S` skips past the quoted block below (all remappable, the
       importer maps half-down/half-up/toggle-quoted/skip-quoted)
 
-## R28 — header weeding and pager polish
+## R28 — header weeding and pager polish (done, 1.27)
 
-- [ ] ignore/unignore lists drive the brief header view (default
-      keeps today's Date/From/To/Cc/Subject), `hdr_order` sorts it;
-      both imported from muttrc; `[pager] ignore`/`hdr_order` in TOML
-- [ ] `[pager] format`: mutt's $pager_format renders the pager's
-      bottom line (default keeps the classic "---Message n/m"),
-      sharing the status renderer and its %>/%P machinery
-- [ ] `$wrap`: wrap at N columns instead of the full width (negative
-      N = right margin), body and markers honor it; imported
-- [ ] `~` tilde padding below end-of-message (mutt's $tilde look)
+- [x] ignore/unignore lists drive the brief header view (prefix
+      matching, `*` = all; the default keeps Date/From/To/Cc/
+      Subject), `hdr_order` sorts it; `[pager]` ignore/unignore/
+      hdr_order in TOML, all three imported from muttrc
+- [x] `[pager] format`: mutt's $pager_format renders the pager's
+      bottom line (%C %m %n %s %Z %P %f; the default keeps the
+      classic "---Message n/m"), sharing the status renderer and its
+      %>/%P machinery; imported from `set pager_format`
+- [x] `$wrap`: wrap at N columns instead of the full width (negative
+      N = right margin), rows/search/scroll math all honor it;
+      imported
+- [x] `~` tilde padding below end-of-message (`[pager] tilde`,
+      mutt's $tilde; off by default like mutt); imported
 
 ## R29 — compose round 2
 

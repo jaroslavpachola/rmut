@@ -1441,6 +1441,42 @@ def scenario_pager_quotes(tmp):
     r.close()
 
 
+def scenario_pager_polish(tmp):
+    """R28: ignore/unignore/hdr_order weed and order the brief header
+    view, [pager] format renders the bottom line (with %> fill and
+    %P), wrap narrows the text, tilde pads below end-of-message."""
+    md = make_maildir(tmp, "md")
+    with open(os.path.join(md, "cur/1751790000.1.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: Order test\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+            "X-Topic: budget\r\nMessage-ID: <ot@example.com>\r\n\r\n"
+            "alpha beta gamma delta epsilon zeta\r\nplain tail\r\n"
+        )
+    cfg = os.path.join(tmp, "polish-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            '[pager]\nignore = ["*"]\nunignore = ["subject", "x-topic"]\n'
+            'hdr_order = ["x-topic", "subject"]\n'
+            'format = "PGRFMT %C/%m %s%>-%P"\nwrap = 20\ntilde = true\n'
+        )
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Order test")
+    r.keys(b"\r")
+    # Weeded brief view: X-Topic surfaced and ordered before Subject.
+    r.expect("X-Topic: budget", "plain tail")
+    s = squash(r.buf)
+    assert s.index("X-Topic:budget") < s.index("Subject:Ordertest"), "hdr_order"
+    # $wrap at 20 columns: the long line breaks with a + marker.
+    r.expect("+delta epsilon zeta")
+    # $tilde pads the empty rows; the custom format fills with - up
+    # to the right-aligned position.
+    r.expect("~~~~~", "PGRFMT 1/1", "--100%")
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1677,6 +1713,7 @@ SCENARIOS = [
     scenario_triage,
     scenario_odds,
     scenario_pager_quotes,
+    scenario_pager_polish,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

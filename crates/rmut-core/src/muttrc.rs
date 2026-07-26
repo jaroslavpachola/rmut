@@ -64,6 +64,13 @@ struct State {
     /// `color body FG BG REGEX` rules, in muttrc order.
     color_body_rules: Vec<(String, String, String)>,
     quote_regexp: Option<String>,
+    /// ignore/unignore/hdr_order lists for the brief header view.
+    hdr_ignore: Vec<String>,
+    hdr_unignore: Vec<String>,
+    hdr_order: Vec<String>,
+    pager_format: Option<String>,
+    wrap: Option<i64>,
+    tilde: bool,
     status_format: Option<String>,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
@@ -119,6 +126,13 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
                 }
             }
             "alias" => st.aliases.push(line.clone()),
+            "ignore" => st.hdr_ignore.extend(tokens[1..].iter().cloned()),
+            "unignore" => st.hdr_unignore.extend(tokens[1..].iter().cloned()),
+            "hdr_order" => st.hdr_order.extend(
+                tokens[1..]
+                    .iter()
+                    .map(|t| t.trim_end_matches(':').to_string()),
+            ),
             "bind" => st.bind(&tokens[1..], &line),
             "macro" => st.mutt_macro(&tokens[1..], &line),
             "color" => st.color(&tokens[1..], &line),
@@ -467,6 +481,18 @@ impl State {
                 Err(_) => self.skip(line, "not a number"),
             },
             "quote_regexp" => self.quote_regexp = Some(v.to_string()),
+            "pager_format" => self.pager_format = Some(v.to_string()),
+            "wrap" => match v.parse() {
+                Ok(n) => self.wrap = Some(n),
+                Err(_) => self.skip(line, "not a number"),
+            },
+            "tilde" => {
+                if is_yes(&v) {
+                    self.tilde = true;
+                } else {
+                    self.satisfy(line, "no tilde padding is rmut's default");
+                }
+            }
             "mime_forward" => {
                 if is_yes(&v) {
                     self.forward_attach = true;
@@ -857,6 +883,12 @@ impl State {
         if self.pager_index_lines.is_some()
             || self.pager_context.is_some()
             || self.quote_regexp.is_some()
+            || self.pager_format.is_some()
+            || self.wrap.is_some()
+            || self.tilde
+            || !self.hdr_ignore.is_empty()
+            || !self.hdr_unignore.is_empty()
+            || !self.hdr_order.is_empty()
         {
             out += "\n[pager]\n";
             if let Some(n) = self.pager_index_lines {
@@ -867,6 +899,26 @@ impl State {
             }
             if let Some(re) = &self.quote_regexp {
                 out += &format!("quote_regexp = {}\n", quote(re));
+            }
+            for (key, list) in [
+                ("ignore", &self.hdr_ignore),
+                ("unignore", &self.hdr_unignore),
+                ("hdr_order", &self.hdr_order),
+            ] {
+                if !list.is_empty() {
+                    let items: Vec<String> = list.iter().map(|s| quote(s)).collect();
+                    out += &format!("{key} = [{}]\n", items.join(", "));
+                }
+            }
+            if let Some(f) = &self.pager_format {
+                out += "# rmut renders %C %m %n %s %Z %P %f and %>X here\n";
+                out += &format!("format = {}\n", quote(f));
+            }
+            if let Some(n) = self.wrap {
+                out += &format!("wrap = {n}\n");
+            }
+            if self.tilde {
+                out += "tilde = true\n";
             }
         }
         if !self.filters.is_empty() {
@@ -1549,6 +1601,31 @@ mod tests {
             Some("T")
         );
         assert!(toml.contains("[[color_body]]"));
+    }
+
+    #[test]
+    fn header_weeding_and_pager_polish_translate() {
+        let (cfg, toml) = to_config(concat!(
+            "ignore *\n",
+            "unignore from date subject\n",
+            "hdr_order Date: From: Subject:\n",
+            "set pager_format=\"-%Z- %C/%m: %s\"\n",
+            "set wrap = 78\n",
+            "set tilde\n",
+        ));
+        assert_eq!(cfg.pager.ignore.as_deref(), Some(&["*".to_string()][..]));
+        assert_eq!(
+            cfg.pager.unignore.as_deref(),
+            Some(&["from".to_string(), "date".into(), "subject".into()][..])
+        );
+        assert_eq!(
+            cfg.pager.hdr_order.as_deref(),
+            Some(&["Date".to_string(), "From".into(), "Subject".into()][..])
+        );
+        assert_eq!(cfg.pager.format.as_deref(), Some("-%Z- %C/%m: %s"));
+        assert_eq!(cfg.pager.wrap, Some(78));
+        assert!(cfg.pager.tilde);
+        assert!(toml.contains("hdr_order"));
     }
 
     #[test]

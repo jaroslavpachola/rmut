@@ -364,6 +364,8 @@ pub struct App {
     pub(crate) pager_search: Option<pattern::Matcher>,
     /// Compiled $quote_regexp classifying quoted body lines.
     pub(crate) quote_re: regex_lite::Regex,
+    /// ignore/unignore/hdr_order for the pager's brief header view.
+    head_rules: message::HeaderRules,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     /// Width and content rows from the last key dispatch, for actions
@@ -418,6 +420,18 @@ pub struct App {
     /// mtimes of new/ and cur/ used for new-mail detection.
     dir_mtimes: (Option<SystemTime>, Option<SystemTime>),
     quit: bool,
+}
+
+impl App {
+    /// mutt's $wrap: the effective text width inside `width` columns
+    /// (positive = wrap there, negative = a right margin).
+    pub(crate) fn pager_wrap(&self, width: usize) -> usize {
+        match self.config.pager.wrap {
+            Some(n) if n > 0 => (n as usize).min(width),
+            Some(n) if n < 0 => width.saturating_sub(n.unsigned_abs() as usize).max(20),
+            _ => width,
+        }
+    }
 }
 
 /// mutt's $quote_regexp default.
@@ -511,6 +525,24 @@ impl App {
             },
             None => default_quote_re(),
         };
+        // [pager] ignore/unignore/hdr_order override the classic
+        // five-header view field by field; entries are lowercased and
+        // hdr_order accepts mutt's trailing colons.
+        let mut head_rules = message::HeaderRules::default();
+        let clean = |list: &Vec<String>| {
+            list.iter()
+                .map(|n| n.trim_end_matches(':').to_lowercase())
+                .collect::<Vec<_>>()
+        };
+        if let Some(list) = &config.pager.ignore {
+            head_rules.ignore = clean(list);
+        }
+        if let Some(list) = &config.pager.unignore {
+            head_rules.unignore = clean(list);
+        }
+        if let Some(list) = &config.pager.hdr_order {
+            head_rules.order = clean(list);
+        }
         let status = (!warnings.is_empty()).then(|| warnings.join("; "));
         let count = msgs.len();
         let mut me: Vec<String> = config
@@ -549,6 +581,7 @@ impl App {
             last_search: None,
             pager_search: None,
             quote_re,
+            head_rules,
             body_rules,
             view_size: (80, 24),
             thread_depth: vec![0; count],
@@ -1571,6 +1604,8 @@ impl App {
     // ---- pager ----
 
     fn handle_pager_key(&mut self, key: KeyEvent, width: usize, page: usize) {
+        // $wrap narrows the text, so all row math follows it.
+        let width = self.pager_wrap(width);
         if let Some(seq) = self.keymap.lookup_pager_macro(&key) {
             self.replay(seq.to_vec());
             return;
@@ -1791,7 +1826,7 @@ impl App {
             ));
             return;
         };
-        let (width, _) = self.view_size;
+        let width = self.pager_wrap(self.view_size.0);
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
@@ -3769,7 +3804,7 @@ impl App {
                 m.env.lines = Some(message::body_lines(&raw));
             }
         }
-        let mut view = message::load_with(path, &self.config.filters)?;
+        let mut view = message::load_with(path, &self.config.filters, &self.head_rules)?;
         // PGP messages: decrypt/verify via gpg, prepend the verdict
         // line to whatever body ends up shown.
         if let Ok(raw) = std::fs::read(path)

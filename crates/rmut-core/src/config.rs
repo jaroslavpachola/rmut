@@ -169,6 +169,23 @@ pub struct Pager {
     /// mutt's $quote_regexp: classifies quoted body lines (depth =
     /// quote characters in the match). Default `^([ \t]*[|>:}#])+`.
     pub quote_regexp: Option<String>,
+    /// mutt's ignore list: header-name prefixes hidden from the brief
+    /// view (`*` = all). Unset keeps the classic view (everything
+    /// hidden except Date/From/To/Cc/Subject).
+    pub ignore: Option<Vec<String>>,
+    /// mutt's unignore list: prefixes shown even when ignored.
+    pub unignore: Option<Vec<String>>,
+    /// mutt's hdr_order: name prefixes sorting the brief view;
+    /// unlisted headers follow in message order.
+    pub hdr_order: Option<Vec<String>>,
+    /// mutt's $pager_format for the pager's bottom line; the default
+    /// reproduces the classic "---Message n/m: subject -- NN%".
+    pub format: Option<String>,
+    /// mutt's $wrap: wrap body text at N columns (negative = a right
+    /// margin of |N|); unset wraps at the window width.
+    pub wrap: Option<i64>,
+    /// mutt's $tilde: pad the rows below end-of-message with ~.
+    pub tilde: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

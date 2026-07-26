@@ -211,31 +211,85 @@ pub struct MessageView {
     pub body: String,
 }
 
+/// mutt's ignore/unignore/hdr_order: which headers the pager's brief
+/// view shows, and in what order. Entries are lowercase name
+/// prefixes; `*` matches everything; unignore wins over ignore.
+#[derive(Debug, Clone)]
+pub struct HeaderRules {
+    pub ignore: Vec<String>,
+    pub unignore: Vec<String>,
+    pub order: Vec<String>,
+}
+
+impl Default for HeaderRules {
+    /// The classic view: everything hidden except the usual five, in
+    /// their usual order.
+    fn default() -> HeaderRules {
+        let five = || {
+            ["date", "from", "to", "cc", "subject"]
+                .map(String::from)
+                .to_vec()
+        };
+        HeaderRules {
+            ignore: vec!["*".into()],
+            unignore: five(),
+            order: five(),
+        }
+    }
+}
+
+fn prefix_match(prefixes: &[String], name: &str) -> bool {
+    prefixes.iter().any(|p| p == "*" || name.starts_with(p))
+}
+
+/// The brief header view under `rules`: weeded (ignore minus
+/// unignore), then sorted by hdr_order position — unlisted names
+/// keep message order after the listed ones.
+pub fn weed(all: &[(String, String)], rules: &HeaderRules) -> Vec<(String, String)> {
+    let mut shown: Vec<(String, String)> = all
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.to_lowercase();
+            !prefix_match(&rules.ignore, &name) || prefix_match(&rules.unignore, &name)
+        })
+        .cloned()
+        .collect();
+    shown.sort_by_key(|(name, _)| {
+        let name = name.to_lowercase();
+        rules
+            .order
+            .iter()
+            .position(|p| name.starts_with(p))
+            .unwrap_or(rules.order.len())
+    });
+    shown
+}
+
 pub fn load(path: &Path) -> Result<MessageView> {
-    load_with(path, &std::collections::HashMap::new())
+    load_with(
+        path,
+        &std::collections::HashMap::new(),
+        &HeaderRules::default(),
+    )
 }
 
 /// Like `load`, but when the message has no text/plain part, a part
 /// whose MIME type appears in `filters` is rendered through its shell
-/// command (stdin → stdout), mutt's auto_view.
+/// command (stdin → stdout), mutt's auto_view; `rules` weeds the
+/// brief header block.
 pub fn load_with(
     path: &Path,
     filters: &std::collections::HashMap<String, String>,
+    rules: &HeaderRules,
 ) -> Result<MessageView> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
-    let header_map = mail.get_headers();
-    let mut brief = Vec::new();
-    for name in ["Date", "From", "To", "Cc", "Subject"] {
-        if let Some(value) = header_map.get_first_value(name) {
-            brief.push((name.to_string(), value));
-        }
-    }
-    let all = mail
+    let all: Vec<(String, String)> = mail
         .headers
         .iter()
         .map(|h| (h.get_key(), h.get_value()))
         .collect();
+    let brief = weed(&all, rules);
     let body = find_plain(&mail)
         .or_else(|| filtered_body(&mail, filters))
         .or_else(|| extract_text(&mail))
@@ -413,6 +467,40 @@ pub fn part_bytes(path: &Path, index: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weed_applies_ignore_unignore_and_order() {
+        let all: Vec<(String, String)> = [
+            ("Received", "relay"),
+            ("Subject", "hi"),
+            ("X-Topic", "budget"),
+            ("From", "jane@example.com"),
+            ("X-Spam-Score", "0"),
+        ]
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .to_vec();
+        let names = |v: &[(String, String)]| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        // The classic default: only the usual five, in their order.
+        assert_eq!(
+            names(&weed(&all, &HeaderRules::default())),
+            ["From", "Subject"]
+        );
+        // Prefix ignore with an unignore exception; no order keeps
+        // message order.
+        let rules = HeaderRules {
+            ignore: vec!["x-".into(), "received".into()],
+            unignore: vec!["x-topic".into()],
+            order: vec![],
+        };
+        assert_eq!(names(&weed(&all, &rules)), ["Subject", "X-Topic", "From"]);
+        // hdr_order sorts the listed prefixes first, the rest after.
+        let rules = HeaderRules {
+            ignore: vec!["*".into()],
+            unignore: vec!["subject".into(), "x-topic".into(), "from".into()],
+            order: vec!["x-topic".into(), "from".into()],
+        };
+        assert_eq!(names(&weed(&all, &rules)), ["X-Topic", "From", "Subject"]);
+    }
 
     const MULTIPART: &str = concat!(
         "From: a@example.com\r\n",

@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.26.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.27.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -382,6 +382,27 @@ Lines of overlap when paging (mutt's pager_context).
 Regex classifying quoted body lines (mutt's $quote_regexp; default
 "^([ \\t]*[|>:}#])+"). The depth \(em the number of quote characters
 in the match \(em picks the quoted color.
+.TP
+.B ignore unignore hdr_order
+mutt's header weeding for the brief view: lists of header-name
+prefixes ("*" matches all); ignored headers are hidden unless a
+prefix in unignore re-includes them, and hdr_order sorts the shown
+ones (unlisted names follow in message order). Unset, the classic
+view shows Date/From/To/Cc/Subject. The h key still toggles the
+full list.
+.TP
+.B format
+mutt's $pager_format for the pager's bottom line: %C message
+number, %m count, %n sender, %s subject, %Z status characters,
+%P percent through the message, %f mailbox, plus the conditional
+and %>X machinery. Default: "\-\-\-Message %C/%m: %s \-\- %P".
+.TP
+.B wrap
+mutt's $wrap: wrap body text at N columns instead of the window
+width; a negative N leaves a right margin of |N|.
+.TP
+.B tilde
+mutt's $tilde: pad the rows below end-of-message with ~.
 .SS [ui]
 .TP
 .B theme
