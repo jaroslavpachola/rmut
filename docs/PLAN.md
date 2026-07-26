@@ -364,16 +364,18 @@ message (Alt+e resends), and the compose menu (with Enter viewing
 the selected entry). R23–R26 below are the UX gaps left from that
 audit, ranked; daily-use findings still outrank them all.
 
-## R23 — prompt line editor
+## R23 — prompt line editor (done, 1.22)
 
-Mutt's prompts are a real line editor; rmut's only append at the end.
+Mutt's prompts are a real line editor; rmut's only appended.
 
-- [ ] Cursor movement and mid-line editing at every prompt:
+- [x] Cursor movement and mid-line editing at every prompt:
       left/right, Home/End (and ctrl+a/ctrl+e), insert and delete at
-      the cursor, ctrl+w word delete, the cursor drawn where it is
-- [ ] History per prompt kind (patterns, addresses, mailboxes,
-      subjects, commands): up/down recalls, newest first, in-memory
-      for the session
+      the cursor (Del/ctrl+d), ctrl+u to start, ctrl+k to end,
+      ctrl+w word delete, the cursor marker drawn where it is
+- [x] History per prompt kind (patterns, addresses, mailboxes,
+      files, commands, subjects): Up/Down recalls newest first,
+      stepping back restores the line being typed; 100 entries,
+      in-memory for the session
 
 ## R24 — pager body search
 

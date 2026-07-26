@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.21.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.22.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -172,6 +172,12 @@ toggle full headers
 .BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
 .BR b ", " e " and " a
 work as in the index.
+.SS Prompts
+Every line prompt is a small line editor: Left/Right, Home/End (also
+ctrl+a / ctrl+e), Backspace and Del (ctrl+d) around the cursor,
+ctrl+u kills to the start, ctrl+k to the end, ctrl+w the word before
+the cursor. Up/Down recall the prompt kind's history (patterns,
+addresses, mailboxes, files, commands), newest first.
 .SS Compose questions
 Like mutt's ask-yes defaults: replying to a message with a Reply-To
 asks "Reply to ...?" (no falls back to From), an empty Subject asks

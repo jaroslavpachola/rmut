@@ -1131,6 +1131,56 @@ def scenario_edit_headers(tmp):
     r.close()
 
 
+def scenario_line_editor(tmp):
+    """R23: mid-line editing (ctrl+a/ctrl+d, arrows) and per-kind
+    history (Up recalls) at the prompts; asserts on the sent files."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-le.eml")
+    sendmail = os.path.join(tmp, "sendmail-le.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "le-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "le body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "le-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    # ctrl+a jumps home, ctrl+d deletes the stray leading char
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"Xpetr@example.com\x01\x04\r")
+    r.keys(b"first subject\r")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "To: petr@example.com" in open(sent_file).read(),
+             desc="ctrl+a/ctrl+d edited address")
+    # arrows: insert the missing char mid-line (jne -> jane)
+    r.keys(b"m")
+    r.keys(b"jne@example.com" + b"\x1b[D" * 14 + b"a\r")
+    r.keys(b"arrowmail\r")
+    r.keys(b"y")
+    wait_for(lambda: "To: jane@example.com" in open(sent_file).read()
+             and "Subject: arrowmail" in open(sent_file).read(),
+             desc="arrow-edited address sent")
+    # history: Up recalls jane (newest), Up again petr
+    r.keys(b"m")
+    r.keys(b"\x1b[A\x1b[A\r")
+    r.keys(b"histmail\r")
+    r.keys(b"y")
+    wait_for(lambda: "Subject: histmail" in open(sent_file).read(),
+             desc="history-recalled send")
+    assert open(sent_file).read().count("To: petr@example.com") == 2
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_mutt_flow(tmp):
     """Mutt-default behaviors: the Reply-To/include/no-subject
     questions, e edits the raw message, Space past the end advances,
@@ -1362,6 +1412,7 @@ SCENARIOS = [
     scenario_print,
     scenario_edit_headers,
     scenario_mutt_flow,
+    scenario_line_editor,
     scenario_message_commands,
     scenario_identities,
     scenario_tag_save_sort,

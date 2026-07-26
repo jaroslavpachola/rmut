@@ -112,6 +112,24 @@ pub enum LineKind {
     EditSubject,
 }
 
+impl LineKind {
+    /// History bucket, mutt-style: one shared list per input class.
+    fn history_bucket(self) -> &'static str {
+        match self {
+            LineKind::Limit | LineKind::Search => "pattern",
+            LineKind::ComposeTo
+            | LineKind::BounceTo
+            | LineKind::EditTo
+            | LineKind::EditCc
+            | LineKind::EditBcc => "address",
+            LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg => "mailbox",
+            LineKind::SavePart | LineKind::AttachFile => "file",
+            LineKind::Pipe => "command",
+            LineKind::ComposeSubject | LineKind::EditSubject | LineKind::AliasNick => "other",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum KeyKind {
     Sort,
@@ -139,11 +157,41 @@ pub enum Prompt {
         label: String,
         buf: String,
         kind: LineKind,
+        /// Cursor as a char position into `buf`.
+        cursor: usize,
+        /// Index into the kind's history while browsing with Up/Down.
+        hist_pos: Option<usize>,
+        /// The line being typed, restored when browsing steps back
+        /// past the newest history entry.
+        stash: String,
     },
     Key {
         label: String,
         kind: KeyKind,
     },
+}
+
+impl Prompt {
+    /// A line prompt with the cursor at the end of the prefill.
+    fn line(label: impl Into<String>, buf: String, kind: LineKind) -> Prompt {
+        let cursor = buf.chars().count();
+        Prompt::Line {
+            label: label.into(),
+            buf,
+            kind,
+            cursor,
+            hist_pos: None,
+            stash: String::new(),
+        }
+    }
+}
+
+/// Byte offset of the `cursor`-th char (the length when past the end).
+pub(crate) fn byte_at(buf: &str, cursor: usize) -> usize {
+    buf.char_indices()
+        .nth(cursor)
+        .map(|(i, _)| i)
+        .unwrap_or(buf.len())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -298,6 +346,8 @@ pub struct App {
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
     pending_keys: std::collections::VecDeque<KeyEvent>,
+    /// Prompt history per input class (newest first), for the session.
+    history: HashMap<&'static str, Vec<String>>,
     /// Compiled [[color_index]] rules: (patterns, style patch); the
     /// first matching rule colors the line.
     pub index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
@@ -424,6 +474,7 @@ impl App {
             idle: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
+            history: HashMap::new(),
             index_rules,
             sidebar: Vec::new(),
             sidebar_sel: 0,
@@ -760,26 +811,81 @@ impl App {
                 self.prompt = None;
                 self.run_key_prompt(kind, key.code);
             }
-            Some(Prompt::Line { buf, .. }) => match key.code {
+            Some(Prompt::Line { buf, cursor, .. }) => match key.code {
                 KeyCode::Esc => {
                     self.prompt = None;
                     self.compose_setup = None;
                     self.bounce_to = None;
                     self.alias_addr = None;
                     // Escaping a sub-prompt of the send flow (attach
-                    // file) returns to the send prompt.
+                    // file) returns to the compose menu.
                     if self.compose.is_some() {
                         self.open_compose_menu();
                     }
                 }
+                // The line editor, mutt/readline style.
+                KeyCode::Left => *cursor = cursor.saturating_sub(1),
+                KeyCode::Right => *cursor = (*cursor + 1).min(buf.chars().count()),
+                KeyCode::Home => *cursor = 0,
+                KeyCode::End => *cursor = buf.chars().count(),
+                KeyCode::Char('a') if is_ctrl(&key) => *cursor = 0,
+                KeyCode::Char('e') if is_ctrl(&key) => *cursor = buf.chars().count(),
                 KeyCode::Backspace => {
-                    buf.pop();
+                    if *cursor > 0 {
+                        buf.remove(byte_at(buf, *cursor - 1));
+                        *cursor -= 1;
+                    }
                 }
-                KeyCode::Char('u') if is_ctrl(&key) => buf.clear(),
-                KeyCode::Char(c) if !is_ctrl(&key) => buf.push(c),
+                KeyCode::Delete => {
+                    if *cursor < buf.chars().count() {
+                        buf.remove(byte_at(buf, *cursor));
+                    }
+                }
+                KeyCode::Char('d') if is_ctrl(&key) => {
+                    if *cursor < buf.chars().count() {
+                        buf.remove(byte_at(buf, *cursor));
+                    }
+                }
+                KeyCode::Char('u') if is_ctrl(&key) => {
+                    // Kill to the start of the line.
+                    let i = byte_at(buf, *cursor);
+                    buf.replace_range(..i, "");
+                    *cursor = 0;
+                }
+                KeyCode::Char('k') if is_ctrl(&key) => {
+                    let i = byte_at(buf, *cursor);
+                    buf.truncate(i);
+                }
+                KeyCode::Char('w') if is_ctrl(&key) => {
+                    // Kill the word before the cursor.
+                    let chars: Vec<char> = buf.chars().collect();
+                    let mut c = *cursor;
+                    while c > 0 && chars[c - 1].is_whitespace() {
+                        c -= 1;
+                    }
+                    while c > 0 && !chars[c - 1].is_whitespace() {
+                        c -= 1;
+                    }
+                    let (start, end) = (byte_at(buf, c), byte_at(buf, *cursor));
+                    buf.replace_range(start..end, "");
+                    *cursor = c;
+                }
+                KeyCode::Char(c) if !is_ctrl(&key) => {
+                    buf.insert(byte_at(buf, *cursor), c);
+                    *cursor += 1;
+                }
+                KeyCode::Up => self.history_step(true),
+                KeyCode::Down => self.history_step(false),
                 KeyCode::Tab => self.tab_complete(),
                 KeyCode::Enter => {
                     if let Some(Prompt::Line { buf, kind, .. }) = self.prompt.take() {
+                        let entry = buf.trim().to_string();
+                        if !entry.is_empty() {
+                            let bucket = self.history.entry(kind.history_bucket()).or_default();
+                            bucket.retain(|e| e != &entry);
+                            bucket.insert(0, entry);
+                            bucket.truncate(100);
+                        }
                         self.run_line_prompt(kind, buf.trim());
                     }
                 }
@@ -787,6 +893,49 @@ impl App {
             },
             None => {}
         }
+    }
+
+    /// Up/Down at a line prompt: recall the kind's history (newest
+    /// first); stepping back past the newest restores the line that
+    /// was being typed.
+    fn history_step(&mut self, older: bool) {
+        let Some(Prompt::Line {
+            buf,
+            cursor,
+            kind,
+            hist_pos,
+            stash,
+            ..
+        }) = &mut self.prompt
+        else {
+            return;
+        };
+        let bucket = self
+            .history
+            .get(kind.history_bucket())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if bucket.is_empty() {
+            return;
+        }
+        let next = match (*hist_pos, older) {
+            (None, true) => Some(0),
+            (None, false) => return,
+            (Some(p), true) => Some((p + 1).min(bucket.len() - 1)),
+            (Some(0), false) => None,
+            (Some(p), false) => Some(p - 1),
+        };
+        match next {
+            Some(p) => {
+                if hist_pos.is_none() {
+                    *stash = buf.clone();
+                }
+                *buf = bucket[p].clone();
+            }
+            None => *buf = stash.clone(),
+        }
+        *hist_pos = next;
+        *cursor = buf.chars().count();
     }
 
     fn run_key_prompt(&mut self, kind: KeyKind, code: KeyCode) {
@@ -935,8 +1084,9 @@ impl App {
             return;
         }
         let set_buf = |app: &mut App, text: &str| {
-            if let Some(Prompt::Line { buf, .. }) = &mut app.prompt {
+            if let Some(Prompt::Line { buf, cursor, .. }) = &mut app.prompt {
                 *buf = text.to_string();
+                *cursor = buf.chars().count();
             }
         };
         if let Some(c) = &mut self.complete
@@ -1190,28 +1340,24 @@ impl App {
                     .as_ref()
                     .map(|(s, _)| s.clone())
                     .unwrap_or_default();
-                self.prompt = Some(Prompt::Line {
-                    label: "Limit (~f/~s/~b/~t/~c/~d/flags, ! | (), empty=all): ".into(),
+                self.prompt = Some(Prompt::line(
+                    "Limit (~f/~s/~b/~t/~c/~d/flags, ! | (), empty=all): ",
                     buf,
-                    kind: LineKind::Limit,
-                });
+                    LineKind::Limit,
+                ));
             }
             IndexAction::Search => {
-                self.prompt = Some(Prompt::Line {
-                    label: "Search: ".into(),
-                    buf: String::new(),
-                    kind: LineKind::Search,
-                });
+                self.prompt = Some(Prompt::line("Search: ", String::new(), LineKind::Search));
             }
             IndexAction::SearchNext => self.search_next(),
             IndexAction::Attachments => self.open_attachments(),
             IndexAction::ChangeMailbox => {
                 if self.ready_to_leave() {
-                    self.prompt = Some(Prompt::Line {
-                        label: "Open mailbox (Tab completes): ".into(),
-                        buf: String::new(),
-                        kind: LineKind::ChangeDir,
-                    });
+                    self.prompt = Some(Prompt::line(
+                        "Open mailbox (Tab completes): ",
+                        String::new(),
+                        LineKind::ChangeDir,
+                    ));
                 }
             }
             IndexAction::Folders => self.open_folder_browser(),
@@ -1417,11 +1563,7 @@ impl App {
                         .filename
                         .clone()
                         .unwrap_or_else(|| format!("part-{}.bin", *sel + 1));
-                    self.prompt = Some(Prompt::Line {
-                        label: "Save to file: ".into(),
-                        buf: default,
-                        kind: LineKind::SavePart,
-                    });
+                    self.prompt = Some(Prompt::line("Save to file: ", default, LineKind::SavePart));
                 }
             }
             _ => {}
@@ -1819,11 +1961,7 @@ impl App {
                 .unwrap_or_default(),
             ComposeKind::New | ComposeKind::Forward => String::new(),
         };
-        self.prompt = Some(Prompt::Line {
-            label: "To: ".into(),
-            buf: to_prefill,
-            kind: LineKind::ComposeTo,
-        });
+        self.prompt = Some(Prompt::line("To: ", to_prefill, LineKind::ComposeTo));
     }
 
     fn setup_to_submitted(&mut self, input: &str) {
@@ -1839,11 +1977,11 @@ impl App {
             (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.from_addr, &b.subject),
             _ => String::new(),
         };
-        self.prompt = Some(Prompt::Line {
-            label: "Subject: ".into(),
-            buf: subject_prefill,
-            kind: LineKind::ComposeSubject,
-        });
+        self.prompt = Some(Prompt::line(
+            "Subject: ",
+            subject_prefill,
+            LineKind::ComposeSubject,
+        ));
     }
 
     /// After the Subject prompt: mutt's $abort_nosubject (ask-yes) on
@@ -2198,11 +2336,11 @@ impl App {
             KeyCode::Char('b') => self.edit_header_prompt("Bcc"),
             KeyCode::Char('s') => self.edit_header_prompt("Subject"),
             KeyCode::Char('a') => {
-                self.prompt = Some(Prompt::Line {
-                    label: "Attach file: ".into(),
-                    buf: String::new(),
-                    kind: LineKind::AttachFile,
-                });
+                self.prompt = Some(Prompt::line(
+                    "Attach file: ",
+                    String::new(),
+                    LineKind::AttachFile,
+                ));
             }
             KeyCode::Enter => self.view_compose_entry(),
             KeyCode::Char('D') => self.detach_selected(),
@@ -2296,11 +2434,11 @@ impl App {
             "Bcc" => LineKind::EditBcc,
             _ => LineKind::EditSubject,
         };
-        self.prompt = Some(Prompt::Line {
-            label: format!("{name}: "),
-            buf: self.draft_header(name),
+        self.prompt = Some(Prompt::line(
+            format!("{name}: "),
+            self.draft_header(name),
             kind,
-        });
+        ));
     }
 
     /// D in the compose menu: drop the selected Attach: line (the
@@ -2737,20 +2875,19 @@ impl App {
             return;
         }
         let buf = self.config.mail.save.clone().unwrap_or_default();
-        self.prompt = Some(Prompt::Line {
-            label: if delete {
+        self.prompt = Some(Prompt::line(
+            if delete {
                 "Save to mailbox: "
             } else {
                 "Copy to mailbox: "
-            }
-            .into(),
+            },
             buf,
-            kind: if delete {
+            if delete {
                 LineKind::SaveMsg
             } else {
                 LineKind::CopyMsg
             },
-        });
+        ));
     }
 
     /// The selected message's raw bytes, completing a header-only IMAP
@@ -2845,11 +2982,7 @@ impl App {
             .and_then(|a| a.split('@').next().map(|l| l.to_lowercase()))
             .unwrap_or_default();
         self.alias_addr = Some(from.trim().to_string());
-        self.prompt = Some(Prompt::Line {
-            label: "Alias as (nick): ".into(),
-            buf: nick,
-            kind: LineKind::AliasNick,
-        });
+        self.prompt = Some(Prompt::line("Alias as (nick): ", nick, LineKind::AliasNick));
     }
 
     fn create_alias(&mut self, nick: &str) {
@@ -2870,11 +3003,11 @@ impl App {
         if self.visible.get(self.sel).is_none() {
             return;
         }
-        self.prompt = Some(Prompt::Line {
-            label: "Pipe to command: ".into(),
-            buf: String::new(),
-            kind: LineKind::Pipe,
-        });
+        self.prompt = Some(Prompt::line(
+            "Pipe to command: ",
+            String::new(),
+            LineKind::Pipe,
+        ));
     }
 
     /// Pipe the raw message to a shell command, like mutt's |.
@@ -2896,11 +3029,11 @@ impl App {
         if self.visible.get(self.sel).is_none() {
             return;
         }
-        self.prompt = Some(Prompt::Line {
-            label: "Bounce message to: ".into(),
-            buf: String::new(),
-            kind: LineKind::BounceTo,
-        });
+        self.prompt = Some(Prompt::line(
+            "Bounce message to: ",
+            String::new(),
+            LineKind::BounceTo,
+        ));
     }
 
     fn bounce_to_submitted(&mut self, input: &str) {

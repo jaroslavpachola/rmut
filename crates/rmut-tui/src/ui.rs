@@ -467,7 +467,13 @@ fn draw_postponed(
 fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u16) {
     if let Some(prompt) = &app.prompt {
         let mut text = match prompt {
-            Prompt::Line { label, buf, .. } => format!("{label}{buf}\u{2581}"),
+            Prompt::Line {
+                label, buf, cursor, ..
+            } => {
+                // The marker sits at the cursor, not always at the end.
+                let i = crate::app::byte_at(buf, *cursor);
+                format!("{label}{}\u{2581}{}", &buf[..i], &buf[i..])
+            }
             Prompt::Key { label, .. } => label.clone(),
         };
         // Completion hints and the like show behind the input.
