@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.20** — everything from the 1.0 roadmap plus R5–R17, hardening
+**1.21** — everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -38,9 +38,12 @@ a header cache for large maildirs, mbox rewrite backups, and **flow
 niceties** (R20): attach/review at the send prompt, create-alias,
 $trash, a postponed-draft picker, and **display customization** (R21):
 pattern→color index rules, mutt's status_format, `%M` collapsed
-counts, and **distribution** (R22): CI, crates.io packages, a man page
+counts, **distribution** (R22): CI, crates.io packages, a man page
 (`docs/rmut.1`), and tagged releases with a prebuilt x86_64-linux
-binary. A pty-driven e2e suite (including fake IMAP/SMTP servers and a
+binary, and the **mutt-parity round**: mutt's defaults (index format,
+edit_headers, $resolve, $mark_old, first-new positioning, pager
+markers and $pager_stop, the ask-yes compose questions, e edits the
+raw message) plus the full **compose menu** after the editor. A pty-driven e2e suite (including fake IMAP/SMTP servers and a
 stub gpg) lives in `tests/e2e/`.
 
 ## Install & run
