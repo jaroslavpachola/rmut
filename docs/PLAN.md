@@ -416,6 +416,71 @@ Mutt's prompts are a real line editor; rmut's only appended.
       renders; a status message shortens a full-width line instead
       of falling off the edge
 
+**Third round** (2026-07, after 1.25): the parity audit's ranked list
+is empty, so R27–R30 below collect what daily use and a fresh look at
+mutt still surface — the pager's missing colors, header weeding,
+compose paper cuts, and big-mailbox speed. Ranked; R18 (notmuch)
+stays open and slots after R28; daily-use findings still outrank
+everything.
+
+## R27 — pager colors and motion
+
+The last big *visual* gap: rmut's pager is monochrome where mutt
+tints quotes, hits, and URLs.
+
+- [ ] Quoted-line coloring: mutt's $quote_regexp default
+      (`^([ \t]*[|>:}#])+`) classifies quoted lines, nesting depth
+      cycles `color quoted`/`quoted1`… slots; `[colors] quoted`
+      overrides, importer takes `color quotedN` and `quote_regexp`
+- [ ] `[[color_body]]` rules: regex + fg/bg applied to matching body
+      spans in the pager (URLs, diff lines); imported from
+      `color body FG BG REGEX`
+- [ ] Search-hit highlighting: the R24 pager search paints its
+      matches (`color search` slot, reverse by default) and the hit
+      the cursor is on
+- [ ] Motion: ctrl+d/ctrl+u half-page, `T` hides quoted lines,
+      `S` skips past the current quoted block (all remappable,
+      importer maps half-down/half-up/toggle-quoted/skip-quoted)
+
+## R28 — header weeding and pager polish
+
+- [ ] ignore/unignore lists drive the brief header view (default
+      keeps today's Date/From/To/Cc/Subject), `hdr_order` sorts it;
+      both imported from muttrc; `[pager] ignore`/`hdr_order` in TOML
+- [ ] `[pager] format`: mutt's $pager_format renders the pager's
+      bottom line (default keeps the classic "---Message n/m"),
+      sharing the status renderer and its %>/%P machinery
+- [ ] `$wrap`: wrap at N columns instead of the full width (negative
+      N = right margin), body and markers honor it; imported
+- [ ] `~` tilde padding below end-of-message (mutt's $tilde look)
+
+## R29 — compose round 2
+
+- [ ] `$fast_reply` (skip the To/Subject prompts on reply/forward)
+      and `$autoedit` (skip straight into the editor, compose menu
+      after), both imported
+- [ ] Compose menu: `d` edits an attachment's description, ctrl+t
+      its content-type (mutt's edit-type); both land in the Attach:
+      line
+- [ ] `mime_forward = "ask"`: the forward flow asks
+      "Forward as attachment?" (yes = today's mime_forward, no =
+      inline quote); `$forward_decode` decodes when inline
+- [ ] `f` edits Fcc in the compose menu; `$copy = no` (imported)
+      skips the sent copy entirely
+
+## R30 — big mailboxes
+
+- [ ] IMAP server-side search: `~b`/`~B` (and plain-text terms) in
+      limit/search run as UID SEARCH on the open folder instead of
+      fetching every body; falls back locally when the server can't
+- [ ] Progressive open: huge folders show the index while envelope
+      batches stream in (windowed UID FETCH, newest first), the
+      status line counting up
+- [ ] `new_mail_command`: run a shell command when new mail arrives
+      (notify-send and friends), `%f`/`%n` expansions; imported
+- [ ] Header-cache hygiene: drop entries whose files vanished and
+      compact the cache file when it grows past its live set
+
 ## Non-goals
 
 S/MIME, POP3, scoring — still out; revisit only if daily use proves
