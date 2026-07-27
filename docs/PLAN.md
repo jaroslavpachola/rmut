@@ -498,7 +498,99 @@ tints quotes, hits, and URLs.
       files of vanished maildirs — a weekly sweep (marker-limited)
       drops them, keyed by the mailbox path now stored in each file
 
+## Proposed rounds (2026-07, from the mutt-parity gap analysis)
+
+Ranked by how soon a mutt veteran trips over the gap; none committed
+until picked up, and daily-use paper cuts still outrank all of them.
+
+## R31 — patterns v3
+
+Goal: close the pattern-operator gaps a mutt hand reaches for first.
+
+- [ ] `~h` (any header, read from disk like `~e`), `~i` (Message-ID),
+      `~x` already exists — check `~r` (received date) against Date
+      handling
+- [ ] `~m` message ranges (`~m 10-20`, `.`, `$`), `~z` size ranges
+      (`~z >100K`)
+- [ ] `~=` duplicate messages (same Message-ID seen twice)
+- [ ] everywhere patterns go: limit, search, pattern-ops, color_index
+      rules, identities
+
+## R32 — enter-command
+
+Goal: mutt's `:` prompt — runtime configuration without restarting.
+
+- [ ] `:` opens a command prompt (line editor + history) accepting
+      set/unset/toggle of the runtime-changeable options, bind,
+      macro, color, ignore/unignore, alias
+- [ ] `push`/`exec` for macros; errors report in the error style
+- [ ] this is the machinery folder-hooks with arbitrary commands
+      would need later — design with that in mind
+
+## R33 — batch and CLI round
+
+Goal: rmut as a drop-in mutt for scripts and one-shot sends.
+
+- [ ] `rmut -s subj -a file [-c cc] -- addr < body` sends without
+      the TUI (identity/SMTP from config)
+- [ ] `mailto:` argument opens a prefilled compose (also covers
+      being the system mailto handler)
+- [ ] `-p` recalls the postponed picker, `-y` opens the mailbox
+      list, `-z`/`-Z` exit codes for new mail
+- [ ] `-e command` runs a config command at startup (needs R32's
+      parser)
+
+## R34 — mailing lists
+
+Goal: mutt's list machinery around the existing `%L`.
+
+- [ ] `subscribe`/`lists` (config + importer), `~l` pattern
+- [ ] `L` list-reply in index and pager
+- [ ] honor Mail-Followup-To on group replies; set it on mail to
+      subscribed lists ($followup_to)
+
+## R35 — alternates and my_hdr
+
+Goal: rmut knows which addresses are "me" and what extra headers to
+send.
+
+- [ ] `alternates` (config regex list + importer): reply-to-all
+      dedup, the `+`/`T` index marks, reverse_name lookups
+- [ ] `my_hdr`/`unmy_hdr`: default headers merged into every compose
+      (edit_headers shows them)
+
+## R36 — hooks round 2
+
+Goal: the per-context hooks daily mutt configs actually use.
+
+- [ ] fcc-hook / fcc-save-hook (pattern → Fcc mailbox)
+- [ ] message-hook (pattern → display-time settings) and reply-hook
+- [ ] crypt-hook: per-recipient PGP key selection
+- [ ] folder-hook running arbitrary commands (on top of R32)
+
+## R37 — format=flowed
+
+Goal: f=f both ways.
+
+- [ ] display: reflow flowed paragraphs to the wrap width, keeping
+      quote depth
+- [ ] compose: optionally send text/plain; format=flowed
+      ($text_flowed), space-stuffing included
+
+## R38 — MIME polish
+
+Goal: the remaining display-selection knobs.
+
+- [ ] alternative_order / unalternative_order (importer too) —
+      slots into pick_alternative
+- [ ] unauto_view; read ~/.mailcap for filters when [filters] has no
+      entry (copiousoutput entries only)
+- [ ] decrypted PGP/MIME entities render through the full tree
+      (attachments inside encrypted mail), not just their first text
+      part
+
 ## Non-goals
 
 S/MIME, POP3, scoring — still out; revisit only if daily use proves
-otherwise.
+otherwise. MH/MMDF folders and compressed-folder hooks join them:
+maildir, mbox, and IMAP cover this machine.
