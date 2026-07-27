@@ -650,6 +650,14 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
         Mode::Help { .. } => "---rmut: help".to_string(),
         Mode::Index => index_status(app, area.width as usize, content_height as usize),
     };
+    // An error takes over the whole row in the error color, mutt's
+    // message line; notes append to the bar as before.
+    if app.status_error
+        && let Some(msg) = &app.status
+    {
+        frame.render_widget(Line::from(msg.clone()).style(app.theme.error), area);
+        return;
+    }
     let text = match &app.status {
         Some(msg) => {
             // Keep the message visible even when a %>-filled status

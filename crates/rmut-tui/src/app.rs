@@ -376,6 +376,9 @@ pub struct App {
     pub mode: Mode,
     pub prompt: Option<Prompt>,
     pub status: Option<String>,
+    /// Set when `status` is an error: the bottom line renders it in
+    /// the error color and a bell rang (mutt's color error + $beep).
+    pub status_error: bool,
     pub sort: SortKey,
     pub sort_rev: bool,
     pub limit: Option<(String, Vec<Pattern>)>,
@@ -606,6 +609,7 @@ impl App {
             mode: Mode::Index,
             prompt: None,
             status,
+            status_error: false,
             sort: SortKey::Date,
             sort_rev: false,
             limit: None,
@@ -775,6 +779,7 @@ impl App {
             if let Some(key) = key {
                 let size = terminal.size()?;
                 self.status = None;
+                self.status_error = false;
                 self.handle_key(key, size.width as usize, size.height as usize);
             }
             // The IDLE watcher makes server changes show up within a
@@ -829,14 +834,14 @@ impl App {
             // synchronously; the rescan below integrates the files.
             if backfilling {
             } else if let Err(err) = remote.check_new() {
-                self.status = Some(format!("imap: {err:#}"));
+                self.error_status(format!("imap: {err:#}"));
             }
         }
         self.maybe_backfill();
         if let Some(mbox) = &mut self.mbox {
             // Re-mirror when the file changed; same rescan pickup.
             if let Err(err) = mbox.refresh() {
-                self.status = Some(format!("mbox: {err:#}"));
+                self.error_status(format!("mbox: {err:#}"));
             }
         }
         self.check_other_mailboxes();
@@ -1275,7 +1280,7 @@ impl App {
                 KeyCode::Char('n') => self.subject_ready(String::new()),
                 _ => {
                     self.compose_setup = None;
-                    self.status = Some("aborted (no subject)".into());
+                    self.error_status("aborted (no subject)");
                 }
             },
             KeyKind::IncludeReply => {
@@ -1401,7 +1406,7 @@ impl App {
             after_comma + buf_now[after_comma..].len() - buf_now[after_comma..].trim_start().len();
         let word = buf_now[start..].trim().to_string();
         if word.is_empty() {
-            self.status = Some("nothing to complete".into());
+            self.error_status("nothing to complete");
             return;
         }
         let candidates = if is_addr {
@@ -1414,7 +1419,7 @@ impl App {
             let specs = match self.folder_candidates() {
                 Ok(specs) => specs,
                 Err(err) => {
-                    self.status = Some(format!("cannot list folders: {err:#}"));
+                    self.error_status(format!("cannot list folders: {err:#}"));
                     return;
                 }
             };
@@ -1430,7 +1435,7 @@ impl App {
                 .collect()
         };
         match candidates.len() {
-            0 => self.status = Some(format!("no matches for {word}")),
+            0 => self.error_status(format!("no matches for {word}")),
             n => {
                 let next = format!("{}{}", &buf_now[..start], candidates[0]);
                 set_buf(self, &next);
@@ -1460,7 +1465,7 @@ impl App {
                             self.limit = Some((input.to_string(), patterns));
                         }
                         Err(err) => {
-                            self.status = Some(format!("bad pattern: {err}"));
+                            self.error_status(format!("bad pattern: {err}"));
                             return;
                         }
                     }
@@ -1478,7 +1483,7 @@ impl App {
                             self.last_search = Some(patterns);
                         }
                         Err(err) => {
-                            self.status = Some(format!("bad pattern: {err}"));
+                            self.error_status(format!("bad pattern: {err}"));
                             return;
                         }
                     }
@@ -1493,7 +1498,7 @@ impl App {
                 if self.pager_search.is_some() {
                     self.pager_search_step(true);
                 } else {
-                    self.status = Some("No search pattern.".into());
+                    self.error_status("No search pattern.");
                 }
             }
             LineKind::DeletePattern => self.apply_pattern(input, "deleted", |m| {
@@ -1589,14 +1594,14 @@ impl App {
             IndexAction::CreateAlias => self.prompt_create_alias(),
             IndexAction::Query => {
                 if self.config.mail.query_command.is_none() {
-                    self.status = Some("no query_command configured".into());
+                    self.error_status("no query_command configured");
                 } else {
                     self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
                 }
             }
             IndexAction::Notmuch => {
                 if self.config.mail.notmuch == Some(false) {
-                    self.status = Some("notmuch is disabled in the config".into());
+                    self.error_status("notmuch is disabled in the config");
                 } else {
                     self.prompt = Some(Prompt::line(
                         "Notmuch query: ",
@@ -1830,7 +1835,7 @@ impl App {
             }
             PagerAction::NextMsg | PagerAction::NextUndeleted => {
                 if self.part_pager() {
-                    self.status = Some("Not available in this menu.".into());
+                    self.error_status("Not available in this menu.");
                     return;
                 }
                 match self.step_message(true, action == PagerAction::NextUndeleted) {
@@ -1838,13 +1843,13 @@ impl App {
                         self.sel = pos;
                         self.open_selected();
                     }
-                    None => self.status = Some("last message".into()),
+                    None => self.error_status("last message"),
                 }
                 return;
             }
             PagerAction::PrevMsg | PagerAction::PrevUndeleted => {
                 if self.part_pager() {
-                    self.status = Some("Not available in this menu.".into());
+                    self.error_status("Not available in this menu.");
                     return;
                 }
                 match self.step_message(false, action == PagerAction::PrevUndeleted) {
@@ -1852,13 +1857,13 @@ impl App {
                         self.sel = pos;
                         self.open_selected();
                     }
-                    None => self.status = Some("first message".into()),
+                    None => self.error_status("first message"),
                 }
                 return;
             }
             PagerAction::Delete => {
                 if self.part_pager() {
-                    self.status = Some("Not available in this menu.".into());
+                    self.error_status("Not available in this menu.");
                     return;
                 }
                 if self.deny_readonly() {
@@ -1984,7 +1989,7 @@ impl App {
                     self.sel = pos;
                     self.open_selected();
                 }
-                None => self.status = Some("last message".into()),
+                None => self.error_status("last message"),
             }
             return;
         }
@@ -2039,7 +2044,7 @@ impl App {
                 if i < rows.len() {
                     pager.scroll = i.min(max_scroll.max(pager.scroll));
                 } else {
-                    self.status = Some("No more quoted text.".into());
+                    self.error_status("No more quoted text.");
                 }
             }
             _ => {}
@@ -2085,7 +2090,7 @@ impl App {
                     });
                 }
             }
-            None => self.status = Some("Not found.".into()),
+            None => self.error_status("Not found."),
         }
     }
 
@@ -2158,12 +2163,14 @@ impl App {
                     back,
                 };
             }
-            Ok(_) => self.status = Some("message has no parts".into()),
-            Err(err) => self.status = Some(format!("cannot list parts: {err:#}")),
+            Ok(_) => self.error_status("message has no parts"),
+            Err(err) => self.error_status(format!("cannot list parts: {err:#}")),
         }
     }
 
     fn view_part(&mut self) {
+        // A fresh pager session, search-wise (see open_selected).
+        self.pager_search = None;
         let (msg_path, index, is_text, mimetype) = match &self.mode {
             Mode::Attach {
                 msg_path,
@@ -2196,12 +2203,12 @@ impl App {
                                 back: Some(Box::new(menu)),
                             });
                         }
-                        Err(err) => self.status = Some(format!("filter failed: {err:#}")),
+                        Err(err) => self.error_status(format!("filter failed: {err:#}")),
                     }
                     return;
                 }
                 None => {
-                    self.status = Some(format!("{mimetype} is not text — save it with s"));
+                    self.error_status(format!("{mimetype} is not text — save it with s"));
                     return;
                 }
             }
@@ -2222,7 +2229,7 @@ impl App {
                     back: Some(Box::new(menu)),
                 });
             }
-            Err(err) => self.status = Some(format!("cannot decode part: {err:#}")),
+            Err(err) => self.error_status(format!("cannot decode part: {err:#}")),
         }
     }
 
@@ -2235,7 +2242,7 @@ impl App {
         match message::part_bytes(&msg_path, index) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
-                self.status = Some(format!("cannot decode part: {err:#}"));
+                self.error_status(format!("cannot decode part: {err:#}"));
                 None
             }
         }
@@ -2244,7 +2251,7 @@ impl App {
     /// `|` on the attachment menu: the decoded part to a command.
     fn pipe_part(&mut self, command: &str) {
         if command.is_empty() {
-            self.status = Some("no command given".into());
+            self.error_status("no command given");
             return;
         }
         let Some(bytes) = self.selected_part_bytes() else {
@@ -2252,7 +2259,7 @@ impl App {
         };
         match pipe_to(command, &bytes) {
             Ok(()) => self.status = Some(format!("piped to {command}")),
-            Err(err) => self.status = Some(format!("pipe failed: {err:#}")),
+            Err(err) => self.error_status(format!("pipe failed: {err:#}")),
         }
     }
 
@@ -2269,7 +2276,7 @@ impl App {
             .unwrap_or_else(|| "lpr".into());
         match pipe_to(&command, &bytes) {
             Ok(()) => self.status = Some(format!("printed via {command}")),
-            Err(err) => self.status = Some(format!("print failed: {err:#}")),
+            Err(err) => self.error_status(format!("print failed: {err:#}")),
         }
     }
 
@@ -2279,12 +2286,12 @@ impl App {
             _ => return,
         };
         if input.is_empty() {
-            self.status = Some("no filename given".into());
+            self.error_status("no filename given");
             return;
         }
         let target = expand_tilde(input);
         if target.exists() {
-            self.status = Some(format!("{} exists — not overwriting", target.display()));
+            self.error_status(format!("{} exists — not overwriting", target.display()));
             return;
         }
         let result = message::part_bytes(&msg_path, index).and_then(|bytes| {
@@ -2293,7 +2300,7 @@ impl App {
         });
         match result {
             Ok(n) => self.status = Some(format!("saved {n} bytes to {}", target.display())),
-            Err(err) => self.status = Some(format!("save failed: {err:#}")),
+            Err(err) => self.error_status(format!("save failed: {err:#}")),
         }
     }
 
@@ -2360,7 +2367,7 @@ impl App {
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(err) => {
-                self.status = Some(format!("cannot browse {}: {err}", root.display()));
+                self.error_status(format!("cannot browse {}: {err}", root.display()));
                 return;
             }
         };
@@ -2412,7 +2419,7 @@ impl App {
         };
         for sub in ["cur", "new", "tmp"] {
             if let Err(err) = std::fs::create_dir_all(path.join(sub)) {
-                self.status = Some(format!("cannot create {}: {err}", path.display()));
+                self.error_status(format!("cannot create {}: {err}", path.display()));
                 return;
             }
         }
@@ -2455,18 +2462,18 @@ impl App {
             Ok(out) if out.status.success() => out,
             Ok(out) => {
                 let err = String::from_utf8_lossy(&out.stderr);
-                self.status = Some(format!("notmuch: {}", err.trim()));
+                self.error_status(format!("notmuch: {}", err.trim()));
                 return;
             }
             Err(err) => {
-                self.status = Some(format!("notmuch: {err}"));
+                self.error_status(format!("notmuch: {err}"));
                 return;
             }
         };
         let stdout = String::from_utf8_lossy(&out.stdout);
         let files: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
         if files.is_empty() {
-            self.status = Some("notmuch: no matches".into());
+            self.error_status("notmuch: no matches");
             return;
         }
         if !self.ready_to_leave() {
@@ -2596,12 +2603,12 @@ impl App {
         let dirs = match self.folder_candidates() {
             Ok(dirs) => dirs,
             Err(err) => {
-                self.status = Some(format!("cannot list folders: {err:#}"));
+                self.error_status(format!("cannot list folders: {err:#}"));
                 return;
             }
         };
         if dirs.is_empty() {
-            self.status = Some("no maildirs found next to this one".into());
+            self.error_status("no maildirs found next to this one");
             return;
         }
         let sel = dirs
@@ -2639,7 +2646,7 @@ impl App {
     /// block the switch. True when it is safe to go.
     fn ready_to_leave(&mut self) -> bool {
         if self.deleted_count() > 0 {
-            self.status = Some("deleted messages pending — sync with $ or undelete first".into());
+            self.error_status("deleted messages pending — sync with $ or undelete first");
             return false;
         }
         if self.pending_count() > 0 {
@@ -2679,7 +2686,7 @@ impl App {
                     app.refresh_sidebar();
                     *self = app;
                 }
-                Err(err) => self.status = Some(format!("cannot open {spec}: {err:#}")),
+                Err(err) => self.error_status(format!("cannot open {spec}: {err:#}")),
             }
             return;
         }
@@ -2690,7 +2697,7 @@ impl App {
                 app.refresh_sidebar();
                 *self = app;
             }
-            Err(err) => self.status = Some(format!("cannot open {spec}: {err:#}")),
+            Err(err) => self.error_status(format!("cannot open {spec}: {err:#}")),
         }
     }
 
@@ -2744,7 +2751,7 @@ impl App {
             match self.compose_base() {
                 Some(b) => Some(b),
                 None => {
-                    self.status = Some("no message selected".into());
+                    self.error_status("no message selected");
                     return;
                 }
             }
@@ -2998,7 +3005,7 @@ impl App {
                     fcc: None,
                 });
             }
-            Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
+            Err(err) => self.error_status(format!("cannot write draft: {err:#}")),
         }
     }
 
@@ -3065,7 +3072,7 @@ impl App {
                 self.open_compose_menu();
             }
             _ => {
-                self.status = Some(format!(
+                self.error_status(format!(
                     "editor failed — draft kept at {}",
                     compose.path.display()
                 ));
@@ -3336,14 +3343,14 @@ impl App {
                 Some(command) => match run_file_filter(&command, &a.path) {
                     Ok(text) => (name, text),
                     Err(err) => {
-                        self.status = Some(format!("filter failed: {err:#}"));
+                        self.error_status(format!("filter failed: {err:#}"));
                         return;
                     }
                 },
                 None if mimetype.starts_with("text/") => match std::fs::read_to_string(&a.path) {
                     Ok(text) => (name, text),
                     Err(err) => {
-                        self.status = Some(format!("cannot read {name}: {err}"));
+                        self.error_status(format!("cannot read {name}: {err}"));
                         return;
                     }
                 },
@@ -3377,7 +3384,7 @@ impl App {
         };
         let fixed = 1 + usize::from(self.compose.as_ref().is_some_and(|c| c.attach.is_some()));
         if sel < fixed {
-            self.status = Some("only Attach: files can be edited".into());
+            self.error_status("only Attach: files can be edited");
             return;
         }
         let k = sel - fixed;
@@ -3462,7 +3469,7 @@ impl App {
         };
         let fixed = 1 + usize::from(self.compose.as_ref().is_some_and(|c| c.attach.is_some()));
         if sel < fixed {
-            self.status = Some("only Attach: files can be detached".into());
+            self.error_status("only Attach: files can be detached");
             return;
         }
         let k = sel - fixed;
@@ -3495,7 +3502,7 @@ impl App {
         let input = input.trim();
         if !input.is_empty() {
             if !expand_tilde(input).is_file() {
-                self.status = Some(format!("{input} is not a file"));
+                self.error_status(format!("{input} is not a file"));
             } else if let Some(c) = &mut self.compose {
                 // Quote paths with spaces the way extract_attachments
                 // reads them back.
@@ -3519,7 +3526,7 @@ impl App {
                     }),
                 };
                 if let Err(err) = result {
-                    self.status = Some(format!("cannot attach: {err}"));
+                    self.error_status(format!("cannot attach: {err}"));
                 }
             }
         }
@@ -3546,7 +3553,7 @@ impl App {
         let raw = match draft_full(&compose_state) {
             Ok(r) => r,
             Err(err) => {
-                self.status = Some(format!("cannot read draft: {err}"));
+                self.error_status(format!("cannot read draft: {err}"));
                 return;
             }
         };
@@ -3564,7 +3571,7 @@ impl App {
         ) {
             Ok(t) => t,
             Err(err) => {
-                self.status = Some(format!("{err} — press e to edit"));
+                self.error_status(format!("{err} — press e to edit"));
                 self.compose = Some(compose_state);
                 self.open_compose_menu();
                 return;
@@ -3574,7 +3581,7 @@ impl App {
             Some(path) => match std::fs::read(path) {
                 Ok(bytes) => Some(bytes),
                 Err(err) => {
-                    self.status = Some(format!("cannot attach the original: {err}"));
+                    self.error_status(format!("cannot attach the original: {err}"));
                     self.compose = Some(compose_state);
                     self.open_compose_menu();
                     return;
@@ -3590,7 +3597,7 @@ impl App {
         ) {
             Ok(t) => t,
             Err(err) => {
-                self.status = Some(format!("{err:#} — e edits, s changes security"));
+                self.error_status(format!("{err:#} — e edits, s changes security"));
                 self.compose = Some(compose_state);
                 self.open_compose_menu();
                 return;
@@ -3673,7 +3680,7 @@ impl App {
                 self.status = Some(note);
             }
             Err(err) => {
-                self.status = Some(format!("send failed: {err:#}"));
+                self.error_status(format!("send failed: {err:#}"));
                 self.compose = Some(compose_state);
                 self.open_compose_menu();
             }
@@ -3794,7 +3801,7 @@ impl App {
                 self.status = Some(format!("postponed to {}", path.display()));
             }
             Err(err) => {
-                self.status = Some(format!(
+                self.error_status(format!(
                     "postpone failed: {err:#} — draft at {}",
                     compose_state.path.display()
                 ));
@@ -3811,7 +3818,7 @@ impl App {
             .unwrap_or_default();
         let mut files = files;
         if files.is_empty() {
-            self.status = Some("no postponed messages".into());
+            self.error_status("no postponed messages");
             return;
         }
         if files.len() == 1 {
@@ -3848,7 +3855,7 @@ impl App {
                     fcc: None,
                 });
             }
-            Err(err) => self.status = Some(format!("cannot recall: {err:#}")),
+            Err(err) => self.error_status(format!("cannot recall: {err:#}")),
         }
     }
 
@@ -3887,7 +3894,7 @@ impl App {
     fn replay(&mut self, seq: Vec<KeyEvent>) {
         if self.pending_keys.len() + seq.len() > 1000 {
             self.pending_keys.clear();
-            self.status = Some("macro expansion too deep — stopped".into());
+            self.error_status("macro expansion too deep — stopped");
             return;
         }
         for (i, key) in seq.into_iter().enumerate() {
@@ -3946,13 +3953,13 @@ impl App {
             && remote::is_partial(&path)
             && let Err(err) = remote.fetch_body(&path)
         {
-            self.status = Some(format!("cannot fetch message: {err:#}"));
+            self.error_status(format!("cannot fetch message: {err:#}"));
             return None;
         }
         match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
-                self.status = Some(format!("cannot read message: {err}"));
+                self.error_status(format!("cannot read message: {err}"));
                 None
             }
         }
@@ -3963,7 +3970,7 @@ impl App {
     /// deleted afterwards — mutt's s versus C.
     fn copy_message(&mut self, input: &str, delete: bool) {
         if input.is_empty() {
-            self.status = Some("no mailbox given".into());
+            self.error_status("no mailbox given");
             return;
         }
         let Some(&i) = self.visible.get(self.sel) else {
@@ -3979,13 +3986,13 @@ impl App {
                     match remote.append_to(folder, flags, &bytes) {
                         Ok(folder) => format!("imap:{account}/{folder}"),
                         Err(err) => {
-                            self.status = Some(format!("cannot save: {err:#}"));
+                            self.error_status(format!("cannot save: {err:#}"));
                             return;
                         }
                     }
                 }
                 _ => {
-                    self.status = Some("can only save to a folder of the open account".into());
+                    self.error_status("can only save to a folder of the open account");
                     return;
                 }
             },
@@ -3997,7 +4004,7 @@ impl App {
                 match result {
                     Ok(shown) => shown,
                     Err(err) => {
-                        self.status = Some(format!("cannot save: {err:#}"));
+                        self.error_status(format!("cannot save: {err:#}"));
                         return;
                     }
                 }
@@ -4022,7 +4029,7 @@ impl App {
         };
         let path = self.msgs[i].env.file.path.clone();
         let Some(from) = message::first_header(&path, "From") else {
-            self.status = Some("the message has no From header".into());
+            self.error_status("the message has no From header");
             return;
         };
         let nick = compose::bare_address(&from)
@@ -4037,12 +4044,12 @@ impl App {
             return;
         };
         if nick.is_empty() || nick.contains(char::is_whitespace) {
-            self.status = Some("the alias nick must be one word".into());
+            self.error_status("the alias nick must be one word");
             return;
         }
         match alias::append(nick, &addr) {
             Ok(_) => self.status = Some(format!("added: alias {nick} {addr}")),
-            Err(err) => self.status = Some(format!("cannot save the alias: {err:#}")),
+            Err(err) => self.error_status(format!("cannot save the alias: {err:#}")),
         }
     }
 
@@ -4060,7 +4067,7 @@ impl App {
     /// Pipe the raw message to a shell command, like mutt's |.
     fn pipe_message(&mut self, command: &str) {
         if command.is_empty() {
-            self.status = Some("no command given".into());
+            self.error_status("no command given");
             return;
         }
         let Some(bytes) = self.full_message_bytes() else {
@@ -4068,7 +4075,7 @@ impl App {
         };
         match pipe_to(command, &bytes) {
             Ok(()) => self.status = Some(format!("piped to {command}")),
-            Err(err) => self.status = Some(format!("pipe failed: {err:#}")),
+            Err(err) => self.error_status(format!("pipe failed: {err:#}")),
         }
     }
 
@@ -4104,7 +4111,7 @@ impl App {
         };
         let rcpts = compose::addresses(to);
         if rcpts.is_empty() {
-            self.status = Some(format!("cannot parse the addresses in {to:?}"));
+            self.error_status(format!("cannot parse the addresses in {to:?}"));
             return;
         }
         let host = maildir::hostname();
@@ -4132,7 +4139,7 @@ impl App {
         };
         match result {
             Ok(()) => self.status = Some(format!("message bounced to {to}")),
-            Err(err) => self.status = Some(format!("bounce failed: {err:#}")),
+            Err(err) => self.error_status(format!("bounce failed: {err:#}")),
         }
     }
 
@@ -4144,7 +4151,7 @@ impl App {
             return;
         }
         if self.mbox.is_some() {
-            self.status = Some("editing in place is not supported for mbox spools".into());
+            self.error_status("editing in place is not supported for mbox spools");
             return;
         }
         if self.full_message_bytes().is_none() {
@@ -4157,7 +4164,7 @@ impl App {
         let original = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                self.status = Some(format!("cannot read message: {err}"));
+                self.error_status(format!("cannot read message: {err}"));
                 return;
             }
         };
@@ -4167,7 +4174,7 @@ impl App {
         }) {
             Ok(p) => p,
             Err(err) => {
-                self.status = Some(format!("cannot write edit copy: {err:#}"));
+                self.error_status(format!("cannot write edit copy: {err:#}"));
                 return;
             }
         };
@@ -4188,7 +4195,7 @@ impl App {
         let edited = std::fs::read(&temp).unwrap_or_default();
         let _ = std::fs::remove_file(&temp);
         if !matches!(status, Ok(s) if s.success()) {
-            self.status = Some("editor failed — message unchanged".into());
+            self.error_status("editor failed — message unchanged");
             return;
         }
         if edited == original {
@@ -4202,7 +4209,7 @@ impl App {
                 let flags = self.msgs[self.visible[self.sel]].env.file.flags;
                 let mailbox = remote.mailbox.clone();
                 if let Err(err) = remote.append_to(&mailbox, flags, &edited) {
-                    self.status = Some(format!("cannot store the edited copy: {err:#}"));
+                    self.error_status(format!("cannot store the edited copy: {err:#}"));
                     return;
                 }
                 if let Some(m) = self.cur_mut() {
@@ -4215,7 +4222,7 @@ impl App {
             }
             None => {
                 if let Err(err) = std::fs::write(&path, &edited) {
-                    self.status = Some(format!("cannot write message: {err}"));
+                    self.error_status(format!("cannot write message: {err}"));
                     return;
                 }
                 self.rescan();
@@ -4233,7 +4240,7 @@ impl App {
             return;
         }
         let Some(base) = self.compose_base() else {
-            self.status = Some("no message selected".into());
+            self.error_status("no message selected");
             return;
         };
         let body = message::body_text(&base.path).unwrap_or_default();
@@ -4259,7 +4266,7 @@ impl App {
                     fcc: None,
                 });
             }
-            Err(err) => self.status = Some(format!("cannot write draft: {err:#}")),
+            Err(err) => self.error_status(format!("cannot write draft: {err:#}")),
         }
     }
 
@@ -4278,7 +4285,7 @@ impl App {
     /// refused because of `rmut -R`.
     fn deny_readonly(&mut self) -> bool {
         if self.read_only {
-            self.status = Some("Mailbox is read-only.".into());
+            self.error_status("Mailbox is read-only.");
         }
         self.read_only
     }
@@ -4325,8 +4332,25 @@ impl App {
         Ok(view)
     }
 
+    /// An error status: rendered in the error color with a bell,
+    /// unlike informational notes (mutt's mutt_error vs mutt_message).
+    fn error_status(&mut self, msg: impl Into<String>) {
+        self.status = Some(msg.into());
+        self.status_error = true;
+        if self.config.ui.beep {
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x07");
+            let _ = out.flush();
+        }
+    }
+
     fn open_selected(&mut self) {
         self.mark_read();
+        // Opening a message ends the pager search, like mutt (whose
+        // compiled search is per pager session); the text stays as
+        // the next prompt's prefill.
+        self.pager_search = None;
         let Some(&i) = self.visible.get(self.sel) else {
             return;
         };
@@ -4341,7 +4365,7 @@ impl App {
                     back: None,
                 });
             }
-            Err(err) => self.status = Some(format!("cannot open message: {err:#}")),
+            Err(err) => self.error_status(format!("cannot open message: {err:#}")),
         }
     }
 
@@ -4365,7 +4389,7 @@ impl App {
         let view = match self.load_view(&path) {
             Ok(v) => v,
             Err(err) => {
-                self.status = Some(format!("cannot print: {err:#}"));
+                self.error_status(format!("cannot print: {err:#}"));
                 return;
             }
         };
@@ -4383,13 +4407,13 @@ impl App {
             .unwrap_or_else(|| "lpr".into());
         match pipe_to(&command, text.as_bytes()) {
             Ok(()) => self.status = Some(format!("printed via {command}")),
-            Err(err) => self.status = Some(format!("print failed: {err:#}")),
+            Err(err) => self.error_status(format!("print failed: {err:#}")),
         }
     }
 
     fn toggle_collapse(&mut self, all: bool) {
         if self.sort != SortKey::Threads {
-            self.status = Some("folding needs thread sort (o t)".into());
+            self.error_status("folding needs thread sort (o t)");
             return;
         }
         let keep;
@@ -4503,7 +4527,7 @@ impl App {
 
     fn search_next(&mut self) {
         let Some(patterns) = self.last_search.clone() else {
-            self.status = Some("no search pattern (use /)".into());
+            self.error_status("no search pattern (use /)");
             return;
         };
         if self.visible.is_empty() {
@@ -4520,7 +4544,7 @@ impl App {
                 return;
             }
         }
-        self.status = Some("not found".into());
+        self.error_status("not found");
     }
 
     /// Tab / Alt+Tab: jump to the next (previous) new-or-unread
@@ -4541,7 +4565,7 @@ impl App {
                 return;
             }
         }
-        self.status = Some("no new or unread messages".into());
+        self.error_status("no new or unread messages");
     }
 
     /// Apply `f` to every message matching `input`, within the active
@@ -4554,7 +4578,7 @@ impl App {
         let patterns = match pattern::parse(input) {
             Ok(p) => p,
             Err(err) => {
-                self.status = Some(format!("bad pattern: {err}"));
+                self.error_status(format!("bad pattern: {err}"));
                 return;
             }
         };
@@ -4631,7 +4655,7 @@ impl App {
             && expand_tilde(&trash) != self.dir
             && let Err(err) = self.trash_deleted(&trash)
         {
-            self.status = Some(format!("trash failed: {err:#} — nothing purged"));
+            self.error_status(format!("trash failed: {err:#} — nothing purged"));
             return;
         }
         if let Some(remote) = &mut self.remote {
@@ -4658,7 +4682,7 @@ impl App {
                 });
             if let Err(err) = result {
                 // Nothing applied locally: everything stays pending.
-                self.status = Some(format!("sync failed: {err:#}"));
+                self.error_status(format!("sync failed: {err:#}"));
                 return;
             }
         }
@@ -4679,7 +4703,7 @@ impl App {
             }
             if let Err(err) = mbox.write_back(&state) {
                 // Nothing applied locally: everything stays pending.
-                self.status = Some(format!("sync failed: {err:#}"));
+                self.error_status(format!("sync failed: {err:#}"));
                 return;
             }
         }

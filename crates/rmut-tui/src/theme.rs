@@ -15,6 +15,9 @@ pub struct Theme {
     pub quoted: Vec<Color>,
     /// Search-hit highlight in the pager (mutt's `color search`).
     pub search: Style,
+    /// Error statuses on the bottom line (mutt's `color error`,
+    /// bold bright red by default).
+    pub error: Style,
 }
 
 impl Theme {
@@ -30,6 +33,7 @@ impl Theme {
                 header: Color::Reset,
                 quoted: Vec::new(),
                 search: Style::new().add_modifier(Modifier::REVERSED),
+                error: Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             },
             // mutt's default look
             _ => Theme {
@@ -42,6 +46,9 @@ impl Theme {
                 header: Color::Green,
                 quoted: vec![Color::Cyan],
                 search: Style::new().add_modifier(Modifier::REVERSED),
+                error: Style::new()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
             },
         }
     }
@@ -80,6 +87,9 @@ impl Theme {
                 "header" => theme.header = color,
                 "search_fg" => search_fg = Some(color),
                 "search_bg" => search_bg = Some(color),
+                "error" => {
+                    theme.error = Style::new().fg(color).add_modifier(Modifier::BOLD);
+                }
                 other => warnings.push(format!("unknown color key {other:?}")),
             }
         }

@@ -1203,6 +1203,14 @@ def scenario_pager_search(tmp):
             "Message-ID: <long@example.com>\r\n\r\n"
             + "\r\n".join(lines) + "\r\n"
         )
+    # An older second message, for the cross-message n behavior below.
+    with open(os.path.join(md, "cur/1751789000.8.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "Subject: Earlier note\r\nDate: Mon, 6 Jul 2026 09:00:00 +0200\r\n"
+            "Message-ID: <early@example.com>\r\n\r\n"
+            "gamma filler\r\nthe target gamma\r\n"
+        )
     r = Rmut(md, base_env(tmp))
     r.expect("A long report")
     r.keys(b"\r")
@@ -1222,6 +1230,15 @@ def scenario_pager_search(tmp):
     r.expect("Search wrapped to bottom.")
     r.keys(b"/")
     r.keys(b"zebra\r")
+    r.expect("Not found.")
+    # Crossing to another message ends the search, like mutt: n
+    # re-prompts, prefilled with the last pattern.
+    r.keys(b"k")  # previous undeleted message
+    r.expect("gamma filler")
+    r.buf = ""
+    r.keys(b"n")
+    r.expect("zebra▁")  # the prompt, prefilled, cursor at the end
+    r.keys(b"\x15absent\r")  # ctrl+u clears the prefill; new search runs
     r.expect("Not found.")
     r.keys(b"q")
     r.keys(b"q")

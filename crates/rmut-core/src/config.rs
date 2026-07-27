@@ -208,13 +208,25 @@ pub struct Pager {
     pub tilde: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Ui {
     pub theme: Option<String>,
     /// mutt's status_format for the bottom line (see
     /// format::DEFAULT_STATUS_FORMAT for the specifiers).
     pub status_format: Option<String>,
+    /// Ring the terminal bell on error statuses (mutt's $beep).
+    pub beep: bool,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Ui {
+            theme: None,
+            status_format: None,
+            beep: true,
+        }
+    }
 }
 
 /// One `[[color_index]]` rule (mutt's `color index FG BG PATTERN`):

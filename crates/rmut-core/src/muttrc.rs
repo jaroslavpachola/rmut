@@ -72,6 +72,7 @@ struct State {
     wrap: Option<i64>,
     tilde: bool,
     status_format: Option<String>,
+    no_beep: bool,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
     macros_index: BTreeMap<String, String>,
@@ -511,6 +512,13 @@ impl State {
                     self.satisfy(line, "inline forwarding is rmut's default");
                 }
             }
+            "beep" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "beeping on errors is rmut's default");
+                } else {
+                    self.no_beep = true;
+                }
+            }
             "fast_reply" => {
                 if is_yes(&v) {
                     self.fast_reply = true;
@@ -772,6 +780,9 @@ impl State {
             ("header" | "hdrdefault", _) => {
                 self.colors.insert("header", fg);
             }
+            ("error", _) => {
+                self.colors.insert("error", vivid);
+            }
             ("index", Some("~D")) => {
                 self.colors.insert("deleted", vivid);
             }
@@ -1019,11 +1030,16 @@ impl State {
                 out += &format!("bg = {}\n", quote(bg));
             }
         }
-        if let Some(sf) = &self.status_format {
+        if self.status_format.is_some() || self.no_beep {
             out += "\n[ui]\n";
-            out += "# rmut renders %f %m %M %n %u %d %F %t %s %V %r %v and\n";
-            out += "# %?X?then&else? conditionals; other specifiers show literally\n";
-            out += &format!("status_format = {}\n", quote(sf));
+            if let Some(sf) = &self.status_format {
+                out += "# rmut renders %f %m %M %n %u %d %F %t %s %V %r %v and\n";
+                out += "# %?X?then&else? conditionals; other specifiers show literally\n";
+                out += &format!("status_format = {}\n", quote(sf));
+            }
+            if self.no_beep {
+                out += "beep = false\n";
+            }
         }
         for (section, table) in [("index", &self.keys_index), ("pager", &self.keys_pager)] {
             if !table.is_empty() {
