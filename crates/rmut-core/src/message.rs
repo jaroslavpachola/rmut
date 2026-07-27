@@ -273,10 +273,10 @@ pub fn load(path: &Path) -> Result<MessageView> {
     )
 }
 
-/// Like `load`, but when the message has no text/plain part, a part
-/// whose MIME type appears in `filters` is rendered through its shell
-/// command (stdin → stdout), mutt's auto_view; `rules` weeds the
-/// brief header block.
+/// Like `load`, but parts whose MIME type appears in `filters` render
+/// through that shell command (stdin → stdout), mutt's auto_view;
+/// `rules` weeds the brief header block and any embedded
+/// message/rfc822 headers.
 pub fn load_with(
     path: &Path,
     filters: &std::collections::HashMap<String, String>,
@@ -290,44 +290,196 @@ pub fn load_with(
         .map(|h| (h.get_key(), h.get_value()))
         .collect();
     let brief = weed(&all, rules);
-    let body = find_plain(&mail)
-        .or_else(|| filtered_body(&mail, filters))
-        .or_else(|| extract_text(&mail))
-        .unwrap_or_else(|| "[-- no displayable text part --]".into());
+    let mut body = String::new();
+    if !render(&mail, filters, rules, &mut body) && body.is_empty() {
+        body = "[-- no displayable text part --]".into();
+    }
     Ok(MessageView { brief, all, body })
 }
 
-/// The first text/plain leaf, depth-first.
-fn find_plain(mail: &ParsedMail) -> Option<String> {
-    if mail.subparts.is_empty() {
-        return (mail.ctype.mimetype == "text/plain")
-            .then(|| mail.get_body().ok())
-            .flatten();
+/// Mutt's pager rendering: the whole MIME tree, depth-first. Text
+/// parts (any subtype, like mutt — raw html included) and filtered
+/// types show inline, multipart/alternative collapses to its best
+/// subpart, message/rfc822 shows its weeded headers then its own
+/// tree, and every subpart of a multipart is announced with mutt's
+/// `[-- Attachment #N --]` / `[-- Type: ... --]` marker block. Parts
+/// that cannot display leave a one-line stub. Returns whether
+/// anything actually displayed (as opposed to only stubs), so the
+/// caller can tell an empty body from an undisplayable message.
+fn render(
+    part: &ParsedMail,
+    filters: &std::collections::HashMap<String, String>,
+    rules: &HeaderRules,
+    out: &mut String,
+) -> bool {
+    let ty = part.ctype.mimetype.clone();
+    if ty == "multipart/alternative" {
+        return match pick_alternative(&part.subparts, filters) {
+            Some(best) => render(best, filters, rules, out),
+            None => {
+                gap(out);
+                out.push_str("[-- multipart/alternative: no displayable part --]\n");
+                false
+            }
+        };
     }
-    mail.subparts.iter().find_map(find_plain)
+    if ty.starts_with("multipart/") {
+        let mut shown = false;
+        for (i, sub) in part.subparts.iter().enumerate() {
+            marker(sub, i + 1, out);
+            shown |= render(sub, filters, rules, out);
+        }
+        return shown;
+    }
+    if let Some(command) = filters.get(&ty) {
+        gap(out);
+        let text = part
+            .get_body_raw()
+            .map_err(anyhow::Error::from)
+            .and_then(|raw| run_filter(command, &raw));
+        return match text {
+            Ok(text) => {
+                out.push_str(&format!("[-- Autoview using {command} --]\n\n{text}"));
+                ensure_newline(out);
+                true
+            }
+            Err(err) => {
+                out.push_str(&format!("[-- filter {command} failed: {err:#} --]\n"));
+                false
+            }
+        };
+    }
+    if ty == "message/rfc822" {
+        if let Ok(raw) = part.get_body_raw()
+            && let Ok(embedded) = parse_mail(&raw)
+        {
+            gap(out);
+            let all: Vec<(String, String)> = embedded
+                .headers
+                .iter()
+                .map(|h| (h.get_key(), h.get_value()))
+                .collect();
+            for (name, value) in weed(&all, rules) {
+                out.push_str(&format!("{name}: {value}\n"));
+            }
+            out.push('\n');
+            return render(&embedded, filters, rules, out);
+        }
+        gap(out);
+        out.push_str("[-- message/rfc822: cannot parse --]\n");
+        return false;
+    }
+    if ty.starts_with("text/")
+        && let Ok(text) = part.get_body()
+    {
+        gap(out);
+        out.push_str(&text);
+        ensure_newline(out);
+        return true;
+    }
+    gap(out);
+    out.push_str(&format!(
+        "[-- {ty} is unsupported (use 'v' to view this part) --]\n"
+    ));
+    false
 }
 
-/// First leaf with a configured filter, rendered through it.
-fn filtered_body(
-    mail: &ParsedMail,
+/// Mutt's alternative_handler order (sans alternative_order): a part
+/// with an auto_view filter wins, then the richest text part
+/// (html < plain < enriched, later parts win ties, like mutt), then
+/// anything displayable at all.
+fn pick_alternative<'a, 'b>(
+    subs: &'a [ParsedMail<'b>],
     filters: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    let mut all = Vec::new();
-    leaves(mail, &mut all);
-    for part in all {
-        if let Some(command) = filters.get(&part.ctype.mimetype)
-            && let Ok(raw) = part.get_body_raw()
-        {
-            return match run_filter(command, &raw) {
-                Ok(text) => Some(format!(
-                    "[-- {} rendered by {command} --]\n\n{text}",
-                    part.ctype.mimetype
-                )),
-                Err(err) => Some(format!("[-- filter {command} failed: {err:#} --]")),
-            };
-        }
+) -> Option<&'a ParsedMail<'b>> {
+    if let Some(p) = subs
+        .iter()
+        .rev()
+        .find(|p| filters.contains_key(&p.ctype.mimetype))
+    {
+        return Some(p);
     }
-    None
+    let rank = |p: &ParsedMail| match p.ctype.mimetype.as_str() {
+        "text/enriched" => 3,
+        "text/plain" => 2,
+        "text/html" => 1,
+        _ => 0,
+    };
+    if let Some((_, p)) = subs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| rank(p) > 0)
+        .max_by_key(|&(i, p)| (rank(p), i))
+    {
+        return Some(p);
+    }
+    subs.iter().find(|p| displayable(p, filters))
+}
+
+/// Can this part (or anything inside it) show in the pager?
+fn displayable(part: &ParsedMail, filters: &std::collections::HashMap<String, String>) -> bool {
+    let ty = &part.ctype.mimetype;
+    ty.starts_with("text/")
+        || ty == "message/rfc822"
+        || filters.contains_key(ty)
+        || (ty.starts_with("multipart/") && part.subparts.iter().any(|s| displayable(s, filters)))
+}
+
+/// Mutt's attachment announcement in the pager:
+/// `[-- Attachment #2: report.pdf --]`
+/// `[-- Type: application/pdf, Encoding: base64, Size: 12K --]`
+fn marker(part: &ParsedMail, count: usize, out: &mut String) {
+    gap(out);
+    let name = part
+        .get_headers()
+        .get_first_value("Content-Description")
+        .or_else(|| part_filename(part));
+    match name {
+        Some(n) => out.push_str(&format!("[-- Attachment #{count}: {n} --]\n")),
+        None => out.push_str(&format!("[-- Attachment #{count} --]\n")),
+    }
+    let encoding = part
+        .get_headers()
+        .get_first_value("Content-Transfer-Encoding")
+        .map(|e| e.to_lowercase())
+        .unwrap_or_else(|| "7bit".into());
+    let size = part.get_body_raw().map(|b| b.len()).unwrap_or(0);
+    out.push_str(&format!(
+        "[-- Type: {}, Encoding: {encoding}, Size: {} --]\n",
+        part.ctype.mimetype,
+        pretty_size(size)
+    ));
+}
+
+/// One blank separator line between rendered pieces, none at the top.
+fn gap(out: &mut String) {
+    if out.is_empty() {
+        return;
+    }
+    while !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+}
+
+fn ensure_newline(out: &mut String) {
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+/// Mutt's mutt_pretty_size: 0K, 3.2K, 128K, 1.3M, 12M.
+fn pretty_size(n: usize) -> String {
+    if n == 0 {
+        "0K".into()
+    } else if n < 10189 {
+        format!("{:.1}K", n as f64 / 1024.0)
+    } else if n < 1023949 {
+        format!("{}K", (n + 51) / 1024)
+    } else if n < 10433332 {
+        format!("{:.1}M", n as f64 / 1048576.0)
+    } else {
+        format!("{}M", n / 1048576)
+    }
 }
 
 /// Decoded part rendered through a filter command (attachment viewer).
@@ -427,21 +579,23 @@ pub fn parts(path: &Path) -> Result<Vec<Part>> {
     leaves(&mail, &mut all);
     Ok(all
         .iter()
-        .map(|p| {
-            let filename = p
-                .get_content_disposition()
-                .params
-                .get("filename")
-                .cloned()
-                .or_else(|| p.ctype.params.get("name").cloned());
-            Part {
-                mimetype: p.ctype.mimetype.clone(),
-                filename,
-                size: p.get_body_raw().map(|b| b.len()).unwrap_or(0),
-                is_text: p.ctype.mimetype.starts_with("text/"),
-            }
+        .map(|p| Part {
+            mimetype: p.ctype.mimetype.clone(),
+            filename: part_filename(p),
+            size: p.get_body_raw().map(|b| b.len()).unwrap_or(0),
+            is_text: p.ctype.mimetype.starts_with("text/"),
         })
         .collect())
+}
+
+/// The part's file name: Content-Disposition filename, or the
+/// Content-Type name parameter.
+fn part_filename(p: &ParsedMail) -> Option<String> {
+    p.get_content_disposition()
+        .params
+        .get("filename")
+        .cloned()
+        .or_else(|| p.ctype.params.get("name").cloned())
 }
 
 fn leaf_at<'a, 'b>(mail: &'a ParsedMail<'b>, index: usize) -> Result<&'a ParsedMail<'b>> {
@@ -629,5 +783,119 @@ mod tests {
         assert_eq!(view.brief.len(), 3); // From, To, Subject (no Date/Cc)
         assert_eq!(view.all.len(), 4);
         assert!(view.all.iter().any(|(k, _)| k == "X-Custom"));
+    }
+
+    fn body_of(raw: &str) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("msg");
+        std::fs::write(&path, raw).unwrap();
+        load(&path).unwrap().body
+    }
+
+    #[test]
+    fn render_shows_text_attachments_with_markers() {
+        let body = body_of(concat!(
+            "From: a@example.com\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n",
+            "\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "the body\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain; name=\"notes.txt\"\r\n",
+            "Content-Disposition: attachment; filename=\"notes.txt\"\r\n",
+            "\r\n",
+            "attached notes\r\n",
+            "--b--\r\n",
+        ));
+        assert!(body.contains("[-- Attachment #1 --]"), "{body}");
+        assert!(body.contains("the body"), "{body}");
+        assert!(body.contains("[-- Attachment #2: notes.txt --]"), "{body}");
+        assert!(
+            body.contains("[-- Type: text/plain, Encoding: 7bit, Size: 0.0K --]"),
+            "{body}"
+        );
+        assert!(body.contains("attached notes"), "{body}");
+    }
+
+    #[test]
+    fn render_stubs_non_text_attachments() {
+        let body = body_of(MULTIPART);
+        assert!(body.contains("plain text"), "{body}");
+        assert!(body.contains("[-- Attachment #2: report.pdf --]"), "{body}");
+        assert!(
+            body.contains("[-- Type: application/pdf, Encoding: base64, Size: 0.0K --]"),
+            "{body}"
+        );
+        assert!(
+            body.contains("[-- application/pdf is unsupported (use 'v' to view this part) --]"),
+            "{body}"
+        );
+    }
+
+    const ALTERNATIVE: &str = concat!(
+        "From: a@example.com\r\n",
+        "MIME-Version: 1.0\r\n",
+        "Content-Type: multipart/alternative; boundary=\"b\"\r\n",
+        "\r\n",
+        "--b\r\n",
+        "Content-Type: text/plain\r\n",
+        "\r\n",
+        "plain version\r\n",
+        "--b\r\n",
+        "Content-Type: text/html\r\n",
+        "\r\n",
+        "<b>html version</b>\r\n",
+        "--b--\r\n",
+    );
+
+    #[test]
+    fn render_alternative_prefers_plain_but_autoview_wins() {
+        // No filter: mutt's text ranking picks plain over html, no markers.
+        let body = body_of(ALTERNATIVE);
+        assert!(body.contains("plain version"), "{body}");
+        assert!(!body.contains("html version"), "{body}");
+        assert!(!body.contains("Attachment #"), "{body}");
+        // An auto_view filter for text/html beats the text ranking.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("msg");
+        std::fs::write(&path, ALTERNATIVE).unwrap();
+        let filters =
+            std::collections::HashMap::from([("text/html".to_string(), "cat".to_string())]);
+        let body = load_with(&path, &filters, &HeaderRules::default())
+            .unwrap()
+            .body;
+        assert!(body.contains("[-- Autoview using cat --]"), "{body}");
+        assert!(body.contains("<b>html version</b>"), "{body}");
+        assert!(!body.contains("plain version"), "{body}");
+    }
+
+    #[test]
+    fn render_rfc822_shows_embedded_headers_and_body() {
+        let body = body_of(concat!(
+            "From: a@example.com\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n",
+            "\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "see below\r\n",
+            "--b\r\n",
+            "Content-Type: message/rfc822\r\n",
+            "\r\n",
+            "From: jane@example.com\r\n",
+            "Subject: inner\r\n",
+            "\r\n",
+            "inner body\r\n",
+            "--b--\r\n",
+        ));
+        assert!(body.contains("[-- Attachment #2 --]"), "{body}");
+        assert!(body.contains("[-- Type: message/rfc822"), "{body}");
+        assert!(body.contains("From: jane@example.com"), "{body}");
+        assert!(body.contains("Subject: inner"), "{body}");
+        assert!(body.contains("inner body"), "{body}");
     }
 }

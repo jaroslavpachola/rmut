@@ -190,6 +190,13 @@ disable the key with [mail] notmuch = false
 .B B Ctrl+N Ctrl+P Ctrl+O
 toggle the sidebar; move its highlight; open the highlighted mailbox
 .SS Pager
+The body is the whole MIME tree rendered like mutt: text parts and
+[filters]-rendered parts inline, each attachment announced with
+.B [\-\- Attachment #N \-\-]
+marker lines, multipart/alternative collapsed to its best part
+(auto_view filters win, then text/plain over text/html), embedded
+message/rfc822 shown as its headers plus body, and a one\-line stub
+for anything undisplayable.
 .TP 12
 .B q i Esc
 back to the index
@@ -475,8 +482,9 @@ applied in order to every match on a displayed line \(em URLs, diff
 lines, and the like.
 .SS [filters]
 MIME type \(-> shell command rendering the part (stdin to stdout),
-e.g. "text/html" = "w3m \-dump \-T text/html". Used when a message
-has no text/plain part, and in the attachment viewer.
+e.g. "text/html" = "w3m \-dump \-T text/html" \(em mutt's auto_view.
+Applied to matching parts wherever they sit in the message, preferred
+in multipart/alternative, and used in the attachment viewer.
 .SS [keys.index], [keys.pager]
 Remaps,
 .IR action " = " key ,

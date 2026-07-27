@@ -71,8 +71,10 @@ pub struct Config {
     /// message pattern.
     pub color_body: Vec<ColorRule>,
     /// MIME type → shell command that renders the part (stdin → stdout),
-    /// e.g. "text/html" = "w3m -dump -T text/html". Used when a message
-    /// has no text/plain part, and in the attachment viewer.
+    /// e.g. "text/html" = "w3m -dump -T text/html" — mutt's auto_view.
+    /// Applied to matching parts wherever they sit in the message,
+    /// preferred in multipart/alternative, and used in the attachment
+    /// viewer.
     pub filters: HashMap<String, String>,
     pub keys: Keys,
     /// Macros: a key that replays a sequence of keys, per menu —
