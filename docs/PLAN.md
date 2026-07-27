@@ -589,6 +589,41 @@ Goal: the remaining display-selection knobs.
       (attachments inside encrypted mail), not just their first text
       part
 
+## Beyond mutt (frozen — only on explicit request)
+
+Ideas that exploit what mutt structurally can't do. Unlike the
+proposed rounds above, these are NOT part of normal work: never pick
+one up on your own, not even as a paper cut or "while I'm in there" —
+each starts only when explicitly asked for by name. Ranked by
+value-per-effort:
+
+- Undo: a stack over delete/flag/tag/move and limit-scoped bulk ops
+  (the deferred-sync dirty model makes this cheap; mutt has nothing)
+- Undo send: outgoing mail waits N seconds with a cancel key before
+  sendmail/SMTP fires
+- text/calendar: render meeting invites (when/where/who) in the
+  pager instead of a base64 blob; maybe accept/decline replies
+- Attachment reminder: body mentions an attachment but none attached
+  — ask at the send prompt
+- Clickable/yankable URLs: OSC 8 hyperlinks in the body, OSC 52
+  clipboard yank via a URL picker key
+- Inline image preview: kitty/sixel graphics for image parts in the
+  pager
+- Auto-harvested address completion: rank by who you actually mail,
+  learned from the mail itself
+- Markdown compose (opt-in): text/plain + generated text/html
+  multipart/alternative
+- Patch-series view: recognize a git series thread, show in order,
+  pipe to git am
+- Built-in full-text search: an incremental tantivy index making ~b
+  instant without notmuch
+- Unified inbox: several accounts' inboxes merged into one live
+  virtual mailbox (flagship-sized; after the parity rounds)
+
+Explicitly rejected even here: embedded scripting languages, HTML
+rendering engines, notmuch-tag write-back — the fat that sank other
+mutt successors.
+
 ## Non-goals
 
 S/MIME, POP3, scoring — still out; revisit only if daily use proves
