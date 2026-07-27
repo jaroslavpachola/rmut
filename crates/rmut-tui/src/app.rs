@@ -37,6 +37,10 @@ pub struct Pager {
     /// mutt's toggle-quoted (`T`): quoted lines are dropped from the
     /// display while set.
     pub hide_quoted: bool,
+    /// Set when this pager shows a single attachment part: the
+    /// attachment menu to restore on q or paging past the end (mutt
+    /// returns to the menu there, never to the next message).
+    pub back: Option<Box<Mode>>,
 }
 
 pub enum Mode {
@@ -1786,7 +1790,14 @@ impl App {
         };
         match action {
             PagerAction::Back => {
-                self.mode = Mode::Index;
+                // A part view returns to its attachment menu.
+                if let Mode::Pager(p) = &mut self.mode
+                    && let Some(menu) = p.back.take()
+                {
+                    self.mode = *menu;
+                } else {
+                    self.mode = Mode::Index;
+                }
                 return;
             }
             PagerAction::NextMsg => {
@@ -1916,8 +1927,13 @@ impl App {
         );
         let max_scroll = lines.saturating_sub(page);
         // mutt's $pager_stop = no: paging past the end opens the next
-        // message.
+        // message — except in a part view, which returns to its
+        // attachment menu like mutt.
         if action == PagerAction::PageDown && pager.scroll >= max_scroll {
+            if let Some(menu) = pager.back.take() {
+                self.mode = *menu;
+                return;
+            }
             if self.sel + 1 < self.visible.len() {
                 self.sel += 1;
                 self.open_selected();
@@ -2120,6 +2136,7 @@ impl App {
                     match message::filter_part(&msg_path, index, &command) {
                         Ok(body) => {
                             let headers = vec![("Content-Type".to_string(), mimetype)];
+                            let menu = std::mem::replace(&mut self.mode, Mode::Index);
                             self.mode = Mode::Pager(Pager {
                                 view: message::MessageView {
                                     brief: headers.clone(),
@@ -2129,6 +2146,7 @@ impl App {
                                 scroll: 0,
                                 full_headers: false,
                                 hide_quoted: false,
+                                back: Some(Box::new(menu)),
                             });
                         }
                         Err(err) => self.status = Some(format!("filter failed: {err:#}")),
@@ -2144,6 +2162,7 @@ impl App {
         match message::part_text(&msg_path, index) {
             Ok(body) => {
                 let headers = vec![("Content-Type".to_string(), mimetype)];
+                let menu = std::mem::replace(&mut self.mode, Mode::Index);
                 self.mode = Mode::Pager(Pager {
                     view: message::MessageView {
                         brief: headers.clone(),
@@ -2153,6 +2172,7 @@ impl App {
                     scroll: 0,
                     full_headers: false,
                     hide_quoted: false,
+                    back: Some(Box::new(menu)),
                 });
             }
             Err(err) => self.status = Some(format!("cannot decode part: {err:#}")),
@@ -4271,6 +4291,7 @@ impl App {
                     scroll: 0,
                     full_headers: false,
                     hide_quoted: false,
+                    back: None,
                 });
             }
             Err(err) => self.status = Some(format!("cannot open message: {err:#}")),

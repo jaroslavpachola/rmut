@@ -1857,6 +1857,46 @@ def scenario_import_muttrc(tmp):
     assert "(redacted)" in out
 
 
+def scenario_attachment_pager(tmp):
+    """The pager renders the whole MIME tree (text attachments inline
+    under [-- Attachment #N --] markers), and the part view returns
+    to the attachment menu on space past the end instead of jumping
+    to the next message."""
+    md = make_maildir(tmp, "md")
+    with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
+        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: with attachment\r\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <ap1@example.com>\r\nMIME-Version: 1.0\r\n"
+                "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n"
+                "--b\r\nContent-Type: text/plain\r\n\r\nmain body here\r\n"
+                "--b\r\nContent-Type: text/plain; name=\"notes.txt\"\r\n"
+                "Content-Disposition: attachment; filename=\"notes.txt\"\r\n\r\n"
+                "attached notes text\r\n--b--\r\n")
+    with open(os.path.join(md, "cur", "1751790001.2.host:2,S"), "w") as f:
+        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: decoy next\r\n"
+                "Date: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
+                "Message-ID: <ap2@example.com>\r\n\r\ndecoy body\r\n")
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:2")
+    r.keys(b"k\r")  # up to the older message, open it
+    # The whole tree renders: body, marker block, attachment inline.
+    r.expect("main body here", "[-- Attachment #2: notes.txt --]",
+             "attached notes text")
+    r.keys(b"v")
+    r.expect("Parts:2")
+    r.keys(b"j\r")  # view the attachment part
+    r.expect("Content-Type: text/plain")
+    r.keys(b" ")    # space past the end of the short part...
+    r.keys(b"s")    # ...lands back in the menu, where s asks for a file
+    r.expect("Save to file:", absent=("decoy body",))
+    r.keys(b"\x1b")  # cancel the prompt
+    r.keys(b"qq")    # menu -> message pager -> index
+    r.expect("Msgs:2", absent=("decoy body",))
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -1884,6 +1924,7 @@ SCENARIOS = [
     scenario_identities,
     scenario_tag_save_sort,
     scenario_import_muttrc,
+    scenario_attachment_pager,
 ]
 
 
