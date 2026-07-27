@@ -383,6 +383,9 @@ pub struct App {
     /// The pager's text search, kept across messages so n/N carry
     /// over; the pager highlights its hits.
     pub(crate) pager_search: Option<pattern::Matcher>,
+    /// Its raw text, prefilling the next Search for: prompt (mutt
+    /// prefills from its searchbuf the same way).
+    pub(crate) pager_search_text: String,
     /// Compiled $quote_regexp classifying quoted body lines.
     pub(crate) quote_re: regex_lite::Regex,
     /// ignore/unignore/hdr_order for the pager's brief header view.
@@ -608,6 +611,7 @@ impl App {
             limit: None,
             last_search: None,
             pager_search: None,
+            pager_search_text: String::new(),
             quote_re,
             head_rules,
             body_rules,
@@ -1484,6 +1488,7 @@ impl App {
             LineKind::PagerSearch => {
                 if !input.is_empty() {
                     self.pager_search = Some(pattern::Matcher::new(input));
+                    self.pager_search_text = input.to_string();
                 }
                 if self.pager_search.is_some() {
                     self.pager_search_step(true);
@@ -1876,7 +1881,7 @@ impl App {
             PagerAction::Search => {
                 self.prompt = Some(Prompt::line(
                     "Search for: ",
-                    String::new(),
+                    self.pager_search_text.clone(),
                     LineKind::PagerSearch,
                 ));
                 return;
@@ -2046,10 +2051,11 @@ impl App {
     /// top line, like mutt.
     fn pager_search_step(&mut self, forward: bool) {
         let Some(matcher) = self.pager_search.clone() else {
-            // n/N with nothing searched yet: ask for the pattern first.
+            // n/N with nothing searched yet: ask for the pattern
+            // first (mutt falls through to search the same way).
             self.prompt = Some(Prompt::line(
                 "Search for: ",
-                String::new(),
+                self.pager_search_text.clone(),
                 LineKind::PagerSearch,
             ));
             return;
