@@ -1,7 +1,7 @@
 //! Default keybindings plus config remaps ([keys.index] / [keys.pager],
 //! `action = "key"`). Key syntax: a single character, or `ctrl+x` /
 //! `alt+x`, or a name: enter, esc, space, tab, backspace, up, down,
-//! pgup, pgdn, home, end.
+//! left, right, pgup, pgdn, home, end.
 
 use std::collections::HashMap;
 
@@ -97,6 +97,8 @@ pub fn parse_key(input: &str) -> Option<KeyPattern> {
         "backspace" => KeyCode::Backspace,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
         "pgup" | "pageup" => KeyCode::PageUp,
         "pgdn" | "pagedown" => KeyCode::PageDown,
         "home" => KeyCode::Home,
@@ -183,6 +185,8 @@ pub enum PagerAction {
     SkipQuoted,
     NextMsg,
     PrevMsg,
+    NextUndeleted,
+    PrevUndeleted,
     Delete,
     Headers,
     Search,
@@ -401,6 +405,8 @@ impl PagerAction {
             SkipQuoted => "skip-quoted",
             NextMsg => "next",
             PrevMsg => "previous",
+            NextUndeleted => "next-undeleted",
+            PrevUndeleted => "previous-undeleted",
             Delete => "delete",
             Headers => "headers",
             Search => "search",
@@ -439,6 +445,8 @@ impl PagerAction {
             SkipQuoted => "skip past the quoted text below",
             NextMsg => "open next message",
             PrevMsg => "open previous message",
+            NextUndeleted => "open next undeleted message",
+            PrevUndeleted => "open previous undeleted message",
             Delete => "delete and advance",
             Headers => "toggle full headers",
             Search => "search the displayed text (unlike the index /, which matches messages)",
@@ -477,6 +485,8 @@ impl PagerAction {
             SkipQuoted,
             NextMsg,
             PrevMsg,
+            NextUndeleted,
+            PrevUndeleted,
             Delete,
             Headers,
             Search,
@@ -619,12 +629,16 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('q'), Back),
         (KeyPattern::ch('i'), Back),
         (KeyPattern::plain(K::Esc), Back),
-        (KeyPattern::ch('j'), Down),
-        (KeyPattern::plain(K::Down), Down),
+        // mutt's pager: Enter/Backspace scroll one line; j/k and the
+        // arrows move between messages (next-/previous-undeleted).
         (KeyPattern::plain(K::Enter), Down),
-        (KeyPattern::ch('k'), Up),
-        (KeyPattern::plain(K::Up), Up),
         (KeyPattern::plain(K::Backspace), Up),
+        (KeyPattern::ch('j'), NextUndeleted),
+        (KeyPattern::plain(K::Down), NextUndeleted),
+        (KeyPattern::plain(K::Right), NextUndeleted),
+        (KeyPattern::ch('k'), PrevUndeleted),
+        (KeyPattern::plain(K::Up), PrevUndeleted),
+        (KeyPattern::plain(K::Left), PrevUndeleted),
         (KeyPattern::ch(' '), PageDown),
         (KeyPattern::plain(K::PageDown), PageDown),
         (KeyPattern::ch('-'), PageUp),

@@ -1778,6 +1778,29 @@ impl App {
 
     // ---- pager ----
 
+    /// Is the pager showing a single attachment part (not a message)?
+    /// Message-motion keys refuse there, like mutt's "Not available".
+    fn part_pager(&self) -> bool {
+        matches!(&self.mode, Mode::Pager(p) if p.back.is_some())
+    }
+
+    /// The next/previous visible position from the selection; mutt's
+    /// next-/previous-undeleted skips messages flagged for deletion.
+    fn step_message(&self, forward: bool, skip_deleted: bool) -> Option<usize> {
+        let mut pos = self.sel;
+        loop {
+            pos = if forward {
+                pos + 1
+            } else {
+                pos.checked_sub(1)?
+            };
+            let &i = self.visible.get(pos)?;
+            if !skip_deleted || !self.msgs[i].env.file.flags.deleted {
+                return Some(pos);
+            }
+        }
+    }
+
     fn handle_pager_key(&mut self, key: KeyEvent, width: usize, page: usize) {
         // $wrap narrows the text, so all row math follows it.
         let width = self.pager_wrap(width);
@@ -1800,25 +1823,39 @@ impl App {
                 }
                 return;
             }
-            PagerAction::NextMsg => {
-                if self.sel + 1 < self.visible.len() {
-                    self.sel += 1;
-                    self.open_selected();
-                } else {
-                    self.status = Some("last message".into());
+            PagerAction::NextMsg | PagerAction::NextUndeleted => {
+                if self.part_pager() {
+                    self.status = Some("Not available in this menu.".into());
+                    return;
+                }
+                match self.step_message(true, action == PagerAction::NextUndeleted) {
+                    Some(pos) => {
+                        self.sel = pos;
+                        self.open_selected();
+                    }
+                    None => self.status = Some("last message".into()),
                 }
                 return;
             }
-            PagerAction::PrevMsg => {
-                if self.sel > 0 {
-                    self.sel -= 1;
-                    self.open_selected();
-                } else {
-                    self.status = Some("first message".into());
+            PagerAction::PrevMsg | PagerAction::PrevUndeleted => {
+                if self.part_pager() {
+                    self.status = Some("Not available in this menu.".into());
+                    return;
+                }
+                match self.step_message(false, action == PagerAction::PrevUndeleted) {
+                    Some(pos) => {
+                        self.sel = pos;
+                        self.open_selected();
+                    }
+                    None => self.status = Some("first message".into()),
                 }
                 return;
             }
             PagerAction::Delete => {
+                if self.part_pager() {
+                    self.status = Some("Not available in this menu.".into());
+                    return;
+                }
                 if self.deny_readonly() {
                     return;
                 }
@@ -1826,11 +1863,13 @@ impl App {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
                 }
-                if self.sel + 1 < self.visible.len() {
-                    self.sel += 1;
-                    self.open_selected();
-                } else {
-                    self.mode = Mode::Index;
+                // mutt's $resolve: advance to the next undeleted.
+                match self.step_message(true, true) {
+                    Some(pos) => {
+                        self.sel = pos;
+                        self.open_selected();
+                    }
+                    None => self.mode = Mode::Index,
                 }
                 return;
             }
@@ -1934,11 +1973,13 @@ impl App {
                 self.mode = *menu;
                 return;
             }
-            if self.sel + 1 < self.visible.len() {
-                self.sel += 1;
-                self.open_selected();
-            } else {
-                self.status = Some("last message".into());
+            // mutt falls through to next-undeleted here.
+            match self.step_message(true, true) {
+                Some(pos) => {
+                    self.sel = pos;
+                    self.open_selected();
+                }
+                None => self.status = Some("last message".into()),
             }
             return;
         }

@@ -1215,9 +1215,10 @@ def scenario_pager_search(tmp):
     r.expect("the target beta")
     r.keys(b"n")  # past the last hit: around to the first
     r.expect("Search wrapped to top.")
-    # j clears the status (else "bottom." diffs against "top." and only
-    # changed cells reach the pty); the first N re-finds alpha above.
-    r.keys(b"jNN")  # backwards from the first hit: around to the last
+    # Enter (next-line) clears the status (else "bottom." diffs against
+    # "top." and only changed cells reach the pty); the first N
+    # re-finds alpha above.
+    r.keys(b"\rNN")  # backwards from the first hit: around to the last
     r.expect("Search wrapped to bottom.")
     r.keys(b"/")
     r.keys(b"zebra\r")
@@ -1859,9 +1860,10 @@ def scenario_import_muttrc(tmp):
 
 def scenario_attachment_pager(tmp):
     """The pager renders the whole MIME tree (text attachments inline
-    under [-- Attachment #N --] markers), and the part view returns
-    to the attachment menu on space past the end instead of jumping
-    to the next message."""
+    under [-- Attachment #N --] markers); the part view returns to
+    the attachment menu on space past the end and refuses message
+    motion; in the message pager j moves to the next undeleted
+    message (mutt's pager default)."""
     md = make_maildir(tmp, "md")
     with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
         f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
@@ -1888,12 +1890,16 @@ def scenario_attachment_pager(tmp):
     r.expect("Parts:2")
     r.keys(b"j\r")  # view the attachment part
     r.expect("Content-Type: text/plain")
+    r.keys(b"j")    # message motion refuses in a part view
+    r.expect("Not available in this menu.", absent=("decoy body",))
     r.keys(b" ")    # space past the end of the short part...
     r.keys(b"s")    # ...lands back in the menu, where s asks for a file
     r.expect("Save to file:", absent=("decoy body",))
-    r.keys(b"\x1b")  # cancel the prompt
-    r.keys(b"qq")    # menu -> message pager -> index
-    r.expect("Msgs:2", absent=("decoy body",))
+    r.keys(b"\x1b")  # cancel the prompt (alone: a chaser would read as alt+)
+    r.settle(0.3)
+    r.keys(b"q")     # menu -> the message pager
+    r.keys(b"j")     # mutt's pager j: open the next undeleted message
+    r.expect("decoy body")
     r.close()
 
 

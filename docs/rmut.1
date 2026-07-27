@@ -201,13 +201,19 @@ for anything undisplayable.
 .B q i Esc
 back to the index
 .TP
-.B j k Enter Backspace
+.B Enter Backspace
 scroll one line
+.TP
+.B j k Down Up Right Left
+open the next / previous undeleted message (mutt's pager default;
+in an attachment part view these refuse with "Not available in this
+menu.")
 .TP
 .B Space \-
 page down / up (also PgDn / PgUp, Home / End for top / bottom);
-Space past the end opens the next message (mutt's pager_stop
-default) \(em except when viewing a single attachment part, which
+Space past the end opens the next undeleted message (mutt's
+pager_stop default) \(em except when viewing a single attachment
+part, which
 returns to the attachment menu, as does q; wrapped lines carry a
 leading + (mutt's markers)
 .TP
@@ -220,10 +226,10 @@ lines are tinted by depth (see quote_regexp and the quoted colors);
 search hits are highlighted
 .TP
 .B J K
-open next / previous message
+open next / previous message (mutt's next-entry: deleted ones too)
 .TP
 .B d
-delete and advance
+delete and advance to the next undeleted
 .TP
 .B h
 toggle full headers
