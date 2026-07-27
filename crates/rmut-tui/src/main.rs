@@ -65,6 +65,8 @@ fn run() -> Result<ExitCode> {
         Some(s) => s,
         None => default_mailbox(&config)?,
     };
+    // Weekly at most: drop header caches of vanished maildirs.
+    rmut_core::hdrcache::sweep();
 
     let opened = App::open_spec(&spec, config);
     eprint!("\r\x1b[K"); // clear the leftover progress line

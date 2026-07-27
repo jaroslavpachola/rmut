@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.29** — everything from the 1.0 roadmap plus R5–R17, hardening
+**1.30** — everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -65,7 +65,11 @@ the bottom line, `$wrap` and `$tilde` round out the pager, and
 read-only virtual mailbox, and **compose round 2** (R29):
 fast_reply/autoedit skip the prompts, the compose menu edits
 attachment descriptions/types and the Fcc, `forward = "ask"` asks
-per forward, and `copy = false` skips the sent copy.
+per forward, and `copy = false` skips the sent copy, and
+**big mailboxes** (R30): `~b` searches server-side on IMAP, huge
+folders open progressively with a background backfill,
+new_mail_command fires on arrivals, and stale header caches sweep
+themselves.
 A pty-driven e2e suite (including fake IMAP/SMTP servers and a
 stub gpg) lives in `tests/e2e/`.
 

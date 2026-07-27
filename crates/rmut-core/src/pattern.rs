@@ -27,6 +27,11 @@ impl Matcher {
         }
     }
 
+    /// The pattern text as written (for server-side IMAP search).
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
     pub fn is_match(&self, text: &str) -> bool {
         match &self.re {
             Some(re) => re.is_match(text),
@@ -360,24 +365,58 @@ fn day_bounds_of(date: chrono::NaiveDate) -> Result<(i64, i64), String> {
 
 // ---- matching ----
 
+/// Answers `~b` for a message without the local file read — Some
+/// when a server-side search already knows, None to fall back.
+pub type BodyOracle<'a> = &'a dyn Fn(&Envelope, &Matcher) -> Option<bool>;
+
 /// Per-message context: disk reads happen at most once.
 struct Ctx<'a> {
     env: &'a Envelope,
     me: &'a [String],
     body: Option<String>,
     sender: Option<String>,
+    oracle: Option<BodyOracle<'a>>,
 }
 
 /// AND of the top-level patterns. `me` are my own bare lowercase
 /// addresses, for `~p`.
 pub fn matches(patterns: &[Pattern], env: &Envelope, me: &[String]) -> bool {
+    matches_via(patterns, env, me, None)
+}
+
+/// Like `matches`, with `~b` optionally answered by `oracle`
+/// (server-side IMAP search) instead of reading the file.
+pub fn matches_via(
+    patterns: &[Pattern],
+    env: &Envelope,
+    me: &[String],
+    oracle: Option<BodyOracle>,
+) -> bool {
     let mut ctx = Ctx {
         env,
         me,
         body: None,
         sender: None,
+        oracle,
     };
     patterns.iter().all(|p| eval(p, &mut ctx))
+}
+
+/// Every `~b` argument in the pattern, for pre-resolving on a server.
+pub fn body_terms(patterns: &[Pattern]) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(p: &Pattern, out: &mut Vec<String>) {
+        match p {
+            Pattern::All(terms) | Pattern::Any(terms) => {
+                terms.iter().for_each(|t| walk(t, out));
+            }
+            Pattern::Not(term) => walk(term, out),
+            Pattern::Body(m) if !out.contains(&m.raw) => out.push(m.raw.clone()),
+            _ => {}
+        }
+    }
+    patterns.iter().for_each(|p| walk(p, &mut out));
+    out
 }
 
 fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
@@ -410,6 +449,9 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
         Pattern::Tagged => env.tagged,
         Pattern::ToMe => env.to.iter().chain(&env.cc).any(|a| ctx.me.contains(a)),
         Pattern::Body(m) => {
+            if let Some(answer) = ctx.oracle.and_then(|oracle| oracle(env, m)) {
+                return answer;
+            }
             let body = ctx
                 .body
                 .get_or_insert_with(|| message::body_text(&env.file.path).unwrap_or_default());
@@ -530,6 +572,21 @@ mod tests {
         assert!(!matches(&ok("~f petr (~s x | ~s lunch)"), &e, &[]));
         assert!(matches(&ok("~f jane (~s x | ~s lunch)"), &e, &[]));
         assert!(matches(&ok("!(~f petr | ~f alice)"), &e, &[]));
+    }
+
+    #[test]
+    fn body_terms_collect_and_the_oracle_answers() {
+        let pats = ok("~b invoice ~s x !(~b a | ~b invoice)");
+        assert_eq!(body_terms(&pats), vec!["invoice", "a"]);
+        // The oracle's verdict replaces the (missing) local body read.
+        let e = env("Jane", "report", false, Flags::default());
+        let pats = ok("~b invoice");
+        assert!(!matches(&pats, &e, &[]));
+        let yes = |_: &Envelope, m: &Matcher| Some(m.raw() == "invoice");
+        assert!(matches_via(&pats, &e, &[], Some(&yes)));
+        // None falls back to the local read (empty body: no match).
+        let dunno = |_: &Envelope, _: &Matcher| None;
+        assert!(!matches_via(&pats, &e, &[], Some(&dunno)));
     }
 
     #[test]

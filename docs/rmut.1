@@ -1,4 +1,4 @@
-.TH RMUT 1 "July 2026" "rmut 1.29.0" "User Commands"
+.TH RMUT 1 "July 2026" "rmut 1.30.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -68,7 +68,10 @@ An IMAP folder of a configured
 .B [[accounts]]
 entry (INBOX when
 .I FOLDER
-is omitted), over TLS with local caching.
+is omitted), over TLS with local caching. A huge folder opens with
+its newest 500 headers; the rest stream in through a background
+connection while the index is already usable, the message count
+climbing as they land.
 .B $
 maps flag changes and deletions back to the server. Dead connections
 reconnect transparently; new mail arrives via IDLE or the regular
@@ -279,7 +282,10 @@ every prompt and question, straight into the editor;
 forward = "ask" asks "Forward as attachment?" per forward;
 copy = false keeps no sent copy by default.
 .SH PATTERNS
-Limit and search take mutt-style patterns:
+Limit and search take mutt-style patterns. On an IMAP mailbox a
+plain-substring ~b term is answered by the server (UID SEARCH), so
+no bodies are downloaded; regex or non-ASCII terms, and any failure,
+fall back to matching locally. The specifiers:
 .PP
 .nf
   ~f x  from       ~s x  subject     ~b x  body
@@ -375,6 +381,11 @@ draft's header block (From/To/Cc/Subject, Attach: lines) into the
 editor buffer for direct editing. Off, the prompts set To and
 Subject, and attachments go through the compose menu's
 .BR a .
+.TP
+.B new_mail_command
+Shell command run (fire-and-forget) when new mail arrives, in the
+open mailbox or a watched one: %f is the mailbox, %n how many.
+E.g. "notify-send 'rmut: %n new in %f'".
 .SS [index]
 .TP
 .B format

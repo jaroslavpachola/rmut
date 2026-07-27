@@ -414,6 +414,11 @@ pub struct App {
     attach_edit: Option<usize>,
     /// Background IDLE watcher for the open IMAP folder.
     idle: Option<remote::IdleWatch>,
+    /// Background header mirror for the tail of a huge IMAP folder.
+    backfill: Option<remote::Backfill>,
+    /// Server-side `~b` results: term → matching UIDs, filled when a
+    /// limit/search pattern with body terms is submitted on IMAP.
+    body_hits: HashMap<String, HashSet<u32>>,
     /// Address completion state at the To prompt (Tab cycles).
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
@@ -619,6 +624,8 @@ impl App {
             alias_addr: None,
             attach_edit: None,
             idle: None,
+            backfill: None,
+            body_hits: HashMap::new(),
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
             history: HashMap::new(),
@@ -656,6 +663,8 @@ impl App {
     pub fn open_spec(spec: &str, config: Config) -> Result<Self> {
         let mut app = Self::open_spec_inner(spec, config)?;
         app.refresh_sidebar();
+        // A huge IMAP folder mirrors its tail in the background.
+        app.maybe_backfill();
         Ok(app)
     }
 
@@ -805,13 +814,17 @@ impl App {
     // ---- new-mail detection ----
 
     fn check_new_mail(&mut self) {
+        let backfilling = self.backfill.as_ref().is_some_and(|b| !b.done());
         if let Some(remote) = &mut self.remote {
-            // NOOP + cache refresh; arrivals land in the cache maildir
-            // and are picked up by the mtime rescan below.
-            if let Err(err) = remote.check_new() {
+            // While the backfill streams headers in, skip the server
+            // check — a full reconcile would refetch its tail
+            // synchronously; the rescan below integrates the files.
+            if backfilling {
+            } else if let Err(err) = remote.check_new() {
                 self.status = Some(format!("imap: {err:#}"));
             }
         }
+        self.maybe_backfill();
         if let Some(mbox) = &mut self.mbox {
             // Re-mirror when the file changed; same rescan pickup.
             if let Err(err) = mbox.refresh() {
@@ -825,6 +838,73 @@ impl App {
             return;
         }
         self.rescan();
+    }
+
+    /// Spawn (or finish) the background mirror for a huge folder's
+    /// leftover headers; the poll rescan integrates them as they land.
+    fn maybe_backfill(&mut self) {
+        if self.backfill.as_ref().is_some_and(|b| !b.done()) {
+            return;
+        }
+        self.backfill = None;
+        let Some(remote) = &mut self.remote else {
+            return;
+        };
+        if remote.pending_backfill.is_empty() {
+            return;
+        }
+        let uids = mem::take(&mut remote.pending_backfill);
+        let Ok(password) = account_password(&remote.account) else {
+            return;
+        };
+        let count = uids.len();
+        self.backfill = Some(remote::backfill(
+            &remote.account,
+            &remote.mailbox,
+            &password,
+            remote.cache.clone(),
+            uids,
+        ));
+        self.status = Some(format!(
+            "loading {count} older message(s) in the background"
+        ));
+    }
+
+    /// Server-aware pattern match: `~b` terms resolved by UID SEARCH
+    /// (when `resolve_body_terms` filled the sets) instead of local
+    /// body reads; everything else matches as usual.
+    fn env_matches(&self, patterns: &[Pattern], env: &Envelope) -> bool {
+        pattern::matches_via(
+            patterns,
+            env,
+            &self.me,
+            Some(&|env: &Envelope, m: &pattern::Matcher| {
+                let set = self.body_hits.get(m.raw())?;
+                let uid = remote::uid_of(&env.file.path)?;
+                Some(set.contains(&uid))
+            }),
+        )
+    }
+
+    /// On IMAP, ask the server about the pattern's `~b` terms up
+    /// front. Only plain substrings go (regex or non-ASCII terms stay
+    /// local — a server search is a literal match); a failed search
+    /// just falls back to reading bodies locally.
+    fn resolve_body_terms(&mut self, patterns: &[Pattern]) {
+        let Some(remote) = &mut self.remote else {
+            return;
+        };
+        for term in pattern::body_terms(patterns) {
+            let simple = !term
+                .chars()
+                .any(|c| r".*+?[](){}|^$\".contains(c) || !c.is_ascii());
+            if !simple || self.body_hits.contains_key(&term) {
+                continue;
+            }
+            if let Ok(uids) = remote.search_body(&term) {
+                self.body_hits.insert(term, uids.into_iter().collect());
+            }
+        }
     }
 
     /// Rebuild the sidebar entries: the configured mailboxes with
@@ -873,7 +953,8 @@ impl App {
             }
             let count = maildir::new_count(&dir);
             let prev = self.mailbox_new.insert(spec.clone(), count);
-            if prev.is_some_and(|p| count > p) {
+            if let Some(p) = prev.filter(|&p| count > p) {
+                self.run_new_mail_command(&spec, count - p);
                 grew.push(spec);
             }
         }
@@ -918,7 +999,26 @@ impl App {
         self.resort(keep);
         if arrived > 0 {
             self.status = Some(format!("new mail in {} (+{arrived})", self.title));
+            let title = self.title.clone();
+            self.run_new_mail_command(&title, arrived);
         }
+    }
+
+    /// neomutt's new_mail_command: fire-and-forget shell hook on
+    /// arrivals; %f = the mailbox, %n = how many.
+    fn run_new_mail_command(&self, mailbox: &str, count: usize) {
+        let Some(cmd) = &self.config.mail.new_mail_command else {
+            return;
+        };
+        let cmd = cmd
+            .replace("%f", &format!("'{}'", mailbox.replace('\'', r"'\''")))
+            .replace("%n", &count.to_string());
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     }
 
     // ---- help ----
@@ -1347,7 +1447,10 @@ impl App {
                     self.limit = None;
                 } else {
                     match pattern::parse(input) {
-                        Ok(patterns) => self.limit = Some((input.to_string(), patterns)),
+                        Ok(patterns) => {
+                            self.resolve_body_terms(&patterns);
+                            self.limit = Some((input.to_string(), patterns));
+                        }
                         Err(err) => {
                             self.status = Some(format!("bad pattern: {err}"));
                             return;
@@ -1362,7 +1465,10 @@ impl App {
             LineKind::Search => {
                 if !input.is_empty() {
                     match pattern::parse(input) {
-                        Ok(patterns) => self.last_search = Some(patterns),
+                        Ok(patterns) => {
+                            self.resolve_body_terms(&patterns);
+                            self.last_search = Some(patterns);
+                        }
                         Err(err) => {
                             self.status = Some(format!("bad pattern: {err}"));
                             return;
@@ -4252,7 +4358,7 @@ impl App {
         let mut visible = Vec::with_capacity(self.msgs.len());
         for i in 0..self.msgs.len() {
             let limit_ok = match &self.limit {
-                Some((_, patterns)) => pattern::matches(patterns, &self.msgs[i].env, &self.me),
+                Some((_, patterns)) => self.env_matches(patterns, &self.msgs[i].env),
                 None => true,
             };
             if !limit_ok {
@@ -4338,7 +4444,7 @@ impl App {
         let n = self.visible.len();
         for step in 1..=n {
             let vi = (self.sel + step) % n;
-            if pattern::matches(&patterns, &self.msgs[self.visible[vi]].env, &self.me) {
+            if self.env_matches(&patterns, &self.msgs[self.visible[vi]].env) {
                 if vi <= self.sel {
                     self.status = Some("search wrapped".into());
                 }
@@ -4384,13 +4490,14 @@ impl App {
                 return;
             }
         };
+        self.resolve_body_terms(&patterns);
         let mut count = 0;
         for i in 0..self.msgs.len() {
             let in_limit = match &self.limit {
-                Some((_, l)) => pattern::matches(l, &self.msgs[i].env, &self.me),
+                Some((_, l)) => self.env_matches(l, &self.msgs[i].env),
                 None => true,
             };
-            if in_limit && pattern::matches(&patterns, &self.msgs[i].env, &self.me) {
+            if in_limit && self.env_matches(&patterns, &self.msgs[i].env) {
                 f(&mut self.msgs[i]);
                 count += 1;
             }

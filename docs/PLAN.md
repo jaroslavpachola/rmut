@@ -479,18 +479,24 @@ tints quotes, hits, and URLs.
       keep no copy); `$copy = no` (imported as `[mail] copy =
       false`) skips the sent copy by default, an explicit Fcc wins
 
-## R30 — big mailboxes
+## R30 — big mailboxes (done, 1.30)
 
-- [ ] IMAP server-side search: `~b`/`~B` (and plain-text terms) in
-      limit/search run as UID SEARCH on the open folder instead of
-      fetching every body; falls back locally when the server can't
-- [ ] Progressive open: huge folders show the index while envelope
-      batches stream in (windowed UID FETCH, newest first), the
-      status line counting up
-- [ ] `new_mail_command`: run a shell command when new mail arrives
-      (notify-send and friends), `%f`/`%n` expansions; imported
-- [ ] Header-cache hygiene: drop entries whose files vanished and
-      compact the cache file when it grows past its live set
+- [x] IMAP server-side search: plain-substring `~b` terms in
+      limit/search/pattern-ops run as UID SEARCH on the open folder
+      instead of fetching every body; regex/non-ASCII terms and any
+      server failure fall back to local matching
+- [x] Progressive open: a folder with more than 500 unmirrored
+      messages fetches the newest 500 synchronously and backfills
+      the tail on a background connection; the poll rescan
+      integrates the files as they land (the count climbs), and the
+      server check pauses meanwhile so nothing double-fetches
+- [x] `new_mail_command`: shell hook on arrivals in the open or
+      watched mailboxes (`%f` mailbox, `%n` count), fire-and-forget;
+      imported from neomutt's option
+- [x] Header-cache hygiene: entry pruning and compaction were
+      already inherent in the rewrite; what lingered were cache
+      files of vanished maildirs — a weekly sweep (marker-limited)
+      drops them, keyed by the mailbox path now stored in each file
 
 ## Non-goals
 

@@ -38,8 +38,15 @@ pub struct Remote {
     uidvalidity: u32,
     /// Highest UID mirrored so far; arrivals are fetched from here.
     last_uid: u32,
+    /// Older UIDs a huge folder left unfetched at open — the caller
+    /// hands them to `backfill` for a background mirror.
+    pub pending_backfill: Vec<u32>,
     progress: Progress,
 }
+
+/// How many newest headers a first open fetches synchronously; the
+/// rest of a huge folder streams in through `backfill`.
+const OPEN_WINDOW: usize = 500;
 
 /// `imap:account[/mailbox]` → (account, mailbox); INBOX when omitted.
 pub fn parse_spec(spec: &str) -> Option<(&str, &str)> {
@@ -182,6 +189,7 @@ impl Remote {
             secret: password.to_string(),
             uidvalidity: 0,
             last_uid: 0,
+            pending_backfill: Vec::new(),
             progress,
         };
         remote.point_at(mailbox)?;
@@ -260,16 +268,28 @@ impl Remote {
     /// expunged messages, download headers of new ones. Returns how
     /// many new messages arrived.
     pub fn refresh(&mut self) -> Result<usize> {
-        let (arrived, max_uid) = self.retry(Self::reconcile)?;
+        let (arrived, max_uid, leftover) = self.retry(|client, cache, progress| {
+            Self::reconcile(client, cache, progress, OPEN_WINDOW)
+        })?;
         self.last_uid = max_uid;
+        self.pending_backfill = leftover;
         Ok(arrived)
+    }
+
+    /// Server-side `~b`: UIDs of messages whose body contains `term`.
+    pub fn search_body(&mut self, term: &str) -> Result<Vec<u32>> {
+        self.retry(|client, _, progress| {
+            progress("searching on the server...");
+            client.uid_search_body(term)
+        })
     }
 
     fn reconcile(
         client: &mut Client,
         cache: &Path,
         progress: &mut Progress,
-    ) -> Result<(usize, u32)> {
+        window: usize,
+    ) -> Result<(usize, u32, Vec<u32>)> {
         let mut by_uid: HashMap<u32, MailFile> = HashMap::new();
         for file in maildir::scan(cache)? {
             if let Some(uid) = uid_of(&file.path) {
@@ -299,6 +319,14 @@ impl Remote {
                 let _ = fs::remove_file(&file.path);
             }
         }
+        // Huge folders: fetch the newest `window` now, leave the tail
+        // for the background backfill.
+        let leftover = if new_uids.len() > window {
+            new_uids.sort_unstable_by(|a, b| b.cmp(a));
+            new_uids.split_off(window)
+        } else {
+            Vec::new()
+        };
         let total = new_uids.len();
         let mut done = 0usize;
         for chunk in new_uids.chunks(100) {
@@ -317,7 +345,7 @@ impl Remote {
             progress(&format!("fetched {total} message header(s)"));
         }
         let max_uid = metas.iter().map(|m| m.uid).max().unwrap_or(0);
-        Ok((new_uids.len(), max_uid))
+        Ok((new_uids.len(), max_uid, leftover))
     }
 
     /// Mirror only arrivals: everything above the last mirrored UID.
@@ -511,6 +539,65 @@ impl Drop for IdleWatch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
     }
+}
+
+/// Background header mirror for the tail of a huge folder: a
+/// dedicated session fetches `uids` into the cache chunk by chunk;
+/// the caller's poll rescan picks the files up as they land. Dropped
+/// (mailbox switch, quit) it stops at the next chunk boundary;
+/// best-effort — anything missed comes in with the next reconcile.
+pub struct Backfill {
+    stop: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+}
+
+impl Backfill {
+    pub fn done(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for Backfill {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn backfill(
+    account: &Account,
+    mailbox: &str,
+    password: &str,
+    cache: PathBuf,
+    uids: Vec<u32>,
+) -> Backfill {
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let (account, mailbox, password) = (account.clone(), mailbox.to_string(), password.to_string());
+    let (thread_stop, thread_done) = (Arc::clone(&stop), Arc::clone(&done));
+    std::thread::spawn(move || {
+        let run = || -> Result<()> {
+            let mut client = connect_client(&account, &password)?;
+            client.select(&mailbox)?;
+            for chunk in uids.chunks(100) {
+                if thread_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let set = chunk
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                for fetched in client.uid_fetch_headers(&set)? {
+                    write_partial(&cache, &fetched)?;
+                }
+            }
+            client.logout();
+            Ok(())
+        };
+        let _ = run();
+        thread_done.store(true, Ordering::Relaxed);
+    });
+    Backfill { stop, done }
 }
 
 /// Watch `mailbox` with IDLE on a dedicated connection, setting the
@@ -887,6 +974,84 @@ mod tests {
                 "{err:#}"
             );
         });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn search_body_asks_the_server() {
+        let mut script = open_script();
+        script.push(Expect::new(
+            "UID SEARCH BODY \"invoice\"",
+            "* SEARCH 10 11\r\n".into(),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
+            assert_eq!(remote.search_body("invoice").unwrap(), vec![10, 11]);
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn reconcile_windows_huge_folders() {
+        // Three new messages, window 2: the newest two are fetched
+        // now, the oldest is left for the backfill.
+        let script = vec![
+            Expect::new(
+                "UID FETCH 1:* (UID FLAGS)",
+                "* 1 FETCH (UID 10 FLAGS ())\r\n* 2 FETCH (UID 11 FLAGS ())\r\n\
+                 * 3 FETCH (UID 12 FLAGS ())\r\n"
+                    .into(),
+            ),
+            Expect::new(
+                "UID FETCH 12,11 (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+                fetch_reply(12, "", "Subject: c\r\n\r\n")
+                    + &fetch_reply(11, "", "Subject: b\r\n\r\n"),
+            ),
+        ];
+        let (port, handle) = testserver::imap(script);
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        maildir::create(&cache).unwrap();
+        let mut client = Client::connect("127.0.0.1", port, false).unwrap();
+        let mut progress: Progress = Box::new(|_| {});
+        let (arrived, max_uid, leftover) =
+            Remote::reconcile(&mut client, &cache, &mut progress, 2).unwrap();
+        assert_eq!(arrived, 2);
+        assert_eq!(max_uid, 12);
+        assert_eq!(leftover, vec![10]);
+        assert_eq!(maildir::scan(&cache).unwrap().len(), 2);
+        drop(client);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn backfill_fills_the_cache() {
+        let script = vec![
+            Expect::new("LOGIN", String::new()),
+            Expect::new(
+                "SELECT \"INBOX\"",
+                "* 3 EXISTS\r\n* OK [UIDVALIDITY 42] ok\r\n".into(),
+            ),
+            Expect::new(
+                "UID FETCH 9,10 (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])",
+                fetch_reply(9, "\\Seen", "Subject: old-a\r\n\r\n")
+                    + &fetch_reply(10, "\\Seen", "Subject: old-b\r\n\r\n"),
+            ),
+        ];
+        let (port, handle) = testserver::imap(script);
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        maildir::create(&cache).unwrap();
+        let fill = backfill(&account(port), "INBOX", "pw", cache.clone(), vec![9, 10]);
+        for _ in 0..100 {
+            if fill.done() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(fill.done(), "backfill thread should finish");
+        assert_eq!(maildir::scan(&cache).unwrap().len(), 2);
         handle.join().unwrap();
     }
 

@@ -96,6 +96,7 @@ struct State {
     autoedit: bool,
     /// `set nocopy`: skip the sent copy.
     no_copy: bool,
+    new_mail_command: Option<String>,
     save_default: Option<String>,
     filters: BTreeMap<String, String>,
     imap_user: Option<String>,
@@ -487,6 +488,7 @@ impl State {
                 Err(_) => self.skip(line, "not a number"),
             },
             "quote_regexp" => self.quote_regexp = Some(v.to_string()),
+            "new_mail_command" => self.new_mail_command = Some(v.to_string()),
             "pager_format" => self.pager_format = Some(v.to_string()),
             "wrap" => match v.parse() {
                 Ok(n) => self.wrap = Some(n),
@@ -860,6 +862,7 @@ impl State {
             || self.fast_reply
             || self.autoedit
             || self.no_copy
+            || self.new_mail_command.is_some()
             || self.edit_headers_on
         {
             out += "\n[mail]\n";
@@ -907,6 +910,9 @@ impl State {
             }
             if self.no_copy {
                 out += "copy = false\n";
+            }
+            if let Some(c) = &self.new_mail_command {
+                out += &format!("new_mail_command = {}\n", quote(c));
             }
             if self.edit_headers_on {
                 out += "edit_headers = true\n";
@@ -1688,11 +1694,16 @@ mod tests {
             "set nocopy\n",
             "set mime_forward = ask-yes\n",
             "set forward_decode\n", // satisfied: always decoded
+            "set new_mail_command=\"notify-send 'rmut: %n new in %f'\"\n",
         ));
         assert!(cfg.mail.fast_reply);
         assert!(cfg.mail.autoedit);
         assert_eq!(cfg.mail.copy, Some(false));
         assert_eq!(cfg.mail.forward.as_deref(), Some("ask"));
+        assert_eq!(
+            cfg.mail.new_mail_command.as_deref(),
+            Some("notify-send 'rmut: %n new in %f'")
+        );
     }
 
     #[test]

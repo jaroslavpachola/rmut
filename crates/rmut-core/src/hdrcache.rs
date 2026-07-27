@@ -34,6 +34,11 @@ struct Entry {
 
 #[derive(Serialize, Deserialize, Default)]
 struct CacheFile {
+    /// The mirrored maildir, so `sweep` can drop caches of vanished
+    /// mailboxes (absent in pre-1.30 files — those age out on their
+    /// next rewrite).
+    #[serde(default)]
+    dir: String,
     entries: Vec<Entry>,
 }
 
@@ -135,16 +140,82 @@ fn load_envelopes_at(dir: &Path, cache_file: &Path) -> Result<(Vec<Envelope>, us
         if let Some(parent) = cache_file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = toml::to_string(&CacheFile { entries: fresh }) {
+        let out = CacheFile {
+            dir: dir.display().to_string(),
+            entries: fresh,
+        };
+        if let Ok(text) = toml::to_string(&out) {
             let _ = std::fs::write(cache_file, text);
         }
     }
     Ok((envelopes, skipped))
 }
 
+/// Drop header caches of maildirs that no longer exist. Rate-limited
+/// by a marker file, so callers can just invoke it at startup.
+pub fn sweep() {
+    sweep_at(&crate::remote::cache_base().join("headers"))
+}
+
+fn sweep_at(headers: &Path) {
+    let marker = headers.join(".last-sweep");
+    let week = std::time::Duration::from_secs(7 * 24 * 3600);
+    if std::fs::metadata(&marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < week)
+    {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(headers) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let dir = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| toml::from_str::<CacheFile>(&text).ok())
+            .map(|c| c.dir)
+            .unwrap_or_default();
+        if !dir.is_empty() && !Path::new(&dir).join("cur").is_dir() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let _ = std::fs::write(&marker, "swept\n");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweep_drops_caches_of_vanished_maildirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let headers = tmp.path().join("headers");
+        std::fs::create_dir_all(&headers).unwrap();
+        let md = tmp.path().join("md");
+        for sub in ["cur", "new", "tmp"] {
+            std::fs::create_dir_all(md.join(sub)).unwrap();
+        }
+        write_msg(&md.join("cur"), "1.host:2,S", "live");
+        load_envelopes_at(&md, &headers.join("live.toml")).unwrap();
+        let gone = format!(
+            "dir = \"{}\"\nentries = []\n",
+            tmp.path().join("gone").display()
+        );
+        std::fs::write(headers.join("gone.toml"), &gone).unwrap();
+        sweep_at(&headers);
+        assert!(headers.join("live.toml").exists());
+        assert!(!headers.join("gone.toml").exists());
+        // The marker rate-limits: a fresh sweep leaves things alone.
+        std::fs::write(headers.join("gone.toml"), &gone).unwrap();
+        sweep_at(&headers);
+        assert!(headers.join("gone.toml").exists());
+    }
 
     fn write_msg(dir: &Path, name: &str, subject: &str) {
         let content = format!(

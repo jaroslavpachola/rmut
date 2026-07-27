@@ -227,6 +227,24 @@ impl Client {
     /// NOOP, classifying the server's untagged report: nothing, only
     /// new arrivals (EXISTS/RECENT), or anything else — flag changes,
     /// expunges, unknown lines — that needs a full reconciliation.
+    /// Server-side body search: UIDs whose text contains `text`
+    /// (ASCII only — anything else needs CHARSET negotiation, so the
+    /// caller falls back to matching locally).
+    pub fn uid_search_body(&mut self, text: &str) -> Result<Vec<u32>> {
+        let arg = quoted(text).context("search text needs a charset")?;
+        let lines = self.command(&format!("UID SEARCH BODY {arg}"))?;
+        let mut out = Vec::new();
+        for line in &lines {
+            if let Some(rest) = line.text.trim_end().strip_prefix("* SEARCH") {
+                out.extend(
+                    rest.split_whitespace()
+                        .filter_map(|t| t.parse::<u32>().ok()),
+                );
+            }
+        }
+        Ok(out)
+    }
+
     pub fn noop_changes(&mut self) -> Result<Changes> {
         let lines = self.command("NOOP")?;
         if lines.is_empty() {

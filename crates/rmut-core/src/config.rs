@@ -155,6 +155,10 @@ pub struct Mail {
     /// mutt's $copy: false skips the sent copy (Fcc) entirely; an
     /// Fcc set in the compose menu still wins.
     pub copy: Option<bool>,
+    /// Shell command run when new mail arrives (neomutt's
+    /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
+    /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
+    pub new_mail_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

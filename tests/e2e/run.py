@@ -380,6 +380,7 @@ email = "jarda@example.com"
 mailboxes = ["{md}"]
 sent = "{os.path.join(tmp, 'Sent')}"
 poll_seconds = 1
+new_mail_command = "echo %f:%n >> {os.path.join(tmp, 'hook.out')}"
 [index]
 format = "%C|%-4.4F|%l|%L|%s"
 [keys.index]
@@ -414,6 +415,12 @@ L = "l~f jane<enter>"
     # new-mail detection: drop a message into new/ and wait for the poll
     write_msgs(md, ["petr"])
     r.expect("new mail in", "+1", timeout=8)
+    # ... which also fires new_mail_command with %f/%n expanded
+    hook = os.path.join(tmp, "hook.out")
+    wait_for(
+        lambda: os.path.exists(hook) and f"{md}:1" in open(hook).read(),
+        desc="new_mail_command ran",
+    )
     r.keys(b"q")
     r.close()
 

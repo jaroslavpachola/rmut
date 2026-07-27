@@ -3,14 +3,14 @@ resolver = "2"
 members = ["crates/rmut-core", "crates/rmut-tui"]
 
 [workspace.package]
-version = "1.29.0"
+version = "1.30.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/jaroslavpachola/rmut"
 readme = "README.md"
 
 [workspace.dependencies]
-rmut-core = { path = "crates/rmut-core", version = "1.29.0" }
+rmut-core = { path = "crates/rmut-core", version = "1.30.0" }
 anyhow = "1"
 ratatui = "0.29"
 chrono = "0.4"
