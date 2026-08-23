@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.30** — everything from the 1.0 roadmap plus R5–R17, hardening
+**1.30**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -136,8 +136,8 @@ Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 `~p` addressed to me; a bare word matches subject or from. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
-back to plain substring). `~d` takes a day or range —
-`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027` — or an
+back to plain substring). `~d` takes a day or range
+(`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027`) or an
 offset: `<1w` (within), `>2d` (older than), `=3d` (that day); units
 y m w d H M. Adjacent terms AND, `!` negates, `|` ORs, `()` groups:
 `!~D (~f jane | ~t jane) ~d <1m`.
@@ -147,8 +147,8 @@ y m w d H M. Adjacent terms AND, `!` negates, `|` ORs, `()` groups:
 `rmut imap:work` (or `imap:work/Archive`) opens an account folder;
 `c` and the folder browser `y` take the same specs, and `y` lists the
 account's folders via LIST. Messages are mirrored into a cache maildir
-under `~/.cache/rmut/imap/` — headers up front, full bodies fetched on
-first view — so the index is fast and old mail reopens offline. `$`
+under `~/.cache/rmut/imap/` (headers up front, full bodies fetched on
+first view), so the index is fast and old mail reopens offline. `$`
 pushes your changes to the server (flags via UID STORE, deletes via
 EXPUNGE). New mail is announced by **IDLE** (RFC 2177, on a second
 connection) and shows up within a second; when the server doesn't
@@ -158,12 +158,12 @@ connection dropped by laptop sleep or a server timeout is transparently
 reopened and the operation retried once; polls fetch only new arrivals
 unless the server reported flag changes or expunges. The
 password comes from `password_command` (e.g. `pass show mail/work`),
-run once per session — or from a stored `password`, if you accept a
+run once per session, or from a stored `password`, if you accept a
 secret sitting in the config file (keep it chmod 600).
 
 For Gmail/O365-style **OAuth2**, set `auth = "xoauth2"` (or
 `"oauthbearer"`, RFC 7628) and a `token_command` whose first output
-line is a fresh access token — acquiring and refreshing tokens is the
+line is a fresh access token; acquiring and refreshing tokens is the
 external tool's business (oauth2ms, mutt_oauth2.py, ...). The command
 runs for every connection, since tokens expire; both IMAP
 (AUTHENTICATE) and SMTP (AUTH) then use the token instead of a
@@ -175,8 +175,8 @@ password.
 maildir (like IMAP folders), so the index, pager, flags, and patterns
 all work unchanged, and messages are keyed by content so your flags
 survive when the spool grows. `$` sync writes changes back into the
-file — deleted messages dropped, `Status:`/`X-Status:` headers
-rewritten (`RO`/`AF`), mboxrd `>From` quoting preserved — under an
+file: deleted messages dropped, `Status:`/`X-Status:` headers
+rewritten (`RO`/`AF`), mboxrd `>From` quoting preserved, all under an
 exclusive flock, with a crash backup kept in the cache until the
 rewrite lands, and refuses (rather than clobbers) when the spool
 changed since the last look; check for new mail (`G`) and sync again.
@@ -188,25 +188,25 @@ PGP messages are handled on view by shelling out to gpg(1):
 PGP/MIME (RFC 3156) and inline/clearsigned messages are decrypted
 and/or verified, with a `[-- PGP: ... --]` verdict line at the top of
 the pager (good/BAD/unverified signature). Outgoing mail is treated
-per message: in the compose menu, `p` opens the security menu —
-(e)ncrypt, (s)ign, (b)oth, (c)lear — and the chosen state shows in the
+per message: in the compose menu, `p` opens the security menu with
+(e)ncrypt, (s)ign, (b)oth, (c)lear, and the chosen state shows in the
 menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption
 looks keys up by recipient address and always encrypts to the sender
 too, so the Fcc copy stays readable. Passphrases are gpg-agent's
-business — rmut never sees them.
+business; rmut never sees them.
 
 ## Sending mail
 
 Drafts open in `$VISUAL`/`$EDITOR` (default `vi`). If an account with
 `smtp_host` applies (the open mailbox's account, or the first one
-configured), the message goes out via SMTP submission — STARTTLS on
+configured), the message goes out via SMTP submission (STARTTLS on
 587, implicit TLS on 465, AUTH PLAIN/LOGIN, Bcc stripped from the wire
-copy — and the Fcc lands in the account's `sent_folder` by IMAP
+copy) and the Fcc lands in the account's `sent_folder` by IMAP
 APPEND. Otherwise it is handed to `sendmail -t -oi`; setting
 `$RMUT_SENDMAIL` or `mail.sendmail` forces the sendmail path. `From:`
-defaults to the identity in effect — `[identity]` overlaid by the open
+defaults to the identity in effect (`[identity]` overlaid by the open
 account's `identity` and any matching `[[identities]]` rules, with
-`reverse_name` picking the address a replied-to message came to — or
+`reverse_name` picking the address a replied-to message came to), or
 falls back to `$EMAIL` / `user@hostname`; the draft's own From line
 always wins, and rmut prefills it whenever an identity applies. In
 the compose menu, `P` postpones the draft into a nearby Drafts maildir
@@ -216,11 +216,11 @@ Aliases are read from `$RMUT_ALIASES` or `~/.config/rmut/aliases`, one
 mutt-style `alias nick address...` per line. At the To prompt (compose
 and bounce), **Tab** completes the word under the cursor: alias nicks
 by prefix, plus hits from `query_command` when one is configured
-(mutt's protocol — `%s` is the search word, the first output line is a
+(mutt's protocol: `%s` is the search word, the first output line is a
 message, then `address<TAB>name` lines). Repeated Tab cycles through
 multiple matches.
 
-By default (like mutt) the editor gets only the message body —
+By default (like mutt) the editor gets only the message body;
 headers come from the prompts, and attachments are added with `a` at
 the compose menu. With `edit_headers = true` the draft's header block
 is part of the editor buffer, where you can adjust To/Cc/Subject
@@ -245,7 +245,7 @@ entry (text directly, other types via `[filters]`), `t`/`c`/`b`/`s`
 edit the headers, `a` attaches without a trip through the editor, `D` detaches
 the selected file, `p` opens the security menu, `P` postpones, and
 `q` asks "Postpone this message?" (no discards). PGP signing and encryption wrap the whole multipart, attachments
-included — this also works for forwards with `forward = "attach"`.
+included; this also works for forwards with `forward = "attach"`.
 
 With several postponed drafts, recalling (`m`, then `r`) opens a
 picker instead of silently taking the newest.
@@ -329,7 +329,7 @@ deleted = "red"              # tagged header
 sync = "w"
 [keys.pager]
 
-[macros.index]               # macro: key = "replayed key sequence" —
+[macros.index]               # macro: key = "replayed key sequence",
 L = "l~f jane<enter>"        # literals + <enter>/<esc>/<ctrl+x>/...;
 [macros.pager]               # it feeds the input queue, so it can
                              # drive prompts; a macro shadows a
@@ -368,13 +368,13 @@ rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
 translates a muttrc (identity, folder/mailboxes, record/postponed,
 sendmail/editor/print_command/query_command/status_format, binds,
 status/header colors and `color index FG BG PATTERN` rules, PGP
-defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton — with
+defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, with
 `auth`/`token_command` when `*_authenticators` names
-oauthbearer/xoauth2 — reverse_name,
+oauthbearer/xoauth2, reverse_name,
 folder-hooks/send-hooks that only set from/realname into
 `[[identities]]` rules, and macros whose sequence is plain keys and
 prompt input) into rmut
-TOML on stdout for review — it never writes any file itself.
+TOML on stdout for review; it never writes any file itself.
 Directives with no rmut equivalent are kept as `# not imported:`
 comments, and ones that match rmut's built-in behavior (ssl_starttls,
 UTF-8 charset, pgp_auto_decode, ...) are acknowledged under
