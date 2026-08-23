@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.30**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.31**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -116,7 +116,8 @@ recipients, with a Resent-\* block), `e` edit the raw message (mutt's
 edit; the changed result replaces the original), Alt+e edit as a new
 draft (resend), `a` add the sender to the alias file (nick prompted, local
 part prefilled), `p` print (pipes the message to `mail.print`,
-default `lpr`), `q` quit (writes changes; asks before purging
+default `lpr`), `:` run a config command (see **Enter-command**
+below), `q` quit (writes changes; asks before purging
 deletions, like mutt), `x` abort without saving. Leaving a mailbox
 ages unread new mail to old (`O`), mutt's mark_old.
 
@@ -124,7 +125,7 @@ Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
 `v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `p` print,
 `s` save, `C`/`|`/`b` copy/pipe/bounce, `e`/Alt+e edit raw/resend,
-`q`/`i` back. Space past the end opens the next message and wrapped
+`:` run a config command, `q`/`i` back. Space past the end opens the next message and wrapped
 lines carry a leading `+` marker, like mutt. Replies ask mutt's
 ask-yes questions: Reply-To (when the header is set), "No subject,
 abort?", and "Include message in reply?"; Enter takes the yes.
@@ -249,6 +250,42 @@ included; this also works for forwards with `forward = "attach"`.
 
 With several postponed drafts, recalling (`m`, then `r`) opens a
 picker instead of silently taking the newest.
+
+## Enter-command
+
+`:` opens mutt's command prompt (the same line editor as the other
+prompts, with its own history) and applies one config line to the
+running session. Nothing is written back to the config file, so it is
+a place to try a setting before keeping it.
+
+```
+:set index_format="%4C %Z %{%b %d} %-15.15L (%?l?%4l&%4c?) %s"
+:set nobeep                 # also: set beep, unset beep, toggle beep
+:set invtilde               # mutt's inv prefix toggles
+:set pager_index_lines=6 pager_context=2
+:set sort?                  # report a value instead of setting it
+:bind index \Cd delete-message      # mutt keys and function names
+:macro pager S "s=archive<enter>"
+:color index brightyellow default ~F
+:ignore x-spam-score        # and unignore, to bring one back
+:alias jane Jane Doe <jane@example.com>
+:push "<enter>"             # keys into the input queue
+:exec sync                  # run one function now
+```
+
+Settable at runtime: `index_format`, `date_format`, `sort`,
+`sort_aux`, `pager_format`, `pager_index_lines`, `pager_context`,
+`quote_regexp`, `wrap`, `tilde`, `status_format`, `theme`, `beep`,
+`from`, `realname`, `reverse_name`, `edit_headers`, `fast_reply`,
+`autoedit`, `copy`, `forward`/`mime_forward`, `sendmail`, `editor`,
+`print_command`, `query_command`, `trash`, `record`, `postponed`,
+`new_mail_command`, `mail_check`, `notmuch`, `sidebar_visible`,
+`sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
+An unknown option, a bad number, an unbindable key, or an unknown
+function reports on the bottom line in the error color and stops the
+rest of the line. Changed settings recompile in place: colors, key
+tables, the quote regexp, header rules, and a resort when the sort
+order moved.
 
 ## Configuration
 

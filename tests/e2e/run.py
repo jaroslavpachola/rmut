@@ -1920,6 +1920,68 @@ def scenario_attachment_pager(tmp):
     r.close()
 
 
+
+def scenario_enter_command(tmp):
+    """R32: the `:` prompt applies config commands to the live session:
+    set/unset/toggle with a `?` query, bind and macro against the key
+    tables, exec and push, and errors reported in the error style."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "ci"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:2")
+    # set: a new index_format takes effect on the next draw
+    r.keys(b':set index_format="XX %s"\r')
+    r.expect("XX Lunch on Friday?", "XX CI failed on")
+    # ? queries the value instead of changing it; booleans read back
+    # in mutt's no-prefixed spelling
+    r.keys(b":set index_format?\r")
+    r.expect('index_format="XX %s"')
+    r.keys(b":set beep?\r")
+    r.expect("beep")
+    r.keys(b":unset beep\r")
+    r.keys(b":set beep?\r")
+    r.expect("nobeep")
+    r.keys(b":toggle beep\r")
+    r.keys(b":set beep?\r")
+    r.expect("beep")
+    # a bad option and a bad command both report as errors
+    r.keys(b":set nosuchoption=1\r")
+    r.expect("unknown or read-only option")
+    r.keys(b":frobnicate\r")
+    r.expect("unknown command")
+    r.keys(b":set pager_index_lines=x\r")
+    r.expect("wants a number")
+    # macro: mutt syntax, checked against the live key tables
+    r.keys(b':macro index L "l~f jane<enter>"\r')
+    r.keys(b"L")
+    r.expect("Msgs:1/2", "limit:~f jane")
+    r.keys(b"l")
+    r.keys(b"\x15\r")  # ctrl+u clears the prefilled limit
+    r.expect("Msgs:2")
+    # bind takes mutt key spellings and mutt function names
+    r.keys(b":bind index D delete-message\r")
+    r.keys(b"D")
+    r.expect("Del:1")
+    r.keys(b":bind index nosuchkey quit\r")
+    r.expect("no such key")
+    r.keys(b":bind index Z nosuchfunction\r")
+    r.expect("no such function")
+    # exec runs a function straight away, push feeds the input queue
+    r.keys(b":exec help\r")
+    r.expect("quit (writes changes")
+    r.keys(b"q")
+    r.keys(b':push "<enter>"\r')
+    r.expect("Lunch on Friday?", "Date:")
+    r.keys(b"q")
+    # ignore/unignore reshape the pager's brief header view
+    r.keys(b":unignore message-id\r")
+    r.keys(b"\r")
+    r.expect("Message-ID: <msg1@example.com>")
+    r.keys(b"q")
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -1936,6 +1998,7 @@ SCENARIOS = [
     scenario_edit_headers,
     scenario_mutt_flow,
     scenario_line_editor,
+    scenario_enter_command,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

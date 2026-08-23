@@ -516,16 +516,28 @@ Goal: close the pattern-operator gaps a mutt hand reaches for first.
 - [ ] everywhere patterns go: limit, search, pattern-ops, color_index
       rules, identities
 
-## R32: enter-command
+## R32: enter-command (done, 1.31)
 
-Goal: mutt's `:` prompt for runtime configuration without restarting.
-
-- [ ] `:` opens a command prompt (line editor + history) accepting
-      set/unset/toggle of the runtime-changeable options, bind,
-      macro, color, ignore/unignore, alias
-- [ ] `push`/`exec` for macros; errors report in the error style
-- [ ] this is the machinery folder-hooks with arbitrary commands
-      would need later, so design with that in mind
+- [x] `:` in the index and the pager opens a command prompt (the R23
+      line editor, with its own history bucket) taking one config
+      line for the session; the config file is never rewritten
+- [x] `set`/`unset`/`toggle` over the runtime-changeable options in
+      mutt's spelling, including `set nofoo`, `set invfoo`, several
+      assignments per line, and `set foo?` reporting the value
+- [x] `bind` and `macro` against the live key tables, taking mutt key
+      spellings (`\Cd`, `<esc>`) and mutt function names
+      (`delete-message`) as well as rmut's own action names;
+      `index`, `pager`, `generic`, and comma-joined menu lists
+- [x] `color` into the same slots the importer uses (named slots, the
+      quoted palette, `color index PATTERN`, `color body REGEX`),
+      `ignore`/`unignore`, and `alias` appending to the alias file
+- [x] `push` feeds the input queue, `exec` runs one function straight
+      away in the menu on screen; every failure reports in the error
+      style and stops the line
+- [x] Changed config recompiles in place: theme, key tables, color
+      rules, quote regexp, header rules, and a resort when the sort
+      order moved. `command::parse` + `command::apply` are the halves
+      a folder-hook with arbitrary commands would reuse
 
 ## R33: batch and CLI round
 

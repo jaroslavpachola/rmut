@@ -13,9 +13,9 @@ use rmut_core::config::{Account, Config};
 use rmut_core::message::Envelope;
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote::{self, Remote};
-use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thread};
+use rmut_core::{alias, command, compose, hdrcache, maildir, mbox, message, pgp, smtp, thread};
 
-use crate::keymap::{IndexAction, Keymap, PagerAction};
+use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
 use crate::theme::Theme;
 
 pub struct Msg {
@@ -125,6 +125,8 @@ pub enum LineKind {
     Query,
     /// The notmuch query (`X`).
     Notmuch,
+    /// The `:` prompt: one config command (mutt's enter-command).
+    EnterCommand,
     ChangeDir,
     SavePart,
     SaveMsg,
@@ -173,6 +175,7 @@ impl LineKind {
             LineKind::SavePart | LineKind::AttachFile => "file",
             LineKind::Pipe | LineKind::PipePart => "command",
             LineKind::Notmuch => "notmuch",
+            LineKind::EnterCommand => "command",
             LineKind::ComposeSubject
             | LineKind::EditSubject
             | LineKind::AliasNick
@@ -478,23 +481,41 @@ fn dir_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
     (mtime(dir.join("new")), mtime(dir.join("cur")))
 }
 
-impl App {
-    pub fn open(dir: &Path, config: Config) -> Result<Self> {
-        // The header cache spares re-parsing every message on open.
-        let (envelopes, skipped) = hdrcache::load_envelopes(dir)?;
-        let mut msgs: Vec<Msg> = envelopes
-            .into_iter()
-            .map(|env| Msg { env, dirty: false })
-            .collect();
-        // Mutt's default sort: date, oldest first.
-        msgs.sort_by_key(|m| m.env.date);
-        let visible: Vec<usize> = (0..msgs.len()).collect();
-        // Like mutt: start on the first new message, else the last.
-        let sel = msgs
-            .iter()
-            .position(|m| m.env.file.is_new)
-            .unwrap_or(visible.len().saturating_sub(1));
-        let (theme, mut warnings) = Theme::from_config(&config);
+/// An rmut action name or a mutt function name, resolved to the rmut
+/// name the key tables use. None when the menu has no such function.
+fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
+    if menu == command::Menu::Index {
+        if IndexAction::from_name(name).is_some() {
+            return Some(name.to_string());
+        }
+        let mapped = rmut_core::muttrc::index_function(name)?;
+        IndexAction::from_name(mapped).map(|_| mapped.to_string())
+    } else {
+        if PagerAction::from_name(name).is_some() {
+            return Some(name.to_string());
+        }
+        let mapped = rmut_core::muttrc::pager_function(name)?;
+        PagerAction::from_name(mapped).map(|_| mapped.to_string())
+    }
+}
+
+/// Everything the running app derives from [`Config`]: compiled rules,
+/// the theme, and the key tables. Kept in one place so `:` commands can
+/// rebuild it after changing the config, exactly as startup built it.
+struct Derived {
+    theme: Theme,
+    keymap: Keymap,
+    index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
+    body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
+    quote_re: regex_lite::Regex,
+    head_rules: message::HeaderRules,
+}
+
+impl Derived {
+    /// Compile the config, collecting warnings for anything unusable
+    /// (a bad pattern, an unknown color) rather than failing.
+    fn from_config(config: &Config) -> (Derived, Vec<String>) {
+        let (theme, mut warnings) = Theme::from_config(config);
         let (keymap, key_warnings) = Keymap::with_config(
             &config.keys.index,
             &config.keys.pager,
@@ -502,9 +523,6 @@ impl App {
             &config.macros.pager,
         );
         warnings.extend(key_warnings);
-        if skipped > 0 {
-            warnings.push(format!("{skipped} unreadable message(s) skipped"));
-        }
         // Compile [[color_index]] rules; broken ones warn and drop.
         let mut index_rules = Vec::new();
         for rule in &config.color_index {
@@ -576,6 +594,48 @@ impl App {
         }
         if let Some(list) = &config.pager.hdr_order {
             head_rules.order = clean(list);
+        }
+        (
+            Derived {
+                theme,
+                keymap,
+                index_rules,
+                body_rules,
+                quote_re,
+                head_rules,
+            },
+            warnings,
+        )
+    }
+}
+
+impl App {
+    pub fn open(dir: &Path, config: Config) -> Result<Self> {
+        // The header cache spares re-parsing every message on open.
+        let (envelopes, skipped) = hdrcache::load_envelopes(dir)?;
+        let mut msgs: Vec<Msg> = envelopes
+            .into_iter()
+            .map(|env| Msg { env, dirty: false })
+            .collect();
+        // Mutt's default sort: date, oldest first.
+        msgs.sort_by_key(|m| m.env.date);
+        let visible: Vec<usize> = (0..msgs.len()).collect();
+        // Like mutt: start on the first new message, else the last.
+        let sel = msgs
+            .iter()
+            .position(|m| m.env.file.is_new)
+            .unwrap_or(visible.len().saturating_sub(1));
+        let (derived, mut warnings) = Derived::from_config(&config);
+        let Derived {
+            theme,
+            keymap,
+            index_rules,
+            body_rules,
+            quote_re,
+            head_rules,
+        } = derived;
+        if skipped > 0 {
+            warnings.push(format!("{skipped} unreadable message(s) skipped"));
         }
         let status = (!warnings.is_empty()).then(|| warnings.join("; "));
         let count = msgs.len();
@@ -1527,6 +1587,7 @@ impl App {
             LineKind::PipePart => self.pipe_part(input),
             LineKind::Query => self.run_query(input),
             LineKind::Notmuch => self.notmuch_search(input),
+            LineKind::EnterCommand => self.run_command_line(input),
             LineKind::BounceTo => self.bounce_to_submitted(input),
             LineKind::AttachFile => self.attach_file_submitted(input),
             LineKind::AliasNick => self.create_alias(input),
@@ -1564,6 +1625,12 @@ impl App {
             return;
         };
         let apply_tagged = mem::take(&mut self.tag_next);
+        self.run_index_action(action, apply_tagged, page);
+    }
+
+    /// One index action, however it arrived: a key, a macro replay, or
+    /// `:exec`.
+    fn run_index_action(&mut self, action: IndexAction, apply_tagged: bool, page: usize) {
         match action {
             IndexAction::Tag => {
                 if let Some(m) = self.cur_mut() {
@@ -1782,6 +1849,7 @@ impl App {
                     self.open_mailbox_spec(&spec);
                 }
             }
+            IndexAction::EnterCommand => self.open_command_prompt(),
             IndexAction::Help => self.open_help(),
         }
     }
@@ -1821,6 +1889,11 @@ impl App {
         let Some(action) = self.keymap.lookup_pager(&key) else {
             return;
         };
+        self.run_pager_action(action, width, page);
+    }
+
+    /// One pager action, however it arrived (key, macro, or `:exec`).
+    fn run_pager_action(&mut self, action: PagerAction, width: usize, page: usize) {
         match action {
             PagerAction::Back => {
                 // A part view returns to its attachment menu.
@@ -1950,6 +2023,10 @@ impl App {
             }
             PagerAction::CreateAlias => {
                 self.prompt_create_alias();
+                return;
+            }
+            PagerAction::EnterCommand => {
+                self.open_command_prompt();
                 return;
             }
             PagerAction::Help => {
@@ -3891,6 +3968,180 @@ impl App {
     /// Queue a macro's keys in front of whatever is already queued (a
     /// macro fired mid-replay expands in place, like mutt's input
     /// stack). The cap breaks self-referencing macros.
+    /// mutt's enter-command: `:` takes one config line for this
+    /// session (the config file itself is never rewritten).
+    fn open_command_prompt(&mut self) {
+        self.prompt = Some(Prompt::line(":", String::new(), LineKind::EnterCommand));
+    }
+
+    /// Run one `:` line: apply every command it holds, then recompile
+    /// whatever the change touched so it shows without a restart. The
+    /// first failing command reports and stops the line, like mutt.
+    fn run_command_line(&mut self, line: &str) {
+        let commands = match command::parse(line) {
+            Ok(commands) => commands,
+            Err(err) => return self.error_status(err),
+        };
+        let sort_before = (
+            self.config.index.sort.clone(),
+            self.config.index.sort_aux.clone(),
+        );
+        let sidebar_before = self.config.sidebar.visible;
+        let mut reports = Vec::new();
+        for cmd in &commands {
+            let outcome = match cmd {
+                command::Command::Bind { .. } | command::Command::Macro { .. } => {
+                    self.bind_command(cmd)
+                }
+                command::Command::Alias { nick, expansion } => self.alias_command(nick, expansion),
+                command::Command::Push(seq) => self.push_command(seq),
+                command::Command::Exec(function) => self.exec_command(function),
+                config_command => command::apply(&mut self.config, config_command),
+            };
+            match outcome {
+                Ok(Some(text)) => reports.push(text),
+                Ok(None) => {}
+                Err(err) => return self.error_status(err),
+            }
+        }
+        if commands.is_empty() {
+            return;
+        }
+        reports.extend(self.recompile());
+        if sort_before
+            != (
+                self.config.index.sort.clone(),
+                self.config.index.sort_aux.clone(),
+            )
+        {
+            if let Some(spec) = self.config.index.sort.clone()
+                && let Some((sort, rev)) = parse_sort(&spec)
+            {
+                self.sort = sort;
+                self.sort_rev = rev;
+            }
+            self.apply_sort();
+        }
+        if self.config.sidebar.visible != sidebar_before {
+            self.sidebar_visible = self.config.sidebar.visible;
+        }
+        if !reports.is_empty() {
+            self.status = Some(reports.join("; "));
+        }
+    }
+
+    /// Recompile the config-derived state (theme, key tables, color
+    /// rules, quote regexp, header rules) and hand back any warnings.
+    fn recompile(&mut self) -> Vec<String> {
+        let (derived, warnings) = Derived::from_config(&self.config);
+        self.theme = derived.theme;
+        self.keymap = derived.keymap;
+        self.index_rules = derived.index_rules;
+        self.body_rules = derived.body_rules;
+        self.quote_re = derived.quote_re;
+        self.head_rules = derived.head_rules;
+        warnings
+    }
+
+    /// `bind` / `macro`: the action names live here, not in the config
+    /// crate, so these are checked against the live tables and then
+    /// written into the config for `recompile` to pick up. mutt key
+    /// spellings (`\Cd`, `<esc>`) and mutt function names both work.
+    fn bind_command(&mut self, cmd: &command::Command) -> Result<Option<String>, String> {
+        let (menu, key) = match cmd {
+            command::Command::Bind { menu, key, .. }
+            | command::Command::Macro { menu, key, .. } => (*menu, key),
+            _ => return Ok(None),
+        };
+        let key = rmut_core::muttrc::convert_key(key).unwrap_or_else(|| key.clone());
+        if parse_key(&key).is_none() {
+            return Err(format!("no such key {key:?}"));
+        }
+        let menus: &[command::Menu] = match menu {
+            command::Menu::Generic => &[command::Menu::Index, command::Menu::Pager],
+            command::Menu::Index => &[command::Menu::Index],
+            command::Menu::Pager => &[command::Menu::Pager],
+        };
+        match cmd {
+            command::Command::Bind { function, .. } => {
+                let mut bound = false;
+                for m in menus {
+                    let Some(action) = resolve_function(*m, function) else {
+                        continue;
+                    };
+                    let table = if *m == command::Menu::Index {
+                        &mut self.config.keys.index
+                    } else {
+                        &mut self.config.keys.pager
+                    };
+                    table.insert(action, key.clone());
+                    bound = true;
+                }
+                if !bound {
+                    return Err(format!("no such function {function:?}"));
+                }
+            }
+            command::Command::Macro { seq, .. } => {
+                if parse_sequence(seq).is_none() {
+                    return Err(format!("bad key sequence {seq:?}"));
+                }
+                for m in menus {
+                    let table = if *m == command::Menu::Index {
+                        &mut self.config.macros.index
+                    } else {
+                        &mut self.config.macros.pager
+                    };
+                    table.insert(key.clone(), seq.clone());
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    /// `alias NICK ADDRESS`: appended to the alias file, like the `a`
+    /// key, so it outlives the session.
+    fn alias_command(&mut self, nick: &str, expansion: &str) -> Result<Option<String>, String> {
+        if nick.contains(char::is_whitespace) {
+            return Err("the alias nick must be one word".into());
+        }
+        match alias::append(nick, expansion) {
+            Ok(_) => Ok(Some(format!("added: alias {nick} {expansion}"))),
+            Err(err) => Err(format!("cannot save the alias: {err:#}")),
+        }
+    }
+
+    /// `push SEQUENCE`: keys into the input queue, the same path a
+    /// macro takes.
+    fn push_command(&mut self, seq: &str) -> Result<Option<String>, String> {
+        let keys = parse_sequence(seq).ok_or_else(|| format!("bad key sequence {seq:?}"))?;
+        self.replay(keys);
+        Ok(None)
+    }
+
+    /// `exec FUNCTION`: run one action straight away, in whichever
+    /// menu is on screen.
+    fn exec_command(&mut self, function: &str) -> Result<Option<String>, String> {
+        let (width, page) = self.view_size;
+        match self.mode {
+            Mode::Pager(_) => {
+                let name = resolve_function(command::Menu::Pager, function)
+                    .ok_or_else(|| format!("no such pager function {function:?}"))?;
+                let action = PagerAction::from_name(&name)
+                    .ok_or_else(|| format!("no such pager function {function:?}"))?;
+                self.run_pager_action(action, self.pager_wrap(width), page);
+            }
+            _ => {
+                let name = resolve_function(command::Menu::Index, function)
+                    .ok_or_else(|| format!("no such index function {function:?}"))?;
+                let action = IndexAction::from_name(&name)
+                    .ok_or_else(|| format!("no such index function {function:?}"))?;
+                self.run_index_action(action, false, page);
+            }
+        }
+        Ok(None)
+    }
+
     fn replay(&mut self, seq: Vec<KeyEvent>) {
         if self.pending_keys.len() + seq.len() > 1000 {
             self.pending_keys.clear();

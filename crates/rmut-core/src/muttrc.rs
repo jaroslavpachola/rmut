@@ -218,7 +218,7 @@ fn strip_comment(line: &str) -> String {
 
 /// Whitespace-separated tokens; quotes group, backslash escapes inside
 /// double quotes and bare text (mutt-ish, close enough for configs).
-fn tokenize(line: &str) -> Vec<String> {
+pub(crate) fn tokenize(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut has = false;
@@ -259,7 +259,7 @@ fn tokenize(line: &str) -> Vec<String> {
 
 /// `set` arguments as (name, value) pairs: `a=b`, `a = b`, `a =b`,
 /// `a= b`, and bare booleans `a` / `noa`.
-fn assignments(tokens: &[String]) -> Vec<(String, String)> {
+pub(crate) fn assignments(tokens: &[String]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -295,12 +295,12 @@ fn assignments(tokens: &[String]) -> Vec<(String, String)> {
     out
 }
 
-fn is_yes(value: &str) -> bool {
+pub(crate) fn is_yes(value: &str) -> bool {
     matches!(value, "yes" | "ask-yes" | "true" | "1")
 }
 
 /// "Jane Doe <jane@x>" or a bare address → (display name, address).
-fn split_from(v: &str) -> (Option<String>, String) {
+pub(crate) fn split_from(v: &str) -> (Option<String>, String) {
     match v.split_once('<') {
         Some((n, rest)) => {
             let n = n.trim().trim_matches('"');
@@ -1230,7 +1230,7 @@ fn quote(value: &str) -> String {
 }
 
 /// mutt key syntax → rmut key syntax (None: no equivalent).
-fn convert_key(key: &str) -> Option<String> {
+pub fn convert_key(key: &str) -> Option<String> {
     if let Some(c) = key.strip_prefix("\\C").or_else(|| key.strip_prefix("\\c")) {
         let mut chars = c.chars();
         let c = chars.next()?;
@@ -1322,14 +1322,14 @@ fn convert_sequence(seq: &str) -> Option<String> {
 }
 
 /// mutt "bright" colors are close to ratatui's "light" family.
-fn convert_color(name: &str) -> String {
+pub(crate) fn convert_color(name: &str) -> String {
     match name.strip_prefix("bright") {
         Some(base) => format!("light{base}"),
         None => name.to_string(),
     }
 }
 
-fn index_function(name: &str) -> Option<&'static str> {
+pub fn index_function(name: &str) -> Option<&'static str> {
     Some(match name {
         "quit" => "quit",
         "exit" => "abort",
@@ -1376,7 +1376,7 @@ fn index_function(name: &str) -> Option<&'static str> {
     })
 }
 
-fn pager_function(name: &str) -> Option<&'static str> {
+pub fn pager_function(name: &str) -> Option<&'static str> {
     Some(match name {
         "exit" => "back",
         "next-line" => "down",

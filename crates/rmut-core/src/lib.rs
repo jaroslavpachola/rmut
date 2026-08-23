@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod command;
 pub mod compose;
 pub mod config;
 pub mod format;

@@ -167,6 +167,7 @@ pub enum IndexAction {
     CreateAlias,
     Query,
     Notmuch,
+    EnterCommand,
     Help,
 }
 
@@ -205,6 +206,7 @@ pub enum PagerAction {
     Resend,
     Edit,
     CreateAlias,
+    EnterCommand,
     Help,
 }
 
@@ -262,6 +264,7 @@ impl IndexAction {
             CreateAlias => "create-alias",
             Query => "query",
             Notmuch => "notmuch",
+            EnterCommand => "enter-command",
             Help => "help",
         }
     }
@@ -319,6 +322,7 @@ impl IndexAction {
             CreateAlias => "add the sender to the alias file",
             Query => "look up addresses with query_command",
             Notmuch => "notmuch search into a read-only view",
+            EnterCommand => "run a config command (set/bind/macro/color/...)",
             Help => "this help",
         }
     }
@@ -376,11 +380,12 @@ impl IndexAction {
             CreateAlias,
             Query,
             Notmuch,
+            EnterCommand,
             Help,
         ]
     }
 
-    fn from_name(name: &str) -> Option<IndexAction> {
+    pub fn from_name(name: &str) -> Option<IndexAction> {
         IndexAction::all()
             .iter()
             .copied()
@@ -425,6 +430,7 @@ impl PagerAction {
             Resend => "resend",
             Edit => "edit",
             CreateAlias => "create-alias",
+            EnterCommand => "enter-command",
             Help => "help",
         }
     }
@@ -465,6 +471,7 @@ impl PagerAction {
             Resend => "edit the message as a new draft",
             Edit => "edit the raw message and replace it",
             CreateAlias => "add the sender to the alias file",
+            EnterCommand => "run a config command (set/bind/macro/color/...)",
             Help => "this help",
         }
     }
@@ -505,11 +512,12 @@ impl PagerAction {
             Resend,
             Edit,
             CreateAlias,
+            EnterCommand,
             Help,
         ]
     }
 
-    fn from_name(name: &str) -> Option<PagerAction> {
+    pub fn from_name(name: &str) -> Option<PagerAction> {
         PagerAction::all()
             .iter()
             .copied()
@@ -618,6 +626,7 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ch('a'), CreateAlias),
         (KeyPattern::ch('Q'), Query),
         (KeyPattern::ch('X'), Notmuch),
+        (KeyPattern::ch(':'), EnterCommand),
         (KeyPattern::ch('?'), Help),
     ]
 }
@@ -669,6 +678,7 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('e'), Edit),
         (KeyPattern::alt('e'), Resend),
         (KeyPattern::ch('a'), CreateAlias),
+        (KeyPattern::ch(':'), EnterCommand),
         (KeyPattern::ch('?'), Help),
     ]
 }
