@@ -38,7 +38,7 @@ pub struct Remote {
     uidvalidity: u32,
     /// Highest UID mirrored so far; arrivals are fetched from here.
     last_uid: u32,
-    /// Older UIDs a huge folder left unfetched at open — the caller
+    /// Older UIDs a huge folder left unfetched at open; the caller
     /// hands them to `backfill` for a background mirror.
     pub pending_backfill: Vec<u32>,
     progress: Progress,
@@ -196,7 +196,7 @@ impl Remote {
         Ok(remote)
     }
 
-    /// Reuse this session for another folder of the same account — a
+    /// Reuse this session for another folder of the same account: a
     /// SELECT on the live connection instead of a fresh connect+login
     /// round. On failure the caller falls back to a full open.
     pub fn switch(&mut self, mailbox: &str) -> Result<()> {
@@ -235,7 +235,7 @@ impl Remote {
 
     /// One transparent reconnect after a dropped connection: fresh
     /// session, same mailbox. A changed UIDVALIDITY means the cache is
-    /// stale — that needs a real reopen, not a silent retry.
+    /// stale, and that needs a real reopen, not a silent retry.
     fn reconnect(&mut self) -> Result<()> {
         let mut client = connect_client(&self.account, &self.secret)?;
         let select = client.select(&self.mailbox)?;
@@ -545,7 +545,7 @@ impl Drop for IdleWatch {
 /// dedicated session fetches `uids` into the cache chunk by chunk;
 /// the caller's poll rescan picks the files up as they land. Dropped
 /// (mailbox switch, quit) it stops at the next chunk boundary;
-/// best-effort — anything missed comes in with the next reconcile.
+/// best-effort; anything missed comes in with the next reconcile.
 pub struct Backfill {
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
@@ -730,7 +730,7 @@ mod tests {
 
     fn with_cache_home<T>(f: impl FnOnce() -> T) -> (T, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
-        // Serialized by rust's test lock? No — tests run in parallel, so
+        // Serialized by rust's test lock? No: tests run in parallel, so
         // env vars are unsafe to share. Give each test its own subdir
         // through a process-wide lock held for the whole closure.
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

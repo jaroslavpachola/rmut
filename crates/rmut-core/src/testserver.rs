@@ -16,7 +16,7 @@ pub(crate) struct Expect {
     reply: String,
     /// IMAP: complete the command with NO instead of OK.
     fail: Option<&'static str>,
-    /// IMAP: send only `reply`, no tagged completion — for IDLE, which
+    /// IMAP: send only `reply`, no tagged completion; for IDLE, which
     /// is completed by a later DONE step.
     untagged: bool,
     /// IMAP: drop the connection instead of answering (reconnect
@@ -69,7 +69,7 @@ impl Expect {
 /// IMAP server; returns the port and the thread to join at test end.
 /// When the client disconnects with script steps left, the server
 /// accepts a fresh connection (reconnect tests). Writes are
-/// best-effort — a LOGOUT reply may race the client's close.
+/// best-effort; a LOGOUT reply may race the client's close.
 pub(crate) fn imap(script: Vec<Expect>) -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

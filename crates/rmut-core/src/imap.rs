@@ -92,7 +92,7 @@ impl Client {
                     .context("IMAP login")?;
             }
             _ => {
-                // Something unquotable — send both as literals.
+                // Something unquotable, so send both as literals.
                 let tag = self.next_tag();
                 self.conn
                     .write_all(format!("{tag} LOGIN {{{}}}\r\n", user.len()).as_bytes())?;
@@ -165,7 +165,7 @@ impl Client {
         Ok(lines.iter().filter_map(parse_fetch).collect())
     }
 
-    /// Flags, size, and the full header block — for indexing new mail.
+    /// Flags, size, and the full header block, for indexing new mail.
     pub fn uid_fetch_headers(&mut self, set: &str) -> Result<Vec<Fetched>> {
         let lines = self.command(&format!(
             "UID FETCH {set} (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])"
@@ -225,10 +225,10 @@ impl Client {
     }
 
     /// NOOP, classifying the server's untagged report: nothing, only
-    /// new arrivals (EXISTS/RECENT), or anything else — flag changes,
-    /// expunges, unknown lines — that needs a full reconciliation.
+    /// new arrivals (EXISTS/RECENT), or anything else (flag changes,
+    /// expunges, unknown lines) that needs a full reconciliation.
     /// Server-side body search: UIDs whose text contains `text`
-    /// (ASCII only — anything else needs CHARSET negotiation, so the
+    /// (ASCII only; anything else needs CHARSET negotiation, so the
     /// caller falls back to matching locally).
     pub fn uid_search_body(&mut self, text: &str) -> Result<Vec<u32>> {
         let arg = quoted(text).context("search text needs a charset")?;
@@ -285,7 +285,7 @@ impl Client {
 
     /// RFC 2177 IDLE: block until the server announces a change, `stop`
     /// is set (checked whenever the socket's 60 s read timeout fires),
-    /// or ~25 minutes pass — re-issue before the server's half-hour
+    /// or ~25 minutes pass; re-issue before the server's half-hour
     /// limit. True = the mailbox changed.
     pub fn idle(&mut self, stop: &std::sync::atomic::AtomicBool) -> Result<bool> {
         use std::sync::atomic::Ordering;
@@ -429,7 +429,7 @@ fn number_after(text: &str, marker: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
-/// `* LIST (\Noselect) "/" "INBOX/sub"` — name may be quoted, a
+/// `* LIST (\Noselect) "/" "INBOX/sub"`; name may be quoted, a
 /// literal, or a bare atom.
 fn parse_list(line: &Line) -> Option<Folder> {
     let rest = line.text.strip_prefix("* LIST ")?;
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn starttls_refusal_is_an_error() {
         // tls on a non-993 port means STARTTLS; a server that refuses
-        // it must fail the connect — never a plaintext LOGIN.
+        // it must fail the connect, never a plaintext LOGIN.
         let (port, handle) = testserver::imap(vec![testserver::Expect::fail(
             "STARTTLS",
             "NO too old for that",

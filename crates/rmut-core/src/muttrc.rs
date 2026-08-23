@@ -1,6 +1,6 @@
 //! Muttrc importer: translate the common muttrc directives into rmut's
 //! TOML config. Meant for a one-time `rmut --import-muttrc` run whose
-//! output the user reviews and saves — everything that does not map is
+//! output the user reviews and saves; everything that does not map is
 //! kept visible as `# not imported:` comments, never dropped silently.
 
 use std::collections::BTreeMap;
@@ -108,7 +108,7 @@ struct State {
     smtp_url: Option<String>,
     aliases: Vec<String>,
     skipped: Vec<String>,
-    /// Directives that match what rmut always does — acknowledged in
+    /// Directives that match what rmut always does, acknowledged in
     /// the output so the user knows they were seen, not dropped.
     satisfied: Vec<String>,
 }
@@ -154,7 +154,7 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
                 st.hook(folder_hook, &tokens[1..], &line);
             }
             "save-hook" => match (tokens.get(1).map(String::as_str), tokens.get(2)) {
-                // Expanded at output time — $folder may come later.
+                // Expanded at output time; $folder may come later.
                 (Some("." | "~A"), Some(mailbox)) => st.save_default = Some(mailbox.clone()),
                 _ => st.skip(&line, "only the catch-all pattern . maps to [mail] save"),
             },
@@ -680,7 +680,7 @@ impl State {
         }
     }
 
-    /// `macro MENU KEY SEQUENCE [description]` — translated when the
+    /// `macro MENU KEY SEQUENCE [description]`, translated when the
     /// sequence is plain keys and prompt input; mutt function names
     /// (`<collapse-all>` etc.) have no rmut equivalent.
     fn mutt_macro(&mut self, args: &[String], line: &str) {
@@ -721,7 +721,7 @@ impl State {
         match mime {
             "text/html" => {
                 // The command lives in mailcap, which is not read;
-                // w3m is the usual suspect — adjust after import.
+                // w3m is the usual suspect; adjust after import.
                 self.filters
                     .entry("text/html".into())
                     .or_insert_with(|| "w3m -dump -T text/html -O UTF-8".into());

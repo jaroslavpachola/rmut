@@ -50,7 +50,7 @@ impl Write for Stream {
 }
 
 /// True when the error means the connection itself died (dropped
-/// socket, EOF) rather than the server saying NO — the caller may
+/// socket, EOF) rather than the server saying NO: the caller may
 /// reconnect and retry the command once.
 pub(crate) fn is_connection_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<std::io::Error>().is_some()

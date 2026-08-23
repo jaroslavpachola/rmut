@@ -1,7 +1,7 @@
 //! mbox support (system spools like /var/mail/$USER): the file is
 //! mirrored into a cache maildir so the whole index/pager stack works
-//! on it unchanged, and `$` sync writes the changes back — Status:/
-//! X-Status: headers rewritten, purged messages dropped — with the
+//! on it unchanged, and `$` sync writes the changes back, rewriting
+//! Status:/X-Status: headers and dropping purged messages, with the
 //! file flock()ed and rewritten in place (mboxrd `>From` quoting).
 //! Messages are keyed by a content hash, so flags survive re-mirrors
 //! when the spool grows.

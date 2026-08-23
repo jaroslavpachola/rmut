@@ -35,8 +35,8 @@ struct Entry {
 #[derive(Serialize, Deserialize, Default)]
 struct CacheFile {
     /// The mirrored maildir, so `sweep` can drop caches of vanished
-    /// mailboxes (absent in pre-1.30 files — those age out on their
-    /// next rewrite).
+    /// mailboxes (absent in pre-1.30 files, which age out on
+    /// their next rewrite).
     #[serde(default)]
     dir: String,
     entries: Vec<Entry>,
@@ -78,7 +78,7 @@ impl Entry {
 }
 
 /// Cache identity of one message file: the base name (immutable in
-/// maildir — flags live after ":2,") plus the current byte length.
+/// maildir, flags live after ":2,") plus the current byte length.
 fn key_of(file: &MailFile) -> Option<String> {
     let name = file.path.file_name()?.to_str()?;
     let base = name.split(":2,").next()?;

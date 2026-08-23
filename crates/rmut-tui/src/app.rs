@@ -267,7 +267,7 @@ pub struct ComposeBase {
     /// The From header as written, the reply target when the
     /// Reply-To question is answered no.
     from_hdr: String,
-    /// The message has a Reply-To differing from From — worth the
+    /// The message has a Reply-To differing from From, worth the
     /// mutt $reply_to (ask-yes) question.
     has_reply_to: bool,
     orig_to: String,
@@ -830,7 +830,7 @@ impl App {
         let backfilling = self.backfill.as_ref().is_some_and(|b| !b.done());
         if let Some(remote) = &mut self.remote {
             // While the backfill streams headers in, skip the server
-            // check — a full reconcile would refetch its tail
+            // check, since a full reconcile would refetch its tail
             // synchronously; the rescan below integrates the files.
             if backfilling {
             } else if let Err(err) = remote.check_new() {
@@ -901,7 +901,7 @@ impl App {
 
     /// On IMAP, ask the server about the pattern's `~b` terms up
     /// front. Only plain substrings go (regex or non-ASCII terms stay
-    /// local — a server search is a literal match); a failed search
+    /// local; a server search is a literal match); a failed search
     /// just falls back to reading bodies locally.
     fn resolve_body_terms(&mut self, patterns: &[Pattern]) {
         let Some(remote) = &mut self.remote else {
@@ -1350,7 +1350,7 @@ impl App {
     /// Tab at a prompt: at an address prompt, complete the token under
     /// the cursor against aliases and query_command; at a mailbox
     /// prompt (c, save, copy), complete the buffer against the folder
-    /// candidates — and with nothing typed at the c prompt, open the
+    /// candidates, and with nothing typed at the c prompt, open the
     /// folder browser instead. Repeated Tab cycles the candidates.
     fn tab_complete(&mut self) {
         let (buf_now, kind) = match &self.prompt {
@@ -1976,7 +1976,7 @@ impl App {
         );
         let max_scroll = lines.saturating_sub(page);
         // mutt's $pager_stop = no: paging past the end opens the next
-        // message — except in a part view, which returns to its
+        // message, except in a part view, which returns to its
         // attachment menu like mutt.
         if action == PagerAction::PageDown && pager.scroll >= max_scroll {
             if let Some(menu) = pager.back.take() {
@@ -2079,7 +2079,7 @@ impl App {
         match search_lines(&lines, &matcher, pager.scroll, forward) {
             Some((hit, wrapped)) => {
                 // The hit becomes the top line even near the end (past
-                // max_scroll), like mutt — otherwise close-to-the-end
+                // max_scroll), like mutt; otherwise close-to-the-end
                 // hits would be indistinguishable and n would stall.
                 pager.scroll = hit;
                 if wrapped {
@@ -2447,7 +2447,7 @@ impl App {
     }
 
     /// `X` submitted: `notmuch search --output=files` into a virtual
-    /// read-only mailbox — the hits are symlinked into a cache
+    /// read-only mailbox: the hits are symlinked into a cache
     /// maildir (the real copies stay where they are), so viewing,
     /// replying, copying, and piping work while flag changes and
     /// deletes stay refused.
@@ -2623,7 +2623,7 @@ impl App {
     }
 
     /// mutt's $mark_old (on by default): when leaving the mailbox,
-    /// unread new mail ages to old — moved out of new/ without the
+    /// unread new mail ages to old: moved out of new/ without the
     /// seen flag, shown as O and no longer counted as new.
     fn mark_old_unread(&mut self) {
         if self.read_only {
@@ -2768,7 +2768,7 @@ impl App {
 
     fn continue_setup(&mut self, kind: ComposeKind, base: Option<ComposeBase>) {
         // mutt's $autoedit (with edit_headers): no prompts, no
-        // questions — the defaults land in the draft and the editor
+        // questions: the defaults land in the draft and the editor
         // opens; everything stays editable there and in the menu.
         if self.config.mail.autoedit && self.edit_headers() {
             let to = match (&kind, &base) {
@@ -3015,8 +3015,8 @@ impl App {
         self.config.mail.edit_headers.unwrap_or(false)
     }
 
-    /// Write a fresh draft file for the editor: the whole text, or —
-    /// with edit_headers = false — only the body, the header block
+    /// Write a fresh draft file for the editor: the whole text, or
+    /// (with edit_headers = false) only the body, the header block
     /// withheld for draft_full to rejoin.
     fn stage_draft(&self, text: &str) -> Result<(PathBuf, Option<String>)> {
         if self.edit_headers() {
@@ -3298,7 +3298,7 @@ impl App {
         }
     }
 
-    /// Enter in the compose menu: show the selected entry — the
+    /// Enter in the compose menu: show the selected entry: the
     /// draft body, the forwarded original, or an attached file (text
     /// directly, other types through their [filters] command).
     fn view_compose_entry(&mut self) {
@@ -3967,7 +3967,7 @@ impl App {
 
     /// Copy the message to a mailbox (local maildir path or a folder
     /// of the open IMAP account); with `delete` the original is marked
-    /// deleted afterwards — mutt's s versus C.
+    /// deleted afterwards, mutt's s versus C.
     fn copy_message(&mut self, input: &str, delete: bool) {
         if input.is_empty() {
             self.error_status("no mailbox given");
@@ -4144,7 +4144,7 @@ impl App {
     }
 
     /// mutt's edit function (`e`): the selected message's raw bytes go
-    /// through $EDITOR, and a changed result replaces the original —
+    /// through $EDITOR, and a changed result replaces the original:
     /// in place for maildirs, append + delete-mark on IMAP.
     fn start_raw_edit(&mut self) {
         if self.deny_readonly() {
@@ -4569,7 +4569,7 @@ impl App {
     }
 
     /// Apply `f` to every message matching `input`, within the active
-    /// limit (members of folded threads included — folding is display
+    /// limit (members of folded threads included; folding is display
     /// only), and report the count.
     fn apply_pattern(&mut self, input: &str, verb: &'static str, f: impl Fn(&mut Msg)) {
         if input.is_empty() {

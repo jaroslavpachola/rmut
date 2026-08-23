@@ -365,7 +365,7 @@ fn day_bounds_of(date: chrono::NaiveDate) -> Result<(i64, i64), String> {
 
 // ---- matching ----
 
-/// Answers `~b` for a message without the local file read — Some
+/// Answers `~b` for a message without the local file read: Some
 /// when a server-side search already knows, None to fall back.
 pub type BodyOracle<'a> = &'a dyn Fn(&Envelope, &Matcher) -> Option<bool>;
 

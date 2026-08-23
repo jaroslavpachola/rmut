@@ -518,7 +518,7 @@ impl PagerAction {
 }
 
 /// A key sequence for macros: literal characters plus key names in
-/// angle brackets (`<enter>`, `<esc>`, `<ctrl+x>` — everything
+/// angle brackets (`<enter>`, `<esc>`, `<ctrl+x>`, everything
 /// `parse_key` accepts). None on an unknown name or an unclosed `<`.
 pub fn parse_sequence(input: &str) -> Option<Vec<KeyEvent>> {
     let mut out = Vec::new();
@@ -900,7 +900,7 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bad index macro Z"), "{warnings:?}");
         let ev = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
-        // The macro exists on d — the app checks it before the delete
+        // The macro exists on d; the app checks it before the delete
         // binding, so it shadows.
         assert_eq!(map.lookup_index_macro(&ev).unwrap().len(), 9);
         assert!(

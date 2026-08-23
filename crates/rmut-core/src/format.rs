@@ -82,7 +82,7 @@ pub fn render_status(fmt: &str, width: usize, value_of: &dyn Fn(char) -> String)
 }
 
 /// The `%[-][min][.max]X` + `%?X?then&else?` machinery over any
-/// specifier set — index lines and the status line share it. Unknown
+/// specifier set; index lines and the status line share it. Unknown
 /// specifiers should come back as `"%x"` to stay visible.
 pub fn render_with(fmt: &str, value_of: &dyn Fn(char) -> String) -> String {
     let mut out = String::new();
@@ -92,7 +92,7 @@ pub fn render_with(fmt: &str, value_of: &dyn Fn(char) -> String) -> String {
             out.push(c);
             continue;
         }
-        // %?X?then&else? — mutt conditional on field X.
+        // %?X?then&else?, mutt's conditional on field X.
         if chars.peek() == Some(&'?') {
             chars.next();
             let Some(spec) = chars.next() else { break };

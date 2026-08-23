@@ -58,7 +58,7 @@ pub fn append(nick: &str, expansion: &str) -> anyhow::Result<PathBuf> {
 
 /// Completion candidates for a partial address: expansions of every
 /// alias whose nick starts with `word` (case-insensitive), then
-/// query_command results — sorted, deduplicated.
+/// query_command results, sorted and deduplicated.
 pub fn complete(
     word: &str,
     aliases: &HashMap<String, String>,

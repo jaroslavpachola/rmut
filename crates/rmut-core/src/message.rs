@@ -95,7 +95,7 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
 }
 
 /// Lines in the body part (after the first blank line), counted on the
-/// raw bytes — cheap enough to do for every envelope.
+/// raw bytes, cheap enough to do for every envelope.
 pub fn body_lines(raw: &[u8]) -> usize {
     let mut offset = None;
     let mut i = 0;
@@ -243,7 +243,7 @@ fn prefix_match(prefixes: &[String], name: &str) -> bool {
 }
 
 /// The brief header view under `rules`: weeded (ignore minus
-/// unignore), then sorted by hdr_order position — unlisted names
+/// unignore), then sorted by hdr_order position; unlisted names
 /// keep message order after the listed ones.
 pub fn weed(all: &[(String, String)], rules: &HeaderRules) -> Vec<(String, String)> {
     let mut shown: Vec<(String, String)> = all
@@ -298,7 +298,7 @@ pub fn load_with(
 }
 
 /// Mutt's pager rendering: the whole MIME tree, depth-first. Text
-/// parts (any subtype, like mutt — raw html included) and filtered
+/// parts (any subtype, like mutt, including raw html) and filtered
 /// types show inline, multipart/alternative collapses to its best
 /// subpart, message/rfc822 shows its weeded headers then its own
 /// tree, and every subpart of a multipart is announced with mutt's

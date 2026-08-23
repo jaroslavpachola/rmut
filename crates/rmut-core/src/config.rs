@@ -71,13 +71,13 @@ pub struct Config {
     /// message pattern.
     pub color_body: Vec<ColorRule>,
     /// MIME type → shell command that renders the part (stdin → stdout),
-    /// e.g. "text/html" = "w3m -dump -T text/html" — mutt's auto_view.
+    /// e.g. "text/html" = "w3m -dump -T text/html", mutt's auto_view.
     /// Applied to matching parts wherever they sit in the message,
     /// preferred in multipart/alternative, and used in the attachment
     /// viewer.
     pub filters: HashMap<String, String>,
     pub keys: Keys,
-    /// Macros: a key that replays a sequence of keys, per menu —
+    /// Macros: a key that replays a sequence of keys, per menu:
     /// [macros.index] / [macros.pager], `key = "sequence"`. The
     /// sequence is literal characters plus `<enter>`/`<esc>`/
     /// `<ctrl+x>`/... names in angle brackets; it feeds the input
@@ -85,7 +85,7 @@ pub struct Config {
     pub macros: Keys,
     pub accounts: Vec<Account>,
     /// Conditional identities, applied in order over `identity` when
-    /// their globs match — the minimal folder-hook / send-hook.
+    /// their globs match: the minimal folder-hook / send-hook.
     pub identities: Vec<IdentityRule>,
     pub pgp: Pgp,
 }
@@ -276,7 +276,7 @@ pub struct Account {
     /// (pass(1)-style). Wins over `password` when both are set.
     pub password_command: Option<String>,
     /// Plaintext password. Convenient, but anyone who can read the
-    /// config can read your mail — keep the file at mode 600.
+    /// config can read your mail, so keep it at mode 600.
     pub password: Option<String>,
     pub imap_host: Option<String>,
     #[serde(default = "default_imap_port")]
@@ -297,7 +297,7 @@ pub struct Account {
     /// `token_command` instead of a password.
     pub auth: Option<String>,
     /// Shell command whose first stdout line is a *fresh* OAuth access
-    /// token (refresh is its business — oauth2ms, mutt_oauth2.py, ...).
+    /// token (refresh is its business: oauth2ms, mutt_oauth2.py, ...).
     /// Run for every connection; tokens expire, so it is never cached.
     pub token_command: Option<String>,
     /// IMAP folder that receives the Fcc copy of sent mail.
@@ -310,7 +310,7 @@ pub struct Account {
 
 /// PGP via gpg(1). Decrypt/verify happens automatically when a viewed
 /// message is PGP; signing and encrypting are chosen at the send
-/// prompt. Passphrases are gpg-agent's business — rmut never sees them.
+/// prompt. Passphrases are gpg-agent's business; rmut never sees them.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Pgp {
@@ -460,7 +460,7 @@ impl Config {
     /// then the account's, then every matching `[[identities]]` rule in
     /// order (a later rule overrides an earlier one; unset fields keep
     /// the value below). `rcpts` are the draft's bare recipient
-    /// addresses — empty when they are not known yet, which makes
+    /// addresses, empty when they are not known yet, which makes
     /// recipient rules not match.
     pub fn identity_for(
         &self,

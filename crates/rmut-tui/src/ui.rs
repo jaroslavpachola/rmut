@@ -319,7 +319,7 @@ pub fn quote_depth(line: &str, re: &regex_lite::Regex) -> usize {
 /// The pager display: header block, separator, wrapped body (with
 /// mutt's `+` continuation markers), each row classified for
 /// coloring. The scroll math, the body search, and the drawing all
-/// share this — T (hide_quoted) drops quoted rows here, so every
+/// share this; T (hide_quoted) drops quoted rows here, so every
 /// consumer agrees on what a line number means.
 pub fn pager_rows(
     view: &MessageView,
@@ -373,7 +373,7 @@ pub fn pager_rows(
     rows
 }
 
-/// The pager's display as plain text — what the body search runs over.
+/// The pager's display as plain text: what the body search runs over.
 pub fn pager_text_lines(
     view: &MessageView,
     width: usize,

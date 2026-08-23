@@ -503,7 +503,7 @@ editor = "{editor}"
 
 class FakeImap(threading.Thread):
     """Stateful IMAP server: enough of RFC 3501 (+ IDLE) for rmut's
-    client. Connections are served concurrently — rmut keeps a second
+    client. Connections are served concurrently; rmut keeps a second
     one open for IDLE."""
 
     def __init__(self):
@@ -966,7 +966,7 @@ def scenario_pgp(tmp):
     assert "micalg=pgp-sha256" in sent
     assert "BEGIN PGP SIGNATURE" in sent
     assert "signed body line" in sent
-    r.keys(b"q")  # both messages were already seen — quits directly
+    r.keys(b"q")  # both messages were already seen, so it quits directly
     r.close()
 
 
@@ -1062,7 +1062,7 @@ email = "second@example.com"
     wait_for(lambda: "From: Jarda <second@example.com>" in open(sent_file).read(),
              desc="folder identity applied")
     # bugfix: a pending flag change (reading new mail, N, F) must not
-    # block c/y/ctrl+o — it syncs silently on the way out, like q
+    # block c/y/ctrl+o; it syncs silently on the way out, like q
     r.keys(b"N")
     r.keys(b"c")
     r.expect("Open mailbox (Tab completes):", absent=("pending changes",))
@@ -1427,7 +1427,7 @@ def scenario_odds(tmp):
 
 
 def scenario_pager_quotes(tmp):
-    """R27: quoted-line handling in the pager — S skips past the
+    """R27: quoted-line handling in the pager: S skips past the
     quoted block, T hides quoted lines (the tail behind a long quote
     becomes visible), and quoted text is tinted (raw ANSI check)."""
     md = make_maildir(tmp, "md")
@@ -1452,7 +1452,7 @@ def scenario_pager_quotes(tmp):
     r.keys(b"\r")  # newest: Skip test
     r.expect("start-line")
     # The default theme tints quoted lines cyan (crossterm emits it as
-    # 38;5;6 on the default background) — check the raw output, since
+    # 38;5;6 on the default background), so check the raw output, since
     # assertions otherwise strip ANSI.
     assert "\x1b[38;5;6;49m" in r.buf, "quoted lines should be tinted"
     r.keys(b"S")  # skip past the quoted block: its end scrolls to top
@@ -1504,7 +1504,7 @@ def scenario_pager_polish(tmp):
 
 def scenario_notmuch(tmp):
     """R18: X runs notmuch (stubbed here) and opens the hits as a
-    read-only virtual mailbox — view and copy work, delete refuses,
+    read-only virtual mailbox: view and copy work, delete refuses,
     and leaving the view restores a writable mailbox."""
     md = make_maildir(tmp, "md")
     write_msgs(md, ["ci"])
@@ -1527,7 +1527,7 @@ def scenario_notmuch(tmp):
     r.keys(b"d")  # the virtual mailbox never writes
     r.expect("Mailbox is read-only.")
     r.keys(b"q")
-    r.keys(b"C")  # copying out still works — the original is read
+    r.keys(b"C")  # copying out still works, the original is read
     r.keys(f"{dest}\r".encode())
     wait_for(
         lambda: any(os.listdir(os.path.join(dest, s)) for s in ("cur", "new")),
@@ -1723,7 +1723,7 @@ def scenario_mutt_flow(tmp):
     r.keys(b" ")
     r.expect("sejdeme se")
     r.keys(b"i")
-    # $mark_old: the untouched new message ages on quit — moved to
+    # $mark_old: the untouched new message ages on quit, moved to
     # cur/ without gaining the seen flag
     r.keys(b"q")
     wait_for(lambda: "1751953000.5.host:2," in os.listdir(os.path.join(md, "cur")),

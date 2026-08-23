@@ -53,7 +53,7 @@ pub fn reply_subject(orig: &str) -> String {
     }
 }
 
-/// mutt's default $forward_format, "[%a: %s]" — the author's address
+/// mutt's default $forward_format, "[%a: %s]", the author's address
 /// and the original subject.
 pub fn forward_subject(from_addr: &str, orig: &str) -> String {
     format!("[{from_addr}: {}]", orig.trim())
@@ -270,7 +270,7 @@ fn b64_wrapped(bytes: &[u8]) -> String {
 /// draft body with attachments: multipart/mixed with the text first,
 /// files base64-encoded, and optionally the forwarded original as
 /// message/rfc822 (mutt's mime_forward). The caller puts it under the
-/// draft's top-level headers — or inside a PGP layer.
+/// draft's top-level headers, or inside a PGP layer.
 pub fn mixed_entity(body: &str, files: &[Attachment], original: Option<&[u8]>) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut text = String::from(
@@ -334,7 +334,7 @@ pub fn bounce_text(original: &[u8], from: &str, to: &str, date: &str, msg_id: &s
     )
 }
 
-/// First address in an RFC 5322 address field, without display name —
+/// First address in an RFC 5322 address field, without display name,
 /// e.g. the SMTP envelope sender from a From line.
 pub fn bare_address(field: &str) -> Option<String> {
     match mailparse::addrparse(field)
@@ -377,7 +377,7 @@ pub fn addresses(field: &str) -> Vec<String> {
 }
 
 /// mutt's reverse_name: the first of `me` (lowercase bare addresses)
-/// the original message was addressed to, in the form it appeared —
+/// the original message was addressed to, in the form it appeared:
 /// the display name from the To/Cc header is kept.
 pub fn reverse_from(orig_to: &str, orig_cc: &str, me: &[String]) -> Option<String> {
     let mine = |single: &mailparse::SingleInfo| -> Option<String> {

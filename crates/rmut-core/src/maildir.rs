@@ -119,7 +119,7 @@ fn base_name(name: &str) -> &str {
 }
 
 /// The `,S=<bytes>` message size some tools (and our IMAP cache) put in
-/// the base name — authoritative when present, since a cached file may
+/// the base name, authoritative when present, since a cached file may
 /// hold only the headers.
 fn size_from_name(name: &str) -> Option<u64> {
     let rest = base_name(name).rsplit_once(",S=")?.1;
@@ -199,7 +199,7 @@ pub fn deliver(dir: &Path, content: &[u8], flags: Flags) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Messages waiting in `new/` — the cheap new-mail count for the
+/// Messages waiting in `new/`: the cheap new-mail count for the
 /// folder browser and the cross-mailbox poll. 0 for non-maildirs.
 pub fn new_count(dir: &Path) -> usize {
     dir.join("new")
@@ -214,7 +214,7 @@ pub fn new_count(dir: &Path) -> usize {
 }
 
 /// Find a nearby maildir whose name (ignoring a leading dot) matches one
-/// of `names` case-insensitively — e.g. Sent/.Sent or Drafts.
+/// of `names` case-insensitively, e.g. Sent/.Sent or Drafts.
 pub fn find_special(dir: &Path, names: &[&str]) -> Option<PathBuf> {
     discover(dir).into_iter().find(|p| {
         p.file_name().is_some_and(|n| {

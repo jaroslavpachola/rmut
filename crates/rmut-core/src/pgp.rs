@@ -1,7 +1,7 @@
 //! PGP support by shelling out to gpg(1): decrypt and verify messages
 //! for the pager, sign and encrypt outgoing drafts. Handles PGP/MIME
 //! (RFC 3156) and inline ("armor in the body") messages. Passphrases
-//! are between gpg and its agent — rmut never sees or stores them.
+//! are between gpg and its agent; rmut never sees or stores them.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use crate::message;
 pub enum Sig {
     /// Valid signature by this user id.
     Good(String),
-    /// The signature does not match — the content was altered.
+    /// The signature does not match: the content was altered.
     Bad(String),
     /// Cannot check (missing public key, unsupported algorithm, ...).
     Unknown(String),
@@ -63,7 +63,7 @@ fn run(cfg: &Pgp, args: &[&str], input: &[u8]) -> Result<Gpg> {
     let mut child = spawn()
         .or_else(|err| {
             // ETXTBSY: a freshly written executable can be transiently
-            // busy (fd still open across a fork elsewhere) — retry.
+            // busy (fd still open across a fork elsewhere), so retry.
             if err.raw_os_error() == Some(26) {
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 spawn()
@@ -132,7 +132,7 @@ pub struct Opened {
 
 /// Decrypt an armored PGP message. Also accepts clearsigned input,
 /// where gpg strips the armor and verifies instead. A bad signature is
-/// reported in `sig`, not as an error — the plaintext is still wanted.
+/// reported in `sig`, not as an error; the plaintext is still wanted.
 pub fn decrypt(cfg: &Pgp, data: &[u8]) -> Result<Opened> {
     let out = run(cfg, &["--decrypt"], data)?;
     let sig = sig_from_status(&out.status);
@@ -182,7 +182,7 @@ pub fn sign_detached(cfg: &Pgp, data: &[u8]) -> Result<(String, String)> {
     Ok((sig, micalg(&out.status)))
 }
 
-/// "SIG_CREATED <type> <pk algo> <hash algo> ..." — map the hash
+/// "SIG_CREATED <type> <pk algo> <hash algo> ...": map the hash
 /// number to the RFC 3156 micalg value, assuming SHA-256 when absent.
 fn micalg(status: &[String]) -> String {
     let hash = status
@@ -237,7 +237,7 @@ pub fn encrypt(cfg: &Pgp, recipients: &[String], sign: bool, data: &[u8]) -> Res
 
 /// What the pager should show for a PGP message: a replacement body
 /// (when decryption produced one) and a one-line status note. gpg
-/// trouble goes in the note — the original body stays available.
+/// trouble goes in the note; the original body stays available.
 pub struct View {
     pub body: Option<String>,
     pub note: String,
@@ -326,8 +326,8 @@ fn view_mime_signed(cfg: &Pgp, mail: &ParsedMail) -> View {
         }
     };
     // The CRLF before the closing boundary belongs to the boundary
-    // delimiter, but some senders sign a trailing newline anyway — on
-    // a mismatch, retry with one appended before calling it bad.
+    // delimiter, but some senders sign a trailing newline anyway, so
+    // on a mismatch, retry with one appended before calling it bad.
     let verdict = verify_detached(cfg, &sig_armor, &signed).and_then(|sig| {
         if !matches!(sig, Sig::Bad(_)) {
             return Ok(sig);
@@ -385,7 +385,7 @@ pub fn sign_message(cfg: &Pgp, text: &str) -> Result<String> {
 }
 
 /// Wrap an arbitrary MIME entity (its own Content-Type header + body,
-/// CRLF endings — e.g. compose::mixed_entity) in multipart/signed
+/// CRLF endings, e.g. compose::mixed_entity) in multipart/signed
 /// under `head`.
 pub fn sign_entity(cfg: &Pgp, head: &str, entity: &[u8]) -> Result<String> {
     let (sig, micalg) = sign_detached(cfg, entity)?;
@@ -439,7 +439,7 @@ fn split_head_body(text: &str) -> (&str, &str) {
     text.split_once("\n\n").unwrap_or((text.trim_end(), ""))
 }
 
-/// The draft body as a text/plain MIME entity with CRLF endings — the
+/// The draft body as a text/plain MIME entity with CRLF endings: the
 /// exact bytes that get signed and shipped inside the multiparts.
 fn inner_entity(body: &str) -> Vec<u8> {
     let mut out =
