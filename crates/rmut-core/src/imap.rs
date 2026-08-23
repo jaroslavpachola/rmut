@@ -224,9 +224,6 @@ impl Client {
         self.finish(&tag).map(drop)
     }
 
-    /// NOOP, classifying the server's untagged report: nothing, only
-    /// new arrivals (EXISTS/RECENT), or anything else (flag changes,
-    /// expunges, unknown lines) that needs a full reconciliation.
     /// Server-side body search: UIDs whose text contains `text`
     /// (ASCII only; anything else needs CHARSET negotiation, so the
     /// caller falls back to matching locally).
@@ -245,6 +242,9 @@ impl Client {
         Ok(out)
     }
 
+    /// NOOP, classifying the server's untagged report: nothing, only
+    /// new arrivals (EXISTS/RECENT), or anything else (flag changes,
+    /// expunges, unknown lines) that needs a full reconciliation.
     pub fn noop_changes(&mut self) -> Result<Changes> {
         let lines = self.command("NOOP")?;
         if lines.is_empty() {
