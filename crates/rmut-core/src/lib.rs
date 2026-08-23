@@ -6,6 +6,7 @@ pub mod format;
 pub mod hdrcache;
 pub mod imap;
 pub mod maildir;
+pub mod mailto;
 pub mod mbox;
 pub mod message;
 pub mod muttrc;

@@ -2047,6 +2047,117 @@ def scenario_patterns_v3(tmp):
     r.close()
 
 
+
+def scenario_batch_cli(tmp):
+    """R33: sending without the TUI (-s/-c/-b/-a/-i, recipients after
+    --), a mailto: URL opening a prefilled draft, -e running a config
+    command at startup, -y entering the mailbox list, and the -z/-Z
+    exit codes."""
+    md = make_maildir(tmp, "md-cli")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-cli.eml")
+    sendmail = os.path.join(tmp, "sendmail-cli.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "cli-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "mailto body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    fcc = make_maildir(tmp, "sent-cli-box")
+    att = os.path.join(tmp, "cli-att.txt")
+    with open(att, "w") as f:
+        f.write("attached payload\n")
+    cfg = os.path.join(tmp, "cli-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[identity]\nname = "Jarda"\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                f'sent = "{fcc}"\nmailboxes = ["{md}"]\n')
+    env = dict(os.environ)
+    env.update(base_env(tmp, {"RMUT_CONFIG": cfg}))
+
+    def rmut(args, stdin=b"", timeout=15):
+        return subprocess.run([RMUT, *args], input=stdin, env=env,
+                              capture_output=True, timeout=timeout)
+
+    # batch send: headers from the flags, body from stdin, Fcc kept
+    proc = rmut(["-s", "batch subject", "-c", "cc@example.com",
+                 "-b", "bcc@example.com", "-a", att, "--",
+                 "jane@example.com", "petr@example.com"],
+                stdin=b"batch body line\n")
+    assert proc.returncode == 0, proc.stderr
+    text = open(sent_file).read()
+    assert "Subject: batch subject" in text
+    assert "To: jane@example.com, petr@example.com" in text
+    assert "Cc: cc@example.com" in text
+    assert "Bcc: bcc@example.com" in text
+    assert "From: Jarda <jarda@example.com>" in text
+    assert "batch body line" in text
+    assert "MIME-Version: 1.0" in text
+    assert 'filename="cli-att.txt"' in text
+    assert "YXR0YWNoZWQgcGF5bG9hZAo=" in text  # the attachment, base64
+    assert len(os.listdir(os.path.join(fcc, "cur"))) == 1, "Fcc copy kept"
+
+    # -i reads the body from a file, and -e applies a config setting
+    body_file = os.path.join(tmp, "cli-body.txt")
+    with open(body_file, "w") as f:
+        f.write("body from a file\n")
+    os.truncate(sent_file, 0)
+    proc = rmut(["-i", body_file, "-s", "from file",
+                 "-e", 'set realname="Batch Sender"', "--", "jane@example.com"])
+    assert proc.returncode == 0, proc.stderr
+    text = open(sent_file).read()
+    assert "body from a file" in text
+    assert "From: Batch Sender <jarda@example.com>" in text
+
+    # a send with no recipients fails instead of sending
+    proc = rmut(["-s", "nobody", "--"], stdin=b"x\n")
+    assert proc.returncode != 0
+    assert b"no recipients" in proc.stderr
+
+    # -z / -Z report through the exit code without starting
+    empty = make_maildir(tmp, "md-empty")
+    assert rmut(["-z", empty]).returncode == 1
+    assert rmut(["-Z", md]).returncode == 1, "no new mail in md-cli"
+
+    # -e runs a config command before the first draw
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}),
+             args=("-e", 'set index_format="ZZ %s"'))
+    r.expect("ZZ Lunch on Friday?")
+    r.keys(b"x")
+    r.close()
+
+    # -p goes to the postponed picker, which says so when empty
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), args=("-p",))
+    r.expect("no postponed messages")
+    r.keys(b"x")
+    r.close()
+
+    # -y opens the mailbox list straight away
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), args=("-y",))
+    r.expect("md-cli")
+    r.keys(b"q")
+    r.keys(b"x")
+    r.close()
+
+    # a mailto: URL opens a prefilled draft: the editor adds a body and
+    # the compose menu sends it
+    os.truncate(sent_file, 0)
+    url = ("mailto:jane@example.com?subject=Lunch%20on%20Friday"
+           "&cc=petr@example.com&body=prefilled%20line")
+    r = Rmut(url, base_env(tmp, {"RMUT_CONFIG": cfg}), args=("-f", md))
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: "Subject: Lunch on Friday" in open(sent_file).read(),
+             desc="mailto draft sent")
+    text = open(sent_file).read()
+    assert "To: jane@example.com" in text
+    assert "Cc: petr@example.com" in text
+    assert "prefilled line" in text
+    assert "mailto body" in text
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2065,6 +2176,7 @@ SCENARIOS = [
     scenario_line_editor,
     scenario_enter_command,
     scenario_patterns_v3,
+    scenario_batch_cli,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

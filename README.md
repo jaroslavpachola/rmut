@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.32**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.33**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -293,6 +293,41 @@ function reports on the bottom line in the error color and stops the
 rest of the line. Changed settings recompile in place: colors, key
 tables, the quote regexp, header rules, and a resort when the sort
 order moved.
+
+## Command line
+
+```
+rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
+rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] -- ADDRESS...
+rmut --import-muttrc [MUTTRC]
+```
+
+`-R` read-only, `-f` the mailbox to open, `-p` the postponed picker,
+`-y` the mailbox list, `-z`/`-Z` exit 1 instead of starting when the
+mailbox is empty or has no new mail (for a prompt or a cron job), `-e`
+runs an enter-command line before the first draw (repeatable).
+
+A `mailto:` URL opens a prefilled draft (to, cc, bcc, subject, body,
+percent-decoded) with the mailbox still open behind it, which is what
+a desktop mail handler passes:
+
+```
+rmut 'mailto:jane@example.com?subject=Lunch&body=Friday%3F'
+```
+
+**Sending without the TUI**, for scripts and one-shot mail: `-s`,
+`-c`, `-b`, `-a` (repeatable), or `-i`, or a bare `--`, puts rmut in
+send mode. The body is stdin (or `-i FILE`), the recipients are the
+remaining arguments, the identity and transport come from the config,
+and the exit code says whether the message went out:
+
+```
+rmut -s "nightly build" -a build.log -- ops@example.com < report.txt
+```
+
+The sent copy goes to a local `mail.sent` maildir; a remote Sent
+folder is left to the interactive send, since an IMAP APPEND needs the
+account opened.
 
 ## Configuration
 

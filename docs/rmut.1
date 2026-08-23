@@ -1,10 +1,27 @@
-.TH RMUT 1 "July 2026" "rmut 1.30.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.33.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
 .B rmut
 .RB [ \-R ]
-.RI [ MAILDIR " | " MBOX " | " imap:ACCOUNT [/ FOLDER ]]
+.RB [ \-e
+.IR CMD ]...
+.RB [ \-p | \-y ]
+.RB [ \-z | \-Z ]
+.RI [ MAILDIR " | " MBOX " | " imap:ACCOUNT [/ FOLDER ] " | " mailto: URL ]
+.br
+.B rmut \-s
+.I SUBJECT
+.RB [ \-c
+.IR CC ]
+.RB [ \-b
+.IR BCC ]
+.RB [ \-a
+.IR FILE ]...
+.RB [ \-i
+.IR FILE ]
+.B \-\-
+.IR ADDRESS ...
 .br
 .B rmut \-\-import\-muttrc
 .RI [ MUTTRC ]
@@ -32,6 +49,55 @@ then
 Open the mailbox read-only: nothing is ever written, not even read
 marks; delete, flag, and sync refuse with a note, and the status
 line's %r shows a %.
+.TP
+.BI \-f " MAILBOX"
+The mailbox to open, the same as the positional argument.
+.TP
+.B \-p
+Open the postponed picker straight away.
+.TP
+.B \-y
+Open the mailbox list straight away.
+.TP
+.B \-z
+Exit 1 instead of starting when the mailbox holds no messages.
+.TP
+.B \-Z
+Exit 1 instead of starting when the mailbox holds no new mail.
+Useful in a shell prompt or a cron job.
+.TP
+.BI \-e " COMMAND"
+Run one enter-command line (see
+.BR "ENTER-COMMAND" )
+before the first draw, as
+.B :
+would. Repeatable, applied in order. In send mode only the
+configuration half applies; bind, macro, push and exec need a running
+interface and are ignored.
+.TP
+.BI \-s " SUBJECT"
+Send without starting the interface. The body is read from standard
+input (or
+.BR \-i ),
+the recipients are the remaining arguments, and the identity and
+transport come from the configuration. The exit code says whether the
+message went out.
+.B \-c
+and
+.B \-b
+add Cc and Bcc,
+.B \-a
+attaches a file and may be repeated, and
+.B \-i
+reads the body from a file instead of standard input. Any of these
+flags, or a bare
+.BR \-\- ,
+puts rmut in send mode.
+.TP
+.BI mailto: URL
+Open a draft prefilled from an RFC 6068 URL (to, cc, bcc, subject,
+body), which is what a desktop mail handler is passed. The mailbox
+still opens behind it, so the draft can be postponed as usual.
 .TP
 .BI \-\-import\-muttrc " \fR[\fPMUTTRC\fR]\fP"
 Translate a muttrc (default
@@ -298,6 +364,38 @@ replies (Subject on forwards); autoedit (with edit_headers) skips
 every prompt and question, straight into the editor;
 forward = "ask" asks "Forward as attachment?" per forward;
 copy = false keeps no sent copy by default.
+.SH ENTER\-COMMAND
+.B :
+opens a command prompt (the line editor, with its own history) and
+applies one configuration line to the running session. Nothing is
+written back to the configuration file.
+.PP
+.nf
+  :set index_format="%4C %Z %{%b %d} %-15.15L %s"
+  :set nobeep          # also set beep, unset beep, toggle beep
+  :set invtilde        # mutt's inv prefix toggles
+  :set sort?           # report a value instead of setting it
+  :bind index \\Cd delete-message
+  :macro pager S "s=archive<enter>"
+  :color index brightyellow default ~F
+  :ignore x-spam-score     # and unignore, to bring one back
+  :alias jane Jane Doe <jane@example.com>
+  :push "<enter>"      # keys into the input queue
+  :exec sync           # run one function now
+.fi
+.PP
+Settable at runtime: index_format, date_format, sort, sort_aux,
+pager_format, pager_index_lines, pager_context, quote_regexp, wrap,
+tilde, status_format, theme, beep, from, realname, reverse_name,
+edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
+sendmail, editor, print_command, query_command, trash, record,
+postponed, new_mail_command, mail_check, notmuch, sidebar_visible,
+sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt.
+An unknown option, a bad number, an unbindable key or an unknown
+function reports on the bottom line in the error colour and stops the
+rest of the line. Changed settings recompile in place: colours, key
+tables, the quote regexp, header rules, and a resort when the sort
+order moved.
 .SH PATTERNS
 Limit and search take mutt-style patterns. On an IMAP mailbox a
 plain-substring ~b term is answered by the server (UID SEARCH), so
@@ -307,7 +405,10 @@ fall back to matching locally. The specifiers:
 .nf
   ~f x  from       ~s x  subject     ~b x  body
   ~t x  to         ~c x  cc          ~C x  to or cc
-  ~e x  sender     ~d spec  date     word  subject or from
+  ~e x  sender     ~h x  any header  ~i x  Message-ID
+  ~x x  References ~d spec  date     ~r spec  received date
+  ~m spec  index range        ~z spec  size range
+  ~=  duplicate Message-ID    word  subject or from
   ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
   ~p addressed to me
 .fi
@@ -318,6 +419,21 @@ is a case-insensitive regex; "quotes" keep spaces. Date specs:
 .BR 1/6/2026\-30/6/2026 ,
 .BR 24/12\- ,
 .BR <1w ", " >2d ", " =3d .
+.B ~r
+takes the same specs against the file's delivery time.
+.B ~m
+counts the index as shown
+.RB ( "~m 10\-20" ", " "~m 5\-" ", " "~m \-20" ),
+with
+.B .
+for the selected message and
+.B $
+for the last
+.RB ( "~m .\-$" ).
+.B ~z
+takes
+.BR >100K ", " <2M ", " 1K\-2M ,
+or a plain byte count; K, M and G are powers of 1024.
 Terms AND;
 .B !
 negates,

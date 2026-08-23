@@ -548,18 +548,29 @@ until picked up, and daily-use paper cuts still outrank all of them.
       order moved. `command::parse` + `command::apply` are the halves
       a folder-hook with arbitrary commands would reuse
 
-## R33: batch and CLI round
+## R33: batch and CLI round (done, 1.33)
 
-Goal: rmut as a drop-in mutt for scripts and one-shot sends.
-
-- [ ] `rmut -s subj -a file [-c cc] -- addr < body` sends without
-      the TUI (identity/SMTP from config)
-- [ ] `mailto:` argument opens a prefilled compose (also covers
-      being the system mailto handler)
-- [ ] `-p` recalls the postponed picker, `-y` opens the mailbox
-      list, `-z`/`-Z` exit codes for new mail
-- [ ] `-e command` runs a config command at startup (needs R32's
-      parser)
+- [x] `rmut -s subj [-c cc] [-b bcc] [-a file]... [-i file] -- addr`
+      sends with no terminal work at all: identity from `[identity]`
+      plus any recipient-matching `[[identities]]` rule, transport
+      from `mail.sendmail` or the first SMTP account, body from stdin
+      (or `-i`), Fcc into a local `mail.sent`, and an exit code a
+      script can read. `-s`/`-c`/`-b`/`-a`/`-i` or a bare `--` is
+      what puts rmut in send mode
+- [x] `mailto:` argument (RFC 6068: to, cc, bcc, subject, body,
+      percent-decoding, `+` for space) opens a prefilled draft with
+      the mailbox still open behind it, so it postpones as usual; a
+      crafted subject cannot inject headers
+- [x] `-p` postponed picker, `-y` mailbox list, `-z`/`-Z` exit 1
+      instead of starting when the mailbox is empty / has no new mail
+- [x] `-e command` runs an enter-command line before the first draw,
+      repeatable; in send mode the config half applies and the
+      TUI-only commands are ignored. `-f MAILBOX` joins them, since a
+      mutt hand reaches for it
+- [x] Batch send keeps no IMAP Fcc: an APPEND needs the account
+      opened, which is the interactive path's job. A local
+      `mail.sent` maildir is used, and a remote one is skipped
+      rather than silently dropped
 
 ## R34: mailing lists
 

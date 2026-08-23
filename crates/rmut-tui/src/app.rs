@@ -4183,6 +4183,61 @@ impl App {
         Ok(None)
     }
 
+    /// `rmut mailto:...`: a new draft with To/Cc/Bcc/Subject/body
+    /// already filled in, straight into the editor, skipping the
+    /// prompts the `m` key would ask.
+    pub fn start_mailto(&mut self, m: &rmut_core::mailto::Mailto) {
+        let from = self.compose_from(None, &m.to);
+        let text = compose::draft_text(
+            &compose::DraftHeaders {
+                from,
+                to: m.to.clone(),
+                cc: m.cc.clone(),
+                subject: m.subject.clone(),
+                in_reply_to: None,
+                references: None,
+            },
+            &m.body,
+        );
+        // DraftHeaders has no Bcc slot; it goes ahead of the blank
+        // line, where the send path strips it off the wire copy.
+        let text = match m.bcc.as_deref().filter(|b| !b.trim().is_empty()) {
+            Some(bcc) => match text.split_once("\n\n") {
+                Some((head, body)) => format!("{head}\nBcc: {bcc}\n\n{body}"),
+                None => text,
+            },
+            None => text,
+        };
+        match self.stage_draft(&text) {
+            Ok((path, hidden_head)) => {
+                self.pending_editor = Some(Compose {
+                    path,
+                    recall_source: None,
+                    security: self.default_security(),
+                    attach: None,
+                    hidden_head,
+                    fcc: None,
+                });
+            }
+            Err(err) => self.error_status(format!("cannot write draft: {err:#}")),
+        }
+    }
+
+    /// `rmut -p`: straight into the postponed picker.
+    pub fn open_postponed(&mut self) {
+        self.recall_postponed();
+    }
+
+    /// `rmut -y`: straight into the mailbox list.
+    pub fn open_folders(&mut self) {
+        self.open_folder_browser();
+    }
+
+    /// `rmut -e COMMAND`: one `:` line applied before the first draw.
+    pub fn run_startup_command(&mut self, line: &str) {
+        self.run_command_line(line);
+    }
+
     fn replay(&mut self, seq: Vec<KeyEvent>) {
         if self.pending_keys.len() + seq.len() > 1000 {
             self.pending_keys.clear();
@@ -5165,7 +5220,7 @@ fn account_password(account: &Account) -> Result<String> {
     Ok(password)
 }
 
-fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
+pub(crate) fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
     let from = compose::from_address(text).context("cannot parse the From address")?;
     let (rcpts, text) = compose::smtp_envelope(text)?;
     anyhow::ensure!(!rcpts.is_empty(), "no recipient addresses");
@@ -5209,7 +5264,11 @@ fn run_file_filter(command: &str, path: &Path) -> Result<String> {
 
 /// With `rcpts` the addresses go on the command line (a bounce keeps
 /// its Resent-To out of -t's reach); otherwise -t reads To/Cc/Bcc.
-fn run_sendmail(bytes: &[u8], configured: Option<&str>, rcpts: Option<&[String]>) -> Result<()> {
+pub(crate) fn run_sendmail(
+    bytes: &[u8],
+    configured: Option<&str>,
+    rcpts: Option<&[String]>,
+) -> Result<()> {
     let command = std::env::var("RMUT_SENDMAIL")
         .ok()
         .or_else(|| configured.map(String::from));
