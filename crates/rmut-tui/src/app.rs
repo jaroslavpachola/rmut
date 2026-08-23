@@ -946,8 +946,11 @@ impl App {
     /// Server-aware pattern match: `~b` terms resolved by UID SEARCH
     /// (when `resolve_body_terms` filled the sets) instead of local
     /// body reads; everything else matches as usual.
-    fn env_matches(&self, patterns: &[Pattern], env: &Envelope) -> bool {
-        pattern::matches_via(
+    /// Matches with the message's place in the list, which is what
+    /// `~m` and `~=` need; `Position::default()` stands in where there
+    /// is no list to speak of.
+    fn env_matches_at(&self, patterns: &[Pattern], env: &Envelope, pos: pattern::Position) -> bool {
+        pattern::matches_at(
             patterns,
             env,
             &self.me,
@@ -956,7 +959,45 @@ impl App {
                 let uid = remote::uid_of(&env.file.path)?;
                 Some(set.contains(&uid))
             }),
+            pos,
         )
+    }
+
+    /// `~m` numbering and `~=` duplicate flags for every message, as
+    /// the index stands right now: numbers are the ones on screen, so
+    /// a range means what the user can actually see, and messages
+    /// hidden by the current limit carry number 0 (never in range).
+    fn positions(&self) -> Vec<pattern::Position> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for m in &self.msgs {
+            if let Some(id) = m.env.msg_id.as_deref() {
+                *seen.entry(id).or_default() += 1;
+            }
+        }
+        let mut numbers = vec![0usize; self.msgs.len()];
+        for (n, &mi) in self.visible.iter().enumerate() {
+            if let Some(slot) = numbers.get_mut(mi) {
+                *slot = n + 1;
+            }
+        }
+        let current = self
+            .visible
+            .get(self.sel)
+            .and_then(|&mi| numbers.get(mi).copied())
+            .unwrap_or(0);
+        let last = self.visible.len();
+        (0..self.msgs.len())
+            .map(|i| pattern::Position {
+                number: numbers[i],
+                current,
+                last,
+                duplicate: self.msgs[i]
+                    .env
+                    .msg_id
+                    .as_deref()
+                    .is_some_and(|id| seen.get(id).copied().unwrap_or(0) > 1),
+            })
+            .collect()
     }
 
     /// On IMAP, ask the server about the pattern's `~b` terms up
@@ -4699,9 +4740,10 @@ impl App {
     /// the selection on the message at `keep` when still visible.
     fn rebuild_visible(&mut self, keep: Option<PathBuf>) {
         let mut visible = Vec::with_capacity(self.msgs.len());
-        for i in 0..self.msgs.len() {
+        let positions = self.positions();
+        for (i, pos) in positions.iter().enumerate() {
             let limit_ok = match &self.limit {
-                Some((_, patterns)) => self.env_matches(patterns, &self.msgs[i].env),
+                Some((_, patterns)) => self.env_matches_at(patterns, &self.msgs[i].env, *pos),
                 None => true,
             };
             if !limit_ok {
@@ -4785,9 +4827,11 @@ impl App {
             return;
         }
         let n = self.visible.len();
+        let positions = self.positions();
         for step in 1..=n {
             let vi = (self.sel + step) % n;
-            if self.env_matches(&patterns, &self.msgs[self.visible[vi]].env) {
+            let mi = self.visible[vi];
+            if self.env_matches_at(&patterns, &self.msgs[mi].env, positions[mi]) {
                 if vi <= self.sel {
                     self.status = Some("search wrapped".into());
                 }
@@ -4834,13 +4878,14 @@ impl App {
             }
         };
         self.resolve_body_terms(&patterns);
+        let positions = self.positions();
         let mut count = 0;
-        for i in 0..self.msgs.len() {
+        for (i, pos) in positions.iter().enumerate() {
             let in_limit = match &self.limit {
-                Some((_, l)) => self.env_matches(l, &self.msgs[i].env),
+                Some((_, l)) => self.env_matches_at(l, &self.msgs[i].env, *pos),
                 None => true,
             };
-            if in_limit && self.env_matches(&patterns, &self.msgs[i].env) {
+            if in_limit && self.env_matches_at(&patterns, &self.msgs[i].env, *pos) {
                 f(&mut self.msgs[i]);
                 count += 1;
             }

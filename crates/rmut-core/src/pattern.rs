@@ -1,10 +1,12 @@
 //! Mutt-style search/limit patterns. Terms: `~f` from, `~s` subject,
-//! `~b` body, `~t` to, `~c` cc, `~C` to-or-cc, `~e` sender, `~d` date,
+//! `~b` body, `~t` to, `~c` cc, `~C` to-or-cc, `~e` sender, `~h` any
+//! header, `~i` Message-ID, `~x` References, `~d` date, `~r` received
+//! date, `~m` index range, `~z` size range, `~=` duplicate,
 //! `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 //! `~p` addressed to me; a bare word matches subject or from (mutt's
 //! $simple_search). Adjacent terms AND, `|` ORs, `!` negates, `()`
 //! groups; string arguments are case-insensitive regexes (quote them
-//! to include spaces), `~d` takes `DD/MM/YYYY` ranges or `<`/`>`/`=`
+//! to include spaces), `~d`/`~r` take `DD/MM/YYYY` ranges or `<`/`>`/`=`
 //! offsets like `<1w`.
 
 use chrono::{Datelike, Local, TimeZone};
@@ -83,11 +85,35 @@ pub enum Pattern {
     Recipient(Matcher),
     /// `~e`: the Sender header (read from disk on demand).
     Sender(Matcher),
+    /// `~h`: any header line, as `Name: value` text (read from disk).
+    Header(Matcher),
+    /// `~i`: the Message-ID.
+    MessageId(Matcher),
+    /// `~x`: any References / In-Reply-To id.
+    References(Matcher),
     /// `~d`: epoch-second bounds, min inclusive, max exclusive.
     Date {
         min: Option<i64>,
         max: Option<i64>,
     },
+    /// `~r`: the same bounds against the file's delivery time.
+    Received {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
+    /// `~m`: index-number range, inclusive, over the numbering on
+    /// screen; `.` is the selected message and `$` the last one.
+    Number {
+        min: Option<Bound>,
+        max: Option<Bound>,
+    },
+    /// `~z`: size in bytes, min inclusive, max inclusive.
+    Size {
+        min: Option<u64>,
+        max: Option<u64>,
+    },
+    /// `~=`: the Message-ID occurs more than once in the mailbox.
+    Duplicate,
     New,
     Flagged,
     Deleted,
@@ -97,6 +123,40 @@ pub enum Pattern {
     ToMe,
     /// Bare word: matches subject or from.
     Default(Matcher),
+}
+
+/// One end of a `~m` range: a literal number, or mutt's `.` (the
+/// selected message) and `$` (the last), resolved at match time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bound {
+    Num(usize),
+    Current,
+    Last,
+}
+
+impl Bound {
+    fn resolve(self, pos: &Position) -> usize {
+        match self {
+            Bound::Num(n) => n,
+            Bound::Current => pos.current,
+            Bound::Last => pos.last,
+        }
+    }
+}
+
+/// What a message needs from the list around it: its index number for
+/// `~m` and whether its Message-ID repeats for `~=`. Matching without
+/// a list (a single color rule, say) leaves this at its default, where
+/// both terms are false.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Position {
+    /// 1-based number as shown in the index; 0 when not on screen.
+    pub number: usize,
+    /// The selected message's number, for `.`.
+    pub current: usize,
+    /// The last message's number, for `$`.
+    pub last: usize,
+    pub duplicate: bool,
 }
 
 // ---- parsing ----
@@ -236,7 +296,17 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'c' => Pattern::Cc(Matcher::new(&arg()?)),
                 'C' => Pattern::Recipient(Matcher::new(&arg()?)),
                 'e' => Pattern::Sender(Matcher::new(&arg()?)),
+                'h' => Pattern::Header(Matcher::new(&arg()?)),
+                'i' => Pattern::MessageId(Matcher::new(&arg()?)),
+                'x' => Pattern::References(Matcher::new(&arg()?)),
                 'd' => date_term(&arg()?, now)?,
+                'r' => match date_term(&arg()?, now)? {
+                    Pattern::Date { min, max } => Pattern::Received { min, max },
+                    other => other,
+                },
+                'm' => number_term(&arg()?)?,
+                'z' => size_term(&arg()?)?,
+                '=' => Pattern::Duplicate,
                 'N' => Pattern::New,
                 'F' => Pattern::Flagged,
                 'D' => Pattern::Deleted,
@@ -363,6 +433,82 @@ fn day_bounds_of(date: chrono::NaiveDate) -> Result<(i64, i64), String> {
     Ok((start, start + 86400))
 }
 
+// ---- ~m index ranges and ~z sizes ----
+
+/// `~m 10-20`, `~m 5`, `~m 5-`, `~m -20`, and mutt's `.` (selected)
+/// and `$` (last) at either end.
+fn number_term(spec: &str) -> Result<Pattern, String> {
+    let end = |text: &str| -> Result<Bound, String> {
+        match text {
+            "." => Ok(Bound::Current),
+            "$" => Ok(Bound::Last),
+            n => n
+                .parse()
+                .map(Bound::Num)
+                .map_err(|_| format!("~m wants a number, . or $, got {n:?}")),
+        }
+    };
+    match spec.split_once('-') {
+        Some((min, max)) => Ok(Pattern::Number {
+            min: (!min.is_empty()).then(|| end(min)).transpose()?,
+            max: (!max.is_empty()).then(|| end(max)).transpose()?,
+        }),
+        None => {
+            let one = end(spec)?;
+            Ok(Pattern::Number {
+                min: Some(one),
+                max: Some(one),
+            })
+        }
+    }
+}
+
+/// `~z >100K`, `~z <2M`, `~z 10K-1M`, `~z 500`. K/M/G suffixes are
+/// mutt's (powers of 1024), case-insensitive.
+fn size_term(spec: &str) -> Result<Pattern, String> {
+    if let Some(rest) = spec.strip_prefix('>') {
+        return Ok(Pattern::Size {
+            min: Some(bytes(rest)?),
+            max: None,
+        });
+    }
+    if let Some(rest) = spec.strip_prefix('<') {
+        return Ok(Pattern::Size {
+            min: None,
+            max: Some(bytes(rest)?),
+        });
+    }
+    match spec.split_once('-') {
+        Some((min, max)) => Ok(Pattern::Size {
+            min: (!min.is_empty()).then(|| bytes(min)).transpose()?,
+            max: (!max.is_empty()).then(|| bytes(max)).transpose()?,
+        }),
+        None => {
+            let exact = bytes(spec)?;
+            Ok(Pattern::Size {
+                min: Some(exact),
+                max: Some(exact),
+            })
+        }
+    }
+}
+
+fn bytes(spec: &str) -> Result<u64, String> {
+    let spec = spec.trim();
+    let err = || format!("~z wants a size like 100K, got {spec:?}");
+    let (digits, scale) = match spec.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&spec[..spec.len() - 1], 1024),
+        Some('M') => (&spec[..spec.len() - 1], 1024 * 1024),
+        Some('G') => (&spec[..spec.len() - 1], 1024 * 1024 * 1024),
+        _ => (spec, 1),
+    };
+    digits
+        .trim()
+        .parse::<u64>()
+        .map(|n| n * scale)
+        .map_err(|_| err())
+}
+
 // ---- matching ----
 
 /// Answers `~b` for a message without the local file read: Some
@@ -375,13 +521,16 @@ struct Ctx<'a> {
     me: &'a [String],
     body: Option<String>,
     sender: Option<String>,
+    headers: Option<String>,
+    received: Option<i64>,
+    pos: Position,
     oracle: Option<BodyOracle<'a>>,
 }
 
 /// AND of the top-level patterns. `me` are my own bare lowercase
 /// addresses, for `~p`.
 pub fn matches(patterns: &[Pattern], env: &Envelope, me: &[String]) -> bool {
-    matches_via(patterns, env, me, None)
+    matches_at(patterns, env, me, None, Position::default())
 }
 
 /// Like `matches`, with `~b` optionally answered by `oracle`
@@ -392,11 +541,26 @@ pub fn matches_via(
     me: &[String],
     oracle: Option<BodyOracle>,
 ) -> bool {
+    matches_at(patterns, env, me, oracle, Position::default())
+}
+
+/// The full entry point: `pos` answers `~m` and `~=`, which need the
+/// list around the message rather than the message alone.
+pub fn matches_at(
+    patterns: &[Pattern],
+    env: &Envelope,
+    me: &[String],
+    oracle: Option<BodyOracle>,
+    pos: Position,
+) -> bool {
     let mut ctx = Ctx {
         env,
         me,
         body: None,
         sender: None,
+        headers: None,
+        received: None,
+        pos,
         oracle,
     };
     patterns.iter().all(|p| eval(p, &mut ctx))
@@ -439,9 +603,41 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
             });
             !sender.is_empty() && m.is_match(sender)
         }
+        Pattern::Header(m) => {
+            let headers = ctx
+                .headers
+                .get_or_insert_with(|| message::header_text(&env.file.path).unwrap_or_default());
+            m.is_match(headers)
+        }
+        Pattern::MessageId(m) => env.msg_id.as_deref().is_some_and(|id| m.is_match(id)),
+        Pattern::References(m) => env.references.iter().any(|id| m.is_match(id)),
         Pattern::Date { min, max } => {
             min.is_none_or(|min| env.date >= min) && max.is_none_or(|max| env.date < max)
         }
+        Pattern::Received { min, max } => {
+            // Delivery time, which for a maildir is the file's mtime;
+            // the Date header stands in when the file is unreadable.
+            let at = *ctx.received.get_or_insert_with(|| {
+                std::fs::metadata(&env.file.path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(env.date)
+            });
+            min.is_none_or(|min| at >= min) && max.is_none_or(|max| at < max)
+        }
+        Pattern::Number { min, max } => {
+            let n = ctx.pos.number;
+            n > 0
+                && min.is_none_or(|b| n >= b.resolve(&ctx.pos))
+                && max.is_none_or(|b| n <= b.resolve(&ctx.pos))
+        }
+        Pattern::Size { min, max } => {
+            let size = env.file.size;
+            min.is_none_or(|min| size >= min) && max.is_none_or(|max| size <= max)
+        }
+        Pattern::Duplicate => ctx.pos.duplicate,
         Pattern::New => env.file.is_new,
         Pattern::Flagged => env.file.flags.flagged,
         Pattern::Deleted => env.file.flags.deleted,
@@ -510,9 +706,101 @@ mod tests {
     }
 
     #[test]
+    fn patterns_v3_parse() {
+        assert_eq!(
+            ok("~i msg1"),
+            vec![Pattern::MessageId(Matcher::new("msg1"))]
+        );
+        assert_eq!(
+            ok("~x parent"),
+            vec![Pattern::References(Matcher::new("parent"))]
+        );
+        assert_eq!(
+            ok("~h x-spam"),
+            vec![Pattern::Header(Matcher::new("x-spam"))]
+        );
+        assert_eq!(ok("~="), vec![Pattern::Duplicate]);
+        assert_eq!(
+            ok("~m 10-20"),
+            vec![Pattern::Number {
+                min: Some(Bound::Num(10)),
+                max: Some(Bound::Num(20)),
+            }]
+        );
+        assert_eq!(
+            ok("~m .-$"),
+            vec![Pattern::Number {
+                min: Some(Bound::Current),
+                max: Some(Bound::Last),
+            }]
+        );
+        assert_eq!(
+            ok("~m 7"),
+            vec![Pattern::Number {
+                min: Some(Bound::Num(7)),
+                max: Some(Bound::Num(7)),
+            }]
+        );
+        assert_eq!(
+            ok("~z >100K"),
+            vec![Pattern::Size {
+                min: Some(102400),
+                max: None,
+            }]
+        );
+        assert_eq!(
+            ok("~z 1K-2M"),
+            vec![Pattern::Size {
+                min: Some(1024),
+                max: Some(2 * 1024 * 1024),
+            }]
+        );
+        // ~r shares the ~d spec vocabulary but keeps its own variant.
+        assert!(matches!(
+            ok("~r <1w").as_slice(),
+            [Pattern::Received { .. }]
+        ));
+        assert!(parse("~m nonsense").is_err());
+        assert!(parse("~z 10X").is_err());
+    }
+
+    #[test]
+    fn patterns_v3_match() {
+        let mut e = env("jane@x", "lunch", false, Flags::default());
+        e.msg_id = Some("msg1@example.com".into());
+        e.references = vec!["parent@example.com".into()];
+        e.file.size = 150 * 1024;
+        assert!(matches(&ok("~i msg1"), &e, &[]));
+        assert!(!matches(&ok("~i other"), &e, &[]));
+        assert!(matches(&ok("~x parent"), &e, &[]));
+        assert!(matches(&ok("~z >100K"), &e, &[]));
+        assert!(!matches(&ok("~z >1M"), &e, &[]));
+        assert!(matches(&ok("~z 100K-200K"), &e, &[]));
+        // ~m and ~= are false without a list around the message.
+        assert!(!matches(&ok("~m 1"), &e, &[]));
+        assert!(!matches(&ok("~="), &e, &[]));
+        let pos = Position {
+            number: 3,
+            current: 5,
+            last: 9,
+            duplicate: true,
+        };
+        let at = |p: &str| matches_at(&ok(p), &e, &[], None, pos);
+        assert!(at("~m 3"));
+        assert!(at("~m 1-3"));
+        assert!(at("~m -3"));
+        assert!(!at("~m 4-"));
+        assert!(at("~m 1-."));
+        assert!(!at("~m .-$"));
+        assert!(at("~="));
+        assert!(!matches_at(&ok("~m 3"), &e, &[], None, Position::default()));
+    }
+
+    #[test]
     fn parse_reports_errors() {
-        assert!(parse("~x").is_err());
+        assert!(parse("~Q").is_err());
         assert!(parse("~f").is_err());
+        assert!(parse("~x").is_err()); // still needs an argument
         assert!(parse("(~N").is_err());
         assert!(parse("~N)").is_err());
         assert!(parse("~d nonsense").is_err());

@@ -204,8 +204,8 @@ def scenario_sync_delete_flag_limit(tmp):
     r.expect("limit:~f jane|~f petr")
     r.keys(b"l\x15!~f jane\r")
     r.expect("limit:!~f jane")
-    r.keys(b"l\x15~x\r")
-    r.expect("bad pattern: unknown pattern ~x")
+    r.keys(b"l\x15~Q\r")
+    r.expect("bad pattern: unknown pattern ~Q")
     r.keys(b"l\x15\r")  # back to all
     r.keys(b"q")
     r.close()
@@ -1982,6 +1982,71 @@ def scenario_enter_command(tmp):
     r.close()
 
 
+
+def scenario_patterns_v3(tmp):
+    """R31: ~h any header, ~i Message-ID, ~x References, ~m index
+    ranges (with . and $), ~z size ranges, and ~= duplicates, in the
+    limit prompt and in a pattern-op."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "ci"])
+    # A message carrying an unusual header, a References line, and a
+    # body big enough to sort above the others by size.
+    with open(os.path.join(md, "cur", "1751790500.9.host:2,S"), "w") as f:
+        f.write("From: bulk@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: newsletter\r\nDate: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
+                "Message-ID: <msg9@example.com>\r\n"
+                "References: <msg1@example.com>\r\n"
+                "X-Spam-Score: 9.5\r\n\r\n" + ("padding line\r\n" * 400))
+    # A duplicate of jane's message: same Message-ID, different file.
+    with open(os.path.join(md, "cur", "1751790600.10.host:2,S"), "w") as f:
+        f.write("From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+                "Subject: Lunch on Friday? (dup)\r\n"
+                "Date: Mon, 6 Jul 2026 12:00:00 +0200\r\n"
+                "Message-ID: <msg1@example.com>\r\n\r\nsecond copy\r\n")
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:4")
+    # ~h reads the whole header block from disk
+    r.keys(b"l~h x-spam\r")
+    r.expect("Msgs:1/4", "limit:~h x-spam")
+    # ~i matches the Message-ID: jane's original and its duplicate
+    r.keys(b"l")
+    r.keys(b"\x15~i msg1@\r")
+    r.expect("Msgs:2/4")
+    # ~x matches References
+    r.keys(b"l")
+    r.keys(b"\x15~x msg1@\r")
+    r.expect("Msgs:1/4", "newsletter")
+    # ~= finds both copies of the repeated Message-ID
+    r.keys(b"l")
+    r.keys(b"\x15~=\r")
+    r.expect("Msgs:2/4", "limit:~=")
+    # ~z size ranges: only the padded newsletter is over 4K
+    r.keys(b"l")
+    r.keys(b"\x15~z >4K\r")
+    r.expect("Msgs:1/4", "newsletter")
+    r.keys(b"l")
+    r.keys(b"\x15~z <4K\r")
+    r.expect("Msgs:3/4")
+    # ~m ranges use the numbering on screen, with . and $
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.expect("Msgs:4")
+    r.keys(b"l~m 1-2\r")
+    r.expect("Msgs:2/4", "limit:~m 1-2")
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.keys(b"*")  # select the last message, so . and $ are both 4
+    r.keys(b"l~m .-$\r")
+    r.expect("Msgs:1/4", "limit:~m .-$")
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    # a pattern-op takes the same terms: tag every duplicate
+    r.keys(b"T~=\r")
+    r.expect("2 tagged")
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -1999,6 +2064,7 @@ SCENARIOS = [
     scenario_mutt_flow,
     scenario_line_editor,
     scenario_enter_command,
+    scenario_patterns_v3,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

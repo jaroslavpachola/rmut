@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.31**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.32**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -133,15 +133,22 @@ abort?", and "Include message in reply?"; Enter takes the yes.
 Attachments: `Enter` view a text part, `s` save part to a file.
 
 Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
-`~t x` to, `~c x` cc, `~C x` to-or-cc, `~e x` sender, `~d spec` date,
+`~t x` to, `~c x` cc, `~C x` to-or-cc, `~e x` sender, `~h x` any
+header, `~i x` Message-ID, `~x x` References, `~d spec` date,
+`~r spec` received date, `~m spec` index range, `~z spec` size range,
+`~=` duplicate (same Message-ID twice),
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 `~p` addressed to me; a bare word matches subject or from. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
 back to plain substring). `~d` takes a day or range
 (`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027`) or an
 offset: `<1w` (within), `>2d` (older than), `=3d` (that day); units
-y m w d H M. Adjacent terms AND, `!` negates, `|` ORs, `()` groups:
-`!~D (~f jane | ~t jane) ~d <1m`.
+y m w d H M, and `~r` takes the same specs against delivery time.
+`~m` counts the index as shown (`~m 10-20`, `~m 5-`, `~m -20`), with
+`.` for the selected message and `$` for the last (`~m .-$`). `~z`
+takes `>100K`, `<2M`, `1K-2M`, or a plain byte count (K/M/G are
+powers of 1024). Adjacent terms AND, `!` negates, `|` ORs, `()`
+groups: `!~D (~f jane | ~t jane) ~d <1m`.
 
 ## IMAP
 

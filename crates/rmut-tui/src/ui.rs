@@ -185,6 +185,14 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let width = area.width as usize;
     let mut lines = Vec::with_capacity(rows);
+    // `~m` / `~=` in a [[color_index]] rule need the numbering on
+    // screen and the repeated Message-IDs, counted once per draw.
+    let mut id_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for m in &app.msgs {
+        if let Some(id) = m.env.msg_id.as_deref() {
+            *id_counts.entry(id).or_default() += 1;
+        }
+    }
     for (vi, &mi) in app
         .visible
         .iter()
@@ -259,10 +267,19 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         }
         // The first matching [[color_index]] rule wins over the
         // built-in slot colors.
+        let pos = rmut_core::pattern::Position {
+            number: vi + 1,
+            current: app.sel + 1,
+            last: app.visible.len(),
+            duplicate: env
+                .msg_id
+                .as_deref()
+                .is_some_and(|id| id_counts.get(id).copied().unwrap_or(0) > 1),
+        };
         if let Some((_, rule)) = app
             .index_rules
             .iter()
-            .find(|(patterns, _)| rmut_core::pattern::matches(patterns, env, &app.me))
+            .find(|(patterns, _)| rmut_core::pattern::matches_at(patterns, env, &app.me, None, pos))
         {
             style = style.patch(*rule);
         }

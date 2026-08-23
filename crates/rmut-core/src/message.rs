@@ -520,6 +520,21 @@ pub fn first_header(path: &Path, name: &str) -> Option<String> {
     mail.get_headers().get_first_value(name)
 }
 
+/// The whole decoded header block as `Name: value` lines, for the
+/// `~h` pattern (mutt matches the header text, not one field).
+pub fn header_text(path: &Path) -> Option<String> {
+    let raw = fs::read(path).ok()?;
+    let mail = parse_mail(&raw).ok()?;
+    let mut out = String::new();
+    for header in mail.get_headers() {
+        out.push_str(&header.get_key());
+        out.push_str(": ");
+        out.push_str(&header.get_value());
+        out.push('\n');
+    }
+    Some(out)
+}
+
 /// Decoded text body only (used by `~b` pattern matching).
 pub fn body_text(path: &Path) -> Result<String> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;

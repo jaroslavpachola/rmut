@@ -503,18 +503,27 @@ tints quotes, hits, and URLs.
 Ranked by how soon a mutt veteran trips over the gap; none committed
 until picked up, and daily-use paper cuts still outrank all of them.
 
-## R31: patterns v3
+## R31: patterns v3 (done, 1.32)
 
-Goal: close the pattern-operator gaps a mutt hand reaches for first.
-
-- [ ] `~h` (any header, read from disk like `~e`), `~i` (Message-ID),
-      `~x` already exists; check `~r` (received date) against Date
-      handling
-- [ ] `~m` message ranges (`~m 10-20`, `.`, `$`), `~z` size ranges
-      (`~z >100K`)
-- [ ] `~=` duplicate messages (same Message-ID seen twice)
-- [ ] everywhere patterns go: limit, search, pattern-ops, color_index
-      rules, identities
+- [x] `~h` any header (the decoded header block, read from disk like
+      `~e`), `~i` Message-ID, and `~x` References. The plan said `~x`
+      already existed; it did not, so it shipped here
+- [x] `~r` received date, sharing the `~d` spec vocabulary (ranges and
+      `<`/`>`/`=` offsets) but reading the file's delivery time, with
+      the Date header standing in when the file cannot be stat'ed
+- [x] `~m` index ranges (`~m 10-20`, `~m 5-`, `~m -20`, `~m 7`) over
+      the numbering on screen, with mutt's `.` (selected) and `$`
+      (last) usable at either end
+- [x] `~z` size ranges (`~z >100K`, `~z <2M`, `~z 1K-2M`, `~z 500`),
+      K/M/G suffixes in mutt's powers of 1024
+- [x] `~=` duplicate messages: the Message-ID occurs more than once
+      in the mailbox
+- [x] Everywhere patterns go: limit, search, pattern-ops, and
+      color_index rules. `~m`/`~=` need the list around a message, so
+      matching takes a `Position` (number, selected, last, duplicate);
+      matching one message without a list leaves both false.
+      Identities match on folder/recipient globs, not patterns, so
+      there was nothing to extend there
 
 ## R32: enter-command (done, 1.31)
 
