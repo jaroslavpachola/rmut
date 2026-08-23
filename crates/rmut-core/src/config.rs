@@ -157,6 +157,14 @@ pub struct Mail {
     /// mutt's $copy: false skips the sent copy (Fcc) entirely; an
     /// Fcc set in the compose menu still wins.
     pub copy: Option<bool>,
+    /// mutt's `lists`: address patterns naming mailing lists you know
+    /// of. They drive `~l`, the `L` list-reply target, and the
+    /// Mail-Followup-To rmut sets on mail to a list.
+    pub lists: Vec<String>,
+    /// mutt's `subscribe`: lists you are on. Subscribed lists count as
+    /// known lists too, and a reply to one leaves your own address out
+    /// of Mail-Followup-To, so the list copy is the only one you get.
+    pub subscribed: Vec<String>,
     /// Shell command run when new mail arrives (neomutt's
     /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
     /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
@@ -462,6 +470,26 @@ impl Config {
     /// the value below). `rcpts` are the draft's bare recipient
     /// addresses, empty when they are not known yet, which makes
     /// recipient rules not match.
+    /// Every known mailing-list pattern (`lists` plus `subscribed`),
+    /// compiled for matching against addresses.
+    pub fn list_matchers(&self) -> Vec<crate::pattern::Matcher> {
+        self.mail
+            .lists
+            .iter()
+            .chain(&self.mail.subscribed)
+            .map(|spec| crate::pattern::Matcher::new(spec))
+            .collect()
+    }
+
+    /// The `subscribed` half on its own, for the Mail-Followup-To rule.
+    pub fn subscribed_matchers(&self) -> Vec<crate::pattern::Matcher> {
+        self.mail
+            .subscribed
+            .iter()
+            .map(|spec| crate::pattern::Matcher::new(spec))
+            .collect()
+    }
+
     pub fn identity_for(
         &self,
         folder: &str,

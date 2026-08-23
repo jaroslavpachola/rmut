@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.33.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.34.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -408,7 +408,8 @@ fall back to matching locally. The specifiers:
   ~e x  sender     ~h x  any header  ~i x  Message-ID
   ~x x  References ~d spec  date     ~r spec  received date
   ~m spec  index range        ~z spec  size range
-  ~=  duplicate Message-ID    word  subject or from
+  ~=  duplicate Message-ID    ~l  to a known mailing list
+  word  subject or from
   ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
   ~p addressed to me
 .fi

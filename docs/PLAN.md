@@ -572,14 +572,30 @@ until picked up, and daily-use paper cuts still outrank all of them.
       `mail.sent` maildir is used, and a remote one is skipped
       rather than silently dropped
 
-## R34: mailing lists
+## R34: mailing lists (done, 1.34)
 
-Goal: mutt's list machinery around the existing `%L`.
-
-- [ ] `subscribe`/`lists` (config + importer), `~l` pattern
-- [ ] `L` list-reply in index and pager
-- [ ] honor Mail-Followup-To on group replies; set it on mail to
-      subscribed lists ($followup_to)
+- [x] `[mail] lists` and `[mail] subscribed`: address patterns (the
+      pattern engine's case-insensitive regexes) naming known and
+      subscribed lists, imported from mutt's `lists`, `subscribe`,
+      `unlists` and `unsubscribe`
+- [x] `~l`: addressed to a known list. Matching now takes a `Scope`
+      (my addresses, the list patterns, the position) instead of a
+      bare `me` slice, since `~p`, `~l`, `~m` and `~=` all need
+      something the message alone cannot answer
+- [x] `L` list-reply in index and pager: the List-Post address when
+      the list published one, else the first To/Cc address matching a
+      configured list. With no list to reply to it refuses rather
+      than quietly mailing the author, which is the mistake
+      list-reply exists to prevent
+- [x] Group replies honor a sender's Mail-Followup-To: it is the
+      recipient set they asked for, so it replaces To and no Cc is
+      added
+- [x] $followup_to: mail to a known list carries a Mail-Followup-To.
+      Subscribed leaves my own address out (the list copy is the one
+      I get), not subscribed keeps it in
+- [x] Fixed on the way: list replies did not ask mutt's "Include
+      message in reply?" question that Reply and GroupReply ask,
+      though they quoted the original anyway
 
 ## R35: alternates and my_hdr
 

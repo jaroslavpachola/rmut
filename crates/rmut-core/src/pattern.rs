@@ -3,6 +3,7 @@
 //! header, `~i` Message-ID, `~x` References, `~d` date, `~r` received
 //! date, `~m` index range, `~z` size range, `~=` duplicate,
 //! `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
+//! `~l` addressed to a known mailing list,
 //! `~p` addressed to me; a bare word matches subject or from (mutt's
 //! $simple_search). Adjacent terms AND, `|` ORs, `!` negates, `()`
 //! groups; string arguments are case-insensitive regexes (quote them
@@ -121,6 +122,8 @@ pub enum Pattern {
     Tagged,
     /// `~p`: addressed to one of my addresses.
     ToMe,
+    /// `~l`: addressed to a known mailing list.
+    ToList,
     /// Bare word: matches subject or from.
     Default(Matcher),
 }
@@ -141,6 +144,35 @@ impl Bound {
             Bound::Current => pos.current,
             Bound::Last => pos.last,
         }
+    }
+}
+
+/// Everything matching needs besides the message: my own addresses
+/// (`~p`), the known mailing lists (`~l`), and the message's place in
+/// the list (`~m`, `~=`).
+#[derive(Default, Clone, Copy)]
+pub struct Scope<'a> {
+    /// My bare lowercase addresses.
+    pub me: &'a [String],
+    /// Address patterns naming mailing lists, subscribed or not.
+    pub lists: &'a [Matcher],
+    pub position: Position,
+}
+
+impl<'a> Scope<'a> {
+    /// The common case: my addresses, nothing else known.
+    pub fn me(me: &'a [String]) -> Scope<'a> {
+        Scope {
+            me,
+            ..Default::default()
+        }
+    }
+
+    /// True when any of these addresses names a known list.
+    pub fn any_list(&self, addresses: &[String]) -> bool {
+        addresses
+            .iter()
+            .any(|a| self.lists.iter().any(|m| m.is_match(a)))
     }
 }
 
@@ -313,6 +345,7 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'U' => Pattern::Unread,
                 'T' => Pattern::Tagged,
                 'p' => Pattern::ToMe,
+                'l' => Pattern::ToList,
                 other => return Err(format!("unknown pattern ~{other}")),
             })
         }
@@ -518,19 +551,18 @@ pub type BodyOracle<'a> = &'a dyn Fn(&Envelope, &Matcher) -> Option<bool>;
 /// Per-message context: disk reads happen at most once.
 struct Ctx<'a> {
     env: &'a Envelope,
-    me: &'a [String],
+    scope: Scope<'a>,
     body: Option<String>,
     sender: Option<String>,
     headers: Option<String>,
     received: Option<i64>,
-    pos: Position,
     oracle: Option<BodyOracle<'a>>,
 }
 
 /// AND of the top-level patterns. `me` are my own bare lowercase
 /// addresses, for `~p`.
 pub fn matches(patterns: &[Pattern], env: &Envelope, me: &[String]) -> bool {
-    matches_at(patterns, env, me, None, Position::default())
+    matches_in(patterns, env, Scope::me(me), None)
 }
 
 /// Like `matches`, with `~b` optionally answered by `oracle`
@@ -541,26 +573,24 @@ pub fn matches_via(
     me: &[String],
     oracle: Option<BodyOracle>,
 ) -> bool {
-    matches_at(patterns, env, me, oracle, Position::default())
+    matches_in(patterns, env, Scope::me(me), oracle)
 }
 
-/// The full entry point: `pos` answers `~m` and `~=`, which need the
-/// list around the message rather than the message alone.
-pub fn matches_at(
+/// The full entry point: `scope` answers the terms a lone message
+/// cannot (`~p`, `~l`, `~m`, `~=`).
+pub fn matches_in(
     patterns: &[Pattern],
     env: &Envelope,
-    me: &[String],
+    scope: Scope,
     oracle: Option<BodyOracle>,
-    pos: Position,
 ) -> bool {
     let mut ctx = Ctx {
         env,
-        me,
+        scope,
         body: None,
         sender: None,
         headers: None,
         received: None,
-        pos,
         oracle,
     };
     patterns.iter().all(|p| eval(p, &mut ctx))
@@ -628,22 +658,31 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
             min.is_none_or(|min| at >= min) && max.is_none_or(|max| at < max)
         }
         Pattern::Number { min, max } => {
-            let n = ctx.pos.number;
+            let n = ctx.scope.position.number;
             n > 0
-                && min.is_none_or(|b| n >= b.resolve(&ctx.pos))
-                && max.is_none_or(|b| n <= b.resolve(&ctx.pos))
+                && min.is_none_or(|b| n >= b.resolve(&ctx.scope.position))
+                && max.is_none_or(|b| n <= b.resolve(&ctx.scope.position))
         }
         Pattern::Size { min, max } => {
             let size = env.file.size;
             min.is_none_or(|min| size >= min) && max.is_none_or(|max| size <= max)
         }
-        Pattern::Duplicate => ctx.pos.duplicate,
+        Pattern::Duplicate => ctx.scope.position.duplicate,
         Pattern::New => env.file.is_new,
         Pattern::Flagged => env.file.flags.flagged,
         Pattern::Deleted => env.file.flags.deleted,
         Pattern::Unread => !env.file.flags.seen,
         Pattern::Tagged => env.tagged,
-        Pattern::ToMe => env.to.iter().chain(&env.cc).any(|a| ctx.me.contains(a)),
+        Pattern::ToMe => env
+            .to
+            .iter()
+            .chain(&env.cc)
+            .any(|a| ctx.scope.me.contains(a)),
+        Pattern::ToList => env
+            .to
+            .iter()
+            .chain(&env.cc)
+            .any(|a| ctx.scope.lists.iter().any(|m| m.is_match(a))),
         Pattern::Body(m) => {
             if let Some(answer) = ctx.oracle.and_then(|oracle| oracle(env, m)) {
                 return answer;
@@ -785,7 +824,11 @@ mod tests {
             last: 9,
             duplicate: true,
         };
-        let at = |p: &str| matches_at(&ok(p), &e, &[], None, pos);
+        let scope = Scope {
+            position: pos,
+            ..Default::default()
+        };
+        let at = |p: &str| matches_in(&ok(p), &e, scope, None);
         assert!(at("~m 3"));
         assert!(at("~m 1-3"));
         assert!(at("~m -3"));
@@ -793,7 +836,17 @@ mod tests {
         assert!(at("~m 1-."));
         assert!(!at("~m .-$"));
         assert!(at("~="));
-        assert!(!matches_at(&ok("~m 3"), &e, &[], None, Position::default()));
+        assert!(!matches_in(&ok("~m 3"), &e, Scope::default(), None));
+        // ~l needs the configured list patterns to say anything.
+        e.to = vec!["dev@lists.example.com".into()];
+        assert!(!matches(&ok("~l"), &e, &[]));
+        let lists = [Matcher::new("@lists\\.example\\.com")];
+        let scope = Scope {
+            lists: &lists,
+            ..Default::default()
+        };
+        assert!(matches_in(&ok("~l"), &e, scope, None));
+        assert!(scope.any_list(&["dev@lists.example.com".to_string()]));
     }
 
     #[test]

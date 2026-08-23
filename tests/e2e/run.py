@@ -1579,7 +1579,7 @@ def scenario_compose_round2(tmp):
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:1")
     r.keys(b"r")  # fast_reply: straight to the include question
-    r.expect("Include message in reply?")
+    r.expect("Include")
     r.keys(b"\r")
     r.expect("y:Send")
     r.keys(b"a")
@@ -2158,6 +2158,111 @@ def scenario_batch_cli(tmp):
     r.close()
 
 
+
+def scenario_mailing_lists(tmp):
+    """R34: mail.lists/subscribed drive ~l, L replies to the list only
+    (List-Post, else a known list address in To/Cc), a group reply
+    honours the sender's Mail-Followup-To, and mail to a subscribed
+    list carries one."""
+    md = make_maildir(tmp, "md-lists")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751791000.20.host:2,S"), "w") as f:
+        f.write("From: Dev Person <dev-person@example.com>\r\n"
+                "To: rmut-dev@lists.example.com\r\n"
+                "Subject: patch review\r\n"
+                "Date: Mon, 6 Jul 2026 13:00:00 +0200\r\n"
+                "Message-ID: <list1@example.com>\r\n"
+                "List-Id: Dev talk <rmut-dev.lists.example.com>\r\n"
+                "List-Post: <mailto:rmut-dev@lists.example.com>\r\n\r\n"
+                "please review\r\n")
+    with open(os.path.join(md, "cur", "1751791100.21.host:2,S"), "w") as f:
+        f.write("From: Careful Sender <careful@example.com>\r\n"
+                "To: jarda@example.com\r\nCc: petr@example.com\r\n"
+                "Subject: reply here please\r\n"
+                "Date: Mon, 6 Jul 2026 14:00:00 +0200\r\n"
+                "Message-ID: <mft1@example.com>\r\n"
+                "Mail-Followup-To: followup@example.com\r\n\r\n"
+                "use the followup address\r\n")
+    sent_file = os.path.join(tmp, "sent-lists.eml")
+    sendmail = os.path.join(tmp, "sendmail-lists.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "lists-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "reply body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "lists-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                f'subscribed = ["rmut-dev@lists.example.com"]\n'
+                f'lists = ["announce@lists.example.com"]\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    r.expect("Msgs:3")
+    # ~l limits to mail addressed to a known list
+    r.keys(b"l~l\r")
+    r.expect("Msgs:1/3", "patch review")
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.expect("Msgs:3")
+
+    # L on a non-list message refuses instead of mailing the author
+    r.keys(b"=")  # oldest first: jane's message
+    r.expect("Lunch on Friday?")
+    r.keys(b"L")
+    r.expect("not a message from a known mailing list")
+
+    # L on the list message replies to the list alone, and being
+    # subscribed puts a Mail-Followup-To on it without my address
+    r.keys(b"l~l\r")
+    r.expect("Msgs:1/3")
+    r.keys(b"L")
+    r.expect("To:")
+    r.keys(b"\r")       # take the prefilled list address
+    r.expect("Subject:")
+    r.keys(b"\r")       # take "Re: patch review"
+    r.expect("Include")
+    r.keys(b"y")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: Re: patch review" in open(sent_file).read(),
+             desc="list reply sent")
+    text = open(sent_file).read()
+    assert "To: rmut-dev@lists.example.com" in text
+    assert "dev-person@example.com" not in text.split("\n\n")[0], \
+        "a list reply does not go to the author"
+    assert "Mail-Followup-To: rmut-dev@lists.example.com" in text
+    assert "jarda@example.com" not in text.split("Mail-Followup-To:")[1].split("\n")[0], \
+        "subscribed: my address stays out of Mail-Followup-To"
+
+    # a group reply honours the sender's Mail-Followup-To
+    os.truncate(sent_file, 0)
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.keys(b"l~i mft1@\r")
+    r.expect("Msgs:1/3", "reply here please")
+    r.keys(b"g")
+    r.expect("To:")
+    r.keys(b"\r")
+    r.expect("Subject:")
+    r.keys(b"\r")
+    r.expect("Include")
+    r.keys(b"y")        # include the original, as the list reply did
+    r.expect("Atts:0")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: Re: reply here please" in open(sent_file).read(),
+             desc="group reply sent")
+    text = open(sent_file).read()
+    assert "To: followup@example.com" in text
+    assert "Cc:" not in text, "Mail-Followup-To replaces the recipient set"
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2177,6 +2282,7 @@ SCENARIOS = [
     scenario_enter_command,
     scenario_patterns_v3,
     scenario_batch_cli,
+    scenario_mailing_lists,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.33**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.34**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -110,7 +110,7 @@ new/unseen counts; folders holding new mail show bold), `G` check
 for new mail now, `B` toggle the sidebar (Ctrl+N/Ctrl+P move its
 highlight, Ctrl+O opens the highlighted mailbox), `v` attachments,
 `m` compose, `r` reply, `g` group
-reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
+reply, `L` list-reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
 the raw message to a shell command, `b` bounce (resend as-is to new
 recipients, with a Resent-\* block), `e` edit the raw message (mutt's
 edit; the changed result replaces the original), Alt+e edit as a new
@@ -123,7 +123,8 @@ ages unread new mail to old (`O`), mutt's mark_old.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
 message, `d` delete and advance, `h` toggle full headers,
-`v` attachments, `m`/`r`/`g`/`f` compose/reply/forward, `p` print,
+`v` attachments, `m`/`r`/`g`/`L`/`f` compose/reply/list-reply/forward,
+`p` print,
 `s` save, `C`/`|`/`b` copy/pipe/bounce, `e`/Alt+e edit raw/resend,
 `:` run a config command, `q`/`i` back. Space past the end opens the next message and wrapped
 lines carry a leading `+` marker, like mutt. Replies ask mutt's
@@ -138,7 +139,8 @@ header, `~i x` Message-ID, `~x x` References, `~d spec` date,
 `~r spec` received date, `~m spec` index range, `~z spec` size range,
 `~=` duplicate (same Message-ID twice),
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
-`~p` addressed to me; a bare word matches subject or from. `x` is a
+`~l` addressed to a known mailing list, `~p` addressed to me; a bare
+word matches subject or from. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
 back to plain substring). `~d` takes a day or range
 (`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027`) or an
@@ -328,6 +330,33 @@ rmut -s "nightly build" -a build.log -- ops@example.com < report.txt
 The sent copy goes to a local `mail.sent` maildir; a remote Sent
 folder is left to the interactive send, since an IMAP APPEND needs the
 account opened.
+
+## Mailing lists
+
+Tell rmut which addresses are lists and it stops guessing:
+
+```toml
+[mail]
+lists      = ["announce@lists.example.com"]   # lists you read
+subscribed = ["rmut-dev@lists.example.com"]   # lists you are on
+```
+
+Entries are case-insensitive regexes matched against addresses, and
+`subscribed` counts as a known list too. mutt's `lists`, `subscribe`,
+`unlists` and `unsubscribe` are imported.
+
+With that, `L` replies to the list alone: the List-Post address when
+the list published one, otherwise the known list address from To/Cc.
+On a message from no known list it refuses rather than quietly mailing
+the author. `~l` limits to list mail, and `%L` in the index format
+already shows "To <list>".
+
+Mail going to a known list carries a `Mail-Followup-To` so replies
+land on the list (mutt's $followup_to). On a list you are subscribed
+to, your own address is left out, since the list copy is the one you
+will get; on a list you only read, it stays in. A sender's own
+`Mail-Followup-To` is honored by a group reply: it replaces the
+recipient set rather than adding to it.
 
 ## Configuration
 

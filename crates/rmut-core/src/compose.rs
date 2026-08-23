@@ -336,6 +336,64 @@ pub fn bounce_text(original: &[u8], from: &str, to: &str, date: &str, msg_id: &s
 
 /// First address in an RFC 5322 address field, without display name,
 /// e.g. the SMTP envelope sender from a From line.
+/// The posting address from a List-Post header value:
+/// `<mailto:dev@example.com>`, with the RFC 2369 `NO` meaning the list
+/// takes no posts. Extra mailto parameters are dropped.
+pub fn list_post_address(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("NO") {
+        return None;
+    }
+    let start = value.to_ascii_lowercase().find("mailto:")? + "mailto:".len();
+    let rest = &value[start..];
+    let addr = rest
+        .split(['>', '?', ',', ' '])
+        .next()
+        .unwrap_or(rest)
+        .trim();
+    (!addr.is_empty()).then(|| addr.to_string())
+}
+
+/// mutt's $followup_to: the Mail-Followup-To for a message going to a
+/// mailing list. Every recipient goes in; your own address is left out
+/// when you are subscribed (the list copy is the one you will get) and
+/// kept when you are not.
+pub fn followup_to(to: &str, cc: &str, me: &[String], subscribed: bool, my_from: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |single: &mailparse::SingleInfo| {
+        if subscribed && me.contains(&single.addr.to_lowercase()) {
+            return;
+        }
+        let written = match &single.display_name {
+            Some(name) if !name.trim().is_empty() => format!("{name} <{}>", single.addr),
+            _ => single.addr.clone(),
+        };
+        if !out.iter().any(|a| a == &written) {
+            out.push(written);
+        }
+    };
+    for field in [to, cc] {
+        let Ok(list) = mailparse::addrparse(field) else {
+            continue;
+        };
+        for addr in list.iter() {
+            match addr {
+                mailparse::MailAddr::Single(single) => push(single),
+                mailparse::MailAddr::Group(group) => group.addrs.iter().for_each(&mut push),
+            }
+        }
+    }
+    if !subscribed
+        && let Some(from) = bare_address(my_from)
+        && !out
+            .iter()
+            .any(|a| bare_address(a).is_some_and(|b| b == from))
+    {
+        out.push(my_from.trim().to_string());
+    }
+    out.join(", ")
+}
+
 pub fn bare_address(field: &str) -> Option<String> {
     match mailparse::addrparse(field)
         .ok()?
@@ -450,6 +508,58 @@ pub fn smtp_envelope(text: &str) -> Result<(Vec<String>, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_post_addresses() {
+        assert_eq!(
+            list_post_address("<mailto:dev@example.com>").as_deref(),
+            Some("dev@example.com")
+        );
+        assert_eq!(
+            list_post_address("<mailto:dev@example.com?subject=help>").as_deref(),
+            Some("dev@example.com")
+        );
+        assert_eq!(
+            list_post_address("NOTE: <mailto:dev@example.com>, <http://x/post>").as_deref(),
+            Some("dev@example.com")
+        );
+        // RFC 2369: a list that takes no posts, and a non-mail method.
+        assert_eq!(list_post_address("NO"), None);
+        assert_eq!(list_post_address("<http://example.com/post>"), None);
+    }
+
+    #[test]
+    fn followup_to_drops_me_only_when_subscribed() {
+        let me = vec!["jarda@example.com".to_string()];
+        let subscribed = followup_to(
+            "dev@example.com, Jarda <jarda@example.com>",
+            "",
+            &me,
+            true,
+            "Jarda <jarda@example.com>",
+        );
+        assert_eq!(subscribed, "dev@example.com");
+        let unsubscribed = followup_to(
+            "dev@example.com",
+            "petr@example.com",
+            &me,
+            false,
+            "Jarda <jarda@example.com>",
+        );
+        assert_eq!(
+            unsubscribed,
+            "dev@example.com, petr@example.com, Jarda <jarda@example.com>"
+        );
+        // Already listed: no second copy of my address.
+        let once = followup_to(
+            "dev@example.com, jarda@example.com",
+            "",
+            &me,
+            false,
+            "Jarda <jarda@example.com>",
+        );
+        assert_eq!(once, "dev@example.com, jarda@example.com");
+    }
 
     #[test]
     fn subjects_do_not_stack_prefixes() {

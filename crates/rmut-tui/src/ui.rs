@@ -276,11 +276,9 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 .as_deref()
                 .is_some_and(|id| id_counts.get(id).copied().unwrap_or(0) > 1),
         };
-        if let Some((_, rule)) = app
-            .index_rules
-            .iter()
-            .find(|(patterns, _)| rmut_core::pattern::matches_at(patterns, env, &app.me, None, pos))
-        {
+        if let Some((_, rule)) = app.index_rules.iter().find(|(patterns, _)| {
+            rmut_core::pattern::matches_in(patterns, env, app.scope(pos), None)
+        }) {
             style = style.patch(*rule);
         }
         if vi == app.sel {

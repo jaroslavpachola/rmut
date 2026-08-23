@@ -259,6 +259,8 @@ pub enum ComposeKind {
     New,
     Reply,
     GroupReply,
+    /// mutt's list-reply: the mailing list is the only recipient.
+    ListReply,
     Forward,
 }
 
@@ -275,6 +277,11 @@ pub struct ComposeBase {
     has_reply_to: bool,
     orig_to: String,
     orig_cc: String,
+    /// List-Post's posting address, when the list published one.
+    list_post: Option<String>,
+    /// Mail-Followup-To as the sender wrote it, honored by a group
+    /// reply (mutt does the same).
+    followup_to: String,
     /// Bare author address, for the forward subject's %a.
     from_addr: String,
     from_display: String,
@@ -413,6 +420,12 @@ pub struct App {
     /// My own addresses (identity, accounts, $EMAIL), lowercase, for
     /// the addressed-to-me index mark.
     pub me: Vec<String>,
+    /// Compiled `mail.lists` + `mail.subscribed`, for `~l`, the `L`
+    /// list-reply target, and Mail-Followup-To.
+    pub lists: Vec<pattern::Matcher>,
+    /// The subscribed half on its own: only it drops my address from
+    /// a Mail-Followup-To.
+    pub subscribed: Vec<pattern::Matcher>,
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
@@ -505,6 +518,8 @@ fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
 struct Derived {
     theme: Theme,
     keymap: Keymap,
+    lists: Vec<pattern::Matcher>,
+    subscribed: Vec<pattern::Matcher>,
     index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     quote_re: regex_lite::Regex,
@@ -599,6 +614,8 @@ impl Derived {
             Derived {
                 theme,
                 keymap,
+                lists: config.list_matchers(),
+                subscribed: config.subscribed_matchers(),
                 index_rules,
                 body_rules,
                 quote_re,
@@ -629,6 +646,8 @@ impl App {
         let Derived {
             theme,
             keymap,
+            lists,
+            subscribed,
             index_rules,
             body_rules,
             quote_re,
@@ -688,6 +707,8 @@ impl App {
             theme,
             keymap,
             me,
+            lists,
+            subscribed,
             compose_setup: None,
             compose: None,
             pending_editor: None,
@@ -945,22 +966,29 @@ impl App {
 
     /// Server-aware pattern match: `~b` terms resolved by UID SEARCH
     /// (when `resolve_body_terms` filled the sets) instead of local
-    /// body reads; everything else matches as usual.
-    /// Matches with the message's place in the list, which is what
-    /// `~m` and `~=` need; `Position::default()` stands in where there
-    /// is no list to speak of.
+    /// body reads, and the message's place in the list carried along
+    /// for `~m` and `~=`.
     fn env_matches_at(&self, patterns: &[Pattern], env: &Envelope, pos: pattern::Position) -> bool {
-        pattern::matches_at(
+        pattern::matches_in(
             patterns,
             env,
-            &self.me,
+            self.scope(pos),
             Some(&|env: &Envelope, m: &pattern::Matcher| {
                 let set = self.body_hits.get(m.raw())?;
                 let uid = remote::uid_of(&env.file.path)?;
                 Some(set.contains(&uid))
             }),
-            pos,
         )
+    }
+
+    /// What the pattern engine needs beyond one message: my addresses,
+    /// the configured mailing lists, and the place in the list.
+    pub(crate) fn scope(&self, position: pattern::Position) -> pattern::Scope<'_> {
+        pattern::Scope {
+            me: &self.me,
+            lists: &self.lists,
+            position,
+        }
     }
 
     /// `~m` numbering and `~=` duplicate flags for every message, as
@@ -1796,6 +1824,7 @@ impl App {
             IndexAction::Compose => self.start_compose(ComposeKind::New),
             IndexAction::Reply => self.start_compose(ComposeKind::Reply),
             IndexAction::GroupReply => self.start_compose(ComposeKind::GroupReply),
+            IndexAction::ListReply => self.start_list_reply(),
             IndexAction::Forward => self.start_compose(ComposeKind::Forward),
             IndexAction::Sort => {
                 self.prompt = Some(Prompt::Key {
@@ -2027,6 +2056,10 @@ impl App {
             }
             PagerAction::GroupReply => {
                 self.start_compose(ComposeKind::GroupReply);
+                return;
+            }
+            PagerAction::ListReply => {
+                self.start_list_reply();
                 return;
             }
             PagerAction::Forward => {
@@ -2850,6 +2883,8 @@ impl App {
             has_reply_to,
             orig_to: get("To"),
             orig_cc: get("Cc"),
+            list_post: compose::list_post_address(&get("List-Post")),
+            followup_to: get("Mail-Followup-To"),
             from_addr: compose::addresses(&get("From"))
                 .into_iter()
                 .next()
@@ -2891,12 +2926,14 @@ impl App {
         if self.config.mail.autoedit && self.edit_headers() {
             let to = match (&kind, &base) {
                 (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => b.reply_to.clone(),
+                (ComposeKind::ListReply, Some(b)) => self.list_target(b).unwrap_or_default(),
                 _ => String::new(),
             };
             let subject = match (&kind, &base) {
-                (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => {
-                    compose::reply_subject(&b.subject)
-                }
+                (
+                    ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply,
+                    Some(b),
+                ) => compose::reply_subject(&b.subject),
                 (ComposeKind::Forward, Some(b)) => {
                     compose::forward_subject(&b.from_addr, &b.subject)
                 }
@@ -2940,6 +2977,61 @@ impl App {
 
     /// The To prompt, prefilled for replies with Reply-To (the
     /// question's yes) or the plain From (its no).
+    /// Where a list reply goes: the list's own List-Post address when
+    /// it published one, else the first To/Cc address that matches a
+    /// configured list.
+    fn list_target(&self, base: &ComposeBase) -> Option<String> {
+        if let Some(addr) = &base.list_post {
+            return Some(addr.clone());
+        }
+        let mut candidates = compose::addresses(&base.orig_to);
+        candidates.extend(compose::addresses(&base.orig_cc));
+        candidates
+            .into_iter()
+            .find(|a| self.lists.iter().any(|m| m.is_match(a)))
+    }
+
+    /// mutt's $followup_to: mail going to a known list carries a
+    /// Mail-Followup-To, so replies land on the list. Being subscribed
+    /// leaves my own address out, since the list copy is the one I get.
+    fn followup_header(&self, to: &str, cc: Option<&str>, from: &str) -> Option<String> {
+        if self.lists.is_empty() {
+            return None;
+        }
+        let mut rcpts = compose::addresses(to);
+        rcpts.extend(compose::addresses(cc.unwrap_or_default()));
+        if !rcpts
+            .iter()
+            .any(|a| self.lists.iter().any(|m| m.is_match(a)))
+        {
+            return None;
+        }
+        let subscribed = rcpts
+            .iter()
+            .any(|a| self.subscribed.iter().any(|m| m.is_match(a)));
+        let value = compose::followup_to(to, cc.unwrap_or_default(), &self.me, subscribed, from);
+        (!value.is_empty()).then_some(value)
+    }
+
+    /// `L`: reply to the mailing list. Refuses when the message names
+    /// no list rmut knows of, rather than quietly replying to the
+    /// author, which is the mistake list-reply exists to prevent.
+    fn start_list_reply(&mut self) {
+        let Some(base) = self.compose_base() else {
+            self.error_status("no message selected");
+            return;
+        };
+        if self.list_target(&base).is_none() {
+            self.error_status(if self.lists.is_empty() {
+                "no mailing lists configured (mail.lists / mail.subscribed)"
+            } else {
+                "not a message from a known mailing list"
+            });
+            return;
+        }
+        self.continue_setup(ComposeKind::ListReply, Some(base));
+    }
+
     fn open_to_prompt(&mut self, use_reply_to: bool) {
         let Some(setup) = &self.compose_setup else {
             return;
@@ -2956,12 +3048,20 @@ impl App {
                     }
                 })
                 .unwrap_or_default(),
+            ComposeKind::ListReply => setup
+                .base
+                .as_ref()
+                .and_then(|b| self.list_target(b))
+                .unwrap_or_default(),
             ComposeKind::New | ComposeKind::Forward => String::new(),
         };
         // mutt's $fast_reply: replies take the prefills without the
         // To and Subject prompts (forwards still need a recipient).
         if self.config.mail.fast_reply
-            && matches!(setup.kind, ComposeKind::Reply | ComposeKind::GroupReply)
+            && matches!(
+                setup.kind,
+                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
+            )
             && setup.base.is_some()
         {
             let subject = setup
@@ -2985,7 +3085,7 @@ impl App {
         };
         setup.to = Some(to);
         let subject_prefill = match (&setup.kind, &setup.base) {
-            (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => {
+            (ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply, Some(b)) => {
                 compose::reply_subject(&b.subject)
             }
             (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.from_addr, &b.subject),
@@ -3018,7 +3118,10 @@ impl App {
 
     fn subject_ready(&mut self, subject: String) {
         let is_reply = self.compose_setup.as_ref().is_some_and(|s| {
-            matches!(s.kind, ComposeKind::Reply | ComposeKind::GroupReply) && s.base.is_some()
+            matches!(
+                s.kind,
+                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
+            ) && s.base.is_some()
         });
         let ask_fwd = self.config.mail.forward.as_deref() == Some("ask")
             && self
@@ -3051,7 +3154,7 @@ impl App {
         let Some(setup) = self.compose_setup.take() else {
             return;
         };
-        let to = setup.to.unwrap_or_default();
+        let mut to = setup.to.unwrap_or_default();
         let mut cc = None;
         let mut in_reply_to = None;
         let mut references = None;
@@ -3059,7 +3162,7 @@ impl App {
         let mut attach = None;
         if let Some(b) = &setup.base {
             match setup.kind {
-                ComposeKind::Reply | ComposeKind::GroupReply => {
+                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply => {
                     if include {
                         let orig = message::body_text(&b.path).unwrap_or_default();
                         body =
@@ -3076,14 +3179,21 @@ impl App {
                         references = Some(refs.join(" "));
                     }
                     if setup.kind == ComposeKind::GroupReply {
-                        let joined = [b.orig_to.as_str(), b.orig_cc.as_str()]
-                            .iter()
-                            .filter(|s| !s.trim().is_empty())
-                            .copied()
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        if !joined.is_empty() {
-                            cc = Some(joined);
+                        // mutt honors a sender's Mail-Followup-To: it
+                        // is exactly the recipient set they asked for,
+                        // so it replaces To and leaves Cc alone.
+                        if !b.followup_to.trim().is_empty() {
+                            to = b.followup_to.trim().to_string();
+                        } else {
+                            let joined = [b.orig_to.as_str(), b.orig_cc.as_str()]
+                                .iter()
+                                .filter(|s| !s.trim().is_empty())
+                                .copied()
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            if !joined.is_empty() {
+                                cc = Some(joined);
+                            }
                         }
                     }
                 }
@@ -3101,6 +3211,8 @@ impl App {
             }
         }
         let from = self.compose_from(setup.base.as_ref(), &to);
+        let followup =
+            self.followup_header(&to, cc.as_deref(), from.as_deref().unwrap_or_default());
         let text = compose::draft_text(
             &compose::DraftHeaders {
                 from,
@@ -3112,6 +3224,15 @@ impl App {
             },
             &body,
         );
+        // DraftHeaders has no Mail-Followup-To slot; it goes ahead of
+        // the blank line, where edit_headers shows it like any other.
+        let text = match followup {
+            Some(value) => match text.split_once("\n\n") {
+                Some((head, rest)) => format!("{head}\nMail-Followup-To: {value}\n\n{rest}"),
+                None => text,
+            },
+            None => text,
+        };
         match self.stage_draft(&text) {
             Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
@@ -4077,6 +4198,8 @@ impl App {
         let (derived, warnings) = Derived::from_config(&self.config);
         self.theme = derived.theme;
         self.keymap = derived.keymap;
+        self.lists = derived.lists;
+        self.subscribed = derived.subscribed;
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
         self.quote_re = derived.quote_re;

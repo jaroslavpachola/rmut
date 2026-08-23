@@ -66,6 +66,11 @@ struct State {
     quote_regexp: Option<String>,
     /// ignore/unignore/hdr_order lists for the brief header view.
     hdr_ignore: Vec<String>,
+    /// mutt's `lists` and `subscribe`, kept apart: a subscribed list
+    /// is also a known list, but only it drops my address from
+    /// Mail-Followup-To.
+    lists: Vec<String>,
+    subscribed: Vec<String>,
     hdr_unignore: Vec<String>,
     hdr_order: Vec<String>,
     pager_format: Option<String>,
@@ -134,6 +139,26 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
                 }
             }
             "alias" => st.aliases.push(line.clone()),
+            "lists" => {
+                for t in &tokens[1..] {
+                    if !st.lists.contains(t) {
+                        st.lists.push(t.clone());
+                    }
+                }
+            }
+            "subscribe" => {
+                for t in &tokens[1..] {
+                    if !st.subscribed.contains(t) {
+                        st.subscribed.push(t.clone());
+                    }
+                }
+            }
+            "unlists" | "unsubscribe" => {
+                for t in &tokens[1..] {
+                    st.lists.retain(|l| l != t);
+                    st.subscribed.retain(|l| l != t);
+                }
+            }
             "ignore" => st.hdr_ignore.extend(tokens[1..].iter().cloned()),
             "unignore" => st.hdr_unignore.extend(tokens[1..].iter().cloned()),
             "hdr_order" => st.hdr_order.extend(
@@ -875,8 +900,16 @@ impl State {
             || self.no_copy
             || self.new_mail_command.is_some()
             || self.edit_headers_on
+            || !self.lists.is_empty()
+            || !self.subscribed.is_empty()
         {
             out += "\n[mail]\n";
+            for (key, values) in [("lists", &self.lists), ("subscribed", &self.subscribed)] {
+                if !values.is_empty() {
+                    let list: Vec<String> = values.iter().map(|v| quote(v)).collect();
+                    out += &format!("{key} = [{}]\n", list.join(", "));
+                }
+            }
             if !mailboxes.is_empty() {
                 let list: Vec<String> = mailboxes.iter().map(|m| quote(m)).collect();
                 out += &format!("mailboxes = [{}]\n", list.join(", "));
