@@ -302,7 +302,7 @@ impl Mbox {
         lock(&file)?;
         ensure!(
             stat(&self.path)? == self.snapshot,
-            "{} changed on disk — check for new mail (G), then sync again",
+            "{} changed on disk; check for new mail (G), then sync again",
             self.path.display()
         );
         let mut data = Vec::new();

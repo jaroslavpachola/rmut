@@ -1079,7 +1079,7 @@ impl State {
             );
         }
         if !self.aliases.is_empty() {
-            out += "\n# aliases found — rmut reads mutt-format alias files; put these\n";
+            out += "\n# aliases found: rmut reads mutt-format alias files; put these\n";
             out += "# lines in ~/.config/rmut/aliases (or point $RMUT_ALIASES at them):\n";
             for a in &self.aliases {
                 out += &format!("#   {a}\n");

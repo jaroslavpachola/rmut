@@ -98,7 +98,7 @@ fn import_muttrc(path: Option<&str>) -> Result<ExitCode> {
     print!("{}", import.toml);
     if !import.aliases.is_empty() {
         eprintln!(
-            "rmut: {} alias line(s) found — see the comment block in the output",
+            "rmut: {} alias line(s) found; see the comment block in the output",
             import.aliases.len()
         );
     }

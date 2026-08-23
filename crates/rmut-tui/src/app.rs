@@ -1764,7 +1764,7 @@ impl App {
             }
             IndexAction::SidebarNext | IndexAction::SidebarPrev => {
                 if !self.sidebar_visible {
-                    self.status = Some("the sidebar is hidden — B shows it".into());
+                    self.status = Some("the sidebar is hidden; B shows it".into());
                 } else if !self.sidebar.is_empty() {
                     self.sidebar_sel = if action == IndexAction::SidebarNext {
                         (self.sidebar_sel + 1).min(self.sidebar.len() - 1)
@@ -1775,7 +1775,7 @@ impl App {
             }
             IndexAction::SidebarOpen => {
                 if !self.sidebar_visible {
-                    self.status = Some("the sidebar is hidden — B shows it".into());
+                    self.status = Some("the sidebar is hidden; B shows it".into());
                 } else if self.ready_to_leave()
                     && let Some((spec, _)) = self.sidebar.get(self.sidebar_sel).cloned()
                 {
@@ -2208,7 +2208,7 @@ impl App {
                     return;
                 }
                 None => {
-                    self.error_status(format!("{mimetype} is not text — save it with s"));
+                    self.error_status(format!("{mimetype} is not text; save it with s"));
                     return;
                 }
             }
@@ -2291,7 +2291,7 @@ impl App {
         }
         let target = expand_tilde(input);
         if target.exists() {
-            self.error_status(format!("{} exists — not overwriting", target.display()));
+            self.error_status(format!("{} exists, not overwriting", target.display()));
             return;
         }
         let result = message::part_bytes(&msg_path, index).and_then(|bytes| {
@@ -2646,7 +2646,7 @@ impl App {
     /// block the switch. True when it is safe to go.
     fn ready_to_leave(&mut self) -> bool {
         if self.deleted_count() > 0 {
-            self.error_status("deleted messages pending — sync with $ or undelete first");
+            self.error_status("deleted messages pending; sync with $ or undelete first");
             return false;
         }
         if self.pending_count() > 0 {
@@ -3073,7 +3073,7 @@ impl App {
             }
             _ => {
                 self.error_status(format!(
-                    "editor failed — draft kept at {}",
+                    "editor failed; draft kept at {}",
                     compose.path.display()
                 ));
             }
@@ -3571,7 +3571,7 @@ impl App {
         ) {
             Ok(t) => t,
             Err(err) => {
-                self.error_status(format!("{err} — press e to edit"));
+                self.error_status(format!("{err}; press e to edit"));
                 self.compose = Some(compose_state);
                 self.open_compose_menu();
                 return;
@@ -3597,7 +3597,7 @@ impl App {
         ) {
             Ok(t) => t,
             Err(err) => {
-                self.error_status(format!("{err:#} — e edits, s changes security"));
+                self.error_status(format!("{err:#}; e edits, s changes security"));
                 self.compose = Some(compose_state);
                 self.open_compose_menu();
                 return;
@@ -3802,7 +3802,7 @@ impl App {
             }
             Err(err) => {
                 self.error_status(format!(
-                    "postpone failed: {err:#} — draft at {}",
+                    "postpone failed: {err:#}; draft at {}",
                     compose_state.path.display()
                 ));
             }
@@ -3894,7 +3894,7 @@ impl App {
     fn replay(&mut self, seq: Vec<KeyEvent>) {
         if self.pending_keys.len() + seq.len() > 1000 {
             self.pending_keys.clear();
-            self.error_status("macro expansion too deep — stopped");
+            self.error_status("macro expansion too deep, stopped");
             return;
         }
         for (i, key) in seq.into_iter().enumerate() {
@@ -4093,7 +4093,7 @@ impl App {
     fn bounce_to_submitted(&mut self, input: &str) {
         let to = alias::expand(input, &alias::load_default());
         if to.trim().is_empty() {
-            self.status = Some("no recipients — bounce cancelled".into());
+            self.status = Some("no recipients, bounce cancelled".into());
             return;
         }
         self.bounce_to = Some(to.clone());
@@ -4195,7 +4195,7 @@ impl App {
         let edited = std::fs::read(&temp).unwrap_or_default();
         let _ = std::fs::remove_file(&temp);
         if !matches!(status, Ok(s) if s.success()) {
-            self.error_status("editor failed — message unchanged");
+            self.error_status("editor failed, message unchanged");
             return;
         }
         if edited == original {
@@ -4218,7 +4218,7 @@ impl App {
                 }
                 self.check_new_mail();
                 self.status =
-                    Some("edited copy appended — original marked deleted ($ purges)".into());
+                    Some("edited copy appended; original marked deleted ($ purges)".into());
             }
             None => {
                 if let Err(err) = std::fs::write(&path, &edited) {
@@ -4655,7 +4655,7 @@ impl App {
             && expand_tilde(&trash) != self.dir
             && let Err(err) = self.trash_deleted(&trash)
         {
-            self.error_status(format!("trash failed: {err:#} — nothing purged"));
+            self.error_status(format!("trash failed: {err:#}; nothing purged"));
             return;
         }
         if let Some(remote) = &mut self.remote {

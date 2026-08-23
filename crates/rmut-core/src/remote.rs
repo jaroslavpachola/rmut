@@ -241,7 +241,7 @@ impl Remote {
         let select = client.select(&self.mailbox)?;
         ensure!(
             select.uidvalidity == self.uidvalidity,
-            "UIDVALIDITY changed — reopen the mailbox"
+            "UIDVALIDITY changed; reopen the mailbox"
         );
         self.client = client;
         Ok(())
