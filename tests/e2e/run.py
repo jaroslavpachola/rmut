@@ -911,6 +911,7 @@ def scenario_pgp(tmp):
             "--b--\r\n"
         )
     gpg = os.path.join(tmp, "gpg.sh")
+    recip_log = os.path.join(tmp, "gpg-recipients.txt")
     with open(gpg, "w") as f:
         f.write(
             '#!/bin/sh\ncase "$*" in\n'
@@ -925,12 +926,19 @@ def scenario_pgp(tmp):
             '  echo "[GNUPG:] SIG_CREATED D 1 8 00 12 FPR" >&2\n'
             "  printf -- '-----BEGIN PGP SIGNATURE-----\\nAAAA\\n"
             "-----END PGP SIGNATURE-----\\n' ;;\n"
+            "*--encrypt*)\n"
+            "  cat >/dev/null\n"
+            f'  echo "$*" >> {recip_log}\n'
+            "  printf -- '-----BEGIN PGP MESSAGE-----\\nBBBB\\n"
+            "-----END PGP MESSAGE-----\\n' ;;\n"
             "esac\nexit 0\n"
         )
     os.chmod(gpg, 0o755)
     config = os.path.join(tmp, "config.toml")
     with open(config, "w") as f:
-        f.write(f'[pgp]\ncommand = "{gpg}"\n')
+        f.write(f'[pgp]\ncommand = "{gpg}"\n'
+                '[[crypt_hooks]]\naddress = "boss@example.com"\n'
+                'key = "0xDEADBEEF"\n')
     editor = os.path.join(tmp, "editor.sh")
     with open(editor, "w") as f:
         f.write('#!/bin/sh\nprintf "signed body line\\n" >> "$1"\n')
@@ -966,6 +974,22 @@ def scenario_pgp(tmp):
     assert "micalg=pgp-sha256" in sent
     assert "BEGIN PGP SIGNATURE" in sent
     assert "signed body line" in sent
+
+    # crypt-hook: the boss is encrypted to their key id, not to their
+    # address; everyone else (me, on the Fcc copy) stays an address.
+    os.truncate(sent_file, 0)
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"boss@example.com\rsealed\r")
+    r.expect("y:Send")
+    r.keys(b"pe")  # security menu -> encrypt
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(recip_log)
+             and "--encrypt" in open(recip_log).read(),
+             desc="gpg asked to encrypt")
+    args = open(recip_log).read()
+    assert "--recipient 0xDEADBEEF" in args, args
+    assert "--recipient boss@example.com" not in args, args
     r.keys(b"q")  # both messages were already seen, so it quits directly
     r.close()
 
@@ -2397,6 +2421,114 @@ def scenario_alternates_my_hdr(tmp):
     r.keys(b"x")
     r.close()
 
+def scenario_hooks(tmp):
+    """R36: folder-hook runs any command line on open, message-hook
+    applies while its message is selected and is taken back off when
+    it stops matching, reply-hook shapes a reply's From, and fcc-hook
+    picks where the sent copy goes."""
+    md = make_maildir(tmp, "md-hooks")
+    work = make_maildir(tmp, "md-work")
+    ext_sent = make_maildir(tmp, "ext-sent")
+    default_sent = make_maildir(tmp, "default-sent")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751795000.40.host:2,S"), "w") as f:
+        f.write("From: Boss <boss@example.com>\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: budget\r\n"
+                "Date: Mon, 6 Jul 2026 18:00:00 +0200\r\n"
+                "Message-ID: <boss1@example.com>\r\n\r\nnumbers\r\n")
+    with open(os.path.join(work, "cur", "1751795100.41.host:2,S"), "w") as f:
+        f.write("From: Colleague <col@work.example.com>\r\n"
+                "To: jarda@work.example.com\r\n"
+                "Subject: standup\r\n"
+                "Date: Mon, 6 Jul 2026 19:00:00 +0200\r\n"
+                "Message-ID: <work1@example.com>\r\n\r\nnotes\r\n")
+    sent_file = os.path.join(tmp, "sent-hooks.eml")
+    sendmail = os.path.join(tmp, "sendmail-hooks.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "hooks-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "hooks-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                f'sent = "{default_sent}"\n'
+                f'mailboxes = ["{md}", "{work}"]\n'
+                '[index]\nformat = "<%s>"\n'
+                '[[folder_hooks]]\n'
+                'folder = "*md-work*"\ncommand = \'set index_format="WORK %s"\'\n'
+                '[[message_hooks]]\n'
+                'pattern = "~f boss@example.com"\n'
+                'command = \'set index_format="BOSS %s"\'\n'
+                '[[reply_hooks]]\n'
+                'pattern = "~f boss@example.com"\n'
+                'command = "set from=jarda@work.example.com"\n'
+                '[[fcc_hooks]]\n'
+                "pattern = '~t @external\\.example\\.com'\n"
+                f'mailbox = "{ext_sent}"\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    # Newest message is the boss's, so its message-hook is in force.
+    r.expect("Msgs:2", "BOSS budget", "BOSS Lunch on Friday?")
+    # Move off it and the hook is taken back off, format and all.
+    r.keys(b"=")
+    r.expect("<Lunch on Friday?>", "<budget>")
+    r.keys(b"*")
+    r.expect("BOSS budget")
+
+    # reply-hook: replying to the boss uses the work From
+    r.keys(b"r")
+    r.expect("To:")
+    r.keys(b"\r")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Include")
+    r.keys(b"y")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: Re: budget" in open(sent_file).read(),
+             desc="reply to the boss sent")
+    head = open(sent_file).read().split("\n\n")[0]
+    assert "From: jarda@work.example.com" in head, head
+    # and the hook is undone once the draft is built
+    r.expect("BOSS budget")
+
+    # fcc-hook: a message to the matching domain lands in ext-sent,
+    # not in the [mail] sent maildir the reply's copy went to
+    os.truncate(sent_file, 0)
+    default_cur = os.path.join(default_sent, "cur")
+    before = len(os.listdir(default_cur))
+    assert before == 1, "the reply's copy went to [mail] sent"
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"someone@external.example.com\r")
+    r.settle()
+    r.keys(b"outside\r")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: outside" in open(sent_file).read(),
+             desc="external message sent")
+    wait_for(lambda: os.listdir(os.path.join(ext_sent, "cur")),
+             desc="fcc-hook copy in ext-sent")
+    copy = os.path.join(ext_sent, "cur", os.listdir(os.path.join(ext_sent, "cur"))[0])
+    assert "Subject: outside" in open(copy).read()
+    assert len(os.listdir(default_cur)) == before, \
+        "the fcc-hook target wins over [mail] sent"
+
+    # folder-hook: opening the work mailbox runs its command line
+    r.keys(b"c")
+    r.expect("Open mailbox")
+    r.keys(work.encode() + b"\r")
+    r.expect("WORK standup")
+    r.keys(b"x")
+    r.close()
+
 
 SCENARIOS = [
     scenario_view_and_pager,
@@ -2419,6 +2551,7 @@ SCENARIOS = [
     scenario_batch_cli,
     scenario_mailing_lists,
     scenario_alternates_my_hdr,
+    scenario_hooks,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

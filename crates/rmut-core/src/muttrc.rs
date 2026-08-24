@@ -46,6 +46,16 @@ struct State {
     email: Option<String>,
     reverse_name: bool,
     identity_rules: Vec<IdRule>,
+    /// folder-hooks whose command is not a from/realname set: they
+    /// become [[folder_hooks]] with the command line kept whole.
+    folder_hook_lines: Vec<(String, String)>,
+    /// message-hook / reply-hook: (mutt pattern, command line).
+    message_hooks: Vec<(String, String)>,
+    reply_hooks: Vec<(String, String)>,
+    /// fcc-hook / fcc-save-hook: (mutt pattern, mailbox).
+    fcc_hooks: Vec<(String, String)>,
+    /// crypt-hook: (address pattern, key id).
+    crypt_hooks: Vec<(String, String)>,
     /// `set folder`, for expanding the +/= mailbox shortcuts.
     folder: Option<String>,
     spoolfile: Option<String>,
@@ -220,6 +230,12 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
                 let folder_hook = cmd == "folder-hook";
                 st.hook(folder_hook, &tokens[1..], &line);
             }
+            "message-hook" | "reply-hook" => st.command_hook(cmd, &tokens[1..], &line),
+            "fcc-hook" | "fcc-save-hook" => st.fcc_hook(cmd, &tokens[1..], &line),
+            "crypt-hook" | "pgp-hook" => match &tokens[1..] {
+                [address, key] => st.crypt_hooks.push((address.clone(), key.clone())),
+                _ => st.skip(&line, "crypt-hook ADDRESS KEYID"),
+            },
             "save-hook" => match (tokens.get(1).map(String::as_str), tokens.get(2)) {
                 // Expanded at output time; $folder may come later.
                 (Some("." | "~A"), Some(mailbox)) => st.save_default = Some(mailbox.clone()),
@@ -425,6 +441,21 @@ fn hook_glob(pattern: &str) -> Option<String> {
         glob.push('*');
     }
     Some(glob)
+}
+
+/// mutt's $default_hook, "~f %s !~P | (~P ~C %s)": a hook pattern that
+/// is a plain address means "from them, unless I sent it, in which
+/// case addressed to them". Patterns that already name an operator
+/// (or are the catch-all) are left alone.
+fn default_hook_pattern(pattern: &str) -> String {
+    let p = pattern.trim();
+    if p == "." || p == ".*" {
+        return "~A".into();
+    }
+    if p.starts_with('~') || p.starts_with('!') || p.starts_with('(') || p.contains(" ~") {
+        return p.to_string();
+    }
+    format!("(~f \"{p}\" !~P) | (~P ~C \"{p}\")")
 }
 
 fn expand_path(value: &str, dir: &Path) -> PathBuf {
@@ -668,7 +699,11 @@ impl State {
     }
 
     /// A folder-hook / send-hook whose command only sets from/realname
-    /// becomes an [[identities]] rule; everything else is skipped.
+    /// becomes an [[identities]] rule, where it layers with the rest
+    /// of rmut's identity handling. Any other folder-hook command
+    /// becomes a [[folder_hooks]] entry, run as an enter-command line
+    /// when the mailbox opens; a send-hook doing something else has
+    /// no rmut equivalent and is skipped.
     fn hook(&mut self, folder_hook: bool, args: &[String], line: &str) {
         let [pattern, command] = args else {
             self.skip(line, "unrecognized hook syntax");
@@ -679,38 +714,90 @@ impl State {
             return;
         };
         let tokens = tokenize(command);
-        let only_identity_sets = "only 'set from/realname' hooks translate";
-        if tokens.first().map(String::as_str) != Some("set") {
-            self.skip(line, only_identity_sets);
-            return;
-        }
-        let (mut name, mut email) = (None, None);
-        for (key, value) in assignments(&tokens[1..]) {
-            match key.as_str() {
-                "realname" => name = Some(value),
-                "from" => {
-                    let (n, e) = split_from(&value);
-                    if name.is_none() {
-                        name = n;
+        let only_identity_sets = "only 'set from/realname' send-hooks translate";
+        let identity_sets = || -> Option<(Option<String>, Option<String>)> {
+            if tokens.first().map(String::as_str) != Some("set") {
+                return None;
+            }
+            let (mut name, mut email) = (None, None);
+            for (key, value) in assignments(&tokens[1..]) {
+                match key.as_str() {
+                    "realname" => name = Some(value),
+                    "from" => {
+                        let (n, e) = split_from(&value);
+                        if name.is_none() {
+                            name = n;
+                        }
+                        email = Some(e);
                     }
-                    email = Some(e);
-                }
-                _ => {
-                    self.skip(line, only_identity_sets);
-                    return;
+                    _ => return None,
                 }
             }
+            (name.is_some() || email.is_some()).then_some((name, email))
+        };
+        if let Some((name, email)) = identity_sets() {
+            self.identity_rules.push(IdRule {
+                folder: folder_hook.then(|| glob.clone()),
+                recipient: (!folder_hook).then_some(glob),
+                name,
+                email,
+            });
+            return;
         }
-        if name.is_none() && email.is_none() {
+        if !folder_hook {
             self.skip(line, only_identity_sets);
             return;
         }
-        self.identity_rules.push(IdRule {
-            folder: folder_hook.then(|| glob.clone()),
-            recipient: (!folder_hook).then_some(glob),
-            name,
-            email,
-        });
+        match crate::command::parse(command) {
+            Ok(cmds) if !cmds.is_empty() => self.folder_hook_lines.push((glob, command.clone())),
+            Ok(_) => self.skip(line, "the hook command does nothing"),
+            Err(err) => self.skip(line, &err),
+        }
+    }
+
+    /// message-hook / reply-hook: the pattern stays a rmut pattern and
+    /// the command stays a command line, so both have to parse.
+    fn command_hook(&mut self, cmd: &str, args: &[String], line: &str) {
+        let [pattern, command] = args else {
+            self.skip(line, &format!("{cmd} PATTERN COMMAND"));
+            return;
+        };
+        if let Err(err) = crate::pattern::parse(pattern) {
+            self.skip(line, &format!("pattern does not translate: {err}"));
+            return;
+        }
+        match crate::command::parse(command) {
+            Ok(cmds) if !cmds.is_empty() => {
+                let table = if cmd == "message-hook" {
+                    &mut self.message_hooks
+                } else {
+                    &mut self.reply_hooks
+                };
+                table.push((pattern.clone(), command.clone()));
+            }
+            Ok(_) => self.skip(line, "the hook command does nothing"),
+            Err(err) => self.skip(line, &err),
+        }
+    }
+
+    /// fcc-hook / fcc-save-hook. A bare pattern gets mutt's
+    /// $default_hook expansion, so "boss@example.com" means what mutt
+    /// means by it; fcc-save-hook also fills [mail] save when it is
+    /// the catch-all, which is what save-hook already does.
+    fn fcc_hook(&mut self, cmd: &str, args: &[String], line: &str) {
+        let [pattern, mailbox] = args else {
+            self.skip(line, &format!("{cmd} PATTERN MAILBOX"));
+            return;
+        };
+        let expanded = default_hook_pattern(pattern);
+        if let Err(err) = crate::pattern::parse(&expanded) {
+            self.skip(line, &format!("pattern does not translate: {err}"));
+            return;
+        }
+        self.fcc_hooks.push((expanded, mailbox.clone()));
+        if cmd == "fcc-save-hook" && matches!(pattern.as_str(), "." | ".*" | "~A") {
+            self.save_default = Some(mailbox.clone());
+        }
     }
 
     /// mutt's +x / =x mean "under $folder"; for an IMAP folder that is
@@ -919,6 +1006,39 @@ impl State {
             if let Some(e) = &rule.email {
                 out += &format!("email = {}\n", quote(e));
             }
+        }
+        for (glob, command) in &self.folder_hook_lines {
+            out += &format!(
+                "\n[[folder_hooks]]\nfolder = {}\ncommand = {}\n",
+                quote(glob),
+                quote(command)
+            );
+        }
+        for (table, hooks) in [
+            ("message_hooks", &self.message_hooks),
+            ("reply_hooks", &self.reply_hooks),
+        ] {
+            for (pattern, command) in hooks {
+                out += &format!(
+                    "\n[[{table}]]\npattern = {}\ncommand = {}\n",
+                    quote(pattern),
+                    quote(command)
+                );
+            }
+        }
+        for (pattern, mailbox) in &self.fcc_hooks {
+            out += &format!(
+                "\n[[fcc_hooks]]\npattern = {}\nmailbox = {}\n",
+                quote(pattern),
+                quote(&self.expand_mailbox(mailbox))
+            );
+        }
+        for (address, key) in &self.crypt_hooks {
+            out += &format!(
+                "\n[[crypt_hooks]]\naddress = {}\nkey = {}\n",
+                quote(address),
+                quote(key)
+            );
         }
         // A full URL in spoolfile also identifies the IMAP server when
         // $folder is local or unset.
@@ -1532,6 +1652,52 @@ mod tests {
     }
 
     #[test]
+    fn hooks_round_two_translate() {
+        let (cfg, toml) = to_config(concat!(
+            "folder-hook work 'set index_format=\"%s\"'\n",
+            "folder-hook . 'set sort=threads'\n",
+            "message-hook '~f boss@example\\.com' 'set pager_context=5'\n",
+            "reply-hook '~t @work\\.example\\.com' 'set from=jane@work.example.com'\n",
+            "fcc-hook '~t @work\\.example\\.com' +work-sent\n",
+            "fcc-save-hook boss@example.com +boss\n",
+            "crypt-hook boss@example.com 0xDEADBEEF\n",
+            "message-hook '~X 3' 'set beep'\n", // unparseable pattern
+            "reply-hook '~s x' 'frobnicate'\n", // unknown command
+        ));
+        assert_eq!(cfg.folder_hooks.len(), 2);
+        assert_eq!(cfg.folder_hooks[0].folder, "*work*");
+        assert_eq!(cfg.folder_hooks[0].command, "set index_format=\"%s\"");
+        assert_eq!(cfg.folder_hooks[1].folder, "*");
+        assert_eq!(cfg.message_hooks.len(), 1);
+        assert_eq!(cfg.message_hooks[0].command, "set pager_context=5");
+        assert_eq!(cfg.reply_hooks.len(), 1);
+        assert_eq!(cfg.reply_hooks[0].pattern, "~t @work\\.example\\.com");
+        assert_eq!(cfg.fcc_hooks.len(), 2);
+        assert_eq!(cfg.fcc_hooks[0].mailbox, "work-sent");
+        // A bare fcc-hook pattern gets mutt's $default_hook expansion.
+        assert_eq!(
+            cfg.fcc_hooks[1].pattern,
+            "(~f \"boss@example.com\" !~P) | (~P ~C \"boss@example.com\")"
+        );
+        assert_eq!(cfg.crypt_hooks.len(), 1);
+        assert_eq!(cfg.crypt_hooks[0].key, "0xDEADBEEF");
+        // The two broken hooks stay visible as comments.
+        assert!(toml.contains("pattern does not translate"), "{toml}");
+        assert!(toml.contains("frobnicate"), "{toml}");
+    }
+
+    #[test]
+    fn default_hook_expansion() {
+        assert_eq!(default_hook_pattern("."), "~A");
+        assert_eq!(default_hook_pattern("~t x"), "~t x");
+        assert_eq!(default_hook_pattern("!~P"), "!~P");
+        assert_eq!(
+            default_hook_pattern("a@b"),
+            "(~f \"a@b\" !~P) | (~P ~C \"a@b\")"
+        );
+    }
+
+    #[test]
     fn alternates_and_my_hdr_import() {
         let (cfg, toml) = to_config(concat!(
             "alternates jane@old\\.example\\.com '@club\\.example\\.com$'\n",
@@ -1575,8 +1741,11 @@ mod tests {
         assert_eq!(club.recipient.as_deref(), Some("*@club.example.com*"));
         assert!(club.folder.is_none());
         assert_eq!(club.name.as_deref(), Some("Jenny"));
-        // The push hook and the ~l pattern stay visible as comments.
-        assert!(toml.contains("push <collapse-all>"), "{toml}");
+        // A folder-hook that is not an identity set becomes a
+        // [[folder_hooks]] line; the ~l send-hook stays a comment.
+        assert_eq!(cfg.folder_hooks.len(), 1);
+        assert_eq!(cfg.folder_hooks[0].folder, "*");
+        assert_eq!(cfg.folder_hooks[0].command, "push <collapse-all>");
         assert!(toml.contains("does not translate to a glob"), "{toml}");
         // reverse_name off matches rmut's default.
         let (cfg, toml) = to_config("set reverse_name = no\n");

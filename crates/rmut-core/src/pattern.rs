@@ -4,7 +4,7 @@
 //! date, `~m` index range, `~z` size range, `~=` duplicate,
 //! `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 //! `~l` addressed to a known mailing list,
-//! `~p` addressed to me, `~P` sent by me;
+//! `~p` addressed to me, `~P` sent by me, `~A` every message;
 //! a bare word matches subject or from (mutt's
 //! $simple_search). Adjacent terms AND, `|` ORs, `!` negates, `()`
 //! groups; string arguments are case-insensitive regexes (quote them
@@ -398,6 +398,7 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'D' => Pattern::Deleted,
                 'U' => Pattern::Unread,
                 'T' => Pattern::Tagged,
+                'A' => Pattern::All(Vec::new()),
                 'p' => Pattern::ToMe,
                 'P' => Pattern::FromMe,
                 'l' => Pattern::ToList,

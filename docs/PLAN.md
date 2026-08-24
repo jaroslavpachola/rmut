@@ -626,14 +626,39 @@ send.
       means mutt's sole recipient (one To and no Cc) rather than any
       single To address
 
-## R36: hooks round 2
+## R36: hooks round 2 (done, 1.36)
 
 Goal: the per-context hooks daily mutt configs actually use.
 
-- [ ] fcc-hook / fcc-save-hook (pattern → Fcc mailbox)
-- [ ] message-hook (pattern → display-time settings) and reply-hook
-- [ ] crypt-hook: per-recipient PGP key selection
-- [ ] folder-hook running arbitrary commands (on top of R32)
+All four are message patterns (or a folder glob) plus a payload, and
+the three that carry a command line reuse R32's `command::parse` +
+`command::apply`, so a hook can say anything `:` can say.
+
+- [x] fcc-hook / fcc-save-hook (pattern → Fcc mailbox):
+      `[[fcc_hooks]]`, matched against the draft as it stands after
+      the editor, so the compose menu's Fcc line already shows where
+      the copy is going; an Fcc picked by hand still wins. Batch
+      sends honour it too. `compose::draft_envelope` is what lets a
+      pattern match outgoing mail, with Bcc folded into the Cc
+      addresses so a hook on `~c` sees a blind recipient
+- [x] message-hook (pattern → display-time settings) and reply-hook:
+      `[[message_hooks]]` are in force while their message is the
+      selected one and are taken back off the moment the match set
+      changes, so a display setting really is per-message;
+      `[[reply_hooks]]` apply while a reply's draft is built, which
+      covers `set from`, edit_headers and my_hdr
+- [x] crypt-hook: per-recipient PGP key selection, `[[crypt_hooks]]`
+      mapping a recipient address regex to the key id gpg encrypts to
+- [x] folder-hook running arbitrary commands (on top of R32):
+      `[[folder_hooks]]` run their line when a matching mailbox
+      opens, at startup as well as on a switch. Like mutt, nothing is
+      undone on the way out, so a catch-all entry is how a setting
+      goes back; a from/realname folder-hook still imports to an
+      `[[identities]]` rule, where it layers properly
+- [x] Added on the way: `~A` (every message), which mutt's
+      `$default_hook` expansion needs, and that expansion itself, so
+      a bare `fcc-hook boss@example.com` imports to what mutt means
+      by it: `(~f "boss@example.com" !~P) | (~P ~C "boss@example.com")`
 
 ## R37: format=flowed
 

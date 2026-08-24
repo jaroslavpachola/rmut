@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.35**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.36**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -140,7 +140,8 @@ header, `~i x` Message-ID, `~x x` References, `~d spec` date,
 `~=` duplicate (same Message-ID twice),
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 `~l` addressed to a known mailing list, `~p` addressed to me,
-`~P` sent by me; a bare word matches subject or from. `x` is a
+`~P` sent by me, `~A` every message; a bare word matches subject or
+from. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
 back to plain substring). `~d` takes a day or range
 (`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027`) or an
@@ -394,6 +395,49 @@ takes it off. mutt's `alternates`, `unalternates`, `my_hdr`,
 `unmy_hdr` and `set metoo` are imported, and all of them work at the
 `:` prompt.
 
+## Hooks
+
+Beyond `[[identities]]` (the from/realname half of folder-hook and
+send-hook), four mutt hooks have tables of their own. The three that
+carry a command line take exactly what the `:` prompt takes.
+
+```toml
+[[folder_hooks]]              # on opening a matching mailbox
+folder  = "*work*"            # glob on the mailbox, path or imap: spec
+command = 'set index_format="%4C %Z %-6d %-20.20F %s"'
+
+[[message_hooks]]             # while that message is selected
+pattern = "~f boss@example.com"
+command = "set pager_context=5"
+
+[[reply_hooks]]               # while a reply to it is built
+pattern = "~f boss@example.com"
+command = "set from=jane@work.example.com"
+
+[[fcc_hooks]]                 # where the sent copy goes
+pattern = '~t @work\.example\.com'
+mailbox = "~/Maildir/.WorkSent"
+
+[[crypt_hooks]]               # encrypt to this key for this recipient
+address = "boss@example.com"
+key     = "0xDEADBEEF"
+```
+
+A **message-hook** is in force only while its message is the selected
+one: the moment the match set changes, every setting it touched goes
+back to what it was, so a display setting really is per-message. A
+**reply-hook** applies while the reply's draft is built, which covers
+`set from`, `edit_headers` and `my_hdr`. A **folder-hook** is not
+undone when you leave, exactly like mutt, so a catch-all entry
+(`folder = "*"`) is how you put a setting back.
+
+**fcc-hook** patterns match the draft as it stands after the editor,
+so the compose menu's Fcc line already shows where the copy is going;
+an Fcc chosen by hand with `f` still wins, and batch sends honour the
+hook too. Bcc addresses join the Cc ones for matching, so `~c` sees a
+blind recipient. **crypt-hook** replaces a recipient's address with a
+key id when gpg is asked to encrypt.
+
 ## Configuration
 
 `$RMUT_CONFIG` or `~/.config/rmut/config.toml`:
@@ -525,7 +569,9 @@ defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, with
 oauthbearer/xoauth2, reverse_name, alternates/unalternates,
 my_hdr/unmy_hdr,
 folder-hooks/send-hooks that only set from/realname into
-`[[identities]]` rules, and macros whose sequence is plain keys and
+`[[identities]]` rules, every other folder-hook plus message-hook,
+reply-hook, fcc-hook/fcc-save-hook and crypt-hook into their own hook
+tables, and macros whose sequence is plain keys and
 prompt input) into rmut
 TOML on stdout for review; it never writes any file itself.
 Directives with no rmut equivalent are kept as `# not imported:`

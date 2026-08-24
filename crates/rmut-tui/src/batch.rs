@@ -98,7 +98,7 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
     if config.mail.copy == Some(false) {
         return Ok(note);
     }
-    if let Some(sent) = sent_maildir(config) {
+    if let Some(sent) = fcc_hook_target(config, &final_text).or_else(|| sent_maildir(config)) {
         let flags = maildir::Flags {
             seen: true,
             ..Default::default()
@@ -110,6 +110,23 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         }
     }
     Ok(note)
+}
+
+/// mutt's fcc-hook for a batch send: the first entry whose pattern
+/// matches the message decides where the copy goes. A bad pattern is
+/// skipped rather than failing the send, since the mail already went.
+fn fcc_hook_target(config: &Config, text: &str) -> Option<PathBuf> {
+    let env = compose::draft_envelope(text, Path::new(""));
+    let scope = rmut_core::pattern::Scope::default();
+    for hook in &config.fcc_hooks {
+        let Ok(patterns) = rmut_core::pattern::parse(&hook.pattern) else {
+            continue;
+        };
+        if rmut_core::pattern::matches_in(&patterns, &env, scope, None) {
+            return Some(expand_tilde(&hook.mailbox));
+        }
+    }
+    None
 }
 
 /// `[mail] sent` when it is a local maildir. Batch mode keeps no IMAP

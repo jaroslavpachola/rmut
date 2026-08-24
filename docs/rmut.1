@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.35.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.36.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -415,6 +415,7 @@ fall back to matching locally. The specifiers:
   word  subject or from
   ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
   ~p addressed to me         ~P sent by me
+  ~A every message
 .fi
 .PP
 .I x
@@ -461,6 +462,40 @@ The From identity.
 .B reverse_name
 A reply's From becomes whichever of your addresses the original was
 sent to (mutt's reverse_name).
+.SS [[folder_hooks]], [[message_hooks]], [[reply_hooks]]
+mutt's folder-hook, message-hook and reply-hook, each carrying one
+enter-command line in
+.BR command .
+A folder-hook takes
+.B folder
+(a glob on the opened mailbox) and runs when that mailbox opens, at
+startup as well as on a switch; like mutt it is not undone on the way
+out, so a catch-all entry is how a setting goes back. A message-hook
+takes
+.B pattern
+and is in force only while a matching message is the selected one:
+when the match set changes, everything it touched goes back. A
+reply-hook applies while a reply to a matching message is built,
+which covers
+.BR "set from" ", " edit_headers " and " my_hdr .
+.SS [[fcc_hooks]]
+mutt's fcc-hook:
+.B pattern
+is matched against the draft as it stands after the editor and
+.B mailbox
+is the local maildir its copy goes to. The compose menu's Fcc line
+shows the hook's answer, an Fcc chosen by hand with
+.B f
+still wins, and batch sends honour it too. Bcc addresses join the Cc
+ones for matching, so
+.B ~c
+sees a blind recipient.
+.SS [[crypt_hooks]]
+mutt's crypt-hook:
+.B address
+is a case-insensitive regex over a recipient address and
+.B key
+the key id gpg is asked to encrypt to instead.
 .SS [[identities]]
 Conditional identities, applied in order over
 .B [identity]

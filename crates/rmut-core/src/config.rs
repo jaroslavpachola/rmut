@@ -43,6 +43,26 @@
 //! smtp_host = "smtp.example.com"   # smtp_port = 587, smtp_tls = true
 //! sent_folder = "Sent"             # Fcc target via IMAP APPEND
 //!
+//! [[folder_hooks]]      # mutt's folder-hook, any `:` command line
+//! folder = "*work*"
+//! command = "set index_format=\"%4C %Z %-6d %-20.20F %s\""
+//!
+//! [[message_hooks]]     # applied while the message is selected
+//! pattern = "~f boss@example.com"
+//! command = "set pager_context=5"
+//!
+//! [[reply_hooks]]       # applied while a reply to it is built
+//! pattern = "~t @work.example.com"
+//! command = "set from=jane@work.example.com"
+//!
+//! [[fcc_hooks]]         # where the sent copy goes
+//! pattern = "~t @work.example.com"
+//! mailbox = "~/Maildir/.WorkSent"
+//!
+//! [[crypt_hooks]]       # encrypt to this key for this recipient
+//! address = "boss@example.com"
+//! key = "0xDEADBEEF"
+//!
 //! [pgp]
 //! command = "gpg"              # runs via $PATH; passphrases come from
 //! sign_key = "jane@example.com"  # the gpg agent, never from rmut
@@ -89,7 +109,60 @@ pub struct Config {
     /// Conditional identities, applied in order over `identity` when
     /// their globs match: the minimal folder-hook / send-hook.
     pub identities: Vec<IdentityRule>,
+    /// mutt's folder-hook with an arbitrary command: enter-command
+    /// lines run when a matching mailbox is opened.
+    pub folder_hooks: Vec<FolderHook>,
+    /// mutt's message-hook: lines applied while a matching message is
+    /// the selected one, and taken back off when it stops matching.
+    pub message_hooks: Vec<MessageHook>,
+    /// mutt's reply-hook: lines applied while a reply to a matching
+    /// message is built.
+    pub reply_hooks: Vec<MessageHook>,
+    /// mutt's fcc-hook: where a matching outgoing message's copy goes.
+    pub fcc_hooks: Vec<FccHook>,
+    /// mutt's crypt-hook: the PGP key to encrypt to for a recipient.
+    pub crypt_hooks: Vec<CryptHook>,
     pub pgp: Pgp,
+}
+
+/// One `[[folder_hooks]]` entry: mutt's folder-hook. Like mutt, a
+/// folder-hook is not undone when you leave the mailbox, so a
+/// catch-all entry (`folder = "*"`) is the way to put a setting back.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FolderHook {
+    /// Glob (`*`) on the opened mailbox: a path or an `imap:` spec.
+    pub folder: String,
+    /// One enter-command line, e.g. `set index_format="%s"`.
+    pub command: String,
+}
+
+/// One `[[message_hooks]]` or `[[reply_hooks]]` entry: a message
+/// pattern and the enter-command line it runs.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct MessageHook {
+    pub pattern: String,
+    pub command: String,
+}
+
+/// One `[[fcc_hooks]]` entry: the mailbox a matching outgoing
+/// message's copy goes to (a local maildir path).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FccHook {
+    /// Message pattern matched against the draft being sent.
+    pub pattern: String,
+    pub mailbox: String,
+}
+
+/// One `[[crypt_hooks]]` entry: encrypt to `key` for any recipient
+/// address matching `address` (a case-insensitive regex).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CryptHook {
+    pub address: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

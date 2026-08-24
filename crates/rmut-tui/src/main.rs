@@ -194,6 +194,9 @@ fn run() -> Result<ExitCode> {
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }
+    // mutt's folder-hook, for the mailbox rmut started on; -e below
+    // still has the last word.
+    app.run_folder_hooks();
     for command in &cli.commands {
         app.run_startup_command(command);
     }

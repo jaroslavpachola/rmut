@@ -429,6 +429,54 @@ pub fn group_recipients(orig_to: &str, orig_cc: &str, to: &str, me: Me, metoo: b
     out.join(", ")
 }
 
+/// A draft seen as a message, so hook patterns (`~t`, `~c`, `~s`,
+/// `~f`, ...) can be matched against outgoing mail the way mutt
+/// matches fcc-hook. `path` is where the body lives, so `~b` and `~h`
+/// still have something to read; the date is now, since the draft has
+/// no Date header yet. Bcc joins the Cc
+/// addresses, so a hook on `~c` sees a blind recipient too.
+pub fn draft_envelope(text: &str, path: &Path) -> crate::message::Envelope {
+    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+    let header = |name: &str| -> String {
+        head.lines()
+            .filter_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let bare = |field: &str| -> Vec<String> {
+        addresses(field).iter().map(|a| a.to_lowercase()).collect()
+    };
+    let from_full = header("From");
+    crate::message::Envelope {
+        file: crate::maildir::MailFile {
+            path: path.to_path_buf(),
+            is_new: false,
+            flags: crate::maildir::Flags {
+                seen: true,
+                ..Default::default()
+            },
+            size: text.len() as u64,
+        },
+        from: crate::message::short_from(&from_full),
+        from_full,
+        subject: header("Subject"),
+        date: Local::now().timestamp(),
+        msg_id: None,
+        references: Vec::new(),
+        tagged: false,
+        to: bare(&header("To")),
+        cc: [header("Cc"), header("Bcc")]
+            .iter()
+            .flat_map(|f| bare(f))
+            .collect(),
+        lines: Some(body.lines().count()),
+        list: None,
+    }
+}
+
 /// mutt's `my_hdr`: extra header lines that go on every draft. An
 /// entry naming a header the draft already carries replaces it, so
 /// `my_hdr From:` and `my_hdr Reply-To:` win over what rmut chose;
@@ -669,6 +717,35 @@ mod tests {
             true,
         );
         assert_eq!(cc, "team@example.com, jarda@example.com");
+    }
+
+    #[test]
+    fn draft_envelope_reads_the_header_block() {
+        let draft = "From: Jane Doe <jane@example.com>\n\
+                     To: Bob <BOB@work.example.com>, team@x\n\
+                     Cc: boss@x\n\
+                     Bcc: archive@x\n\
+                     Subject: quarterly\n\n\
+                     two\nlines\n";
+        let env = draft_envelope(draft, std::path::Path::new("/tmp/draft"));
+        assert_eq!(env.subject, "quarterly");
+        assert_eq!(env.from_full, "Jane Doe <jane@example.com>");
+        assert_eq!(env.to, ["bob@work.example.com", "team@x"]);
+        // Bcc joins Cc, so a hook on ~c sees a blind recipient too.
+        assert_eq!(env.cc, ["boss@x", "archive@x"]);
+        assert_eq!(env.lines, Some(2));
+        let hit = |p: &str| {
+            crate::pattern::matches_in(
+                &crate::pattern::parse(p).unwrap(),
+                &env,
+                crate::pattern::Scope::default(),
+                None,
+            )
+        };
+        assert!(hit("~t @work\\.example\\.com"));
+        assert!(hit("~c archive@"));
+        assert!(hit("~A"));
+        assert!(!hit("~t nobody@"));
     }
 
     #[test]
