@@ -660,14 +660,27 @@ the three that carry a command line reuse R32's `command::parse` +
       a bare `fcc-hook boss@example.com` imports to what mutt means
       by it: `(~f "boss@example.com" !~P) | (~P ~C "boss@example.com")`
 
-## R37: format=flowed
+## R37: format=flowed (done, 1.37)
 
-Goal: f=f both ways.
+Goal: f=f both ways. RFC 3676 lives in `core::flowed`: `unflow` for
+what comes in, `space_stuff` for what goes out.
 
-- [ ] display: reflow flowed paragraphs to the wrap width, keeping
-      quote depth
-- [ ] compose: optionally send text/plain; format=flowed
-      ($text_flowed), space-stuffing included
+- [x] display: reflow flowed paragraphs to the wrap width, keeping
+      quote depth. A flowed part goes back to one logical line per
+      paragraph and the pager's own wrapper lays it out, so `$wrap`
+      and the window width govern as they do everywhere else. Quote
+      depth bounds a paragraph and survives as `>` marks, so quoted
+      text still colours and folds; space-stuffing is undone, DelSp
+      is honoured, and `-- ` stays a fixed line (RFC 3676 4.3).
+      mutt's `$reflow_text` turns it off
+- [x] compose: optionally send text/plain; format=flowed
+      ($text_flowed), space-stuffing included. One `compose::
+      text_entity` now builds the text part everywhere it appears
+      (plain, multipart/mixed, and inside the PGP layers), so the
+      declaration and the stuffing cannot disagree; a draft going out
+      with no MIME wrapper at all gets its Content-Type from
+      `compose::flow_plain`. The paragraphs are the editor's doing,
+      like mutt: rmut adds no trailing spaces of its own
 
 ## R38: MIME polish
 

@@ -270,17 +270,20 @@ pub fn load(path: &Path) -> Result<MessageView> {
         path,
         &std::collections::HashMap::new(),
         &HeaderRules::default(),
+        true,
     )
 }
 
 /// Like `load`, but parts whose MIME type appears in `filters` render
 /// through that shell command (stdin → stdout), mutt's auto_view;
 /// `rules` weeds the brief header block and any embedded
-/// message/rfc822 headers.
+/// message/rfc822 headers, and `reflow` (mutt's $reflow_text) joins
+/// the lines of a `format=flowed` part back into paragraphs.
 pub fn load_with(
     path: &Path,
     filters: &std::collections::HashMap<String, String>,
     rules: &HeaderRules,
+    reflow: bool,
 ) -> Result<MessageView> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
@@ -291,7 +294,7 @@ pub fn load_with(
         .collect();
     let brief = weed(&all, rules);
     let mut body = String::new();
-    if !render(&mail, filters, rules, &mut body) && body.is_empty() {
+    if !render(&mail, filters, rules, reflow, &mut body) && body.is_empty() {
         body = "[-- no displayable text part --]".into();
     }
     Ok(MessageView { brief, all, body })
@@ -310,12 +313,13 @@ fn render(
     part: &ParsedMail,
     filters: &std::collections::HashMap<String, String>,
     rules: &HeaderRules,
+    reflow: bool,
     out: &mut String,
 ) -> bool {
     let ty = part.ctype.mimetype.clone();
     if ty == "multipart/alternative" {
         return match pick_alternative(&part.subparts, filters) {
-            Some(best) => render(best, filters, rules, out),
+            Some(best) => render(best, filters, rules, reflow, out),
             None => {
                 gap(out);
                 out.push_str("[-- multipart/alternative: no displayable part --]\n");
@@ -327,7 +331,7 @@ fn render(
         let mut shown = false;
         for (i, sub) in part.subparts.iter().enumerate() {
             marker(sub, i + 1, out);
-            shown |= render(sub, filters, rules, out);
+            shown |= render(sub, filters, rules, reflow, out);
         }
         return shown;
     }
@@ -363,7 +367,7 @@ fn render(
                 out.push_str(&format!("{name}: {value}\n"));
             }
             out.push('\n');
-            return render(&embedded, filters, rules, out);
+            return render(&embedded, filters, rules, reflow, out);
         }
         gap(out);
         out.push_str("[-- message/rfc822: cannot parse --]\n");
@@ -373,7 +377,13 @@ fn render(
         && let Ok(text) = part.get_body()
     {
         gap(out);
-        out.push_str(&text);
+        // RFC 3676: a flowed part goes back to one line per paragraph
+        // so the pager wraps it at the display width, rather than
+        // keeping whatever width the sender happened to use.
+        match flowed_delsp(part).filter(|_| reflow) {
+            Some(delsp) => out.push_str(&crate::flowed::unflow(&text, delsp)),
+            None => out.push_str(&text),
+        }
         ensure_newline(out);
         return true;
     }
@@ -382,6 +392,22 @@ fn render(
         "[-- {ty} is unsupported (use 'v' to view this part) --]\n"
     ));
     false
+}
+
+/// `Some(delsp)` when the part is `text/plain; format=flowed`, with
+/// the DelSp parameter (default no) alongside.
+fn flowed_delsp(part: &ParsedMail) -> Option<bool> {
+    let value = |name: &str| {
+        part.ctype
+            .params
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.trim().to_lowercase())
+    };
+    if part.ctype.mimetype != "text/plain" || value("format").as_deref() != Some("flowed") {
+        return None;
+    }
+    Some(value("delsp").as_deref() == Some("yes"))
 }
 
 /// Mutt's alternative_handler order (sans alternative_order): a part
@@ -866,6 +892,48 @@ mod tests {
         "--b--\r\n",
     );
 
+    const FLOWED: &str = concat!(
+        "From: a@example.com\r\n",
+        "Subject: flowed\r\n",
+        "MIME-Version: 1.0\r\n",
+        "Content-Type: text/plain; charset=us-ascii; Format=Flowed\r\n",
+        "\r\n",
+        "This paragraph was \r\n",
+        "split by the sender.\r\n",
+        "\r\n",
+        "> quoted and \r\n",
+        "> continued\r\n",
+        "-- \r\n",
+        "Jane\r\n",
+    );
+
+    #[test]
+    fn flowed_parts_come_back_as_paragraphs() {
+        // The parameter is matched case-insensitively, like its value.
+        let body = body_of(FLOWED);
+        assert!(
+            body.contains("This paragraph was split by the sender."),
+            "{body}"
+        );
+        assert!(body.contains("> quoted and continued"), "{body}");
+        // RFC 3676 keeps the signature separator a fixed line.
+        assert!(body.contains("-- \nJane"), "{body:?}");
+        // reflow_text = false leaves the sender's line breaks alone.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("msg");
+        std::fs::write(&path, FLOWED).unwrap();
+        let plain = load_with(
+            &path,
+            &std::collections::HashMap::new(),
+            &HeaderRules::default(),
+            false,
+        )
+        .unwrap()
+        .body;
+        // Untouched, CRLF and all, exactly as the part arrived.
+        assert!(plain.contains("This paragraph was \r\nsplit"), "{plain:?}");
+    }
+
     #[test]
     fn render_alternative_prefers_plain_but_autoview_wins() {
         // No filter: mutt's text ranking picks plain over html, no markers.
@@ -879,7 +947,7 @@ mod tests {
         std::fs::write(&path, ALTERNATIVE).unwrap();
         let filters =
             std::collections::HashMap::from([("text/html".to_string(), "cat".to_string())]);
-        let body = load_with(&path, &filters, &HeaderRules::default())
+        let body = load_with(&path, &filters, &HeaderRules::default(), true)
             .unwrap()
             .body;
         assert!(body.contains("[-- Autoview using cat --]"), "{body}");

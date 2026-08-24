@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.36.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.37.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -391,8 +391,8 @@ pager_format, pager_index_lines, pager_context, quote_regexp, wrap,
 tilde, status_format, theme, beep, from, realname, reverse_name,
 edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
 sendmail, editor, print_command, query_command, trash, record,
-postponed, new_mail_command, mail_check, metoo, notmuch,
-sidebar_visible,
+postponed, new_mail_command, mail_check, metoo, text_flowed,
+reflow_text, notmuch, sidebar_visible,
 sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt.
 An unknown option, a bad number, an unbindable key or an unknown
 function reports on the bottom line in the error colour and stops the
@@ -587,6 +587,14 @@ gain the address instead. One entry per header name.
 .B metoo
 Keep your own address among a group reply's recipients (mutt's
 $metoo); off by default, so replying to all does not mail you a copy.
+.TP
+.B text_flowed
+Declare the outgoing text part
+.I text/plain; format=flowed
+and space-stuff it (RFC 3676, mutt's $text_flowed), in the plain case,
+under attachments, and inside a PGP layer alike. The paragraphs are
+your editor's doing: a line that continues has to end with a space,
+and rmut adds none of its own.
 .SS [index]
 .TP
 .B format
@@ -637,6 +645,17 @@ width; a negative N leaves a right margin of |N|.
 .TP
 .B tilde
 mutt's $tilde: pad the rows below end-of-message with ~.
+.TP
+.B reflow_text
+mutt's $reflow_text (on by default): a
+.I format=flowed
+part is put back into paragraphs and wrapped at the display width,
+rather than kept on the sender's line breaks. Quote depth bounds a
+paragraph and survives as
+.B >
+marks, space-stuffing is undone, DelSp is honoured, and
+.B "-- "
+stays a fixed line.
 .SS [ui]
 .TP
 .B theme

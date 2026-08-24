@@ -87,6 +87,10 @@ struct State {
     my_hdr: Vec<String>,
     /// `set metoo`: keep my address in a group reply.
     metoo: bool,
+    /// `set text_flowed`: send text/plain; format=flowed.
+    text_flowed: bool,
+    /// `set noreflow_text`: leave a flowed part's line breaks alone.
+    no_reflow_text: bool,
     hdr_unignore: Vec<String>,
     hdr_order: Vec<String>,
     pager_format: Option<String>,
@@ -513,6 +517,12 @@ impl State {
             }
             "metoo" => {
                 self.metoo = is_yes(value);
+            }
+            "text_flowed" => {
+                self.text_flowed = is_yes(value);
+            }
+            "reflow_text" => {
+                self.no_reflow_text = !is_yes(value);
             }
             "reverse_name" => {
                 if is_yes(&v) {
@@ -1088,6 +1098,7 @@ impl State {
             || !self.alternates.is_empty()
             || !self.my_hdr.is_empty()
             || self.metoo
+            || self.text_flowed
         {
             out += "\n[mail]\n";
             for (key, values) in [
@@ -1149,6 +1160,9 @@ impl State {
             if self.metoo {
                 out += "metoo = true\n";
             }
+            if self.text_flowed {
+                out += "text_flowed = true\n";
+            }
             if let Some(c) = &self.new_mail_command {
                 out += &format!("new_mail_command = {}\n", quote(c));
             }
@@ -1185,6 +1199,7 @@ impl State {
             || !self.hdr_ignore.is_empty()
             || !self.hdr_unignore.is_empty()
             || !self.hdr_order.is_empty()
+            || self.no_reflow_text
         {
             out += "\n[pager]\n";
             if let Some(n) = self.pager_index_lines {
@@ -1215,6 +1230,9 @@ impl State {
             }
             if self.tilde {
                 out += "tilde = true\n";
+            }
+            if self.no_reflow_text {
+                out += "reflow_text = false\n";
             }
         }
         if !self.filters.is_empty() {
@@ -1649,6 +1667,19 @@ mod tests {
         let cfg: Config = toml::from_str(&import.toml)
             .unwrap_or_else(|e| panic!("bad TOML: {e}\n{}", import.toml));
         (cfg, import.toml)
+    }
+
+    #[test]
+    fn format_flowed_options_import() {
+        let (cfg, toml) = to_config("set text_flowed\nset noreflow_text\n");
+        assert!(cfg.mail.text_flowed);
+        assert_eq!(cfg.pager.reflow_text, Some(false));
+        assert!(toml.contains("text_flowed = true"), "{toml}");
+        assert!(toml.contains("reflow_text = false"), "{toml}");
+        // Both defaults match rmut's, so an explicit default is quiet.
+        let (cfg, _) = to_config("set notext_flowed\nset reflow_text\n");
+        assert!(!cfg.mail.text_flowed);
+        assert_eq!(cfg.pager.reflow_text, None);
     }
 
     #[test]

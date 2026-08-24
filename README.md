@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.36**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.37**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -291,7 +291,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `from`, `realname`, `reverse_name`, `edit_headers`, `fast_reply`,
 `autoedit`, `copy`, `forward`/`mime_forward`, `sendmail`, `editor`,
 `print_command`, `query_command`, `trash`, `record`, `postponed`,
-`new_mail_command`, `mail_check`, `metoo`, `notmuch`, `sidebar_visible`,
+`new_mail_command`, `mail_check`, `metoo`, `text_flowed`,
+`reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
 function reports on the bottom line in the error color and stops the
@@ -395,6 +396,31 @@ takes it off. mutt's `alternates`, `unalternates`, `my_hdr`,
 `unmy_hdr` and `set metoo` are imported, and all of them work at the
 `:` prompt.
 
+## format=flowed
+
+A `text/plain; format=flowed` part (RFC 3676) arrives split at
+whatever width the sender's terminal happened to be. rmut puts it back
+into paragraphs and lets the pager wrap it at your width, so `[pager]
+wrap` and the window govern as they do for everything else. Quote
+depth bounds a paragraph and survives as `>` marks, so quoted text
+still colours and folds; space-stuffing is undone, `DelSp=yes` is
+honoured, and `-- ` stays a fixed line. mutt's `$reflow_text` turns it
+off:
+
+```toml
+[pager]
+reflow_text = false   # keep the sender's line breaks
+
+[mail]
+text_flowed = true    # send text/plain; format=flowed
+```
+
+`text_flowed` declares the outgoing text part `format=flowed` and
+space-stuffs it, in the plain case, under attachments, and inside a
+PGP signature or encryption alike. The paragraphs themselves are your
+editor's doing, exactly as in mutt: a line that continues has to end
+with a space, and rmut adds none of its own.
+
 ## Hooks
 
 Beyond `[[identities]]` (the from/realname half of folder-hook and
@@ -476,6 +502,7 @@ edit_headers = false         # true: the header block is part of the
 alternates = ['jane@old\.example\.com']   # my other addresses
 my_hdr = ["Organization: Acme"]           # on every draft
 metoo = false                # true: a group reply copies me too
+text_flowed = false          # true: send text/plain; format=flowed
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default
@@ -496,6 +523,8 @@ date_format = "%d.%m.%Y"     # strftime for the date column
 [pager]
 index_lines = 10             # keep a slice of the index above the pager
 context = 3                  # overlapping lines when paging
+reflow_text = true           # false: keep a format=flowed part's own
+                             # line breaks instead of rewrapping it
 
 [filters]                    # auto_view: render a part via a command
 "text/html" = "w3m -dump -T text/html -O UTF-8"
@@ -567,7 +596,7 @@ status/header colors and `color index FG BG PATTERN` rules, PGP
 defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, with
 `auth`/`token_command` when `*_authenticators` names
 oauthbearer/xoauth2, reverse_name, alternates/unalternates,
-my_hdr/unmy_hdr,
+my_hdr/unmy_hdr, text_flowed/reflow_text,
 folder-hooks/send-hooks that only set from/realname into
 `[[identities]]` rules, every other folder-hook plus message-hook,
 reply-hook, fcc-hook/fcc-save-hook and crypt-hook into their own hook

@@ -378,10 +378,11 @@ fn view_inline(cfg: &Pgp, text: &str, encrypted: bool) -> View {
 
 // ---- outgoing (RFC 3156) ----
 
-/// Wrap a finalized draft in multipart/signed.
-pub fn sign_message(cfg: &Pgp, text: &str) -> Result<String> {
+/// Wrap a finalized draft in multipart/signed. `flowed` is mutt's
+/// $text_flowed, passed through to the text part inside.
+pub fn sign_message(cfg: &Pgp, text: &str, flowed: bool) -> Result<String> {
     let (head, body) = split_head_body(text);
-    sign_entity(cfg, head, &inner_entity(body))
+    sign_entity(cfg, head, &inner_entity(body, flowed))
 }
 
 /// Wrap an arbitrary MIME entity (its own Content-Type header + body,
@@ -408,9 +409,15 @@ pub fn sign_entity(cfg: &Pgp, head: &str, entity: &[u8]) -> Result<String> {
 /// (which the caller assembles from To/Cc/Bcc plus the sender, so the
 /// author can read their own mail); `sign` adds a signature inside the
 /// encryption layer. Headers, including Subject, stay in clear.
-pub fn encrypt_message(cfg: &Pgp, recipients: &[String], sign: bool, text: &str) -> Result<String> {
+pub fn encrypt_message(
+    cfg: &Pgp,
+    recipients: &[String],
+    sign: bool,
+    text: &str,
+    flowed: bool,
+) -> Result<String> {
     let (head, body) = split_head_body(text);
-    encrypt_entity(cfg, recipients, sign, head, &inner_entity(body))
+    encrypt_entity(cfg, recipients, sign, head, &inner_entity(body, flowed))
 }
 
 /// Like `encrypt_message`, but over an arbitrary MIME entity.
@@ -441,12 +448,8 @@ fn split_head_body(text: &str) -> (&str, &str) {
 
 /// The draft body as a text/plain MIME entity with CRLF endings: the
 /// exact bytes that get signed and shipped inside the multiparts.
-fn inner_entity(body: &str) -> Vec<u8> {
-    let mut out =
-        b"Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
-            .to_vec();
-    out.extend_from_slice(&crlf(body.as_bytes()));
-    out
+fn inner_entity(body: &str, flowed: bool) -> Vec<u8> {
+    crate::compose::text_entity(body, flowed).into_bytes()
 }
 
 /// RFC 3156 canonical form: every line ending is CRLF.
@@ -814,7 +817,7 @@ printf 'stripped text'"#,
 esac"#,
         );
         let draft = "To: bob@x\nFrom: jane@x\nSubject: s\n\nline one\nline two\n";
-        let msg = sign_message(&cfg, draft).unwrap();
+        let msg = sign_message(&cfg, draft, false).unwrap();
         assert!(msg.contains("Content-Type: multipart/signed"));
         assert!(msg.contains("micalg=pgp-sha256"));
         let mail = parse_mail(msg.as_bytes()).unwrap();
@@ -874,7 +877,14 @@ esac"#,
 printf -- '-----BEGIN PGP MESSAGE-----\nCCC\n-----END PGP MESSAGE-----\n'"#,
         );
         let draft = "To: bob@x\nFrom: jane@x\nSubject: s\n\ntop secret\n";
-        let msg = encrypt_message(&cfg, &["bob@x".into(), "jane@x".into()], false, draft).unwrap();
+        let msg = encrypt_message(
+            &cfg,
+            &["bob@x".into(), "jane@x".into()],
+            false,
+            draft,
+            false,
+        )
+        .unwrap();
         assert!(msg.contains("Content-Type: multipart/encrypted"));
         assert!(msg.contains("Subject: s"), "headers stay in clear");
         assert!(!msg.contains("top secret"), "body must not leak");

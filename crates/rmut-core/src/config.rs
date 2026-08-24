@@ -254,6 +254,11 @@ pub struct Mail {
     /// mutt's $metoo: keep your own address among a group reply's
     /// recipients instead of dropping it.
     pub metoo: bool,
+    /// mutt's $text_flowed: outgoing text/plain is declared
+    /// `format=flowed` and space-stuffed (RFC 3676), so a reader can
+    /// rewrap it. The paragraphs themselves come from your editor,
+    /// which has to leave a trailing space on a line that continues.
+    pub text_flowed: bool,
     /// Shell command run when new mail arrives (neomutt's
     /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
     /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
@@ -303,6 +308,10 @@ pub struct Pager {
     pub wrap: Option<i64>,
     /// mutt's $tilde: pad the rows below end-of-message with ~.
     pub tilde: bool,
+    /// mutt's $reflow_text (default true): a `format=flowed` part is
+    /// put back into paragraphs and wrapped at the display width
+    /// instead of keeping the sender's line breaks.
+    pub reflow_text: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

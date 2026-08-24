@@ -4081,20 +4081,25 @@ impl App {
             rcpts.dedup();
             Ok(rcpts)
         };
+        let flowed = self.config.mail.text_flowed;
         if files.is_empty() && original.is_none() {
             return match security {
+                // No MIME wrapper at all, so $text_flowed has to
+                // declare the body itself.
+                Security::None if flowed => Ok(compose::flow_plain(&text)),
                 Security::None => Ok(text),
-                Security::Sign => pgp::sign_message(cfg, &text),
+                Security::Sign => pgp::sign_message(cfg, &text, flowed),
                 Security::Encrypt | Security::Both => pgp::encrypt_message(
                     cfg,
                     &recipients(&text)?,
                     security == Security::Both,
                     &text,
+                    flowed,
                 ),
             };
         }
         let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
-        let entity = compose::mixed_entity(body, files, original)?;
+        let entity = compose::mixed_entity(body, files, original, flowed)?;
         match security {
             Security::None => Ok(format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())),
             Security::Sign => pgp::sign_entity(cfg, head, entity.as_bytes()),
@@ -5105,7 +5110,12 @@ impl App {
                 m.env.lines = Some(message::body_lines(&raw));
             }
         }
-        let mut view = message::load_with(path, &self.config.filters, &self.head_rules)?;
+        let mut view = message::load_with(
+            path,
+            &self.config.filters,
+            &self.head_rules,
+            self.config.pager.reflow_text.unwrap_or(true),
+        )?;
         // PGP messages: decrypt/verify via gpg, prepend the verdict
         // line to whatever body ends up shown.
         if let Ok(raw) = std::fs::read(path)

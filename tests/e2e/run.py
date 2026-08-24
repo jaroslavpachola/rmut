@@ -2529,6 +2529,80 @@ def scenario_hooks(tmp):
     r.keys(b"x")
     r.close()
 
+def scenario_format_flowed(tmp):
+    """R37: a format=flowed part is put back into paragraphs and
+    wrapped at the display width (reflow_text = false leaves it
+    alone), and text_flowed declares and space-stuffs what goes out."""
+    md = make_maildir(tmp, "md-flowed")
+    long_tail = " ".join(f"word{n}" for n in range(1, 13))
+    with open(os.path.join(md, "cur", "1751797000.50.host:2,S"), "w") as f:
+        f.write("From: Flow Sender <flow@example.com>\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: flowed mail\r\n"
+                "Date: Mon, 6 Jul 2026 20:00:00 +0200\r\n"
+                "Message-ID: <flow1@example.com>\r\n"
+                "MIME-Version: 1.0\r\n"
+                "Content-Type: text/plain; charset=us-ascii; format=flowed\r\n"
+                "\r\n"
+                "This sentence was \r\n"
+                "cut in three \r\n"
+                f"by the sender: {long_tail}\r\n"
+                "\r\n"
+                "> quoted and \r\n"
+                "> continued\r\n"
+                "-- \r\n"
+                "Flow\r\n")
+    sent_file = os.path.join(tmp, "sent-flowed.eml")
+    sendmail = os.path.join(tmp, "sendmail-flowed.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "flowed-editor.sh")
+    # A body whose lines need space-stuffing on the way out.
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf ">not a quote\\n indented\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "flowed-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                'text_flowed = true\n'
+                '[pager]\nwrap = 40\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    r.expect("Msgs:1", "flowed mail")
+    r.keys(b"\r")
+    # The sender's two quoted lines are one paragraph again: no second
+    # "> " in the middle. (Assertions run on whitespace-squashed text,
+    # so the quote marks are what tells the two renderings apart.)
+    r.expect("> quoted and continued")
+
+    # reflow_text = false puts the sender's line breaks back
+    r.keys(b":set noreflow_text\r")
+    r.settle()
+    r.keys(b"i")      # out to the index and back in, to re-render
+    r.keys(b"\r")
+    r.expect("> quoted and > continued")
+    r.keys(b"i")
+
+    # text_flowed on the way out: the part is declared and stuffed
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\r")
+    r.settle()
+    r.keys(b"flowing out\r")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: flowing out" in open(sent_file).read(),
+             desc="flowed message sent")
+    sent = open(sent_file).read()
+    assert "Content-Type: text/plain; charset=utf-8; format=flowed" in sent, sent
+    assert " >not a quote" in sent, sent
+    assert "  indented" in sent, sent
+    r.keys(b"x")
+    r.close()
+
 
 SCENARIOS = [
     scenario_view_and_pager,
@@ -2552,6 +2626,7 @@ SCENARIOS = [
     scenario_mailing_lists,
     scenario_alternates_my_hdr,
     scenario_hooks,
+    scenario_format_flowed,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

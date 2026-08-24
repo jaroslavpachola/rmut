@@ -268,18 +268,58 @@ fn b64_wrapped(bytes: &[u8]) -> String {
     out
 }
 
+/// The text/plain entity of an outgoing message: its Content-Type
+/// header and the body in canonical CRLF form. With mutt's
+/// $text_flowed the part is declared `format=flowed` and the body is
+/// space-stuffed, so a reader may rewrap it (RFC 3676). The
+/// paragraphs are the editor's doing: rmut adds no trailing spaces.
+pub fn text_entity(body: &str, flowed: bool) -> String {
+    let mut out = String::from("Content-Type: text/plain; charset=utf-8");
+    if flowed {
+        out += "; format=flowed";
+    }
+    out += "\r\nContent-Transfer-Encoding: 8bit\r\n\r\n";
+    let body = match flowed {
+        true => crate::flowed::space_stuff(body),
+        false => body.to_string(),
+    };
+    out += &String::from_utf8_lossy(&crate::pgp::crlf(body.as_bytes()));
+    out
+}
+
+/// mutt's $text_flowed for a message that goes out with no MIME
+/// wrapper at all: declare the body and space-stuff it, in place, on
+/// a finalized draft. One that already carries a Content-Type (the
+/// user wrote their own) is left alone.
+pub fn flow_plain(text: &str) -> String {
+    let (head, body) = match text.split_once("\n\n") {
+        Some(pair) => pair,
+        None => return text.to_string(),
+    };
+    if header_present(head, "Content-Type") {
+        return text.to_string();
+    }
+    format!(
+        "{}\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8; format=flowed\n\
+         Content-Transfer-Encoding: 8bit\n\n{}",
+        head.trim_end(),
+        crate::flowed::space_stuff(body),
+    )
+}
+
 /// The MIME entity (Content-Type header + body, CRLF endings) for a
 /// draft body with attachments: multipart/mixed with the text first,
 /// files base64-encoded, and optionally the forwarded original as
 /// message/rfc822 (mutt's mime_forward). The caller puts it under the
 /// draft's top-level headers, or inside a PGP layer.
-pub fn mixed_entity(body: &str, files: &[Attachment], original: Option<&[u8]>) -> Result<String> {
+pub fn mixed_entity(
+    body: &str,
+    files: &[Attachment],
+    original: Option<&[u8]>,
+    flowed: bool,
+) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
-    let mut text = String::from(
-        "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n",
-    );
-    text += &String::from_utf8_lossy(&crate::pgp::crlf(body.as_bytes()));
-    parts.push(text);
+    parts.push(text_entity(body, flowed));
     for a in files {
         let bytes =
             std::fs::read(&a.path).with_context(|| format!("reading {}", a.path.display()))?;
@@ -720,6 +760,34 @@ mod tests {
     }
 
     #[test]
+    fn text_flowed_declares_and_stuffs_the_body() {
+        let entity = text_entity("plain\n>looks quoted\n", true);
+        assert!(
+            entity.starts_with("Content-Type: text/plain; charset=utf-8; format=flowed\r\n"),
+            "{entity}"
+        );
+        assert!(
+            entity.ends_with("plain\r\n >looks quoted\r\n"),
+            "{entity:?}"
+        );
+        // Off, the part is what it always was.
+        let plain = text_entity("plain\n>looks quoted\n", false);
+        assert!(plain.starts_with("Content-Type: text/plain; charset=utf-8\r\n"));
+        assert!(plain.ends_with("plain\r\n>looks quoted\r\n"), "{plain:?}");
+    }
+
+    #[test]
+    fn flow_plain_declares_an_unwrapped_draft() {
+        let draft = "From: a@x\nTo: b@x\nSubject: s\n\n>quoted line\n";
+        let out = flow_plain(draft);
+        assert!(out.contains("Content-Type: text/plain; charset=utf-8; format=flowed\n"));
+        assert!(out.ends_with("\n\n >quoted line\n"), "{out:?}");
+        // A draft that declares its own type is left alone.
+        let typed = "From: a@x\nContent-Type: text/x-diff\n\nbody\n";
+        assert_eq!(flow_plain(typed), typed);
+    }
+
+    #[test]
     fn draft_envelope_reads_the_header_block() {
         let draft = "From: Jane Doe <jane@example.com>\n\
                      To: Bob <BOB@work.example.com>, team@x\n\
@@ -945,7 +1013,7 @@ mod tests {
             description: Some("raw bytes".into()),
         }];
         let orig = b"From: jane@x\r\nSubject: hi\r\n\r\noriginal body\r\n";
-        let entity = mixed_entity("see attached", &files, Some(orig)).unwrap();
+        let entity = mixed_entity("see attached", &files, Some(orig), false).unwrap();
         let mail = mailparse::parse_mail(entity.as_bytes()).unwrap();
         assert_eq!(mail.ctype.mimetype, "multipart/mixed");
         assert_eq!(mail.subparts.len(), 3);
@@ -978,7 +1046,7 @@ mod tests {
             mime: None,
             description: None,
         }];
-        let err = mixed_entity("hi", &files, None).unwrap_err();
+        let err = mixed_entity("hi", &files, None, false).unwrap_err();
         assert!(err.to_string().contains("/nonexistent/nope.pdf"));
     }
 

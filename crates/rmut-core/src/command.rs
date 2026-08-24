@@ -275,6 +275,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "tilde" => Flag(&mut cfg.pager.tilde),
         "reverse_name" => Flag(&mut cfg.identity.reverse_name),
         "metoo" => Flag(&mut cfg.mail.metoo),
+        "text_flowed" => Flag(&mut cfg.mail.text_flowed),
+        "reflow_text" => FlagOpt(&mut cfg.pager.reflow_text),
         "sidebar_visible" => Flag(&mut cfg.sidebar.visible),
         "crypt_autosign" | "pgp_autosign" => Flag(&mut cfg.pgp.sign_by_default),
         "crypt_autoencrypt" | "pgp_autoencrypt" => Flag(&mut cfg.pgp.encrypt_by_default),

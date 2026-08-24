@@ -84,7 +84,7 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         let (head, body) = final_text
             .split_once("\n\n")
             .context("draft has no header block")?;
-        let entity = compose::mixed_entity(body, &attachments, None)?;
+        let entity = compose::mixed_entity(body, &attachments, None, config.mail.text_flowed)?;
         // The same join the compose menu makes, MIME-Version included.
         format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())
     };
