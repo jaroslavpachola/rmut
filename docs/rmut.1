@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.34.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.35.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -379,6 +379,8 @@ written back to the configuration file.
   :macro pager S "s=archive<enter>"
   :color index brightyellow default ~F
   :ignore x-spam-score     # and unignore, to bring one back
+  :alternates 'jane@old\.example\.com'  # unalternates removes
+  :my_hdr Organization: Acme   # unmy_hdr Organization removes
   :alias jane Jane Doe <jane@example.com>
   :push "<enter>"      # keys into the input queue
   :exec sync           # run one function now
@@ -389,7 +391,8 @@ pager_format, pager_index_lines, pager_context, quote_regexp, wrap,
 tilde, status_format, theme, beep, from, realname, reverse_name,
 edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
 sendmail, editor, print_command, query_command, trash, record,
-postponed, new_mail_command, mail_check, notmuch, sidebar_visible,
+postponed, new_mail_command, mail_check, metoo, notmuch,
+sidebar_visible,
 sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt.
 An unknown option, a bad number, an unbindable key or an unknown
 function reports on the bottom line in the error colour and stops the
@@ -411,7 +414,7 @@ fall back to matching locally. The specifiers:
   ~=  duplicate Message-ID    ~l  to a known mailing list
   word  subject or from
   ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
-  ~p addressed to me
+  ~p addressed to me         ~P sent by me
 .fi
 .PP
 .I x
@@ -520,6 +523,35 @@ Subject, and attachments go through the compose menu's
 Shell command run (fire-and-forget) when new mail arrives, in the
 open mailbox or a watched one: %f is the mailbox, %n how many.
 E.g. "notify-send 'rmut: %n new in %f'".
+.TP
+.B lists, subscribed
+Case-insensitive address regexes naming the mailing lists you know of
+and the ones you are on (mutt's lists and subscribe).
+.B subscribed
+counts as a known list too. They drive
+.BR ~l ,
+the
+.B L
+list-reply target, and the Mail-Followup-To on mail to a list.
+.TP
+.B alternates
+Case-insensitive regexes for your other addresses (mutt's
+alternates), joined to the identity addresses everywhere rmut asks
+whether an address is yours:
+.BR ~p " and " ~P ,
+the
+.B %Z
+mark, reverse_name, the group-reply dedup, and Mail-Followup-To.
+.TP
+.B my_hdr
+Header lines added to every draft, e.g. "Organization: Acme" or
+"Bcc: me@example.com" (mutt's my_hdr). One naming a header rmut
+already wrote replaces it, so From: and Reply-To: win; To, Cc and Bcc
+gain the address instead. One entry per header name.
+.TP
+.B metoo
+Keep your own address among a group reply's recipients (mutt's
+$metoo); off by default, so replying to all does not mail you a copy.
 .SS [index]
 .TP
 .B format
@@ -692,7 +724,19 @@ truncates.
 .B %C
 number,
 .B %Z
-status/flag/mark characters,
+status/flag/mark characters (the mark is mutt's to_chars:
+.B +
+sole recipient,
+.B T
+one of several,
+.B C
+on the Cc,
+.B F
+sent by you,
+.B L
+to a subscribed list, and
+.B *
+for a tagged message),
 .B %d
 date,
 .B %F

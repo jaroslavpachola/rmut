@@ -417,15 +417,18 @@ pub struct App {
     pub config: Config,
     pub theme: Theme,
     pub keymap: Keymap,
-    /// My own addresses (identity, accounts, $EMAIL), lowercase, for
-    /// the addressed-to-me index mark.
-    pub me: Vec<String>,
+    /// My own addresses (identity, accounts, $EMAIL), lowercase; the
+    /// exact half of `me()`, which adds `alternates` on top.
+    pub my_addresses: Vec<String>,
     /// Compiled `mail.lists` + `mail.subscribed`, for `~l`, the `L`
     /// list-reply target, and Mail-Followup-To.
     pub lists: Vec<pattern::Matcher>,
     /// The subscribed half on its own: only it drops my address from
     /// a Mail-Followup-To.
     pub subscribed: Vec<pattern::Matcher>,
+    /// Compiled `mail.alternates`: my other addresses, joined to `me`
+    /// wherever rmut asks whether an address is mine.
+    pub alternates: Vec<pattern::Matcher>,
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
@@ -520,6 +523,7 @@ struct Derived {
     keymap: Keymap,
     lists: Vec<pattern::Matcher>,
     subscribed: Vec<pattern::Matcher>,
+    alternates: Vec<pattern::Matcher>,
     index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     quote_re: regex_lite::Regex,
@@ -616,6 +620,7 @@ impl Derived {
                 keymap,
                 lists: config.list_matchers(),
                 subscribed: config.subscribed_matchers(),
+                alternates: config.alternate_matchers(),
                 index_rules,
                 body_rules,
                 quote_re,
@@ -648,6 +653,7 @@ impl App {
             keymap,
             lists,
             subscribed,
+            alternates,
             index_rules,
             body_rules,
             quote_re,
@@ -706,9 +712,10 @@ impl App {
             config,
             theme,
             keymap,
-            me,
+            my_addresses: me,
             lists,
             subscribed,
+            alternates,
             compose_setup: None,
             compose: None,
             pending_editor: None,
@@ -985,10 +992,15 @@ impl App {
     /// the configured mailing lists, and the place in the list.
     pub(crate) fn scope(&self, position: pattern::Position) -> pattern::Scope<'_> {
         pattern::Scope {
-            me: &self.me,
+            me: self.me(),
             lists: &self.lists,
             position,
         }
+    }
+
+    /// Which addresses are mine: the identity ones plus `alternates`.
+    pub(crate) fn me(&self) -> pattern::Me<'_> {
+        pattern::Me::new(&self.my_addresses, &self.alternates)
     }
 
     /// `~m` numbering and `~=` duplicate flags for every message, as
@@ -3009,7 +3021,7 @@ impl App {
         let subscribed = rcpts
             .iter()
             .any(|a| self.subscribed.iter().any(|m| m.is_match(a)));
-        let value = compose::followup_to(to, cc.unwrap_or_default(), &self.me, subscribed, from);
+        let value = compose::followup_to(to, cc.unwrap_or_default(), self.me(), subscribed, from);
         (!value.is_empty()).then_some(value)
     }
 
@@ -3185,12 +3197,17 @@ impl App {
                         if !b.followup_to.trim().is_empty() {
                             to = b.followup_to.trim().to_string();
                         } else {
-                            let joined = [b.orig_to.as_str(), b.orig_cc.as_str()]
-                                .iter()
-                                .filter(|s| !s.trim().is_empty())
-                                .copied()
-                                .collect::<Vec<_>>()
-                                .join(", ");
+                            // Everyone else on the original, minus the
+                            // recipient already in To and (mutt's
+                            // $metoo off) my own addresses: replying to
+                            // all should not mail me a copy.
+                            let joined = compose::group_recipients(
+                                &b.orig_to,
+                                &b.orig_cc,
+                                &to,
+                                self.me(),
+                                self.config.mail.metoo,
+                            );
                             if !joined.is_empty() {
                                 cc = Some(joined);
                             }
@@ -3254,12 +3271,16 @@ impl App {
         self.config.mail.edit_headers.unwrap_or(false)
     }
 
-    /// Write a fresh draft file for the editor: the whole text, or
-    /// (with edit_headers = false) only the body, the header block
-    /// withheld for draft_full to rejoin.
+    /// Write a fresh draft file for the editor: the whole text (with
+    /// any `my_hdr` merged in), or (with edit_headers = false) only
+    /// the body, the header block withheld for draft_full to rejoin.
     fn stage_draft(&self, text: &str) -> Result<(PathBuf, Option<String>)> {
+        // mutt's my_hdr lands here, so every draft the TUI opens
+        // carries it: with edit_headers the editor shows the lines,
+        // without it they ride along in the withheld head.
+        let text = compose::apply_my_hdr(text, &self.config.mail.my_hdr);
         if self.edit_headers() {
-            return Ok((write_draft(text)?, None));
+            return Ok((write_draft(&text)?, None));
         }
         let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
         Ok((write_draft(body)?, Some(head.to_string())))
@@ -3271,7 +3292,7 @@ impl App {
     fn compose_from(&self, base: Option<&ComposeBase>, to: &str) -> Option<String> {
         if self.config.identity.reverse_name
             && let Some(b) = base
-            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, &self.me)
+            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, self.me())
         {
             return Some(from);
         }
@@ -4200,6 +4221,7 @@ impl App {
         self.keymap = derived.keymap;
         self.lists = derived.lists;
         self.subscribed = derived.subscribed;
+        self.alternates = derived.alternates;
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
         self.quote_re = derived.quote_re;

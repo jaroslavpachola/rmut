@@ -597,15 +597,34 @@ until picked up, and daily-use paper cuts still outrank all of them.
       message in reply?" question that Reply and GroupReply ask,
       though they quoted the original anyway
 
-## R35: alternates and my_hdr
+## R35: alternates and my_hdr (done, 1.35)
 
 Goal: rmut knows which addresses are "me" and what extra headers to
 send.
 
-- [ ] `alternates` (config regex list + importer): reply-to-all
-      dedup, the `+`/`T` index marks, reverse_name lookups
-- [ ] `my_hdr`/`unmy_hdr`: default headers merged into every compose
-      (edit_headers shows them)
+- [x] `alternates` (config regex list + importer): reply-to-all
+      dedup, the `+`/`T` index marks, reverse_name lookups. One
+      `pattern::Me` (identity addresses plus the alternates regexes)
+      now answers every "is this me?" question, so `~p`, the marks,
+      reverse_name, the group-reply dedup and Mail-Followup-To all
+      agree; `unalternates` in the importer and at the `:` prompt
+      takes patterns back off
+- [x] `my_hdr`/`unmy_hdr`: default headers merged into every compose
+      (edit_headers shows them). The merge happens where a draft is
+      staged, so replies, forwards, mailto: drafts and batch sends
+      all carry them; an entry naming a header rmut already wrote
+      replaces it (`From:`, `Reply-To:`), while To/Cc/Bcc gain the
+      address instead of losing the old one, like mutt. One entry per
+      header name: a later `my_hdr` for the same header wins
+- [x] Added on the way: `~P` (mail I sent), mutt's `$metoo` (keep my
+      address in a group reply), and the rest of mutt's `$to_chars`
+      in the third `%Z` slot: `F` for mail I sent and `L` for mail to
+      a subscribed list
+- [x] Fixed on the way: a group reply put every original recipient in
+      the Cc, my own addresses and the person already in To included,
+      so replying to all mailed me a copy and the sender two; `+` now
+      means mutt's sole recipient (one To and no Cc) rather than any
+      single To address
 
 ## R36: hooks round 2
 

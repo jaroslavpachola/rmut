@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 use chrono::{Local, TimeZone};
 
+use crate::pattern::Me;
+
 pub struct DraftHeaders {
     /// From line when an identity override applies (reverse_name, a
     /// folder/recipient rule, the account); the user can edit it, and
@@ -358,10 +360,10 @@ pub fn list_post_address(value: &str) -> Option<String> {
 /// mailing list. Every recipient goes in; your own address is left out
 /// when you are subscribed (the list copy is the one you will get) and
 /// kept when you are not.
-pub fn followup_to(to: &str, cc: &str, me: &[String], subscribed: bool, my_from: &str) -> String {
+pub fn followup_to(to: &str, cc: &str, me: Me, subscribed: bool, my_from: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut push = |single: &mailparse::SingleInfo| {
-        if subscribed && me.contains(&single.addr.to_lowercase()) {
+        if subscribed && me.is_me(&single.addr) {
             return;
         }
         let written = match &single.display_name {
@@ -392,6 +394,87 @@ pub fn followup_to(to: &str, cc: &str, me: &[String], subscribed: bool, my_from:
         out.push(my_from.trim().to_string());
     }
     out.join(", ")
+}
+
+/// The Cc a group reply gets: everyone the original named in To and
+/// Cc, written the way they were written, minus anyone already in
+/// `to` (the sender, normally) and, unless mutt's $metoo is set, minus
+/// me. Duplicates collapse on the bare address, so a person listed in
+/// both To and Cc appears once.
+pub fn group_recipients(orig_to: &str, orig_cc: &str, to: &str, me: Me, metoo: bool) -> String {
+    let mut seen: Vec<String> = addresses(to).iter().map(|a| a.to_lowercase()).collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |single: &mailparse::SingleInfo| {
+        let bare = single.addr.to_lowercase();
+        if seen.contains(&bare) || (!metoo && me.is_me(&bare)) {
+            return;
+        }
+        seen.push(bare);
+        out.push(match &single.display_name {
+            Some(name) if !name.trim().is_empty() => format!("{name} <{}>", single.addr),
+            _ => single.addr.clone(),
+        });
+    };
+    for field in [orig_to, orig_cc] {
+        let Ok(list) = mailparse::addrparse(field) else {
+            continue;
+        };
+        for addr in list.iter() {
+            match addr {
+                mailparse::MailAddr::Single(single) => push(single),
+                mailparse::MailAddr::Group(group) => group.addrs.iter().for_each(&mut push),
+            }
+        }
+    }
+    out.join(", ")
+}
+
+/// mutt's `my_hdr`: extra header lines that go on every draft. An
+/// entry naming a header the draft already carries replaces it, so
+/// `my_hdr From:` and `my_hdr Reply-To:` win over what rmut chose;
+/// To, Cc and Bcc instead gain the address, like mutt, so a standing
+/// `my_hdr Bcc: me@example.com` cannot erase a reply's recipients.
+/// Malformed entries (no colon, no name) are ignored.
+pub fn apply_my_hdr(text: &str, my_hdr: &[String]) -> String {
+    if my_hdr.is_empty() {
+        return text.to_string();
+    }
+    let (head, body) = match text.split_once("\n\n") {
+        Some((head, body)) => (head, body),
+        None => (text.trim_end(), ""),
+    };
+    let mut lines: Vec<String> = head.lines().map(String::from).collect();
+    for entry in my_hdr {
+        let Some((name, value)) = entry.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() {
+            continue;
+        }
+        let at = lines.iter().position(|l| {
+            l.get(..name.len())
+                .is_some_and(|k| k.eq_ignore_ascii_case(name))
+                && l.as_bytes().get(name.len()) == Some(&b':')
+        });
+        let addressy = ["to", "cc", "bcc"].contains(&name.to_lowercase().as_str());
+        match at {
+            Some(i) if addressy => {
+                let old = lines[i]
+                    .split_once(':')
+                    .map(|(_, v)| v.trim().to_string())
+                    .unwrap_or_default();
+                lines[i] = if old.is_empty() {
+                    format!("{name}: {value}")
+                } else {
+                    format!("{name}: {old}, {value}")
+                };
+            }
+            Some(i) => lines[i] = format!("{name}: {value}"),
+            None => lines.push(format!("{name}: {value}")),
+        }
+    }
+    format!("{}\n\n{body}", lines.join("\n"))
 }
 
 pub fn bare_address(field: &str) -> Option<String> {
@@ -434,12 +517,12 @@ pub fn addresses(field: &str) -> Vec<String> {
     out
 }
 
-/// mutt's reverse_name: the first of `me` (lowercase bare addresses)
-/// the original message was addressed to, in the form it appeared:
+/// mutt's reverse_name: the first of my addresses (`alternates`
+/// included) the original was addressed to, in the form it appeared:
 /// the display name from the To/Cc header is kept.
-pub fn reverse_from(orig_to: &str, orig_cc: &str, me: &[String]) -> Option<String> {
+pub fn reverse_from(orig_to: &str, orig_cc: &str, me: Me) -> Option<String> {
     let mine = |single: &mailparse::SingleInfo| -> Option<String> {
-        if !me.contains(&single.addr.to_lowercase()) {
+        if !me.is_me(&single.addr) {
             return None;
         }
         Some(match &single.display_name {
@@ -530,11 +613,12 @@ mod tests {
 
     #[test]
     fn followup_to_drops_me_only_when_subscribed() {
-        let me = vec!["jarda@example.com".to_string()];
+        let addrs = vec!["jarda@example.com".to_string()];
+        let me = Me::addresses(&addrs);
         let subscribed = followup_to(
             "dev@example.com, Jarda <jarda@example.com>",
             "",
-            &me,
+            me,
             true,
             "Jarda <jarda@example.com>",
         );
@@ -542,7 +626,7 @@ mod tests {
         let unsubscribed = followup_to(
             "dev@example.com",
             "petr@example.com",
-            &me,
+            me,
             false,
             "Jarda <jarda@example.com>",
         );
@@ -554,11 +638,63 @@ mod tests {
         let once = followup_to(
             "dev@example.com, jarda@example.com",
             "",
-            &me,
+            me,
             false,
             "Jarda <jarda@example.com>",
         );
         assert_eq!(once, "dev@example.com, jarda@example.com");
+    }
+
+    #[test]
+    fn group_reply_drops_me_and_the_sender() {
+        let addrs = vec!["jarda@example.com".to_string()];
+        let alternates = vec![crate::pattern::Matcher::new("^jp@old\\.example\\.com$")];
+        let me = Me::new(&addrs, &alternates);
+        let cc = group_recipients(
+            "Team <team@example.com>, Jarda <jarda@example.com>, jp@old.example.com",
+            "boss@example.com, team@example.com",
+            "Petr <petr@example.com>",
+            me,
+            false,
+        );
+        // My exact address and my alternate are gone, the sender in To
+        // is gone, and team@ appears once despite being listed twice.
+        assert_eq!(cc, "Team <team@example.com>, boss@example.com");
+        // $metoo keeps me on the copy.
+        let cc = group_recipients(
+            "team@example.com, jarda@example.com",
+            "",
+            "petr@example.com",
+            me,
+            true,
+        );
+        assert_eq!(cc, "team@example.com, jarda@example.com");
+    }
+
+    #[test]
+    fn my_hdr_merges_into_the_draft_head() {
+        let draft = "From: jane@example.com\nTo: bob@x\nSubject: s\n\nbody\n";
+        let merged = apply_my_hdr(
+            draft,
+            &[
+                "Organization: Acme".to_string(),
+                "From: Jane <jane@work.example.com>".into(),
+                "Bcc: jane@example.com".into(),
+                "To: archive@x".into(),
+                "bogus".into(),
+            ],
+        );
+        assert_eq!(
+            merged,
+            "From: Jane <jane@work.example.com>\n\
+             To: bob@x, archive@x\n\
+             Subject: s\n\
+             Organization: Acme\n\
+             Bcc: jane@example.com\n\
+             \nbody\n"
+        );
+        // Nothing configured: the draft is untouched.
+        assert_eq!(apply_my_hdr(draft, &[]), draft);
     }
 
     #[test]
@@ -609,19 +745,20 @@ mod tests {
 
     #[test]
     fn reverse_from_finds_my_address_as_it_appeared() {
-        let me = vec!["jane@example.com".to_string(), "old@example.com".into()];
+        let addrs = vec!["jane@example.com".to_string(), "old@example.com".into()];
+        let me = Me::addresses(&addrs);
         // Display name kept, match case-insensitive.
         assert_eq!(
-            reverse_from("Boss Me <Jane@example.com>, bob@y", "", &me).as_deref(),
+            reverse_from("Boss Me <Jane@example.com>, bob@y", "", me).as_deref(),
             Some("Boss Me <Jane@example.com>")
         );
         // Bare address stays bare; Cc is searched after To.
         assert_eq!(
-            reverse_from("bob@y", "old@example.com", &me).as_deref(),
+            reverse_from("bob@y", "old@example.com", me).as_deref(),
             Some("old@example.com")
         );
-        assert_eq!(reverse_from("bob@y, eve@z", "", &me), None);
-        assert_eq!(reverse_from("", "", &me), None);
+        assert_eq!(reverse_from("bob@y, eve@z", "", me), None);
+        assert_eq!(reverse_from("", "", me), None);
     }
 
     #[test]

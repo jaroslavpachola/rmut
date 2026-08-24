@@ -70,6 +70,14 @@ pub enum Command {
     },
     Ignore(Vec<String>),
     Unignore(Vec<String>),
+    /// mutt's `alternates` / `unalternates`: regexes for my other
+    /// addresses (`*` un-does the lot).
+    Alternates(Vec<String>),
+    Unalternates(Vec<String>),
+    /// mutt's `my_hdr`: one "Name: value" line for every draft.
+    MyHdr(String),
+    /// `unmy_hdr NAME...`, or `*` for all of them.
+    UnMyHdr(Vec<String>),
     Alias {
         nick: String,
         expansion: String,
@@ -160,6 +168,20 @@ pub fn parse(line: &str) -> Result<Vec<Command>, String> {
         }
         "ignore" => want(args, "ignore which headers?").map(|h| vec![Command::Ignore(h)]),
         "unignore" => want(args, "unignore which headers?").map(|h| vec![Command::Unignore(h)]),
+        "alternates" => want(args, "alternates PATTERN...").map(|p| vec![Command::Alternates(p)]),
+        "unalternates" => {
+            want(args, "unalternates PATTERN...").map(|p| vec![Command::Unalternates(p)])
+        }
+        "my_hdr" => {
+            // The value carries colons and spaces, so it comes off the
+            // raw line rather than from the tokens.
+            let rest = trimmed["my_hdr".len()..].trim().trim_matches('"');
+            if !rest.contains(':') || rest.starts_with(':') {
+                return Err("my_hdr \"Name: value\"".into());
+            }
+            Ok(vec![Command::MyHdr(rest.to_string())])
+        }
+        "unmy_hdr" => want(args, "unmy_hdr NAME...").map(|n| vec![Command::UnMyHdr(n)]),
         "alias" => {
             let (Some(nick), rest) = (args.first(), &args[1.min(args.len())..]) else {
                 return Err("alias NICK ADDRESS".into());
@@ -252,6 +274,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "beep" => Flag(&mut cfg.ui.beep),
         "tilde" => Flag(&mut cfg.pager.tilde),
         "reverse_name" => Flag(&mut cfg.identity.reverse_name),
+        "metoo" => Flag(&mut cfg.mail.metoo),
         "sidebar_visible" => Flag(&mut cfg.sidebar.visible),
         "crypt_autosign" | "pgp_autosign" => Flag(&mut cfg.pgp.sign_by_default),
         "crypt_autoencrypt" | "pgp_autoencrypt" => Flag(&mut cfg.pgp.encrypt_by_default),
@@ -296,12 +319,58 @@ pub fn apply(cfg: &mut Config, cmd: &Command) -> Result<Option<String>, String> 
             edit_header_list(cfg, headers, false);
             Ok(None)
         }
+        Command::Alternates(patterns) => {
+            for p in patterns {
+                if !cfg.mail.alternates.contains(p) {
+                    cfg.mail.alternates.push(p.clone());
+                }
+            }
+            Ok(None)
+        }
+        Command::Unalternates(patterns) => {
+            for p in patterns {
+                if p == "*" {
+                    cfg.mail.alternates.clear();
+                } else {
+                    cfg.mail.alternates.retain(|a| a != p);
+                }
+            }
+            Ok(None)
+        }
+        Command::MyHdr(entry) => {
+            // One my_hdr per header name, like mutt: a second line for
+            // the same header replaces the first.
+            if let Some((name, _)) = entry.split_once(':') {
+                let name = name.trim().to_string();
+                cfg.mail.my_hdr.retain(|h| !header_named(h, &name));
+            }
+            cfg.mail.my_hdr.push(entry.clone());
+            Ok(None)
+        }
+        Command::UnMyHdr(names) => {
+            for name in names {
+                if name == "*" {
+                    cfg.mail.my_hdr.clear();
+                } else {
+                    let name = name.trim_end_matches(':');
+                    cfg.mail.my_hdr.retain(|h| !header_named(h, name));
+                }
+            }
+            Ok(None)
+        }
         Command::Bind { .. }
         | Command::Macro { .. }
         | Command::Alias { .. }
         | Command::Push(_)
         | Command::Exec(_) => Ok(None),
     }
+}
+
+/// True when a stored `my_hdr` line carries this header name.
+fn header_named(entry: &str, name: &str) -> bool {
+    entry
+        .split_once(':')
+        .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(name))
 }
 
 fn unknown(name: &str) -> String {
@@ -518,6 +587,33 @@ mod tests {
         let mut cmds = parse(line).expect("parses");
         assert_eq!(cmds.len(), 1, "{line:?} yielded {cmds:?}");
         cmds.pop().unwrap()
+    }
+
+    #[test]
+    fn alternates_and_my_hdr_at_the_prompt() {
+        let mut cfg = Config::default();
+        for line in [
+            "alternates jane@old\\.example\\.com typo@x",
+            "unalternates typo@x",
+            "my_hdr Organization: Acme",
+            "my_hdr X-Mailer: rmut",
+            "my_hdr Organization: Acme Ltd",
+            "unmy_hdr X-Mailer",
+            "set metoo",
+        ] {
+            for cmd in parse(line).expect(line) {
+                apply(&mut cfg, &cmd).expect(line);
+            }
+        }
+        assert_eq!(cfg.mail.alternates, ["jane@old\\.example\\.com"]);
+        assert_eq!(cfg.mail.my_hdr, ["Organization: Acme Ltd"]);
+        assert!(cfg.mail.metoo);
+        for cmd in parse("unmy_hdr *").unwrap() {
+            apply(&mut cfg, &cmd).unwrap();
+        }
+        assert!(cfg.mail.my_hdr.is_empty());
+        assert!(parse("my_hdr Organization").is_err());
+        assert!(parse("alternates").is_err());
     }
 
     #[test]

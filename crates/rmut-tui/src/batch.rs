@@ -52,6 +52,9 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         },
         &out.body,
     );
+    // mutt's my_hdr applies to batch mail too: the same merge the TUI
+    // makes when it stages a draft.
+    text = compose::apply_my_hdr(&text, &config.mail.my_hdr);
     if let Some(bcc) = out.bcc.as_deref().filter(|b| !b.trim().is_empty()) {
         // draft_text has no Bcc slot; it goes in ahead of the blank
         // line, where smtp_envelope will find and strip it.

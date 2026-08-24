@@ -13,6 +13,8 @@
 //! email = "jane@work.example.com"
 //!
 //! [mail]
+//! alternates = ["jane@old\\.example\\.com"]  # my other addresses
+//! my_hdr = ["Organization: Acme"]        # on every draft
 //! mailboxes = ["~/Maildir", "~/Maildir/.Sent"]
 //! sent = "~/Maildir/.Sent"
 //! postponed = "~/Maildir/.Drafts"
@@ -165,6 +167,20 @@ pub struct Mail {
     /// known lists too, and a reply to one leaves your own address out
     /// of Mail-Followup-To, so the list copy is the only one you get.
     pub subscribed: Vec<String>,
+    /// mutt's `alternates`: regexes matching your other addresses
+    /// (aliases, an old domain, a role address). They join the
+    /// identity addresses everywhere rmut asks "is this me?": `~p`
+    /// and `~P`, the `+`/`T`/`C`/`F` index marks, reverse_name, the
+    /// group-reply dedup, and Mail-Followup-To.
+    pub alternates: Vec<String>,
+    /// mutt's `my_hdr`: header lines added to every draft, e.g.
+    /// "Organization: Acme" or "Bcc: me@example.com". One naming a
+    /// header rmut already wrote replaces it (so `From:` and
+    /// `Reply-To:` win); To/Cc/Bcc gain the address instead.
+    pub my_hdr: Vec<String>,
+    /// mutt's $metoo: keep your own address among a group reply's
+    /// recipients instead of dropping it.
+    pub metoo: bool,
     /// Shell command run when new mail arrives (neomutt's
     /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
     /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
@@ -485,6 +501,16 @@ impl Config {
     pub fn subscribed_matchers(&self) -> Vec<crate::pattern::Matcher> {
         self.mail
             .subscribed
+            .iter()
+            .map(|spec| crate::pattern::Matcher::new(spec))
+            .collect()
+    }
+
+    /// mutt's `alternates`, compiled for matching against a bare
+    /// address.
+    pub fn alternate_matchers(&self) -> Vec<crate::pattern::Matcher> {
+        self.mail
+            .alternates
             .iter()
             .map(|spec| crate::pattern::Matcher::new(spec))
             .collect()

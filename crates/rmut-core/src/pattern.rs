@@ -4,7 +4,8 @@
 //! date, `~m` index range, `~z` size range, `~=` duplicate,
 //! `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 //! `~l` addressed to a known mailing list,
-//! `~p` addressed to me; a bare word matches subject or from (mutt's
+//! `~p` addressed to me, `~P` sent by me;
+//! a bare word matches subject or from (mutt's
 //! $simple_search). Adjacent terms AND, `|` ORs, `!` negates, `()`
 //! groups; string arguments are case-insensitive regexes (quote them
 //! to include spaces), `~d`/`~r` take `DD/MM/YYYY` ranges or `<`/`>`/`=`
@@ -122,6 +123,8 @@ pub enum Pattern {
     Tagged,
     /// `~p`: addressed to one of my addresses.
     ToMe,
+    /// `~P`: sent by me (From is one of my addresses).
+    FromMe,
     /// `~l`: addressed to a known mailing list.
     ToList,
     /// Bare word: matches subject or from.
@@ -147,13 +150,64 @@ impl Bound {
     }
 }
 
+/// Which addresses count as mine: the exact ones the identity layers
+/// name (bare, lowercase) plus mutt's `alternates`, regexes over the
+/// bare address. Everything that asks "is this me?" goes through here:
+/// `~p` and `~P`, the `+`/`T`/`C`/`F` index marks, reverse_name, the
+/// group-reply dedup, and Mail-Followup-To.
+#[derive(Default, Clone, Copy)]
+pub struct Me<'a> {
+    /// My bare lowercase addresses.
+    pub addresses: &'a [String],
+    /// mutt's `alternates`: regexes for my other addresses.
+    pub alternates: &'a [Matcher],
+}
+
+impl<'a> Me<'a> {
+    pub fn new(addresses: &'a [String], alternates: &'a [Matcher]) -> Me<'a> {
+        Me {
+            addresses,
+            alternates,
+        }
+    }
+
+    /// Only the exact addresses, no alternates (tests, and callers
+    /// that have no config in reach).
+    pub fn addresses(addresses: &'a [String]) -> Me<'a> {
+        Me {
+            addresses,
+            alternates: &[],
+        }
+    }
+
+    pub fn is_me(&self, addr: &str) -> bool {
+        let bare = addr.trim().to_lowercase();
+        self.addresses.contains(&bare) || self.alternates.iter().any(|m| m.is_match(&bare))
+    }
+
+    /// True when any of these bare addresses is mine.
+    pub fn any<'b>(&self, addresses: impl IntoIterator<Item = &'b String>) -> bool {
+        addresses.into_iter().any(|a| self.is_me(a))
+    }
+
+    /// True when the message's From names one of my addresses (`~P`).
+    pub fn wrote(&self, from_header: &str) -> bool {
+        crate::compose::addresses(from_header)
+            .iter()
+            .any(|a| self.is_me(a))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.addresses.is_empty() && self.alternates.is_empty()
+    }
+}
+
 /// Everything matching needs besides the message: my own addresses
-/// (`~p`), the known mailing lists (`~l`), and the message's place in
-/// the list (`~m`, `~=`).
+/// (`~p`, `~P`), the known mailing lists (`~l`), and the message's
+/// place in the list (`~m`, `~=`).
 #[derive(Default, Clone, Copy)]
 pub struct Scope<'a> {
-    /// My bare lowercase addresses.
-    pub me: &'a [String],
+    pub me: Me<'a>,
     /// Address patterns naming mailing lists, subscribed or not.
     pub lists: &'a [Matcher],
     pub position: Position,
@@ -163,7 +217,7 @@ impl<'a> Scope<'a> {
     /// The common case: my addresses, nothing else known.
     pub fn me(me: &'a [String]) -> Scope<'a> {
         Scope {
-            me,
+            me: Me::addresses(me),
             ..Default::default()
         }
     }
@@ -345,6 +399,7 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'U' => Pattern::Unread,
                 'T' => Pattern::Tagged,
                 'p' => Pattern::ToMe,
+                'P' => Pattern::FromMe,
                 'l' => Pattern::ToList,
                 other => return Err(format!("unknown pattern ~{other}")),
             })
@@ -673,11 +728,8 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
         Pattern::Deleted => env.file.flags.deleted,
         Pattern::Unread => !env.file.flags.seen,
         Pattern::Tagged => env.tagged,
-        Pattern::ToMe => env
-            .to
-            .iter()
-            .chain(&env.cc)
-            .any(|a| ctx.scope.me.contains(a)),
+        Pattern::ToMe => ctx.scope.me.any(env.to.iter().chain(&env.cc)),
+        Pattern::FromMe => ctx.scope.me.wrote(&env.from_full),
         Pattern::ToList => env
             .to
             .iter()
@@ -956,6 +1008,29 @@ mod tests {
         assert!(matches(&ok("~p"), &e, &me));
         assert!(!matches(&ok("~p"), &e, &["other@example.com".to_string()]));
         assert!(!matches(&ok("~p"), &e, &[]));
+    }
+
+    #[test]
+    fn alternates_widen_who_counts_as_me() {
+        let mut e = env("Jane Doe <jane@example.com>", "s", false, Flags::default());
+        e.to = vec!["j.doe@old.example.com".into()];
+        // The exact list does not have it; an alternate regex does.
+        assert!(!matches(&ok("~p"), &e, &["me@example.com".to_string()]));
+        let alternates = vec![Matcher::new("@old\\.example\\.com$")];
+        let scope = Scope {
+            me: Me::new(&[], &alternates),
+            ..Default::default()
+        };
+        assert!(matches_in(&ok("~p"), &e, scope, None));
+        // ~P reads the From header, so an alternate there is me too.
+        assert!(!matches_in(&ok("~P"), &e, scope, None));
+        let mine = vec!["jane@example.com".to_string()];
+        let scope = Scope {
+            me: Me::addresses(&mine),
+            ..Default::default()
+        };
+        assert!(matches_in(&ok("~P"), &e, scope, None));
+        assert!(!matches_in(&ok("~p"), &e, scope, None));
     }
 
     #[test]

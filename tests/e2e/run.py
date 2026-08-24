@@ -2262,6 +2262,141 @@ def scenario_mailing_lists(tmp):
     r.keys(b"x")
     r.close()
 
+def scenario_alternates_my_hdr(tmp):
+    """R35: mail.alternates widens who counts as me (the %Z marks, ~p
+    and ~P, reverse_name), a group reply drops my own addresses, and
+    mail.my_hdr rides on every draft."""
+    md = make_maildir(tmp, "md-alt")
+    msgs = [
+        ("1751791000.30.host:2,S",
+         "From: Boss <boss@example.com>\r\n"
+         "To: jp@old.example.com\r\n"
+         "Subject: only to my old address\r\n"
+         "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+         "Message-ID: <alt1@example.com>\r\n\r\nhello\r\n"),
+        ("1751791100.31.host:2,S",
+         "From: Jarda Old <jp@old.example.com>\r\n"
+         "To: team@example.com\r\n"
+         "Subject: sent by me\r\n"
+         "Date: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
+         "Message-ID: <mine1@example.com>\r\n\r\nmine\r\n"),
+        ("1751791200.32.host:2,S",
+         "From: Petr <petr@example.com>\r\n"
+         "To: jarda@example.com, Team <team@example.com>\r\n"
+         "Cc: boss@example.com, jp@old.example.com\r\n"
+         "Subject: reply to all of us\r\n"
+         "Date: Mon, 6 Jul 2026 12:00:00 +0200\r\n"
+         "Message-ID: <grp1@example.com>\r\n\r\nwho is in?\r\n"),
+        ("1751791300.33.host:2,S",
+         "From: Dev Person <dev-person@example.com>\r\n"
+         "To: rmut-dev@lists.example.com\r\n"
+         "Subject: on the list\r\n"
+         "Date: Mon, 6 Jul 2026 13:00:00 +0200\r\n"
+         "Message-ID: <lst1@example.com>\r\n\r\nlist mail\r\n"),
+    ]
+    for rel, content in msgs:
+        with open(os.path.join(md, "cur", rel), "w") as f:
+            f.write(content)
+    sent_file = os.path.join(tmp, "sent-alt.eml")
+    sendmail = os.path.join(tmp, "sendmail-alt.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "alt-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "reply body\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "alt-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\nreverse_name = true\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                "alternates = ['jp@old\\.example\\.com']\n"
+                'my_hdr = ["Organization: Acme", "Reply-To: jarda@example.com"]\n'
+                'subscribed = ["rmut-dev@lists.example.com"]\n'
+                '[index]\nformat = "[%Z] %s"\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    r.expect("Msgs:4")
+    # mutt's $to_chars in the third %Z slot: '+' sole recipient (via an
+    # alternate address), 'F' sent by me, 'T' one of several, 'L' to a
+    # subscribed list.
+    r.expect("[+] only to my old address")
+    r.expect("[F] sent by me")
+    r.expect("[T] reply to all of us")
+    r.expect("[L] on the list")
+
+    # ~p counts an alternate as me; ~P is the mail I sent
+    r.keys(b"l~p\r")
+    r.expect("Msgs:2/4")
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.keys(b"l~P\r")
+    r.expect("Msgs:1/4", "sent by me")
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.expect("Msgs:4")
+
+    # A group reply drops my own addresses (both of them) from the Cc,
+    # and my_hdr rides along on the draft.
+    r.keys(b"l~i grp1@\r")
+    r.expect("Msgs:1/4", "reply to all of us")
+    r.keys(b"g")
+    r.expect("To:")
+    r.keys(b"\r")
+    # The Subject prompt overwrites the To prompt character for
+    # character, so a redraw-diffed screen can lose letters from it;
+    # settle and take the prefill rather than matching on it.
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Include")
+    r.keys(b"y")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: Re: reply to all of us" in open(sent_file).read(),
+             desc="group reply sent")
+    text = open(sent_file).read()
+    head = text.split("\n\n")[0]
+    assert "To: Petr <petr@example.com>" in head, head
+    assert "Cc: Team <team@example.com>, boss@example.com" in head, head
+    assert "jarda@example.com" not in head.split("Cc:")[1].split("\n")[0], \
+        "a group reply does not copy me"
+    assert "jp@old.example.com" not in head.split("Cc:")[1].split("\n")[0], \
+        "an alternate address is me too"
+    assert "Organization: Acme" in head, head
+    assert "Reply-To: jarda@example.com" in head, head
+
+    # reverse_name picks the alternate the mail was addressed to
+    os.truncate(sent_file, 0)
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.keys(b"l~i alt1@\r")
+    r.expect("Msgs:1/4", "only to my old address")
+    r.keys(b"r")
+    r.expect("To:")
+    r.keys(b"\r")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Include")
+    r.keys(b"y")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: Re: only to my old address" in open(sent_file).read(),
+             desc="reply to the old address sent")
+    head = open(sent_file).read().split("\n\n")[0]
+    assert "From: jp@old.example.com" in head, head
+
+    # unalternates at the `:` prompt takes the address back off
+    r.keys(b"l")
+    r.keys(b"\x15\r")
+    r.keys(b":unalternates *\r")
+    r.settle()
+    r.keys(b"l~p\r")
+    r.expect("Msgs:1/4", "reply to all of us")
+    r.keys(b"x")
+    r.close()
+
 
 SCENARIOS = [
     scenario_view_and_pager,
@@ -2283,6 +2418,7 @@ SCENARIOS = [
     scenario_patterns_v3,
     scenario_batch_cli,
     scenario_mailing_lists,
+    scenario_alternates_my_hdr,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

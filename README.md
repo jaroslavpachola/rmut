@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.34**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.35**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -139,8 +139,8 @@ header, `~i x` Message-ID, `~x x` References, `~d spec` date,
 `~r spec` received date, `~m spec` index range, `~z spec` size range,
 `~=` duplicate (same Message-ID twice),
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
-`~l` addressed to a known mailing list, `~p` addressed to me; a bare
-word matches subject or from. `x` is a
+`~l` addressed to a known mailing list, `~p` addressed to me,
+`~P` sent by me; a bare word matches subject or from. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
 back to plain substring). `~d` takes a day or range
 (`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027`) or an
@@ -277,6 +277,8 @@ a place to try a setting before keeping it.
 :macro pager S "s=archive<enter>"
 :color index brightyellow default ~F
 :ignore x-spam-score        # and unignore, to bring one back
+:alternates 'jane@old\.example\.com'   # and unalternates (* clears)
+:my_hdr Organization: Acme  # and unmy_hdr Organization (* clears)
 :alias jane Jane Doe <jane@example.com>
 :push "<enter>"             # keys into the input queue
 :exec sync                  # run one function now
@@ -288,7 +290,7 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `from`, `realname`, `reverse_name`, `edit_headers`, `fast_reply`,
 `autoedit`, `copy`, `forward`/`mime_forward`, `sendmail`, `editor`,
 `print_command`, `query_command`, `trash`, `record`, `postponed`,
-`new_mail_command`, `mail_check`, `notmuch`, `sidebar_visible`,
+`new_mail_command`, `mail_check`, `metoo`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
 function reports on the bottom line in the error color and stops the
@@ -358,6 +360,40 @@ will get; on a list you only read, it stays in. A sender's own
 `Mail-Followup-To` is honored by a group reply: it replaces the
 recipient set rather than adding to it.
 
+## Who counts as me, and my_hdr
+
+`[identity] email`, the accounts, and the `[[identities]]` rules
+already name your addresses. `alternates` adds the rest: an old
+domain, a role address, whatever forwards to you.
+
+```toml
+[mail]
+alternates = ['jane@old\.example\.com', '^(jane|jd)@example\.com$']
+my_hdr     = ["Organization: Acme", "Bcc: jane@example.com"]
+metoo      = false   # true: a group reply copies you too
+```
+
+Entries are case-insensitive regexes over the bare address, mutt's
+`alternates`, and one answer serves everywhere rmut asks whether an
+address is yours: `~p` and `~P`, the third `%Z` character (`+` sole
+recipient, `T` one of several, `C` on the Cc, `F` sent by you, `L` to
+a subscribed list), `reverse_name` picking the address a message came
+to, and the dedup a group reply does. That dedup is mutt's: replying
+to all drops your own addresses and the person already in the To, so
+you get no copy of your own mail and nobody gets two. `metoo = true`
+keeps you on the list, like mutt's $metoo.
+
+`my_hdr` lines ride on every draft the compose menu, a `mailto:` URL,
+or a batch send produces; with `edit_headers` they show in the editor
+like any other header. One naming a header rmut already wrote replaces
+it, so `my_hdr From:` and `my_hdr Reply-To:` win; `To`, `Cc` and `Bcc`
+gain the address instead, so a standing `my_hdr Bcc:` cannot erase a
+reply's recipients. There is one entry per header name: a later
+`my_hdr` for the same header replaces the earlier one, and `unmy_hdr`
+takes it off. mutt's `alternates`, `unalternates`, `my_hdr`,
+`unmy_hdr` and `set metoo` are imported, and all of them work at the
+`:` prompt.
+
 ## Configuration
 
 `$RMUT_CONFIG` or `~/.config/rmut/config.toml`:
@@ -393,9 +429,17 @@ trash = "~/Maildir/.Trash"   # purged mail moves here (mutt's $trash;
                              # purging inside it deletes for real
 edit_headers = false         # true: the header block is part of the
                              # editor buffer (To/Cc/Subject, Attach:)
+alternates = ['jane@old\.example\.com']   # my other addresses
+my_hdr = ["Organization: Acme"]           # on every draft
+metoo = false                # true: a group reply copies me too
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default
+                                         # %Z status/flag/mark, where
+                                         # the mark is mutt's to_chars:
+                                         # + sole recipient, T one of
+                                         # several, C on the Cc, F sent
+                                         # by me, L to a subscribed list
                                          # %F from (%L: "To <list>" for
                                          # List-Id mail) %c size %l body
                                          # lines %M collapsed count
@@ -478,7 +522,8 @@ sendmail/editor/print_command/query_command/status_format, binds,
 status/header colors and `color index FG BG PATTERN` rules, PGP
 defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, with
 `auth`/`token_command` when `*_authenticators` names
-oauthbearer/xoauth2, reverse_name,
+oauthbearer/xoauth2, reverse_name, alternates/unalternates,
+my_hdr/unmy_hdr,
 folder-hooks/send-hooks that only set from/realname into
 `[[identities]]` rules, and macros whose sequence is plain keys and
 prompt input) into rmut

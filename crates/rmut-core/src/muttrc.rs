@@ -71,6 +71,12 @@ struct State {
     /// Mail-Followup-To.
     lists: Vec<String>,
     subscribed: Vec<String>,
+    /// mutt's `alternates`: regexes for my other addresses.
+    alternates: Vec<String>,
+    /// mutt's `my_hdr`, as whole "Name: value" lines, in file order.
+    my_hdr: Vec<String>,
+    /// `set metoo`: keep my address in a group reply.
+    metoo: bool,
     hdr_unignore: Vec<String>,
     hdr_order: Vec<String>,
     pager_format: Option<String>,
@@ -157,6 +163,42 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
                 for t in &tokens[1..] {
                     st.lists.retain(|l| l != t);
                     st.subscribed.retain(|l| l != t);
+                }
+            }
+            "alternates" => {
+                for t in &tokens[1..] {
+                    if !st.alternates.contains(t) {
+                        st.alternates.push(t.clone());
+                    }
+                }
+            }
+            "unalternates" => {
+                for t in &tokens[1..] {
+                    if t == "*" {
+                        st.alternates.clear();
+                    } else {
+                        st.alternates.retain(|a| a != t);
+                    }
+                }
+            }
+            // The value carries colons and spaces, so it is taken off
+            // the raw line rather than from the tokens.
+            "my_hdr" => {
+                let rest = line["my_hdr".len()..].trim().trim_matches('"').to_string();
+                if rest.contains(':') {
+                    st.set_my_hdr(rest);
+                } else {
+                    st.skip(&line, "my_hdr needs a \"Name: value\" header line");
+                }
+            }
+            "unmy_hdr" => {
+                for t in &tokens[1..] {
+                    if t == "*" {
+                        st.my_hdr.clear();
+                    } else {
+                        let name = t.trim_end_matches(':');
+                        st.my_hdr.retain(|h| !header_named(h, name));
+                    }
                 }
             }
             "ignore" => st.hdr_ignore.extend(tokens[1..].iter().cloned()),
@@ -400,9 +442,27 @@ fn expand_path(value: &str, dir: &Path) -> PathBuf {
 /// Account name used when the muttrc points at an IMAP server.
 const ACCOUNT: &str = "mutt";
 
+/// True when a stored `my_hdr` line carries this header name.
+fn header_named(entry: &str, name: &str) -> bool {
+    entry
+        .split_once(':')
+        .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+}
+
 impl State {
     fn skip(&mut self, line: &str, why: &str) {
         self.skipped.push(format!("{line}  ({why})"));
+    }
+
+    /// mutt keeps one my_hdr per header name: a later line for the
+    /// same header replaces the earlier one.
+    fn set_my_hdr(&mut self, entry: String) {
+        let Some((name, _)) = entry.split_once(':') else {
+            return;
+        };
+        let name = name.trim().to_string();
+        self.my_hdr.retain(|h| !header_named(h, &name));
+        self.my_hdr.push(entry);
     }
 
     fn satisfy(&mut self, line: &str, why: &str) {
@@ -419,6 +479,9 @@ impl State {
                     self.name.get_or_insert(n);
                 }
                 self.email = Some(e);
+            }
+            "metoo" => {
+                self.metoo = is_yes(value);
             }
             "reverse_name" => {
                 if is_yes(&v) {
@@ -902,9 +965,17 @@ impl State {
             || self.edit_headers_on
             || !self.lists.is_empty()
             || !self.subscribed.is_empty()
+            || !self.alternates.is_empty()
+            || !self.my_hdr.is_empty()
+            || self.metoo
         {
             out += "\n[mail]\n";
-            for (key, values) in [("lists", &self.lists), ("subscribed", &self.subscribed)] {
+            for (key, values) in [
+                ("lists", &self.lists),
+                ("subscribed", &self.subscribed),
+                ("alternates", &self.alternates),
+                ("my_hdr", &self.my_hdr),
+            ] {
                 if !values.is_empty() {
                     let list: Vec<String> = values.iter().map(|v| quote(v)).collect();
                     out += &format!("{key} = [{}]\n", list.join(", "));
@@ -954,6 +1025,9 @@ impl State {
             }
             if self.no_copy {
                 out += "copy = false\n";
+            }
+            if self.metoo {
+                out += "metoo = true\n";
             }
             if let Some(c) = &self.new_mail_command {
                 out += &format!("new_mail_command = {}\n", quote(c));
@@ -1455,6 +1529,30 @@ mod tests {
         let cfg: Config = toml::from_str(&import.toml)
             .unwrap_or_else(|e| panic!("bad TOML: {e}\n{}", import.toml));
         (cfg, import.toml)
+    }
+
+    #[test]
+    fn alternates_and_my_hdr_import() {
+        let (cfg, toml) = to_config(concat!(
+            "alternates jane@old\\.example\\.com '@club\\.example\\.com$'\n",
+            "alternates typo@example\\.com\n",
+            "unalternates typo@example\\.com\n",
+            "my_hdr Organization: Acme\n",
+            "my_hdr X-Mailer: rmut\n",
+            "my_hdr Organization: Acme Ltd\n",
+            "unmy_hdr X-Mailer\n",
+            "set metoo\n",
+        ));
+        assert_eq!(
+            cfg.mail.alternates,
+            ["jane@old\\.example\\.com", "@club\\.example\\.com$"]
+        );
+        // One entry per header name: the later Organization wins, and
+        // unmy_hdr takes X-Mailer back out.
+        assert_eq!(cfg.mail.my_hdr, ["Organization: Acme Ltd"]);
+        assert!(cfg.mail.metoo);
+        assert!(toml.contains("alternates = ["), "{toml}");
+        assert!(toml.contains("metoo = true"), "{toml}");
     }
 
     #[test]

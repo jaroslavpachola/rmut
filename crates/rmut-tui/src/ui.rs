@@ -204,14 +204,31 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         let env = &msg.env;
         let status = env.file.flags.status_char(env.file.is_new);
         let flagged = if env.file.flags.flagged { '!' } else { ' ' };
-        // Third %Z slot, mutt-style: tag mark or how the mail
-        // addresses me.
+        // Third %Z slot, mutt-style: tag mark, or mutt's $to_chars
+        // (" +TCFL") for how the mail relates to me. Precedence is
+        // mutt's: sent by me, then To (alone, or among others), then
+        // Cc, then a subscribed list.
+        let me = app.me();
         let mark = if env.tagged {
             '*'
-        } else if env.to.iter().any(|a| app.me.contains(a)) {
-            if env.to.len() == 1 { '+' } else { 'T' }
-        } else if env.cc.iter().any(|a| app.me.contains(a)) {
+        } else if me.wrote(&env.from_full) {
+            'F'
+        } else if me.any(&env.to) {
+            // mutt's '+' means sole recipient: one To and no Cc.
+            if env.to.len() == 1 && env.cc.is_empty() {
+                '+'
+            } else {
+                'T'
+            }
+        } else if me.any(&env.cc) {
             'C'
+        } else if env
+            .to
+            .iter()
+            .chain(&env.cc)
+            .any(|a| app.subscribed.iter().any(|m| m.is_match(a)))
+        {
+            'L'
         } else {
             ' '
         };
