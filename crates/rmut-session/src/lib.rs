@@ -392,6 +392,57 @@ impl Session {
             .collect();
     }
 
+    /// Open another mailbox in place: the same session, pointed
+    /// somewhere else.
+    ///
+    /// The config, the `-R` flag and the notice sink stay; everything
+    /// about the old mailbox goes. Another folder of the open account
+    /// reuses the live connection (a SELECT) instead of a fresh
+    /// connect and login; a dead session falls through to the full
+    /// open. Warnings come back for the front end to show, as at
+    /// startup.
+    pub fn switch_to(&mut self, spec: &str, progress: remote::Progress) -> Result<Vec<String>> {
+        let reuse = match remote::parse_spec(spec) {
+            Some((account, mailbox))
+                if self
+                    .remote
+                    .as_ref()
+                    .is_some_and(|r| r.account.name == account)
+                    && self
+                        .remote
+                        .as_mut()
+                        .is_some_and(|r| r.switch(mailbox).is_ok()) =>
+            {
+                self.remote.take()
+            }
+            _ => None,
+        };
+        let config = self.config.clone();
+        let (mut next, warnings) = match &reuse {
+            Some(remote) => Session::open(&remote.cache.clone(), config)?,
+            None => Session::open_spec(spec, config, progress)?,
+        };
+        if let Some(remote) = reuse {
+            next.title = remote.spec.clone();
+            // A second connection for IDLE, as the first open makes.
+            if let Ok(password) = account_password(&remote.account) {
+                next.idle = Some(remote::idle_watch(
+                    &remote.account,
+                    &remote.mailbox,
+                    &password,
+                ));
+            }
+            next.remote = Some(remote);
+        }
+        // A -R session stays read-only whatever it opens; Alt+c sets
+        // read_only for one mailbox and does not survive the switch.
+        next.read_only_session = self.read_only_session;
+        next.read_only = self.read_only_session;
+        next.notices = mem::replace(&mut self.notices, Box::new(Silence));
+        *self = next;
+        Ok(warnings)
+    }
+
     /// Hand the session the front end's notice sink. Until this is
     /// called nothing said is kept.
     pub fn install_notices(&mut self, sink: Box<dyn NoticeSink>) {
@@ -1772,6 +1823,70 @@ impl Session {
             .iter()
             .find(|(m, _)| m.is_match(address))
             .map(|(_, key)| key.clone())
+    }
+
+    /// `X` submitted: `notmuch search --output=files` into a virtual
+    /// read-only mailbox: the hits are symlinked into a cache
+    /// maildir (the real copies stay where they are), so viewing,
+    /// replying, copying, and piping work while flag changes and
+    /// deletes stay refused.
+    /// Mirror a notmuch query into a maildir of symlinks, ready to be
+    /// opened. Returns where it is and how many messages it holds.
+    pub fn notmuch_mirror(&mut self, query: &str) -> Option<(PathBuf, usize)> {
+        if query.is_empty() {
+            return None;
+        }
+        let out = Command::new("notmuch")
+            .args(["search", "--output=files", "--limit=1000", "--", query])
+            .output();
+        let out = match out {
+            Ok(out) if out.status.success() => out,
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                self.error(format!("notmuch: {}", err.trim()));
+                return None;
+            }
+            Err(err) => {
+                self.error(format!("notmuch: {err}"));
+                return None;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let files: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+        if files.is_empty() {
+            self.error("notmuch: no matches");
+            return None;
+        }
+        if !self.ready_to_leave() {
+            return None;
+        }
+        let dir = remote::cache_base().join("notmuch");
+        let build = || -> Result<()> {
+            for sub in ["cur", "new", "tmp"] {
+                std::fs::create_dir_all(dir.join(sub))?;
+            }
+            for entry in std::fs::read_dir(dir.join("cur"))?.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+            for (i, file) in files.iter().enumerate() {
+                let base = Path::new(file)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("{i}"));
+                // A unique prefix avoids collisions across source
+                // dirs; the :2, flag suffix stays parseable.
+                let _ = std::os::unix::fs::symlink(
+                    file,
+                    dir.join("cur").join(format!("{i:04}.{base}")),
+                );
+            }
+            Ok(())
+        };
+        if let Err(err) = build() {
+            self.note(format!("notmuch mirror: {err:#}"));
+            return None;
+        }
+        Some((dir, files.len()))
     }
 
     pub fn error(&mut self, msg: impl Into<String>) {

@@ -16,8 +16,8 @@ use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote;
 use rmut_core::{alias, command, compose, maildir, message, pgp};
 use rmut_session::{
-    Session, SortKey, ThreadOp, account_password, default_from, expand_tilde, parse_sort, pipe_to,
-    run_sendmail, send_via_smtp, wrap_order,
+    Session, SortKey, ThreadOp, default_from, expand_tilde, parse_sort, pipe_to, run_sendmail,
+    send_via_smtp, wrap_order,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -743,11 +743,6 @@ impl App {
 
     fn clear_notice(&mut self) {
         self.session.clear_notice();
-    }
-
-    pub fn open(dir: &Path, config: Config) -> Result<Self> {
-        let (session, warnings) = Session::open(dir, config)?;
-        Ok(App::new(session, warnings))
     }
 
     /// Open a mailbox by spec: an `imap:account[/folder]` string (the
@@ -2488,75 +2483,6 @@ impl App {
         self.mode = Mode::Query { results, sel: 0 };
     }
 
-    /// `X` submitted: `notmuch search --output=files` into a virtual
-    /// read-only mailbox: the hits are symlinked into a cache
-    /// maildir (the real copies stay where they are), so viewing,
-    /// replying, copying, and piping work while flag changes and
-    /// deletes stay refused.
-    fn notmuch_search(&mut self, query: &str) {
-        if query.is_empty() {
-            return;
-        }
-        let out = Command::new("notmuch")
-            .args(["search", "--output=files", "--limit=1000", "--", query])
-            .output();
-        let out = match out {
-            Ok(out) if out.status.success() => out,
-            Ok(out) => {
-                let err = String::from_utf8_lossy(&out.stderr);
-                self.error(format!("notmuch: {}", err.trim()));
-                return;
-            }
-            Err(err) => {
-                self.error(format!("notmuch: {err}"));
-                return;
-            }
-        };
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let files: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
-        if files.is_empty() {
-            self.error("notmuch: no matches");
-            return;
-        }
-        if !self.session.ready_to_leave() {
-            return;
-        }
-        let dir = remote::cache_base().join("notmuch");
-        let build = || -> Result<()> {
-            for sub in ["cur", "new", "tmp"] {
-                std::fs::create_dir_all(dir.join(sub))?;
-            }
-            for entry in std::fs::read_dir(dir.join("cur"))?.flatten() {
-                let _ = std::fs::remove_file(entry.path());
-            }
-            for (i, file) in files.iter().enumerate() {
-                let base = Path::new(file)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("{i}"));
-                // A unique prefix avoids collisions across source
-                // dirs; the :2, flag suffix stays parseable.
-                let _ = std::os::unix::fs::symlink(
-                    file,
-                    dir.join("cur").join(format!("{i:04}.{base}")),
-                );
-            }
-            Ok(())
-        };
-        if let Err(err) = build() {
-            self.note(format!("notmuch mirror: {err:#}"));
-            return;
-        }
-        let count = files.len();
-        self.open_mailbox_spec(&dir.display().to_string());
-        if self.session.dir == dir {
-            // The virtual mailbox: never write through the symlinks.
-            self.session.read_only = true;
-            self.session.title = format!("notmuch: {query}");
-            self.note(format!("{count} matching message(s)"));
-        }
-    }
-
     fn handle_query_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -2616,6 +2542,21 @@ impl App {
 
     /// mutt's Esc c: open it, then refuse to write to it. `-R` is
     /// the session-wide version and outlives the switch either way.
+    /// mutt's virtual mailboxes, near enough: a notmuch query
+    /// mirrored into a maildir of symlinks, opened read-only.
+    fn notmuch_search(&mut self, query: &str) {
+        let Some((dir, count)) = self.session.notmuch_mirror(query) else {
+            return;
+        };
+        self.open_mailbox_spec(&dir.display().to_string());
+        if self.session.dir == dir {
+            // The virtual mailbox: never write through the symlinks.
+            self.session.read_only = true;
+            self.session.title = format!("notmuch: {query}");
+            self.note(format!("{count} matching message(s)"));
+        }
+    }
+
     fn open_mailbox_read_only(&mut self, spec: &str) {
         self.open_mailbox_spec(spec);
         self.session.read_only = true;
@@ -2627,56 +2568,19 @@ impl App {
         // Message-hook settings belong to the message being left, not
         // to the config the new mailbox inherits.
         self.clear_message_hooks();
-        // Another folder of the open account reuses the live session
-        // (a SELECT) instead of a fresh connect+login round; a dead
-        // session falls through to the full open below.
-        if let Some((account_name, mailbox)) = remote::parse_spec(spec)
-            && self
-                .session
-                .remote
-                .as_ref()
-                .is_some_and(|r| r.account.name == account_name)
-            && self
-                .session
-                .remote
-                .as_mut()
-                .unwrap()
-                .switch(mailbox)
-                .is_ok()
-        {
-            let remote = self.session.remote.take().unwrap();
-            match App::open(&remote.cache.clone(), self.session.config.clone()) {
-                Ok(mut app) => {
-                    app.session.title = remote.spec.clone();
-                    if let Ok(password) = account_password(&remote.account) {
-                        app.session.idle = Some(remote::idle_watch(
-                            &remote.account,
-                            &remote.mailbox,
-                            &password,
-                        ));
-                    }
-                    app.session.remote = Some(remote);
-                    app.session.read_only_session = self.session.read_only_session;
-                    app.session.read_only = self.session.read_only_session;
-                    app.sidebar_visible = self.sidebar_visible;
-                    app.refresh_sidebar();
-                    *self = app;
-                    self.run_folder_hooks();
+        match self.session.switch_to(spec, Box::new(progress)) {
+            Ok(warnings) => {
+                // Whatever menu asked for the switch is done with: the
+                // new mailbox opens on its index, at the top.
+                self.mode = Mode::Index;
+                self.index_offset = 0;
+                self.tag_op = false;
+                self.tag_next = false;
+                self.complete = None;
+                if !warnings.is_empty() {
+                    self.note(warnings.join("; "));
                 }
-                Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
-            }
-            return;
-        }
-        match App::open_spec(spec, self.session.config.clone()) {
-            Ok(mut app) => {
-                // The runtime sidebar toggle survives a mailbox switch,
-                // and so does a -R session: it is not a property of the
-                // mailbox that was open.
-                app.session.read_only_session = self.session.read_only_session;
-                app.session.read_only = self.session.read_only_session;
-                app.sidebar_visible = self.sidebar_visible;
-                app.refresh_sidebar();
-                *self = app;
+                self.refresh_sidebar();
                 self.run_folder_hooks();
             }
             Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
