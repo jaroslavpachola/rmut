@@ -1,73 +1,30 @@
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use rmut_core::config::{Account, Config};
-use rmut_core::message::Envelope;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
-use rmut_core::remote::{self, Remote};
-use rmut_core::{alias, command, compose, hdrcache, maildir, mbox, message, pgp, smtp, thread};
+use rmut_core::remote;
+use rmut_core::{alias, command, compose, maildir, message, pgp, smtp};
+use rmut_session::{
+    Session, SortKey, ThreadOp, UndoStep, account_password, expand_tilde, parse_sort, wrap_order,
+};
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
 use crate::theme::Theme;
 
-pub struct Msg {
-    pub env: message::Envelope,
-    /// Flags changed since the last sync (rename pending).
-    pub dirty: bool,
-}
-
-impl Msg {
-    pub fn pending(&self) -> bool {
-        self.dirty || self.env.file.flags.deleted
-    }
-}
-
 /// neomutt's $abort_noattach_regex default: the words that make a
 /// draft look like it should have carried a file.
 const DEFAULT_ATTACH_KEYWORD: &str = r"\b(attach|attached|attaching|attachment|attachments)\b";
-
-/// How many undo steps to keep, and how many message snapshots in
-/// total: a pattern delete over a huge mailbox is one step but very
-/// many marks, so both are bounded and the oldest steps go first.
-const UNDO_MAX_STEPS: usize = 32;
-const UNDO_MAX_MARKS: usize = 100_000;
-
-/// One message's state before a step touched it. The path is the
-/// identity: it only changes when the mailbox is written, and a write
-/// drops the whole stack.
-#[derive(Clone)]
-struct MsgMark {
-    path: PathBuf,
-    flags: maildir::Flags,
-    is_new: bool,
-    tagged: bool,
-    dirty: bool,
-}
-
-/// One undoable step: what it was, the messages as they stood before
-/// it, and where the cursor was.
-struct UndoStep {
-    what: String,
-    marks: Vec<MsgMark>,
-    /// The message the cursor was on, by path: a resort or a limit
-    /// can move it, so the position alone would not find it again.
-    sel: Option<PathBuf>,
-    /// Files the step created (a save or copy's delivered message),
-    /// removed again when it is undone.
-    created: Vec<PathBuf>,
-    /// Something the undo cannot take back, said out loud when it
-    /// runs (a copy that went to an IMAP folder).
-    note: Option<String>,
-}
 
 pub struct Pager {
     pub view: message::MessageView,
@@ -121,27 +78,6 @@ pub enum Mode {
         lines: Vec<String>,
         scroll: usize,
     },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SortKey {
-    Date,
-    From,
-    Subject,
-    Size,
-    Threads,
-}
-
-impl SortKey {
-    pub fn name(self) -> &'static str {
-        match self {
-            SortKey::Date => "date",
-            SortKey::From => "from",
-            SortKey::Subject => "subject",
-            SortKey::Size => "size",
-            SortKey::Threads => "threads",
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -450,56 +386,59 @@ struct Complete {
     expect: String,
 }
 
-/// The sink the TUI installs: mutt's message line says one thing at
-/// a time, so the last notice is the only one worth keeping. It is
-/// dropped on the next key, once the user has had their chance to
-/// read it.
+/// The sink the TUI installs in its session: mutt's message line says
+/// one thing at a time, so the last notice is the only one worth
+/// keeping. It is dropped on the next key, once the user has had
+/// their chance to read it.
+///
+/// The app keeps it behind an `Rc` and hands the session a second
+/// handle, so a `set beep` mid-session still reaches the bell.
 #[derive(Default)]
-struct MessageLine(Option<Notice>);
+struct Line {
+    latest: Option<Notice>,
+    /// mutt's $beep: ring the terminal bell on an error.
+    beep: bool,
+}
+
+/// A handle on it, so the app and the session it drives write to the
+/// same line.
+#[derive(Clone, Default)]
+struct MessageLine(Rc<RefCell<Line>>);
 
 impl NoticeSink for MessageLine {
     fn notice(&mut self, notice: Notice) {
-        self.0 = Some(notice);
+        let mut line = self.0.borrow_mut();
+        // The bell belongs to the front end, not to the notice.
+        if notice.is_error() && line.beep {
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x07");
+            let _ = out.flush();
+        }
+        line.latest = Some(notice);
     }
 
     fn latest(&self) -> Option<&Notice> {
-        self.0.as_ref()
+        // A `RefCell` cannot hand out a plain reference; the app
+        // reads its own handle through `App::notice` instead, and the
+        // session only ever writes through this one.
+        None
     }
 
     fn clear(&mut self) {
-        self.0 = None;
+        self.0.borrow_mut().latest = None;
     }
 }
 
 pub struct App {
-    pub dir: PathBuf,
-    /// What the status line calls this mailbox: the path for local
-    /// maildirs, the `imap:account/folder` spec for remote ones.
-    pub title: String,
-    /// Set when `dir` is the cache maildir of an IMAP folder.
-    remote: Option<Remote>,
-    /// Set when `dir` mirrors an mbox file; sync writes back into it.
-    mbox: Option<mbox::Mbox>,
-    pub msgs: Vec<Msg>,
-    /// Indices into `msgs` after applying limit and thread folding.
-    pub visible: Vec<usize>,
-    /// Selection, as an index into `visible`.
-    pub sel: usize,
+    /// The open mailbox and everything that can be done to it. The
+    /// front end owns one and drives it; it owns nothing here.
+    pub session: Session,
     pub index_offset: usize,
     pub mode: Mode,
     pub prompt: Option<Prompt>,
-    /// Where the outcome of an operation goes. The TUI installs a
-    /// sink that keeps the last notice for the message line; what a
-    /// notice looks like is the front end's business, not the
-    /// operation's.
-    notices: Box<dyn NoticeSink>,
-    pub sort: SortKey,
-    pub sort_rev: bool,
-    pub limit: Option<(String, Vec<Pattern>)>,
-    pub last_search: Option<Vec<Pattern>>,
-    /// Which way the last index search went, so `n` repeats in the
-    /// same direction (mutt's search / search-reverse pair).
-    search_rev: bool,
+    /// The message line, written to from both sides.
+    notices: MessageLine,
     /// The pager's text search, kept across messages so n/N carry
     /// over; the pager highlights its hits.
     pub(crate) pager_search: Option<pattern::Matcher>,
@@ -518,9 +457,6 @@ pub struct App {
     /// mailbox, the command, the y/n): the answer applies to the
     /// tagged set, not to the message under the cursor.
     tag_op: bool,
-    /// Undo stack, oldest first: delete/flag/tag/read marks and the
-    /// copies a save made, back to the state before each step.
-    undo: Vec<UndoStep>,
     /// Messages sent but still inside their $undo_send window, oldest
     /// first. They go out when the timer runs out or rmut exits.
     outbox: Vec<Held>,
@@ -530,27 +466,8 @@ pub struct App {
     /// Width and content rows from the last key dispatch, for actions
     /// (prompt submissions) that arrive without a size at hand.
     view_size: (usize, usize),
-    /// Per-message thread depth/root (aligned with `msgs`; identity when
-    /// not sorted by threads).
-    pub thread_depth: Vec<usize>,
-    pub thread_root: Vec<usize>,
-    /// Paths of collapsed thread roots.
-    pub collapsed: HashSet<PathBuf>,
-    pub config: Config,
     pub theme: Theme,
     pub keymap: Keymap,
-    /// My own addresses (identity, accounts, $EMAIL), lowercase; the
-    /// exact half of `me()`, which adds `alternates` on top.
-    pub my_addresses: Vec<String>,
-    /// Compiled `mail.lists` + `mail.subscribed`, for `~l`, the `L`
-    /// list-reply target, and Mail-Followup-To.
-    pub lists: Vec<pattern::Matcher>,
-    /// The subscribed half on its own: only it drops my address from
-    /// a Mail-Followup-To.
-    pub subscribed: Vec<pattern::Matcher>,
-    /// Compiled `mail.alternates`: my other addresses, joined to `me`
-    /// wherever rmut asks whether an address is mine.
-    pub alternates: Vec<pattern::Matcher>,
     /// Compiled hook tables (patterns plus the line or mailbox each
     /// carries).
     message_hooks: Vec<Hook>,
@@ -575,13 +492,6 @@ pub struct App {
     alias_addr: Option<String>,
     /// Attach-line index waiting for a d / ctrl+t compose-menu edit.
     attach_edit: Option<usize>,
-    /// Background IDLE watcher for the open IMAP folder.
-    idle: Option<remote::IdleWatch>,
-    /// Background header mirror for the tail of a huge IMAP folder.
-    backfill: Option<remote::Backfill>,
-    /// Server-side `~b` results: term → matching UIDs, filled when a
-    /// limit/search pattern with body terms is submitted on IMAP.
-    body_hits: HashMap<String, HashSet<u32>>,
     /// Address completion state at the To prompt (Tab cycles).
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
@@ -597,15 +507,6 @@ pub struct App {
     /// Which entry is the open mailbox (for its > marker).
     pub sidebar_open: Option<usize>,
     pub sidebar_visible: bool,
-    /// New-mail counts of the other configured mailboxes at the last
-    /// poll, to notice growth (mutt's `mailboxes` awareness).
-    mailbox_new: HashMap<String, usize>,
-    /// `rmut -R`: nothing is ever written, not even read marks.
-    pub read_only: bool,
-    /// `-R`: the whole session is read-only, so a mailbox switch
-    /// cannot quietly make it writable again. Alt+c sets `read_only`
-    /// for one mailbox without touching this.
-    pub read_only_session: bool,
     /// Ctrl+L: clear and repaint before the next draw.
     redraw: bool,
     /// `!`: a shell command to run with the TUI stood down.
@@ -617,8 +518,6 @@ pub struct App {
     attach_confirmed: bool,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
-    /// mtimes of new/ and cur/ used for new-mail detection.
-    dir_mtimes: (Option<SystemTime>, Option<SystemTime>),
     quit: bool,
 }
 
@@ -626,7 +525,7 @@ impl App {
     /// mutt's $wrap: the effective text width inside `width` columns
     /// (positive = wrap there, negative = a right margin).
     pub(crate) fn pager_wrap(&self, width: usize) -> usize {
-        match self.config.pager.wrap {
+        match self.session.config.pager.wrap {
             Some(n) if n > 0 => (n as usize).min(width),
             Some(n) if n < 0 => width.saturating_sub(n.unsigned_abs() as usize).max(20),
             _ => width,
@@ -637,11 +536,6 @@ impl App {
 /// mutt's $quote_regexp default.
 pub(crate) fn default_quote_re() -> regex_lite::Regex {
     regex_lite::Regex::new(r"^([ \t]*[|>:}#])+").expect("default quote_regexp compiles")
-}
-
-fn dir_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
-    let mtime = |p: PathBuf| p.metadata().and_then(|m| m.modified()).ok();
-    (mtime(dir.join("new")), mtime(dir.join("cur")))
 }
 
 /// An rmut action name or a mutt function name, resolved to the rmut
@@ -699,9 +593,6 @@ fn compile_hooks<'a>(
 struct Derived {
     theme: Theme,
     keymap: Keymap,
-    lists: Vec<pattern::Matcher>,
-    subscribed: Vec<pattern::Matcher>,
-    alternates: Vec<pattern::Matcher>,
     message_hooks: Vec<Hook>,
     reply_hooks: Vec<Hook>,
     fcc_hooks: Vec<Hook>,
@@ -834,9 +725,6 @@ impl Derived {
             Derived {
                 theme,
                 keymap,
-                lists: config.list_matchers(),
-                subscribed: config.subscribed_matchers(),
-                alternates: config.alternate_matchers(),
                 message_hooks: compile_hooks(
                     "message-hook",
                     config
@@ -882,28 +770,14 @@ impl Derived {
 }
 
 impl App {
-    pub fn open(dir: &Path, config: Config) -> Result<Self> {
-        // The header cache spares re-parsing every message on open.
-        let (envelopes, skipped) = hdrcache::load_envelopes(dir)?;
-        let mut msgs: Vec<Msg> = envelopes
-            .into_iter()
-            .map(|env| Msg { env, dirty: false })
-            .collect();
-        // Mutt's default sort: date, oldest first.
-        msgs.sort_by_key(|m| m.env.date);
-        let visible: Vec<usize> = (0..msgs.len()).collect();
-        // Like mutt: start on the first new message, else the last.
-        let sel = msgs
-            .iter()
-            .position(|m| m.env.file.is_new)
-            .unwrap_or(visible.len().saturating_sub(1));
-        let (derived, mut warnings) = Derived::from_config(&config);
+    /// Wrap an open session in a front end: the menus, the key
+    /// tables, the theme and everything else that only matters
+    /// because there is a screen.
+    pub fn new(session: Session, mut warnings: Vec<String>) -> Self {
+        let (derived, config_warnings) = Derived::from_config(&session.config);
         let Derived {
             theme,
             keymap,
-            lists,
-            subscribed,
-            alternates,
             message_hooks,
             reply_hooks,
             fcc_hooks,
@@ -914,45 +788,19 @@ impl App {
             attach_re,
             display,
         } = derived;
-        if skipped > 0 {
-            warnings.push(format!("{skipped} unreadable message(s) skipped"));
-        }
-        let count = msgs.len();
-        let mut me: Vec<String> = config
-            .identity
-            .email
-            .iter()
-            .chain(config.accounts.iter().map(|a| &a.user))
-            .chain(
-                config
-                    .accounts
-                    .iter()
-                    .filter_map(|a| a.identity.as_ref().and_then(|i| i.email.as_ref())),
-            )
-            .chain(config.identities.iter().filter_map(|r| r.email.as_ref()))
-            .map(|a| a.to_lowercase())
-            .collect();
-        if let Ok(email) = std::env::var("EMAIL") {
-            me.push(email.to_lowercase());
-        }
-        let config_sidebar_visible = config.sidebar.visible;
+        // The config's own complaints come first: they are about the
+        // setup, and the session's are about this mailbox.
+        let mut all = config_warnings;
+        all.append(&mut warnings);
+        let sidebar_visible = session.config.sidebar.visible;
+        let notices = MessageLine::default();
+        notices.0.borrow_mut().beep = session.config.ui.beep;
         let mut app = App {
-            dir: dir.to_path_buf(),
-            title: dir.display().to_string(),
-            remote: None,
-            mbox: None,
-            msgs,
-            visible,
-            sel,
+            session,
             index_offset: 0,
             mode: Mode::Index,
             prompt: None,
-            notices: Box::new(MessageLine::default()),
-            sort: SortKey::Date,
-            sort_rev: false,
-            limit: None,
-            last_search: None,
-            search_rev: false,
+            notices: notices.clone(),
             pager_search: None,
             pager_search_text: String::new(),
             quote_re,
@@ -960,21 +808,11 @@ impl App {
             display,
             body_rules,
             tag_op: false,
-            undo: Vec::new(),
             outbox: Vec::new(),
             exit_notes: Vec::new(),
             view_size: (80, 24),
-            thread_depth: vec![0; count],
-            thread_root: (0..count).collect(),
-            collapsed: HashSet::new(),
-            dir_mtimes: dir_mtimes(dir),
-            config,
             theme,
             keymap,
-            my_addresses: me,
-            lists,
-            subscribed,
-            alternates,
             message_hooks,
             reply_hooks,
             fcc_hooks,
@@ -988,9 +826,6 @@ impl App {
             bounce_to: None,
             alias_addr: None,
             attach_edit: None,
-            idle: None,
-            backfill: None,
-            body_hits: HashMap::new(),
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
             history: HashMap::new(),
@@ -998,10 +833,7 @@ impl App {
             sidebar: Vec::new(),
             sidebar_sel: 0,
             sidebar_open: None,
-            sidebar_visible: config_sidebar_visible,
-            mailbox_new: HashMap::new(),
-            read_only: false,
-            read_only_session: false,
+            sidebar_visible,
             redraw: false,
             pending_shell: None,
             pending_suspend: false,
@@ -1009,108 +841,51 @@ impl App {
             tag_next: false,
             quit: false,
         };
-        if let Some(spec) = app.config.index.sort.clone() {
-            match parse_sort(&spec) {
-                Some((sort, rev)) => {
-                    app.sort = sort;
-                    app.sort_rev = rev;
-                    app.resort(None);
-                }
-                None => warnings.push(format!("unknown sort {spec:?} in config")),
-            }
+        app.session.install_notices(Box::new(notices));
+        if !all.is_empty() {
+            app.note(all.join("; "));
         }
-        if !warnings.is_empty() {
-            app.note(warnings.join("; "));
-        }
-        Ok(app)
+        app
+    }
+
+    /// Something worth saying that is not a complaint.
+    pub(crate) fn note(&mut self, msg: impl Into<String>) {
+        self.session.note(msg);
+    }
+
+    fn error(&mut self, msg: impl Into<String>) {
+        self.session.error(msg);
+    }
+
+    /// The last thing said, for the message line and for the callers
+    /// that only speak up when nothing else has.
+    pub(crate) fn notice(&self) -> Option<Notice> {
+        self.notices.0.borrow().latest.clone()
+    }
+
+    fn clear_notice(&mut self) {
+        self.session.clear_notice();
+    }
+
+    pub fn open(dir: &Path, config: Config) -> Result<Self> {
+        let (session, warnings) = Session::open(dir, config)?;
+        Ok(App::new(session, warnings))
     }
 
     /// Open a mailbox by spec: an `imap:account[/folder]` string (the
     /// folder is mirrored into a cache maildir) or a local path.
     pub fn open_spec(spec: &str, config: Config) -> Result<Self> {
-        let mut app = Self::open_spec_inner(spec, config)?;
+        let (session, warnings) = Session::open_spec(spec, config, Box::new(progress))?;
+        let mut app = App::new(session, warnings);
         app.refresh_sidebar();
         // A huge IMAP folder mirrors its tail in the background.
-        app.maybe_backfill();
+        app.session.maybe_backfill();
         Ok(app)
-    }
-
-    fn open_spec_inner(spec: &str, config: Config) -> Result<Self> {
-        match remote::parse_spec(spec) {
-            Some((account_name, mailbox)) => {
-                let account = config
-                    .account(account_name)
-                    .with_context(|| format!("no account {account_name} in config"))?
-                    .clone();
-                let password = account_password(&account)?;
-                let remote = Remote::open(&account, mailbox, &password, Box::new(progress))?;
-                let cache = remote.cache.clone();
-                let mut app = App::open(&cache, config)?;
-                app.title = remote.spec.clone();
-                // IDLE on a second connection; NOOP polling stays as
-                // the fallback when the server doesn't support it.
-                app.idle = Some(remote::idle_watch(&account, &remote.mailbox, &password));
-                app.remote = Some(remote);
-                Ok(app)
-            }
-            None => {
-                let path = expand_tilde(spec);
-                if path.is_file() {
-                    return App::open_mbox(&path, config);
-                }
-                App::open(&path, config)
-            }
-        }
-    }
-
-    /// Open an mbox file (e.g. /var/mail/$USER) through its cache
-    /// mirror; `$` sync writes changes back into the file.
-    fn open_mbox(path: &Path, config: Config) -> Result<Self> {
-        let mbox = mbox::Mbox::open(path)?;
-        let cache = mbox.cache.clone();
-        let mut app = App::open(&cache, config)?;
-        app.title = path.display().to_string();
-        app.mbox = Some(mbox);
-        Ok(app)
-    }
-
-    pub fn new_count(&self) -> usize {
-        self.msgs.iter().filter(|m| m.env.file.is_new).count()
-    }
-
-    pub fn deleted_count(&self) -> usize {
-        self.msgs
-            .iter()
-            .filter(|m| m.env.file.flags.deleted)
-            .count()
-    }
-
-    pub fn pending_count(&self) -> usize {
-        self.msgs.iter().filter(|m| m.pending()).count()
-    }
-
-    /// (depth, hidden-count-if-collapsed-root) for the index display.
-    pub fn thread_info(&self, mi: usize) -> (usize, Option<usize>) {
-        if self.sort != SortKey::Threads {
-            return (0, None);
-        }
-        let depth = self.thread_depth.get(mi).copied().unwrap_or(0);
-        if depth == 0 && self.collapsed.contains(&self.msgs[mi].env.file.path) {
-            let hidden = self
-                .thread_root
-                .iter()
-                .enumerate()
-                .filter(|&(j, &r)| r == mi && j != mi)
-                .count();
-            if hidden > 0 {
-                return (0, Some(hidden));
-            }
-        }
-        (depth, None)
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        let poll_every = Duration::from_secs(self.config.mail.poll_seconds.unwrap_or(5).max(1));
+        let poll_every =
+            Duration::from_secs(self.session.config.mail.poll_seconds.unwrap_or(5).max(1));
         let mut last_poll = Instant::now();
         while !self.quit {
             if PROGRESS_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed)
@@ -1137,12 +912,12 @@ impl App {
             };
             if let Some(key) = key {
                 let size = terminal.size()?;
-                self.notices.clear();
+                self.clear_notice();
                 self.handle_key(key, size.width as usize, size.height as usize);
             }
             // The IDLE watcher makes server changes show up within a
             // loop tick instead of waiting out the poll interval.
-            let idle_kick = self.idle.as_ref().is_some_and(|w| w.take_changed());
+            let idle_kick = self.session.idle_kick();
             if idle_kick || last_poll.elapsed() >= poll_every {
                 last_poll = Instant::now();
                 self.check_new_mail();
@@ -1205,151 +980,12 @@ impl App {
 
     // ---- new-mail detection ----
 
+    /// The session's check, with the sidebar counts redrawn around it.
     fn check_new_mail(&mut self) {
-        let backfilling = self.backfill.as_ref().is_some_and(|b| !b.done());
-        if let Some(remote) = &mut self.remote {
-            // While the backfill streams headers in, skip the server
-            // check, since a full reconcile would refetch its tail
-            // synchronously; the rescan below integrates the files.
-            if backfilling {
-            } else if let Err(err) = remote.check_new() {
-                self.error(format!("imap: {err:#}"));
-            }
-        }
-        self.maybe_backfill();
-        if let Some(mbox) = &mut self.mbox {
-            // Re-mirror when the file changed; same rescan pickup.
-            if let Err(err) = mbox.refresh() {
-                self.error(format!("mbox: {err:#}"));
-            }
-        }
-        self.check_other_mailboxes();
+        self.session.check_new_mail(&mut |session| {
+            let _ = session;
+        });
         self.refresh_sidebar();
-        let current = dir_mtimes(&self.dir);
-        if current == self.dir_mtimes {
-            return;
-        }
-        self.rescan();
-    }
-
-    /// Spawn (or finish) the background mirror for a huge folder's
-    /// leftover headers; the poll rescan integrates them as they land.
-    fn maybe_backfill(&mut self) {
-        if self.backfill.as_ref().is_some_and(|b| !b.done()) {
-            return;
-        }
-        self.backfill = None;
-        let Some(remote) = &mut self.remote else {
-            return;
-        };
-        if remote.pending_backfill.is_empty() {
-            return;
-        }
-        let uids = mem::take(&mut remote.pending_backfill);
-        let Ok(password) = account_password(&remote.account) else {
-            return;
-        };
-        let count = uids.len();
-        self.backfill = Some(remote::backfill(
-            &remote.account,
-            &remote.mailbox,
-            &password,
-            remote.cache.clone(),
-            uids,
-        ));
-        self.note(format!(
-            "loading {count} older message(s) in the background"
-        ));
-    }
-
-    /// Server-aware pattern match: `~b` terms resolved by UID SEARCH
-    /// (when `resolve_body_terms` filled the sets) instead of local
-    /// body reads, and the message's place in the list carried along
-    /// for `~m` and `~=`.
-    fn env_matches_at(&self, patterns: &[Pattern], env: &Envelope, pos: pattern::Position) -> bool {
-        pattern::matches_in(
-            patterns,
-            env,
-            self.scope(pos),
-            Some(&|env: &Envelope, m: &pattern::Matcher| {
-                let set = self.body_hits.get(m.raw())?;
-                let uid = remote::uid_of(&env.file.path)?;
-                Some(set.contains(&uid))
-            }),
-        )
-    }
-
-    /// What the pattern engine needs beyond one message: my addresses,
-    /// the configured mailing lists, and the place in the list.
-    pub(crate) fn scope(&self, position: pattern::Position) -> pattern::Scope<'_> {
-        pattern::Scope {
-            me: self.me(),
-            lists: &self.lists,
-            position,
-        }
-    }
-
-    /// Which addresses are mine: the identity ones plus `alternates`.
-    pub(crate) fn me(&self) -> pattern::Me<'_> {
-        pattern::Me::new(&self.my_addresses, &self.alternates)
-    }
-
-    /// `~m` numbering and `~=` duplicate flags for every message, as
-    /// the index stands right now: numbers are the ones on screen, so
-    /// a range means what the user can actually see, and messages
-    /// hidden by the current limit carry number 0 (never in range).
-    fn positions(&self) -> Vec<pattern::Position> {
-        let mut seen: HashMap<&str, usize> = HashMap::new();
-        for m in &self.msgs {
-            if let Some(id) = m.env.msg_id.as_deref() {
-                *seen.entry(id).or_default() += 1;
-            }
-        }
-        let mut numbers = vec![0usize; self.msgs.len()];
-        for (n, &mi) in self.visible.iter().enumerate() {
-            if let Some(slot) = numbers.get_mut(mi) {
-                *slot = n + 1;
-            }
-        }
-        let current = self
-            .visible
-            .get(self.sel)
-            .and_then(|&mi| numbers.get(mi).copied())
-            .unwrap_or(0);
-        let last = self.visible.len();
-        (0..self.msgs.len())
-            .map(|i| pattern::Position {
-                number: numbers[i],
-                current,
-                last,
-                duplicate: self.msgs[i]
-                    .env
-                    .msg_id
-                    .as_deref()
-                    .is_some_and(|id| seen.get(id).copied().unwrap_or(0) > 1),
-            })
-            .collect()
-    }
-
-    /// On IMAP, ask the server about the pattern's `~b` terms up
-    /// front. Only plain substrings go (regex or non-ASCII terms stay
-    /// local; a server search is a literal match); a failed search
-    /// just falls back to reading bodies locally.
-    fn resolve_body_terms(&mut self, patterns: &[Pattern]) {
-        let Some(remote) = &mut self.remote else {
-            return;
-        };
-        for term in pattern::body_terms(patterns) {
-            let simple = !term
-                .chars()
-                .any(|c| r".*+?[](){}|^$\".contains(c) || !c.is_ascii());
-            if !simple || self.body_hits.contains_key(&term) {
-                continue;
-            }
-            if let Ok(uids) = remote.search_body(&term) {
-                self.body_hits.insert(term, uids.into_iter().collect());
-            }
-        }
     }
 
     /// Rebuild the sidebar entries: the configured mailboxes with
@@ -1361,9 +997,9 @@ impl App {
         }
         let keep = self.sidebar.get(self.sidebar_sel).map(|e| e.0.clone());
         let mut entries: Vec<(String, usize)> = Vec::new();
-        for spec in self.config.mail.mailboxes.clone() {
+        for spec in self.session.config.mail.mailboxes.clone() {
             let count = match remote::parse_spec(&spec) {
-                Some((account, folder)) => match &mut self.remote {
+                Some((account, folder)) => match &mut self.session.remote {
                     Some(remote) if remote.account.name == account => remote.unseen(folder),
                     _ => 0, // other accounts: no connection just for a count
                 },
@@ -1371,10 +1007,10 @@ impl App {
             };
             entries.push((spec, count));
         }
-        let (title, dir) = (self.title.clone(), self.dir.clone());
+        let (title, dir) = (self.session.title.clone(), self.session.dir.clone());
         let open = |e: &(String, usize)| e.0 == title || expand_tilde(&e.0) == dir;
         if !entries.iter().any(&open) {
-            entries.insert(0, (self.title.clone(), self.new_count()));
+            entries.insert(0, (self.session.title.clone(), self.session.new_count()));
         }
         self.sidebar_open = entries.iter().position(&open);
         self.sidebar_sel = keep
@@ -1382,88 +1018,6 @@ impl App {
             .or(self.sidebar_open)
             .unwrap_or(0);
         self.sidebar = entries;
-    }
-
-    /// Watch the other configured local mailboxes for growth in their
-    /// new/ (mutt's `mailboxes`); the first poll only sets a baseline.
-    fn check_other_mailboxes(&mut self) {
-        let mut grew: Vec<String> = Vec::new();
-        for spec in self.config.mail.mailboxes.clone() {
-            if spec.starts_with("imap:") || spec == self.title {
-                continue; // other accounts are not worth a connection
-            }
-            let dir = expand_tilde(&spec);
-            if dir == self.dir || !dir.join("new").is_dir() {
-                continue;
-            }
-            let count = maildir::new_count(&dir);
-            let prev = self.mailbox_new.insert(spec.clone(), count);
-            if let Some(p) = prev.filter(|&p| count > p) {
-                self.run_new_mail_command(&spec, count - p);
-                grew.push(spec);
-            }
-        }
-        // The open mailbox's own announcement (from the rescan) wins.
-        if !grew.is_empty() && self.notice().is_none() {
-            self.note(format!("new mail in {}", grew.join(", ")));
-        }
-    }
-
-    /// Re-read the maildir, keeping unsynced flag changes and deletion
-    /// marks for messages that are still there.
-    fn rescan(&mut self) {
-        let Ok(files) = maildir::scan(&self.dir) else {
-            return;
-        };
-        let keep = self.selected_path();
-        let mut old: std::collections::HashMap<PathBuf, Msg> = self
-            .msgs
-            .drain(..)
-            .map(|m| (m.env.file.path.clone(), m))
-            .collect();
-        let mut arrived = 0usize;
-        for file in files {
-            match old.remove(&file.path) {
-                Some(prev) if prev.pending() => self.msgs.push(prev),
-                Some(mut prev) => {
-                    // Take fresh on-disk flags, keep the parsed envelope.
-                    prev.env.file = file;
-                    self.msgs.push(prev);
-                }
-                None => {
-                    if let Ok(env) = message::envelope(file) {
-                        if env.file.is_new {
-                            arrived += 1;
-                        }
-                        self.msgs.push(Msg { env, dirty: false });
-                    }
-                }
-            }
-        }
-        self.dir_mtimes = dir_mtimes(&self.dir);
-        self.resort(keep);
-        if arrived > 0 {
-            self.note(format!("new mail in {} (+{arrived})", self.title));
-            let title = self.title.clone();
-            self.run_new_mail_command(&title, arrived);
-        }
-    }
-
-    /// neomutt's new_mail_command: fire-and-forget shell hook on
-    /// arrivals; %f = the mailbox, %n = how many.
-    fn run_new_mail_command(&self, mailbox: &str, count: usize) {
-        let Some(cmd) = &self.config.mail.new_mail_command else {
-            return;
-        };
-        let cmd = cmd
-            .replace("%f", &format!("'{}'", mailbox.replace('\'', r"'\''")))
-            .replace("%n", &count.to_string());
-        let _ = Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
     }
 
     // ---- help ----
@@ -1649,9 +1203,9 @@ impl App {
                     KeyCode::Char('t') | KeyCode::Char('T') => (SortKey::Threads, false),
                     _ => return,
                 };
-                self.sort = sort;
-                self.sort_rev = rev;
-                self.apply_sort();
+                self.session.sort = sort;
+                self.session.sort_rev = rev;
+                self.session.apply_sort();
                 self.note(format!(
                     "sorted by {}{}",
                     sort.name(),
@@ -1664,7 +1218,7 @@ impl App {
                 // deleted; anything else calls the whole thing off,
                 // including the quit that asked.
                 KeyCode::Char('y') | KeyCode::Char('n') | KeyCode::Enter => {
-                    self.sync(code != KeyCode::Char('n'));
+                    self.session.sync(code != KeyCode::Char('n'));
                     if quit {
                         self.quit = true;
                     }
@@ -1859,7 +1413,7 @@ impl App {
             alias::complete(
                 &word,
                 &alias::load_default(),
-                self.config.mail.query_command.as_deref(),
+                self.session.config.mail.query_command.as_deref(),
             )
         } else {
             let specs = match self.folder_candidates() {
@@ -1905,22 +1459,24 @@ impl App {
         let expanded;
         let input = match kind.takes_mailbox() {
             true => {
-                expanded =
-                    rmut_core::config::expand_folder(input, self.config.mail.folder.as_deref());
+                expanded = rmut_core::config::expand_folder(
+                    input,
+                    self.session.config.mail.folder.as_deref(),
+                );
                 expanded.as_str()
             }
             false => input,
         };
         match kind {
             LineKind::Limit => {
-                let keep = self.selected_path();
+                let keep = self.session.selected_path();
                 if input.is_empty() || input == "all" {
-                    self.limit = None;
+                    self.session.limit = None;
                 } else {
                     match pattern::parse(input) {
                         Ok(patterns) => {
-                            self.resolve_body_terms(&patterns);
-                            self.limit = Some((input.to_string(), patterns));
+                            self.session.resolve_body_terms(&patterns);
+                            self.session.limit = Some((input.to_string(), patterns));
                         }
                         Err(err) => {
                             self.error(format!("bad pattern: {err}"));
@@ -1928,18 +1484,18 @@ impl App {
                         }
                     }
                 }
-                self.rebuild_visible(keep);
-                if self.visible.is_empty() {
+                self.session.rebuild_visible(keep);
+                if self.session.visible.is_empty() {
                     self.note("no messages match the limit");
                 }
             }
             LineKind::Search | LineKind::SearchBack => {
-                self.search_rev = matches!(kind, LineKind::SearchBack);
+                self.session.search_rev = matches!(kind, LineKind::SearchBack);
                 if !input.is_empty() {
                     match pattern::parse(input) {
                         Ok(patterns) => {
-                            self.resolve_body_terms(&patterns);
-                            self.last_search = Some(patterns);
+                            self.session.resolve_body_terms(&patterns);
+                            self.session.last_search = Some(patterns);
                         }
                         Err(err) => {
                             self.error(format!("bad pattern: {err}"));
@@ -1947,7 +1503,7 @@ impl App {
                         }
                     }
                 }
-                self.search_next();
+                self.session.search_next();
             }
             LineKind::PagerSearch => {
                 if !input.is_empty() {
@@ -1960,22 +1516,24 @@ impl App {
                     self.error("No search pattern.");
                 }
             }
-            LineKind::DeletePattern => self.apply_pattern(input, "deleted", |m| {
+            LineKind::DeletePattern => self.session.apply_pattern(input, "deleted", |m| {
                 if !m.env.file.flags.deleted {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
                 }
             }),
-            LineKind::UndeletePattern => self.apply_pattern(input, "undeleted", |m| {
+            LineKind::UndeletePattern => self.session.apply_pattern(input, "undeleted", |m| {
                 if m.env.file.flags.deleted {
                     m.env.file.flags.deleted = false;
                     m.dirty = true;
                 }
             }),
-            LineKind::TagPattern => self.apply_pattern(input, "tagged", |m| m.env.tagged = true),
-            LineKind::UntagPattern => {
-                self.apply_pattern(input, "untagged", |m| m.env.tagged = false)
-            }
+            LineKind::TagPattern => self
+                .session
+                .apply_pattern(input, "tagged", |m| m.env.tagged = true),
+            LineKind::UntagPattern => self
+                .session
+                .apply_pattern(input, "untagged", |m| m.env.tagged = false),
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::ChangeDirReadOnly => self.open_mailbox_read_only(input),
             LineKind::Shell => {
@@ -2045,22 +1603,22 @@ impl App {
         }
         match action {
             IndexAction::Tag => {
-                if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("tag", &[i]);
-                    self.msgs[i].env.tagged = !self.msgs[i].env.tagged;
-                    self.select(self.sel.saturating_add(1));
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("tag", &[i]);
+                    self.session.msgs[i].env.tagged = !self.session.msgs[i].env.tagged;
+                    self.session.select(self.session.sel.saturating_add(1));
                 }
             }
             IndexAction::Undo => self.undo_last(),
-            IndexAction::DeleteThread => self.thread_mark(false, ThreadOp::Delete),
-            IndexAction::UndeleteThread => self.thread_mark(false, ThreadOp::Undelete),
-            IndexAction::TagThread => self.thread_mark(false, ThreadOp::Tag),
-            IndexAction::DeleteSubthread => self.thread_mark(true, ThreadOp::Delete),
-            IndexAction::UndeleteSubthread => self.thread_mark(true, ThreadOp::Undelete),
-            IndexAction::NextThread => self.jump_thread(true),
-            IndexAction::PrevThread => self.jump_thread(false),
+            IndexAction::DeleteThread => self.session.thread_mark(false, ThreadOp::Delete),
+            IndexAction::UndeleteThread => self.session.thread_mark(false, ThreadOp::Undelete),
+            IndexAction::TagThread => self.session.thread_mark(false, ThreadOp::Tag),
+            IndexAction::DeleteSubthread => self.session.thread_mark(true, ThreadOp::Delete),
+            IndexAction::UndeleteSubthread => self.session.thread_mark(true, ThreadOp::Undelete),
+            IndexAction::NextThread => self.session.jump_thread(true),
+            IndexAction::PrevThread => self.session.jump_thread(false),
             IndexAction::TagPrefix => {
-                if self.msgs.iter().any(|m| m.env.tagged) {
+                if self.session.msgs.iter().any(|m| m.env.tagged) {
                     self.tag_next = true;
                     // mutt writes "Tag-" on its message line and
                     // waits; rmut's one bottom line appends it to the
@@ -2092,14 +1650,14 @@ impl App {
             IndexAction::Edit => self.start_raw_edit(),
             IndexAction::CreateAlias => self.prompt_create_alias(),
             IndexAction::Query => {
-                if self.config.mail.query_command.is_none() {
+                if self.session.config.mail.query_command.is_none() {
                     self.error("no query_command configured");
                 } else {
                     self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
                 }
             }
             IndexAction::Notmuch => {
-                if self.config.mail.notmuch == Some(false) {
+                if self.session.config.mail.notmuch == Some(false) {
                     self.error("notmuch is disabled in the config");
                 } else {
                     self.prompt = Some(Prompt::line(
@@ -2113,83 +1671,85 @@ impl App {
                 // Like mutt: flag changes are written silently; only
                 // pending deletions raise a question (the purge one).
                 self.mark_old_unread();
-                if self.deleted_count() > 0 {
+                if self.session.deleted_count() > 0 {
                     self.prompt_purge(true);
                 } else {
-                    if self.pending_count() > 0 {
-                        self.sync(true);
+                    if self.session.pending_count() > 0 {
+                        self.session.sync(true);
                     }
                     self.quit = true;
                 }
             }
             IndexAction::Abort => self.quit = true,
-            IndexAction::Down => self.select(self.sel.saturating_add(1)),
-            IndexAction::Up => self.select(self.sel.saturating_sub(1)),
-            IndexAction::PageDown => self.select(self.sel.saturating_add(page)),
-            IndexAction::PageUp => self.select(self.sel.saturating_sub(page)),
-            IndexAction::First => self.select(0),
-            IndexAction::Last => self.select(usize::MAX),
+            IndexAction::Down => self.session.select(self.session.sel.saturating_add(1)),
+            IndexAction::Up => self.session.select(self.session.sel.saturating_sub(1)),
+            IndexAction::PageDown => self.session.select(self.session.sel.saturating_add(page)),
+            IndexAction::PageUp => self.session.select(self.session.sel.saturating_sub(page)),
+            IndexAction::First => self.session.select(0),
+            IndexAction::Last => self.session.select(usize::MAX),
             IndexAction::View => self.open_selected(),
-            IndexAction::FoldThread => self.toggle_collapse(false),
-            IndexAction::FoldAll => self.toggle_collapse(true),
+            IndexAction::FoldThread => self.session.toggle_collapse(false),
+            IndexAction::FoldAll => self.session.toggle_collapse(true),
             IndexAction::Delete => {
-                if self.deny_readonly() {
+                if self.session.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged("delete", |m| m.env.file.flags.deleted = true);
-                } else if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("delete", &[i]);
-                    self.msgs[i].env.file.flags.deleted = true;
-                    self.msgs[i].dirty = true;
-                    self.select(self.sel.saturating_add(1));
+                    self.session
+                        .each_tagged("delete", |m| m.env.file.flags.deleted = true);
+                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("delete", &[i]);
+                    self.session.msgs[i].env.file.flags.deleted = true;
+                    self.session.msgs[i].dirty = true;
+                    self.session.select(self.session.sel.saturating_add(1));
                 }
             }
             IndexAction::Undelete => {
-                if self.deny_readonly() {
+                if self.session.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged("undelete", |m| m.env.file.flags.deleted = false);
-                } else if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("undelete", &[i]);
-                    self.msgs[i].env.file.flags.deleted = false;
-                    self.msgs[i].dirty = true;
+                    self.session
+                        .each_tagged("undelete", |m| m.env.file.flags.deleted = false);
+                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("undelete", &[i]);
+                    self.session.msgs[i].env.file.flags.deleted = false;
+                    self.session.msgs[i].dirty = true;
                     // mutt's $resolve (on by default): advance.
-                    self.select(self.sel.saturating_add(1));
+                    self.session.select(self.session.sel.saturating_add(1));
                 }
             }
             IndexAction::Flag => {
-                if self.deny_readonly() {
+                if self.session.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged("flag", |m| {
+                    self.session.each_tagged("flag", |m| {
                         m.env.file.flags.flagged = !m.env.file.flags.flagged
                     });
-                } else if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("flag", &[i]);
-                    let flags = &mut self.msgs[i].env.file.flags;
+                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("flag", &[i]);
+                    let flags = &mut self.session.msgs[i].env.file.flags;
                     flags.flagged = !flags.flagged;
-                    self.msgs[i].dirty = true;
-                    self.select(self.sel.saturating_add(1));
+                    self.session.msgs[i].dirty = true;
+                    self.session.select(self.session.sel.saturating_add(1));
                 }
             }
             IndexAction::ToggleNew => {
-                if self.deny_readonly() {
+                if self.session.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged("toggle read", |m| {
+                    self.session.each_tagged("toggle read", |m| {
                         m.env.file.flags.seen = !m.env.file.flags.seen;
                         m.env.file.is_new = false;
                     });
-                } else if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("toggle read", &[i]);
-                    let file = &mut self.msgs[i].env.file;
+                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("toggle read", &[i]);
+                    let file = &mut self.session.msgs[i].env.file;
                     file.flags.seen = !file.flags.seen;
                     file.is_new = false;
-                    self.msgs[i].dirty = true;
-                    self.select(self.sel.saturating_add(1));
+                    self.session.msgs[i].dirty = true;
+                    self.session.select(self.session.sel.saturating_add(1));
                 }
             }
             IndexAction::Sync => {
-                if self.deleted_count() > 0 {
+                if self.session.deleted_count() > 0 {
                     self.prompt_purge(false);
                 } else {
-                    self.sync(true);
+                    self.session.sync(true);
                 }
             }
             IndexAction::Compose => self.start_compose(ComposeKind::New),
@@ -2206,6 +1766,7 @@ impl App {
             }
             IndexAction::Limit => {
                 let buf = self
+                    .session
                     .limit
                     .as_ref()
                     .map(|(s, _)| s.clone())
@@ -2226,11 +1787,11 @@ impl App {
                     LineKind::SearchBack,
                 ));
             }
-            IndexAction::SearchNext => self.search_next(),
-            IndexAction::NextNew => self.jump_new(true),
-            IndexAction::PrevNew => self.jump_new(false),
+            IndexAction::SearchNext => self.session.search_next(),
+            IndexAction::NextNew => self.session.jump_new(true),
+            IndexAction::PrevNew => self.session.jump_new(false),
             IndexAction::DeletePattern => {
-                if !self.deny_readonly() {
+                if !self.session.deny_readonly() {
                     self.prompt = Some(Prompt::line(
                         "Delete messages matching: ",
                         String::new(),
@@ -2239,7 +1800,7 @@ impl App {
                 }
             }
             IndexAction::UndeletePattern => {
-                if !self.deny_readonly() {
+                if !self.session.deny_readonly() {
                     self.prompt = Some(Prompt::line(
                         "Undelete messages matching: ",
                         String::new(),
@@ -2331,23 +1892,6 @@ impl App {
         matches!(&self.mode, Mode::Pager(p) if p.back.is_some())
     }
 
-    /// The next/previous visible position from the selection; mutt's
-    /// next-/previous-undeleted skips messages flagged for deletion.
-    fn step_message(&self, forward: bool, skip_deleted: bool) -> Option<usize> {
-        let mut pos = self.sel;
-        loop {
-            pos = if forward {
-                pos + 1
-            } else {
-                pos.checked_sub(1)?
-            };
-            let &i = self.visible.get(pos)?;
-            if !skip_deleted || !self.msgs[i].env.file.flags.deleted {
-                return Some(pos);
-            }
-        }
-    }
-
     fn handle_pager_key(&mut self, key: KeyEvent, width: usize, page: usize) {
         // $wrap narrows the text, so all row math follows it.
         let width = self.pager_wrap(width);
@@ -2380,9 +1924,12 @@ impl App {
                     self.error("Not available in this menu.");
                     return;
                 }
-                match self.step_message(true, action == PagerAction::NextUndeleted) {
+                match self
+                    .session
+                    .step_message(true, action == PagerAction::NextUndeleted)
+                {
                     Some(pos) => {
-                        self.sel = pos;
+                        self.session.sel = pos;
                         self.open_selected();
                     }
                     None => self.error("last message"),
@@ -2394,9 +1941,12 @@ impl App {
                     self.error("Not available in this menu.");
                     return;
                 }
-                match self.step_message(false, action == PagerAction::PrevUndeleted) {
+                match self
+                    .session
+                    .step_message(false, action == PagerAction::PrevUndeleted)
+                {
                     Some(pos) => {
-                        self.sel = pos;
+                        self.session.sel = pos;
                         self.open_selected();
                     }
                     None => self.error("first message"),
@@ -2408,18 +1958,18 @@ impl App {
                     self.error("Not available in this menu.");
                     return;
                 }
-                if self.deny_readonly() {
+                if self.session.deny_readonly() {
                     return;
                 }
-                if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("delete", &[i]);
-                    self.msgs[i].env.file.flags.deleted = true;
-                    self.msgs[i].dirty = true;
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("delete", &[i]);
+                    self.session.msgs[i].env.file.flags.deleted = true;
+                    self.session.msgs[i].dirty = true;
                 }
                 // mutt's $resolve: advance to the next undeleted.
-                match self.step_message(true, true) {
+                match self.session.step_message(true, true) {
                     Some(pos) => {
-                        self.sel = pos;
+                        self.session.sel = pos;
                         self.open_selected();
                     }
                     None => self.mode = Mode::Index,
@@ -2431,17 +1981,17 @@ impl App {
                     self.error("Not available in this menu.");
                     return;
                 }
-                if self.deny_readonly() {
+                if self.session.deny_readonly() {
                     return;
                 }
-                if let Some(&i) = self.visible.get(self.sel) {
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
                     let what = match action {
                         PagerAction::Undelete => "undelete",
                         PagerAction::Flag => "flag",
                         _ => "toggle read",
                     };
-                    self.push_undo(what, &[i]);
-                    let file = &mut self.msgs[i].env.file;
+                    self.session.push_undo(what, &[i]);
+                    let file = &mut self.session.msgs[i].env.file;
                     match action {
                         PagerAction::Undelete => file.flags.deleted = false,
                         PagerAction::Flag => file.flags.flagged = !file.flags.flagged,
@@ -2450,7 +2000,7 @@ impl App {
                             file.is_new = false;
                         }
                     }
-                    self.msgs[i].dirty = true;
+                    self.session.msgs[i].dirty = true;
                 }
                 return;
             }
@@ -2459,9 +2009,9 @@ impl App {
                     self.error("Not available in this menu.");
                     return;
                 }
-                if let Some(&i) = self.visible.get(self.sel) {
-                    self.push_undo("tag", &[i]);
-                    self.msgs[i].env.tagged = !self.msgs[i].env.tagged;
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("tag", &[i]);
+                    self.session.msgs[i].env.tagged = !self.session.msgs[i].env.tagged;
                 }
                 return;
             }
@@ -2563,9 +2113,11 @@ impl App {
         // The mini-index (pager.index_lines) shrinks the pager
         // viewport; pager.context keeps overlap when paging.
         let page = page
-            .saturating_sub(self.config.pager.index_lines as usize)
+            .saturating_sub(self.session.config.pager.index_lines as usize)
             .max(1);
-        let step = page.saturating_sub(self.config.pager.context).max(1);
+        let step = page
+            .saturating_sub(self.session.config.pager.context)
+            .max(1);
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
@@ -2586,9 +2138,9 @@ impl App {
                 return;
             }
             // mutt falls through to next-undeleted here.
-            match self.step_message(true, true) {
+            match self.session.step_message(true, true) {
                 Some(pos) => {
-                    self.sel = pos;
+                    self.session.sel = pos;
                     self.open_selected();
                 }
                 None => self.error("last message"),
@@ -2747,10 +2299,10 @@ impl App {
     }
 
     fn open_attachments(&mut self) {
-        let Some(&i) = self.visible.get(self.sel) else {
+        let Some(&i) = self.session.visible.get(self.session.sel) else {
             return;
         };
-        let msg_path = self.msgs[i].env.file.path.clone();
+        let msg_path = self.session.msgs[i].env.file.path.clone();
         match message::parts(&msg_path) {
             Ok(parts) if !parts.is_empty() => {
                 let back = match mem::replace(&mut self.mode, Mode::Index) {
@@ -2870,6 +2422,7 @@ impl App {
             return;
         };
         let command = self
+            .session
             .config
             .mail
             .print
@@ -2925,7 +2478,13 @@ impl App {
                     Mode::Folders {
                         root: Some(root), ..
                     } => root.display().to_string(),
-                    _ => self.dir.parent().unwrap_or(&self.dir).display().to_string(),
+                    _ => self
+                        .session
+                        .dir
+                        .parent()
+                        .unwrap_or(&self.session.dir)
+                        .display()
+                        .to_string(),
                 };
                 self.prompt = Some(Prompt::line("Browse directory: ", buf, LineKind::BrowseDir));
             }
@@ -3014,8 +2573,8 @@ impl App {
             given
         } else {
             root.clone()
-                .or_else(|| self.dir.parent().map(Path::to_path_buf))
-                .unwrap_or_else(|| self.dir.clone())
+                .or_else(|| self.session.dir.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| self.session.dir.clone())
                 .join(given)
         };
         for sub in ["cur", "new", "tmp"] {
@@ -3036,7 +2595,7 @@ impl App {
         if input.is_empty() {
             return;
         }
-        let Some(command) = self.config.mail.query_command.clone() else {
+        let Some(command) = self.session.config.mail.query_command.clone() else {
             return;
         };
         let results = alias::query(&command, input);
@@ -3108,10 +2667,10 @@ impl App {
         }
         let count = files.len();
         self.open_mailbox_spec(&dir.display().to_string());
-        if self.dir == dir {
+        if self.session.dir == dir {
             // The virtual mailbox: never write through the symlinks.
-            self.read_only = true;
-            self.title = format!("notmuch: {query}");
+            self.session.read_only = true;
+            self.session.title = format!("notmuch: {query}");
             self.note(format!("{count} matching message(s)"));
         }
     }
@@ -3155,6 +2714,7 @@ impl App {
         // Local entries carry their new/ count; imap: specs of other
         // accounts show without one (no connection just for a count).
         let mut dirs: Vec<(String, usize)> = self
+            .session
             .config
             .mail
             .mailboxes
@@ -3169,7 +2729,7 @@ impl App {
                 (m.clone(), count)
             })
             .collect();
-        match &mut self.remote {
+        match &mut self.session.remote {
             Some(remote) => {
                 let account = remote.account.name.clone();
                 dirs.extend(
@@ -3180,7 +2740,7 @@ impl App {
                 );
             }
             None => dirs.extend(
-                maildir::discover(&self.dir)
+                maildir::discover(&self.session.dir)
                     .iter()
                     .map(|p| (p.display().to_string(), maildir::new_count(p))),
             ),
@@ -3214,7 +2774,7 @@ impl App {
         }
         let sel = dirs
             .iter()
-            .position(|d| d.0 == self.title || expand_tilde(&d.0) == self.dir)
+            .position(|d| d.0 == self.session.title || expand_tilde(&d.0) == self.session.dir)
             .unwrap_or(0);
         self.mode = Mode::Folders {
             dirs,
@@ -3227,10 +2787,10 @@ impl App {
     /// unread new mail ages to old: moved out of new/ without the
     /// seen flag, shown as O and no longer counted as new.
     fn mark_old_unread(&mut self) {
-        if self.read_only {
+        if self.session.read_only {
             return;
         }
-        for m in &mut self.msgs {
+        for m in &mut self.session.msgs {
             if m.env.file.is_new
                 && !m.env.file.flags.seen
                 && !m.env.file.flags.deleted
@@ -3246,13 +2806,13 @@ impl App {
     /// changes are written silently like q; only pending deletions
     /// block the switch. True when it is safe to go.
     fn ready_to_leave(&mut self) -> bool {
-        if self.deleted_count() > 0 {
+        if self.session.deleted_count() > 0 {
             self.error("deleted messages pending; sync with $ or undelete first");
             return false;
         }
-        if self.pending_count() > 0 {
-            self.sync(false);
-            if self.pending_count() > 0 {
+        if self.session.pending_count() > 0 {
+            self.session.sync(false);
+            if self.session.pending_count() > 0 {
                 return false; // sync failed; its status says why
             }
         }
@@ -3263,8 +2823,8 @@ impl App {
     /// the session-wide version and outlives the switch either way.
     fn open_mailbox_read_only(&mut self, spec: &str) {
         self.open_mailbox_spec(spec);
-        self.read_only = true;
-        self.note(format!("{} (read-only)", self.title));
+        self.session.read_only = true;
+        self.note(format!("{} (read-only)", self.session.title));
     }
 
     fn open_mailbox_spec(&mut self, spec: &str) {
@@ -3277,25 +2837,32 @@ impl App {
         // session falls through to the full open below.
         if let Some((account_name, mailbox)) = remote::parse_spec(spec)
             && self
+                .session
                 .remote
                 .as_ref()
                 .is_some_and(|r| r.account.name == account_name)
-            && self.remote.as_mut().unwrap().switch(mailbox).is_ok()
+            && self
+                .session
+                .remote
+                .as_mut()
+                .unwrap()
+                .switch(mailbox)
+                .is_ok()
         {
-            let remote = self.remote.take().unwrap();
-            match App::open(&remote.cache.clone(), self.config.clone()) {
+            let remote = self.session.remote.take().unwrap();
+            match App::open(&remote.cache.clone(), self.session.config.clone()) {
                 Ok(mut app) => {
-                    app.title = remote.spec.clone();
+                    app.session.title = remote.spec.clone();
                     if let Ok(password) = account_password(&remote.account) {
-                        app.idle = Some(remote::idle_watch(
+                        app.session.idle = Some(remote::idle_watch(
                             &remote.account,
                             &remote.mailbox,
                             &password,
                         ));
                     }
-                    app.remote = Some(remote);
-                    app.read_only_session = self.read_only_session;
-                    app.read_only = self.read_only_session;
+                    app.session.remote = Some(remote);
+                    app.session.read_only_session = self.session.read_only_session;
+                    app.session.read_only = self.session.read_only_session;
                     app.sidebar_visible = self.sidebar_visible;
                     app.refresh_sidebar();
                     *self = app;
@@ -3305,13 +2872,13 @@ impl App {
             }
             return;
         }
-        match App::open_spec(spec, self.config.clone()) {
+        match App::open_spec(spec, self.session.config.clone()) {
             Ok(mut app) => {
                 // The runtime sidebar toggle survives a mailbox switch,
                 // and so does a -R session: it is not a property of the
                 // mailbox that was open.
-                app.read_only_session = self.read_only_session;
-                app.read_only = self.read_only_session;
+                app.session.read_only_session = self.session.read_only_session;
+                app.session.read_only = self.session.read_only_session;
                 app.sidebar_visible = self.sidebar_visible;
                 app.refresh_sidebar();
                 *self = app;
@@ -3324,8 +2891,8 @@ impl App {
     // ---- compose ----
 
     fn compose_base(&self) -> Option<ComposeBase> {
-        let &mi = self.visible.get(self.sel)?;
-        let env = &self.msgs[mi].env;
+        let &mi = self.session.visible.get(self.session.sel)?;
+        let env = &self.session.msgs[mi].env;
         let view = message::load(&env.file.path).ok()?;
         let get = |name: &str| {
             view.all
@@ -3392,7 +2959,7 @@ impl App {
         // mutt's $autoedit (with edit_headers): no prompts, no
         // questions: the defaults land in the draft and the editor
         // opens; everything stays editable there and in the menu.
-        if self.config.mail.autoedit && self.edit_headers() {
+        if self.session.config.mail.autoedit && self.edit_headers() {
             let to = match (&kind, &base) {
                 (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => b.reply_to.clone(),
                 (ComposeKind::ListReply, Some(b)) => self.list_target(b).unwrap_or_default(),
@@ -3457,28 +3024,34 @@ impl App {
         candidates.extend(compose::addresses(&base.orig_cc));
         candidates
             .into_iter()
-            .find(|a| self.lists.iter().any(|m| m.is_match(a)))
+            .find(|a| self.session.lists.iter().any(|m| m.is_match(a)))
     }
 
     /// mutt's $followup_to: mail going to a known list carries a
     /// Mail-Followup-To, so replies land on the list. Being subscribed
     /// leaves my own address out, since the list copy is the one I get.
     fn followup_header(&self, to: &str, cc: Option<&str>, from: &str) -> Option<String> {
-        if self.lists.is_empty() {
+        if self.session.lists.is_empty() {
             return None;
         }
         let mut rcpts = compose::addresses(to);
         rcpts.extend(compose::addresses(cc.unwrap_or_default()));
         if !rcpts
             .iter()
-            .any(|a| self.lists.iter().any(|m| m.is_match(a)))
+            .any(|a| self.session.lists.iter().any(|m| m.is_match(a)))
         {
             return None;
         }
         let subscribed = rcpts
             .iter()
-            .any(|a| self.subscribed.iter().any(|m| m.is_match(a)));
-        let value = compose::followup_to(to, cc.unwrap_or_default(), self.me(), subscribed, from);
+            .any(|a| self.session.subscribed.iter().any(|m| m.is_match(a)));
+        let value = compose::followup_to(
+            to,
+            cc.unwrap_or_default(),
+            self.session.me(),
+            subscribed,
+            from,
+        );
         (!value.is_empty()).then_some(value)
     }
 
@@ -3491,7 +3064,7 @@ impl App {
             return;
         };
         if self.list_target(&base).is_none() {
-            self.error(if self.lists.is_empty() {
+            self.error(if self.session.lists.is_empty() {
                 "no mailing lists configured (mail.lists / mail.subscribed)"
             } else {
                 "not a message from a known mailing list"
@@ -3526,7 +3099,7 @@ impl App {
         };
         // mutt's $fast_reply: replies take the prefills without the
         // To and Subject prompts (forwards still need a recipient).
-        if self.config.mail.fast_reply
+        if self.session.config.mail.fast_reply
             && matches!(
                 setup.kind,
                 ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
@@ -3561,7 +3134,7 @@ impl App {
             _ => String::new(),
         };
         // $fast_reply also skips the Subject prompt on forwards.
-        if self.config.mail.fast_reply && !subject_prefill.is_empty() {
+        if self.session.config.mail.fast_reply && !subject_prefill.is_empty() {
             self.subject_submitted(&subject_prefill);
             return;
         }
@@ -3592,7 +3165,7 @@ impl App {
                 ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
             ) && s.base.is_some()
         });
-        let ask_fwd = self.config.mail.forward.as_deref() == Some("ask")
+        let ask_fwd = self.session.config.mail.forward.as_deref() == Some("ask")
             && self
                 .compose_setup
                 .as_ref()
@@ -3670,8 +3243,8 @@ impl App {
                                 &b.orig_to,
                                 &b.orig_cc,
                                 &to,
-                                self.me(),
-                                self.config.mail.metoo,
+                                self.session.me(),
+                                self.session.config.mail.metoo,
                             );
                             if !joined.is_empty() {
                                 cc = Some(joined);
@@ -3733,7 +3306,7 @@ impl App {
     /// mutt's edit_headers (default false, like mutt): whether the
     /// header block is part of the editor buffer.
     fn edit_headers(&self) -> bool {
-        self.config.mail.edit_headers.unwrap_or(false)
+        self.session.config.mail.edit_headers.unwrap_or(false)
     }
 
     /// Write a fresh draft file for the editor: the whole text (with
@@ -3743,7 +3316,7 @@ impl App {
         // mutt's my_hdr lands here, so every draft the TUI opens
         // carries it: with edit_headers the editor shows the lines,
         // without it they ride along in the withheld head.
-        let text = compose::apply_my_hdr(text, &self.config.mail.my_hdr);
+        let text = compose::apply_my_hdr(text, &self.session.config.mail.my_hdr);
         if self.edit_headers() {
             return Ok((write_draft(&text)?, None));
         }
@@ -3755,9 +3328,9 @@ impl App {
     /// replied-to message came to; otherwise the layered identity
     /// (global, account, matching [[identities]] rules).
     fn compose_from(&self, base: Option<&ComposeBase>, to: &str) -> Option<String> {
-        if self.config.identity.reverse_name
+        if self.session.config.identity.reverse_name
             && let Some(b) = base
-            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, self.me())
+            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, self.session.me())
         {
             return Some(from);
         }
@@ -3768,16 +3341,19 @@ impl App {
     /// The identity in effect for this mailbox (and, when known, the
     /// draft's recipients).
     fn current_identity(&self, rcpts: &[String]) -> rmut_core::config::Identity {
-        self.config
-            .identity_for(&self.title, rcpts, self.remote.as_ref().map(|r| &r.account))
+        self.session.config.identity_for(
+            &self.session.title,
+            rcpts,
+            self.session.remote.as_ref().map(|r| &r.account),
+        )
     }
 
     fn forward_attaches(&self) -> bool {
-        self.config.mail.forward.as_deref() == Some("attach")
+        self.session.config.mail.forward.as_deref() == Some("attach")
     }
 
     fn edit_draft(&mut self, terminal: &mut DefaultTerminal, compose: Compose) {
-        let editor = self.config.mail.editor.clone().unwrap_or_else(|| {
+        let editor = self.session.config.mail.editor.clone().unwrap_or_else(|| {
             std::env::var("VISUAL")
                 .or_else(|_| std::env::var("EDITOR"))
                 .unwrap_or_else(|_| "vi".into())
@@ -3895,7 +3471,7 @@ impl App {
         let fcc = match self.compose.as_ref().and_then(|c| c.fcc.clone()) {
             Some(fcc) if fcc.is_empty() => "(no copy)".into(),
             Some(fcc) => fcc,
-            None if self.config.mail.copy == Some(false) => "(no copy)".into(),
+            None if self.session.config.mail.copy == Some(false) => "(no copy)".into(),
             None => {
                 let default = self.default_fcc();
                 if default.is_empty() {
@@ -4100,12 +3676,12 @@ impl App {
         {
             return mailbox;
         }
-        match &self.remote {
+        match &self.session.remote {
             Some(remote) => format!(
                 "imap:{}/{}",
                 remote.account.name, remote.account.sent_folder
             ),
-            None => self.config.mail.sent.clone().unwrap_or_default(),
+            None => self.session.config.mail.sent.clone().unwrap_or_default(),
         }
     }
 
@@ -4269,8 +3845,8 @@ impl App {
     /// Initial security for a fresh draft, from the [pgp] config.
     fn default_security(&self) -> Security {
         match (
-            self.config.pgp.sign_by_default,
-            self.config.pgp.encrypt_by_default,
+            self.session.config.pgp.sign_by_default,
+            self.session.config.pgp.encrypt_by_default,
         ) {
             (true, true) => Security::Both,
             (true, false) => Security::Sign,
@@ -4295,7 +3871,7 @@ impl App {
         if !mem::take(&mut self.attach_confirmed) && self.attachment_forgotten(&raw, &compose_state)
         {
             self.compose = Some(compose_state);
-            match self.config.mail.abort_noattach.as_deref() {
+            match self.session.config.mail.abort_noattach.as_deref() {
                 // neomutt's "yes" aborts outright: attach the file,
                 // or take the word out of the body.
                 Some("yes") => {
@@ -4375,13 +3951,13 @@ impl App {
                     .unwrap_or_else(|| "message".into())
             },
             state: compose_state,
-            due: Instant::now() + Duration::from_secs(self.config.mail.undo_send),
+            due: Instant::now() + Duration::from_secs(self.session.config.mail.undo_send),
         };
         // $undo_send: the message waits, and z takes it back.
-        if self.config.mail.undo_send > 0 {
+        if self.session.config.mail.undo_send > 0 {
             self.note(format!(
                 "sending {} in {}s (z cancels)",
-                held.label, self.config.mail.undo_send
+                held.label, self.session.config.mail.undo_send
             ));
             self.outbox.push(held);
             return;
@@ -4397,7 +3973,7 @@ impl App {
             self.deliver(held);
         }
         if let Some(next) = self.outbox.first()
-            && !self.notice().is_some_and(Notice::is_error)
+            && !self.notice().is_some_and(|n| n.is_error())
         {
             let left = next.due.saturating_duration_since(Instant::now()).as_secs() + 1;
             self.note(format!("sending {} in {left}s (z cancels)", next.label));
@@ -4411,15 +3987,25 @@ impl App {
             let held = self.outbox.remove(0);
             let label = held.label.clone();
             self.deliver(held);
-            if let Some(err) = self.notice().filter(|n| n.is_error()).map(Notice::text) {
+            if let Some(err) = self.notice().filter(|n| n.is_error()).map(|n| n.text()) {
                 self.exit_notes.push(format!("{label}: {err}"));
-                self.notices.clear();
+                self.clear_notice();
             }
         }
     }
 
     /// Take the newest held message back to its compose menu, draft
     /// and all. Returns false when nothing was waiting.
+    /// mutt has no undo; rmut's walks back the last step. A message
+    /// still inside its $undo_send window is the most recent thing
+    /// done, so it is what undo takes back first.
+    fn undo_last(&mut self) {
+        if self.cancel_send() {
+            return;
+        }
+        self.session.undo_last();
+    }
+
     fn cancel_send(&mut self) -> bool {
         let Some(held) = self.outbox.pop() else {
             return false;
@@ -4442,7 +4028,7 @@ impl App {
             Some(account) => send_via_smtp(&account, &final_text),
             None => run_sendmail(
                 final_text.as_bytes(),
-                self.config.mail.sendmail.as_deref(),
+                self.session.config.mail.sendmail.as_deref(),
                 None,
             ),
         };
@@ -4450,7 +4036,7 @@ impl App {
             Ok(()) => {
                 let mut note = String::from("message sent");
                 let skip_copy = chosen.as_deref() == Some("")
-                    || (chosen.is_none() && self.config.mail.copy == Some(false));
+                    || (chosen.is_none() && self.session.config.mail.copy == Some(false));
                 if skip_copy {
                     // Nothing kept, on request.
                 } else if let Some(fcc) = chosen
@@ -4471,7 +4057,7 @@ impl App {
                         note += &format!(", Fcc to {fcc} failed");
                     }
                 } else {
-                    match &mut self.remote {
+                    match &mut self.session.remote {
                         // Fcc goes to the account's Sent folder on the
                         // server.
                         Some(remote) => match remote.append_sent(final_text.as_bytes()) {
@@ -4480,6 +4066,7 @@ impl App {
                         },
                         None => {
                             let sent_dir = self
+                                .session
                                 .config
                                 .mail
                                 .sent
@@ -4487,7 +4074,7 @@ impl App {
                                 .map(expand_tilde)
                                 .filter(|p| p.join("cur").is_dir())
                                 .or_else(|| {
-                                    maildir::find_special(&self.dir, &["sent", "sent-mail"])
+                                    maildir::find_special(&self.session.dir, &["sent", "sent-mail"])
                                 });
                             match sent_dir {
                                 Some(sent) => {
@@ -4524,7 +4111,15 @@ impl App {
     /// signature do not count, so a reply to "see attached" and a
     /// signature naming one are not false alarms.
     fn attachment_forgotten(&self, raw: &str, compose: &Compose) -> bool {
-        if self.config.mail.abort_noattach.as_deref().unwrap_or("no") == "no" {
+        if self
+            .session
+            .config
+            .mail
+            .abort_noattach
+            .as_deref()
+            .unwrap_or("no")
+            == "no"
+        {
             return false;
         }
         if compose.attach.is_some() || !compose::extract_attachments(raw).1.is_empty() {
@@ -4555,7 +4150,7 @@ impl App {
         files: &[compose::Attachment],
         original: Option<&[u8]>,
     ) -> Result<String> {
-        let cfg = &self.config.pgp;
+        let cfg = &self.session.config.pgp;
         // Encrypt to every recipient plus the sender, so the Fcc copy
         // stays readable.
         let recipients = |text: &str| -> Result<Vec<String>> {
@@ -4574,7 +4169,7 @@ impl App {
             rcpts.dedup();
             Ok(rcpts)
         };
-        let flowed = self.config.mail.text_flowed;
+        let flowed = self.session.config.mail.text_flowed;
         if files.is_empty() && original.is_none() {
             return match security {
                 // No MIME wrapper at all, so $text_flowed has to
@@ -4610,15 +4205,16 @@ impl App {
     /// configuration ($RMUT_SENDMAIL or mail.sendmail) wins; otherwise
     /// the open mailbox's account, or the first one with an smtp_host.
     fn smtp_account(&self) -> Option<Account> {
-        if std::env::var("RMUT_SENDMAIL").is_ok() || self.config.mail.sendmail.is_some() {
+        if std::env::var("RMUT_SENDMAIL").is_ok() || self.session.config.mail.sendmail.is_some() {
             return None;
         }
-        if let Some(remote) = &self.remote
+        if let Some(remote) = &self.session.remote
             && remote.account.smtp_host.is_some()
         {
             return Some(remote.account.clone());
         }
-        self.config
+        self.session
+            .config
             .accounts
             .iter()
             .find(|a| a.smtp_host.is_some())
@@ -4626,14 +4222,18 @@ impl App {
     }
 
     fn postponed_dir(&self) -> Option<PathBuf> {
-        self.config
+        self.session
+            .config
             .mail
             .postponed
             .as_deref()
             .map(expand_tilde)
             .filter(|p| p.join("cur").is_dir())
             .or_else(|| {
-                maildir::find_special(&self.dir, &["drafts", "postponed", "rmut-postponed"])
+                maildir::find_special(
+                    &self.session.dir,
+                    &["drafts", "postponed", "rmut-postponed"],
+                )
             })
     }
 
@@ -4650,7 +4250,7 @@ impl App {
         let target = match self.postponed_dir() {
             Some(d) => Ok(d),
             None => {
-                let d = self.dir.join(".rmut-postponed");
+                let d = self.session.dir.join(".rmut-postponed");
                 maildir::create(&d).map(|()| d)
             }
         };
@@ -4776,10 +4376,10 @@ impl App {
             Err(err) => return self.error(err),
         };
         let sort_before = (
-            self.config.index.sort.clone(),
-            self.config.index.sort_aux.clone(),
+            self.session.config.index.sort.clone(),
+            self.session.config.index.sort_aux.clone(),
         );
-        let sidebar_before = self.config.sidebar.visible;
+        let sidebar_before = self.session.config.sidebar.visible;
         let mut reports = Vec::new();
         for cmd in &commands {
             let outcome = match cmd {
@@ -4789,7 +4389,7 @@ impl App {
                 command::Command::Alias { nick, expansion } => self.alias_command(nick, expansion),
                 command::Command::Push(seq) => self.push_command(seq),
                 command::Command::Exec(function) => self.exec_command(function),
-                config_command => command::apply(&mut self.config, config_command),
+                config_command => command::apply(&mut self.session.config, config_command),
             };
             match outcome {
                 Ok(Some(text)) => reports.push(text),
@@ -4801,24 +4401,24 @@ impl App {
             return;
         }
         // A `:set trash="=Trash"` names a mailbox too.
-        self.config.expand_folders();
+        self.session.config.expand_folders();
         reports.extend(self.recompile());
         if sort_before
             != (
-                self.config.index.sort.clone(),
-                self.config.index.sort_aux.clone(),
+                self.session.config.index.sort.clone(),
+                self.session.config.index.sort_aux.clone(),
             )
         {
-            if let Some(spec) = self.config.index.sort.clone()
+            if let Some(spec) = self.session.config.index.sort.clone()
                 && let Some((sort, rev)) = parse_sort(&spec)
             {
-                self.sort = sort;
-                self.sort_rev = rev;
+                self.session.sort = sort;
+                self.session.sort_rev = rev;
             }
-            self.apply_sort();
+            self.session.apply_sort();
         }
-        if self.config.sidebar.visible != sidebar_before {
-            self.sidebar_visible = self.config.sidebar.visible;
+        if self.session.config.sidebar.visible != sidebar_before {
+            self.sidebar_visible = self.session.config.sidebar.visible;
         }
         if !reports.is_empty() {
             self.note(reports.join("; "));
@@ -4832,11 +4432,12 @@ impl App {
     /// nothing is undone on the way out, so a catch-all entry is how
     /// you put a setting back.
     pub fn run_folder_hooks(&mut self) {
-        if self.config.folder_hooks.is_empty() {
+        if self.session.config.folder_hooks.is_empty() {
             return;
         }
-        let title = self.title.clone();
+        let title = self.session.title.clone();
         let lines: Vec<String> = self
+            .session
             .config
             .folder_hooks
             .iter()
@@ -4864,7 +4465,7 @@ impl App {
         // Back to the pre-hook config first: a hook that no longer
         // matches must leave no trace.
         if let Some(base) = self.hook_base.take() {
-            self.config = *base;
+            self.session.config = *base;
             let warnings = self.recompile();
             if !warnings.is_empty() {
                 self.error(warnings.join("; "));
@@ -4873,7 +4474,7 @@ impl App {
         if matching.is_empty() {
             return;
         }
-        self.hook_base = Some(Box::new(self.config.clone()));
+        self.hook_base = Some(Box::new(self.session.config.clone()));
         for i in matching {
             let Some(line) = self.message_hooks.get(i).map(|h| h.value.clone()) else {
                 continue;
@@ -4887,7 +4488,7 @@ impl App {
     fn clear_message_hooks(&mut self) {
         self.active_message_hooks.clear();
         if let Some(base) = self.hook_base.take() {
-            self.config = *base;
+            self.session.config = *base;
             let warnings = self.recompile();
             if !warnings.is_empty() {
                 self.error(warnings.join("; "));
@@ -4897,21 +4498,26 @@ impl App {
 
     /// Indices of the message-hooks the selected message matches.
     fn matching_message_hooks(&self) -> Vec<usize> {
-        let Some(env) = self.visible.get(self.sel).map(|&mi| &self.msgs[mi].env) else {
+        let Some(env) = self
+            .session
+            .visible
+            .get(self.session.sel)
+            .map(|&mi| &self.session.msgs[mi].env)
+        else {
             return Vec::new();
         };
         // `~m` and `~=` want the whole list; a hook asks about one
         // message, so only its own numbering is filled in.
         let pos = pattern::Position {
-            number: self.sel + 1,
-            current: self.sel + 1,
-            last: self.visible.len(),
+            number: self.session.sel + 1,
+            current: self.session.sel + 1,
+            last: self.session.visible.len(),
             duplicate: false,
         };
         self.message_hooks
             .iter()
             .enumerate()
-            .filter(|(_, h)| pattern::matches_in(&h.patterns, env, self.scope(pos), None))
+            .filter(|(_, h)| pattern::matches_in(&h.patterns, env, self.session.scope(pos), None))
             .map(|(i, _)| i)
             .collect()
     }
@@ -4934,11 +4540,12 @@ impl App {
         }
         let path = &base?.path;
         let env = self
+            .session
             .msgs
             .iter()
             .find(|m| m.env.file.path == *path)
             .map(|m| &m.env)?;
-        let scope = self.scope(pattern::Position::default());
+        let scope = self.session.scope(pattern::Position::default());
         let lines: Vec<String> = self
             .reply_hooks
             .iter()
@@ -4948,7 +4555,7 @@ impl App {
         if lines.is_empty() {
             return None;
         }
-        let saved = Box::new(self.config.clone());
+        let saved = Box::new(self.session.config.clone());
         for line in lines {
             self.run_hook("reply-hook", &line);
         }
@@ -4958,7 +4565,7 @@ impl App {
     /// Undo `apply_reply_hooks`.
     fn restore_after_reply_hooks(&mut self, saved: Option<Box<Config>>) {
         let Some(saved) = saved else { return };
-        self.config = *saved;
+        self.session.config = *saved;
         let warnings = self.recompile();
         if !warnings.is_empty() {
             self.error(warnings.join("; "));
@@ -4977,7 +4584,7 @@ impl App {
             .map(|c| c.path.clone())
             .unwrap_or_default();
         let env = compose::draft_envelope(draft, &path);
-        let scope = self.scope(pattern::Position::default());
+        let scope = self.session.scope(pattern::Position::default());
         self.fcc_hooks
             .iter()
             .find(|h| pattern::matches_in(&h.patterns, &env, scope, None))
@@ -4996,9 +4603,9 @@ impl App {
     /// Run one hook's command line, naming the hook when it fails so
     /// it is clear where a bad line came from.
     fn run_hook(&mut self, what: &str, line: &str) {
-        self.notices.clear();
+        self.clear_notice();
         self.run_command_line(line);
-        if let Some(err) = self.notice().filter(|n| n.is_error()).map(Notice::text) {
+        if let Some(err) = self.notice().filter(|n| n.is_error()).map(|n| n.text()) {
             self.error(format!("{what}: {err}"));
         }
     }
@@ -5006,12 +4613,10 @@ impl App {
     /// Recompile the config-derived state (theme, key tables, color
     /// rules, quote regexp, header rules) and hand back any warnings.
     fn recompile(&mut self) -> Vec<String> {
-        let (derived, warnings) = Derived::from_config(&self.config);
+        let (derived, warnings) = Derived::from_config(&self.session.config);
         self.theme = derived.theme;
         self.keymap = derived.keymap;
-        self.lists = derived.lists;
-        self.subscribed = derived.subscribed;
-        self.alternates = derived.alternates;
+        self.session.recompile();
         self.message_hooks = derived.message_hooks;
         self.reply_hooks = derived.reply_hooks;
         self.fcc_hooks = derived.fcc_hooks;
@@ -5051,9 +4656,9 @@ impl App {
                         continue;
                     };
                     let table = if *m == command::Menu::Index {
-                        &mut self.config.keys.index
+                        &mut self.session.config.keys.index
                     } else {
-                        &mut self.config.keys.pager
+                        &mut self.session.config.keys.pager
                     };
                     table.insert(action, key.clone());
                     bound = true;
@@ -5068,9 +4673,9 @@ impl App {
                 }
                 for m in menus {
                     let table = if *m == command::Menu::Index {
-                        &mut self.config.macros.index
+                        &mut self.session.config.macros.index
                     } else {
-                        &mut self.config.macros.pager
+                        &mut self.session.config.macros.pager
                     };
                     table.insert(key.clone(), seq.clone());
                 }
@@ -5189,133 +4794,15 @@ impl App {
         }
     }
 
-    fn select(&mut self, index: usize) {
-        if self.visible.is_empty() {
-            return;
-        }
-        self.sel = index.min(self.visible.len() - 1);
-    }
-
-    /// Apply `f` to every tagged message, marking them dirty.
-    fn each_tagged(&mut self, what: &str, f: impl Fn(&mut Msg)) {
-        let tagged: Vec<usize> = (0..self.msgs.len())
-            .filter(|&i| self.msgs[i].env.tagged)
-            .collect();
-        self.push_undo(what, &tagged);
-        for &i in &tagged {
-            let m = &mut self.msgs[i];
-            f(m);
-            m.dirty = true;
-        }
-        self.note(format!("applied to {} tagged message(s)", tagged.len()));
-    }
-
-    /// Remember `indices` as they stand, so `z` can put them back.
-    /// Steps with nothing in them are not worth a slot.
-    fn push_undo(&mut self, what: &str, indices: &[usize]) {
-        if indices.is_empty() {
-            return;
-        }
-        let marks = indices.iter().map(|&i| self.mark(i)).collect();
-        self.push_undo_step(UndoStep {
-            what: what.to_string(),
-            marks,
-            sel: self.selected_path(),
-            created: Vec::new(),
-            note: None,
-        });
-    }
-
-    fn push_undo_step(&mut self, step: UndoStep) {
-        self.undo.push(step);
-        // Oldest first out, on either bound.
-        while self.undo.len() > UNDO_MAX_STEPS
-            || (self.undo.len() > 1
-                && self.undo.iter().map(|s| s.marks.len()).sum::<usize>() > UNDO_MAX_MARKS)
-        {
-            self.undo.remove(0);
-        }
-    }
-
-    fn mark(&self, i: usize) -> MsgMark {
-        let m = &self.msgs[i];
-        MsgMark {
-            path: m.env.file.path.clone(),
-            flags: m.env.file.flags,
-            is_new: m.env.file.is_new,
-            tagged: m.env.tagged,
-            dirty: m.dirty,
-        }
-    }
-
-    /// Walk back the last step: the marks it saved go back onto the
-    /// messages that still carry those paths, and any file it created
-    /// is removed. Writing the mailbox drops the stack, so a step here
-    /// is always one that has not reached disk.
-    fn undo_last(&mut self) {
-        // A message still inside its $undo_send window is the most
-        // recent thing done, so it is what undo takes back first.
-        if self.cancel_send() {
-            return;
-        }
-        let Some(step) = self.undo.pop() else {
-            self.note("nothing to undo");
-            return;
-        };
-        let mut restored = 0usize;
-        let by_path: HashMap<&Path, usize> = self
-            .msgs
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (m.env.file.path.as_path(), i))
-            .collect();
-        let mut wanted: Vec<(usize, MsgMark)> = Vec::new();
-        for mark in &step.marks {
-            if let Some(&i) = by_path.get(mark.path.as_path()) {
-                wanted.push((i, mark.clone()));
-            }
-        }
-        for (i, mark) in wanted {
-            let m = &mut self.msgs[i];
-            m.env.file.flags = mark.flags;
-            m.env.file.is_new = mark.is_new;
-            m.env.tagged = mark.tagged;
-            m.dirty = mark.dirty;
-            restored += 1;
-        }
-        let mut failed = Vec::new();
-        for path in &step.created {
-            if let Err(err) = std::fs::remove_file(path) {
-                failed.push(format!("{}: {err}", path.display()));
-            }
-        }
-        if let Some(vi) = step.sel.and_then(|p| {
-            self.visible
-                .iter()
-                .position(|&i| self.msgs[i].env.file.path == p)
-        }) {
-            self.sel = vi;
-        }
-        let mut note = format!("undone: {} ({restored} message(s))", step.what);
-        if let Some(extra) = &step.note {
-            note += &format!("; {extra}");
-        }
-        if !failed.is_empty() {
-            self.error(format!("{note}; could not remove {}", failed.join("; ")));
-        } else {
-            self.note(note);
-        }
-    }
-
     fn prompt_copy(&mut self, delete: bool) {
-        if self.visible.get(self.sel).is_none() {
+        if self.session.visible.get(self.session.sel).is_none() {
             return;
         }
         // Save marks the original deleted; a plain copy is fine.
-        if delete && self.deny_readonly() {
+        if delete && self.session.deny_readonly() {
             return;
         }
-        let buf = self.config.mail.save.clone().unwrap_or_default();
+        let buf = self.session.config.mail.save.clone().unwrap_or_default();
         self.prompt = Some(Prompt::line(
             if delete {
                 "Save to mailbox: "
@@ -5331,45 +4818,6 @@ impl App {
         ));
     }
 
-    /// The selected message's raw bytes, completing a header-only IMAP
-    /// cache file first. Failures land in the status line.
-    /// The messages an operation applies to: the tagged set when `;`
-    /// asked for it, otherwise the one under the cursor. Tagged means
-    /// tagged anywhere, limit or no limit, like the other tagged ops.
-    fn op_targets(&self) -> Vec<usize> {
-        if self.tag_op {
-            return (0..self.msgs.len())
-                .filter(|&i| self.msgs[i].env.tagged)
-                .collect();
-        }
-        self.visible.get(self.sel).copied().into_iter().collect()
-    }
-
-    fn full_message_bytes(&mut self) -> Option<Vec<u8>> {
-        let &i = self.visible.get(self.sel)?;
-        self.message_bytes(i)
-    }
-
-    /// The raw message on disk, fetched first when the IMAP cache
-    /// holds headers only.
-    fn message_bytes(&mut self, i: usize) -> Option<Vec<u8>> {
-        let path = self.msgs.get(i)?.env.file.path.clone();
-        if let Some(remote) = &mut self.remote
-            && remote::is_partial(&path)
-            && let Err(err) = remote.fetch_body(&path)
-        {
-            self.error(format!("cannot fetch message: {err:#}"));
-            return None;
-        }
-        match std::fs::read(&path) {
-            Ok(bytes) => Some(bytes),
-            Err(err) => {
-                self.error(format!("cannot read message: {err}"));
-                None
-            }
-        }
-    }
-
     /// Copy the message to a mailbox (local maildir path or a folder
     /// of the open IMAP account); with `delete` the original is marked
     /// deleted afterwards, mutt's s versus C.
@@ -5378,7 +4826,7 @@ impl App {
             self.error("no mailbox given");
             return;
         }
-        let targets = self.op_targets();
+        let targets = self.session.op_targets(self.tag_op);
         if targets.is_empty() {
             return;
         }
@@ -5397,7 +4845,7 @@ impl App {
                         note = Some(format!("the copy in {shown} stays"));
                     }
                     target = shown;
-                    marks.push(self.mark(i));
+                    marks.push(self.session.mark(i));
                     copied.push(i);
                 }
                 // One bad message does not undo the good ones: the
@@ -5410,18 +4858,18 @@ impl App {
             self.error(format!("cannot {verb}: {}", errors.join("; ")));
             return;
         }
-        self.push_undo_step(UndoStep {
+        self.session.push_undo_step(UndoStep {
             what: format!("{verb} to {target}"),
             marks,
-            sel: self.selected_path(),
+            sel: self.session.selected_path(),
             created,
             note,
         });
         let n = copied.len();
         if delete {
             for &i in &copied {
-                self.msgs[i].env.file.flags.deleted = true;
-                self.msgs[i].dirty = true;
+                self.session.msgs[i].env.file.flags.deleted = true;
+                self.session.msgs[i].dirty = true;
             }
         }
         let mut status = match (delete, n) {
@@ -5447,10 +4895,13 @@ impl App {
         spec: &str,
         created: &mut Vec<PathBuf>,
     ) -> Result<String, String> {
-        let flags = self.msgs[i].env.file.flags;
-        let bytes = self.message_bytes(i).ok_or("cannot read the message")?;
+        let flags = self.session.msgs[i].env.file.flags;
+        let bytes = self
+            .session
+            .message_bytes(i)
+            .ok_or("cannot read the message")?;
         match remote::parse_spec(spec) {
-            Some((account, folder)) => match &mut self.remote {
+            Some((account, folder)) => match &mut self.session.remote {
                 Some(remote) if remote.account.name == account => remote
                     .append_to(folder, flags, &bytes)
                     .map(|folder| format!("imap:{account}/{folder}"))
@@ -5473,10 +4924,10 @@ impl App {
     /// Offer the selected message's sender for the alias file, with
     /// the address's local part as the suggested nick.
     fn prompt_create_alias(&mut self) {
-        let Some(&i) = self.visible.get(self.sel) else {
+        let Some(&i) = self.session.visible.get(self.session.sel) else {
             return;
         };
-        let path = self.msgs[i].env.file.path.clone();
+        let path = self.session.msgs[i].env.file.path.clone();
         let Some(from) = message::first_header(&path, "From") else {
             self.error("the message has no From header");
             return;
@@ -5503,7 +4954,7 @@ impl App {
     }
 
     fn prompt_pipe(&mut self) {
-        if self.visible.get(self.sel).is_none() {
+        if self.session.visible.get(self.session.sel).is_none() {
             return;
         }
         self.prompt = Some(Prompt::line(
@@ -5521,10 +4972,10 @@ impl App {
             self.error("no command given");
             return;
         }
-        let Some(bytes) = self.op_bytes() else {
+        let Some(bytes) = self.session.op_bytes(self.tag_op) else {
             return;
         };
-        let n = self.op_targets().len();
+        let n = self.session.op_targets(self.tag_op).len();
         match pipe_to(command, &bytes) {
             Ok(()) => self.note(match n {
                 1 => format!("piped to {command}"),
@@ -5534,21 +4985,8 @@ impl App {
         }
     }
 
-    /// Every message the operation applies to, back to back.
-    fn op_bytes(&mut self) -> Option<Vec<u8>> {
-        let mut out = Vec::new();
-        for i in self.op_targets() {
-            let bytes = self.message_bytes(i)?;
-            out.extend_from_slice(&bytes);
-            if !bytes.ends_with(b"\n") {
-                out.push(b'\n');
-            }
-        }
-        Some(out)
-    }
-
     fn prompt_bounce(&mut self) {
-        if self.visible.get(self.sel).is_none() {
+        if self.session.visible.get(self.session.sel).is_none() {
             return;
         }
         self.prompt = Some(Prompt::line(
@@ -5565,7 +5003,7 @@ impl App {
             return;
         }
         self.bounce_to = Some(to.clone());
-        let n = self.op_targets().len();
+        let n = self.session.op_targets(self.tag_op).len();
         self.prompt = Some(Prompt::Key {
             label: match n {
                 1 => format!("Bounce message to {to}? (y/n): "),
@@ -5583,10 +5021,10 @@ impl App {
             self.error(format!("cannot parse the addresses in {to:?}"));
             return;
         }
-        let targets = self.op_targets();
+        let targets = self.session.op_targets(self.tag_op);
         let mut sent = 0usize;
         for i in targets {
-            let Some(bytes) = self.message_bytes(i) else {
+            let Some(bytes) = self.session.message_bytes(i) else {
                 return;
             };
             if let Err(err) = self.bounce_one(&bytes, to, &rcpts) {
@@ -5623,7 +5061,7 @@ impl App {
             }),
             None => run_sendmail(
                 text.as_bytes(),
-                self.config.mail.sendmail.as_deref(),
+                self.session.config.mail.sendmail.as_deref(),
                 Some(rcpts),
             ),
         }
@@ -5633,17 +5071,17 @@ impl App {
     /// through $EDITOR, and a changed result replaces the original:
     /// in place for maildirs, append + delete-mark on IMAP.
     fn start_raw_edit(&mut self) {
-        if self.deny_readonly() {
+        if self.session.deny_readonly() {
             return;
         }
-        if self.mbox.is_some() {
+        if self.session.mbox.is_some() {
             self.error("editing in place is not supported for mbox spools");
             return;
         }
-        if self.full_message_bytes().is_none() {
+        if self.session.full_message_bytes().is_none() {
             return;
         }
-        self.pending_raw_edit = self.selected_path();
+        self.pending_raw_edit = self.session.selected_path();
     }
 
     /// mutt's `!`: stand the TUI down, run the command on the real
@@ -5698,7 +5136,7 @@ impl App {
                 return;
             }
         };
-        let editor = self.config.mail.editor.clone().unwrap_or_else(|| {
+        let editor = self.session.config.mail.editor.clone().unwrap_or_else(|| {
             std::env::var("VISUAL")
                 .or_else(|_| std::env::var("EDITOR"))
                 .unwrap_or_else(|_| "vi".into())
@@ -5722,17 +5160,20 @@ impl App {
             self.note("message unchanged");
             return;
         }
-        match &mut self.remote {
+        match &mut self.session.remote {
             Some(remote) => {
                 // Like mutt on IMAP: the edited copy is appended and
                 // the original marked deleted, purged on the next $.
-                let flags = self.msgs[self.visible[self.sel]].env.file.flags;
+                let flags = self.session.msgs[self.session.visible[self.session.sel]]
+                    .env
+                    .file
+                    .flags;
                 let mailbox = remote.mailbox.clone();
                 if let Err(err) = remote.append_to(&mailbox, flags, &edited) {
                     self.error(format!("cannot store the edited copy: {err:#}"));
                     return;
                 }
-                if let Some(m) = self.cur_mut() {
+                if let Some(m) = self.session.cur_mut() {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
                 }
@@ -5744,7 +5185,7 @@ impl App {
                     self.error(format!("cannot write message: {err}"));
                     return;
                 }
-                self.rescan();
+                self.session.rescan();
                 self.note("message edited");
             }
         }
@@ -5755,7 +5196,7 @@ impl App {
     /// prompt takes over.
     fn resend_current(&mut self) {
         // Completes a partial IMAP file so the body is really there.
-        if self.full_message_bytes().is_none() {
+        if self.session.full_message_bytes().is_none() {
             return;
         }
         let Some(base) = self.compose_base() else {
@@ -5789,49 +5230,20 @@ impl App {
         }
     }
 
-    fn cur_mut(&mut self) -> Option<&mut Msg> {
-        let i = self.visible.get(self.sel).copied()?;
-        self.msgs.get_mut(i)
-    }
-
-    fn selected_path(&self) -> Option<PathBuf> {
-        self.visible
-            .get(self.sel)
-            .map(|&i| self.msgs[i].env.file.path.clone())
-    }
-
-    /// True (with a status note) when a mutating operation must be
-    /// refused because of `rmut -R`.
-    fn deny_readonly(&mut self) -> bool {
-        if self.read_only {
-            self.error("Mailbox is read-only.");
-        }
-        self.read_only
-    }
-
-    fn mark_read(&mut self) {
-        if self.read_only {
-            return;
-        }
-        if let Some(m) = self.cur_mut()
-            && (m.env.file.is_new || !m.env.file.flags.seen)
-        {
-            m.env.file.is_new = false;
-            m.env.file.flags.seen = true;
-            m.dirty = true;
-        }
-    }
-
     /// Fetch (IMAP), parse, and PGP-process a message the way the
     /// pager shows it.
     fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
         // Cached IMAP messages start header-only; get the body now.
-        if let Some(remote) = &mut self.remote
+        if let Some(remote) = &mut self.session.remote
             && remote::is_partial(path)
         {
             remote.fetch_body(path).context("cannot fetch message")?;
             // The body is here now: %l can show its line count.
-            if let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
+            if let Some(m) = self
+                .session
+                .msgs
+                .iter_mut()
+                .find(|m| m.env.file.path == path)
                 && let Ok(raw) = std::fs::read(path)
             {
                 m.env.lines = Some(message::body_lines(&raw));
@@ -5841,7 +5253,7 @@ impl App {
         // PGP messages: decrypt/verify via gpg, prepend the verdict
         // line to whatever body ends up shown.
         if let Ok(raw) = std::fs::read(path)
-            && let Some(p) = pgp::view(&self.config.pgp, &raw)
+            && let Some(p) = pgp::view(&self.session.config.pgp, &raw)
         {
             match p.body {
                 // A decrypted PGP/MIME entity is a MIME tree of its
@@ -5858,47 +5270,16 @@ impl App {
         Ok(view)
     }
 
-    /// An error status: rendered in the error color with a bell,
-    /// unlike informational notes (mutt's mutt_error vs mutt_message).
-    fn error(&mut self, msg: impl Into<String>) {
-        self.notify(Notice::Error(msg.into()));
-    }
-
-    /// Something worth saying that is not a complaint.
-    pub(crate) fn note(&mut self, msg: impl Into<String>) {
-        self.notify(Notice::Info(msg.into()));
-    }
-
-    /// Emit, and ring the bell on an error if the user wants one.
-    /// The bell belongs to the front end, not to the notice: $beep
-    /// can be set from a command mid-session, so it is read here
-    /// rather than remembered by the sink.
-    pub(crate) fn notify(&mut self, notice: Notice) {
-        if notice.is_error() && self.config.ui.beep {
-            use std::io::Write as _;
-            let mut out = std::io::stdout();
-            let _ = out.write_all(b"\x07");
-            let _ = out.flush();
-        }
-        self.notices.notice(notice);
-    }
-
-    /// The last thing said, for the message line and for the callers
-    /// that only speak up when nothing else has.
-    pub(crate) fn notice(&self) -> Option<&Notice> {
-        self.notices.latest()
-    }
-
     fn open_selected(&mut self) {
-        self.mark_read();
+        self.session.mark_read();
         // Opening a message ends the pager search, like mutt (whose
         // compiled search is per pager session); the text stays as
         // the next prompt's prefill.
         self.pager_search = None;
-        let Some(&i) = self.visible.get(self.sel) else {
+        let Some(&i) = self.session.visible.get(self.session.sel) else {
             return;
         };
-        let path = self.msgs[i].env.file.path.clone();
+        let path = self.session.msgs[i].env.file.path.clone();
         match self.load_view(&path) {
             Ok(view) => {
                 self.mode = Mode::Pager(Pager {
@@ -5914,10 +5295,10 @@ impl App {
     }
 
     fn confirm_print(&mut self) {
-        if self.visible.get(self.sel).is_none() {
+        if self.session.visible.get(self.session.sel).is_none() {
             return;
         }
-        let n = self.op_targets().len();
+        let n = self.session.op_targets(self.tag_op).len();
         self.prompt = Some(Prompt::Key {
             label: match n {
                 1 => "Print message? (y/n): ".to_string(),
@@ -5930,13 +5311,13 @@ impl App {
     /// Pipe the message as displayed (brief headers, decoded body) to
     /// the configured print command, lpr by default.
     fn print_current(&mut self) {
-        let targets = self.op_targets();
+        let targets = self.session.op_targets(self.tag_op);
         if targets.is_empty() {
             return;
         }
         let mut text = String::new();
         for i in targets.iter().copied() {
-            let path = self.msgs[i].env.file.path.clone();
+            let path = self.session.msgs[i].env.file.path.clone();
             let view = match self.load_view(&path) {
                 Ok(v) => v,
                 Err(err) => {
@@ -5955,6 +5336,7 @@ impl App {
         }
         let n = targets.len();
         let command = self
+            .session
             .config
             .mail
             .print
@@ -5969,295 +5351,6 @@ impl App {
         }
     }
 
-    fn toggle_collapse(&mut self, all: bool) {
-        if self.sort != SortKey::Threads {
-            self.error("folding needs thread sort (o t)");
-            return;
-        }
-        let keep;
-        if all {
-            keep = self.selected_path();
-            if self.collapsed.is_empty() {
-                self.collapsed = self
-                    .msgs
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, _)| self.thread_depth.get(i) == Some(&0))
-                    .map(|(_, m)| m.env.file.path.clone())
-                    .collect();
-            } else {
-                self.collapsed.clear();
-            }
-        } else {
-            let Some(&mi) = self.visible.get(self.sel) else {
-                return;
-            };
-            let root = self.thread_root.get(mi).copied().unwrap_or(mi);
-            let path = self.msgs[root].env.file.path.clone();
-            if !self.collapsed.remove(&path) {
-                self.collapsed.insert(path.clone());
-            }
-            keep = Some(path);
-        }
-        self.rebuild_visible(keep);
-    }
-
-    /// Rebuild `visible` from the limit and collapsed threads, keeping
-    /// the selection on the message at `keep` when still visible.
-    fn rebuild_visible(&mut self, keep: Option<PathBuf>) {
-        let mut visible = Vec::with_capacity(self.msgs.len());
-        let positions = self.positions();
-        for (i, pos) in positions.iter().enumerate() {
-            let limit_ok = match &self.limit {
-                Some((_, patterns)) => self.env_matches_at(patterns, &self.msgs[i].env, *pos),
-                None => true,
-            };
-            if !limit_ok {
-                continue;
-            }
-            if self.limit.is_none()
-                && self.sort == SortKey::Threads
-                && self.thread_depth.get(i).copied().unwrap_or(0) > 0
-            {
-                let root = self.thread_root.get(i).copied().unwrap_or(i);
-                if self.collapsed.contains(&self.msgs[root].env.file.path) {
-                    continue;
-                }
-            }
-            visible.push(i);
-        }
-        self.visible = visible;
-        self.sel = keep
-            .and_then(|p| {
-                self.visible
-                    .iter()
-                    .position(|&i| self.msgs[i].env.file.path == p)
-            })
-            .unwrap_or_else(|| self.visible.len().saturating_sub(1));
-    }
-
-    fn apply_sort(&mut self) {
-        let keep = self.selected_path();
-        self.resort(keep);
-    }
-
-    fn resort(&mut self, keep: Option<PathBuf>) {
-        if self.sort == SortKey::Threads {
-            let newest = self.config.index.sort_aux.as_deref() == Some("last-date-sent");
-            let items = {
-                let envs: Vec<&Envelope> = self.msgs.iter().map(|m| &m.env).collect();
-                thread::thread_by(&envs, newest)
-            };
-            let mut old: Vec<Option<Msg>> = self.msgs.drain(..).map(Some).collect();
-            let mut new_pos = vec![0usize; old.len()];
-            for (pos, item) in items.iter().enumerate() {
-                new_pos[item.index] = pos;
-            }
-            self.msgs = items
-                .iter()
-                .map(|item| {
-                    old[item.index]
-                        .take()
-                        .expect("thread order is a permutation")
-                })
-                .collect();
-            self.thread_depth = items.iter().map(|item| item.depth).collect();
-            self.thread_root = items.iter().map(|item| new_pos[item.root]).collect();
-            self.sort_rev = false;
-        } else {
-            let (sort, rev) = (self.sort, self.sort_rev);
-            self.msgs.sort_by(|a, b| {
-                let ord = match sort {
-                    SortKey::Date => a.env.date.cmp(&b.env.date),
-                    SortKey::From => a.env.from.to_lowercase().cmp(&b.env.from.to_lowercase()),
-                    SortKey::Subject => {
-                        subject_key(&a.env.subject).cmp(&subject_key(&b.env.subject))
-                    }
-                    SortKey::Size => a.env.file.size.cmp(&b.env.file.size),
-                    SortKey::Threads => unreachable!(),
-                };
-                if rev { ord.reverse() } else { ord }
-            });
-            self.thread_depth = vec![0; self.msgs.len()];
-            self.thread_root = (0..self.msgs.len()).collect();
-        }
-        self.rebuild_visible(keep);
-    }
-
-    fn search_next(&mut self) {
-        let Some(patterns) = self.last_search.clone() else {
-            self.error("no search pattern (use /)");
-            return;
-        };
-        if self.visible.is_empty() {
-            return;
-        }
-        let positions = self.positions();
-        for (vi, wrapped) in wrap_order(self.visible.len(), self.sel, !self.search_rev) {
-            let mi = self.visible[vi];
-            if self.env_matches_at(&patterns, &self.msgs[mi].env, positions[mi]) {
-                if wrapped {
-                    self.note("search wrapped");
-                }
-                self.sel = vi;
-                return;
-            }
-        }
-        self.error("not found");
-    }
-
-    /// Tab / Alt+Tab: jump to the next (previous) new-or-unread
-    /// message, wrapping around with a note (mutt's
-    /// next-new-then-unread).
-    /// The messages a thread operation applies to: the selected
-    /// message's whole thread, or (with `sub`) the selected message
-    /// and its replies. None when the index is not thread-sorted,
-    /// which is also when mutt refuses.
-    fn thread_targets(&mut self, sub: bool) -> Option<Vec<usize>> {
-        if self.sort != SortKey::Threads {
-            self.error("thread operations need thread sort (o t)");
-            return None;
-        }
-        let &mi = self.visible.get(self.sel)?;
-        if !sub {
-            let root = self.thread_root.get(mi).copied().unwrap_or(mi);
-            return Some(
-                (0..self.msgs.len())
-                    .filter(|&i| self.thread_root.get(i).copied().unwrap_or(i) == root)
-                    .collect(),
-            );
-        }
-        // Thread sort lays the messages out depth-first, so a
-        // message's replies are the run after it that stays deeper.
-        let depth = self.thread_depth.get(mi).copied().unwrap_or(0);
-        let mut out = vec![mi];
-        for i in (mi + 1)..self.msgs.len() {
-            if self.thread_depth.get(i).copied().unwrap_or(0) <= depth {
-                break;
-            }
-            out.push(i);
-        }
-        Some(out)
-    }
-
-    /// mutt's delete-thread / undelete-thread / tag-thread and their
-    /// subthread halves: one keystroke, one undo step, however many
-    /// messages hang off it.
-    fn thread_mark(&mut self, sub: bool, op: ThreadOp) {
-        if op != ThreadOp::Tag && self.deny_readonly() {
-            return;
-        }
-        let Some(&mi) = self.visible.get(self.sel) else {
-            return;
-        };
-        let Some(targets) = self.thread_targets(sub) else {
-            return;
-        };
-        let scope = if sub { "subthread" } else { "thread" };
-        let (what, verb) = match op {
-            ThreadOp::Delete => (format!("delete {scope}"), "deleted"),
-            ThreadOp::Undelete => (format!("undelete {scope}"), "undeleted"),
-            // mutt's tag-thread follows the message under the cursor:
-            // the whole thread takes the opposite of its tag.
-            ThreadOp::Tag if self.msgs[mi].env.tagged => (format!("untag {scope}"), "untagged"),
-            ThreadOp::Tag => (format!("tag {scope}"), "tagged"),
-        };
-        self.push_undo(&what, &targets);
-        let want_tag = !self.msgs[mi].env.tagged;
-        for &i in &targets {
-            match op {
-                ThreadOp::Delete => {
-                    self.msgs[i].env.file.flags.deleted = true;
-                    self.msgs[i].dirty = true;
-                }
-                ThreadOp::Undelete => {
-                    self.msgs[i].env.file.flags.deleted = false;
-                    self.msgs[i].dirty = true;
-                }
-                ThreadOp::Tag => self.msgs[i].env.tagged = want_tag,
-            }
-        }
-        self.note(format!("{} {verb}", targets.len()));
-        // mutt's $resolve, which is what makes deleting thread after
-        // thread one repeated key; a rescue stays where it is.
-        if op == ThreadOp::Delete
-            && let Some(pos) = self.step_message(true, true)
-        {
-            self.sel = pos;
-        }
-    }
-
-    /// mutt's next-thread / previous-thread: the first message of the
-    /// thread either side of this one.
-    fn jump_thread(&mut self, forward: bool) {
-        if self.sort != SortKey::Threads {
-            self.error("thread operations need thread sort (o t)");
-            return;
-        }
-        for (vi, wrapped) in wrap_order(self.visible.len(), self.sel, forward) {
-            let mi = self.visible[vi];
-            if self.thread_depth.get(mi).copied().unwrap_or(0) == 0 {
-                if wrapped {
-                    self.note("wrapped around");
-                }
-                self.select(vi);
-                return;
-            }
-        }
-        self.error("no other thread");
-    }
-
-    fn jump_new(&mut self, forward: bool) {
-        let n = self.visible.len();
-        if n == 0 {
-            return;
-        }
-        for (vi, wrapped) in wrap_order(n, self.sel, forward) {
-            let m = &self.msgs[self.visible[vi]];
-            if m.env.file.is_new || !m.env.file.flags.seen {
-                if wrapped {
-                    self.note("search wrapped");
-                }
-                self.select(vi);
-                return;
-            }
-        }
-        self.error("no new or unread messages");
-    }
-
-    /// Apply `f` to every message matching `input`, within the active
-    /// limit (members of folded threads included; folding is display
-    /// only), and report the count.
-    fn apply_pattern(&mut self, input: &str, verb: &'static str, f: impl Fn(&mut Msg)) {
-        if input.is_empty() {
-            return;
-        }
-        let patterns = match pattern::parse(input) {
-            Ok(p) => p,
-            Err(err) => {
-                self.error(format!("bad pattern: {err}"));
-                return;
-            }
-        };
-        self.resolve_body_terms(&patterns);
-        let positions = self.positions();
-        let mut hits = Vec::new();
-        for (i, pos) in positions.iter().enumerate() {
-            let in_limit = match &self.limit {
-                Some((_, l)) => self.env_matches_at(l, &self.msgs[i].env, *pos),
-                None => true,
-            };
-            if in_limit && self.env_matches_at(&patterns, &self.msgs[i].env, *pos) {
-                hits.push(i);
-            }
-        }
-        self.push_undo(&format!("{verb} by pattern"), &hits);
-        for &i in &hits {
-            f(&mut self.msgs[i]);
-        }
-        self.note(format!("{} {verb}", hits.len()));
-    }
-
     /// Write all pending changes to the maildir: T-flagged messages are
     /// removed, other dirty messages are renamed with their new flags.
     /// For an IMAP mailbox the changes go to the server first (UID
@@ -6265,211 +5358,25 @@ impl App {
     fn prompt_purge(&mut self, quit: bool) {
         // mutt's $delete: yes purges without asking, no keeps the
         // marks, and the ask default is the question below.
-        match self.config.mail.delete.as_deref() {
+        match self.session.config.mail.delete.as_deref() {
             Some("yes") | Some("no") => {
-                let purge = self.config.mail.delete.as_deref() == Some("yes");
-                self.sync(purge);
+                let purge = self.session.config.mail.delete.as_deref() == Some("yes");
+                self.session.sync(purge);
                 if quit {
                     self.quit = true;
                 }
             }
             _ => {
                 self.prompt = Some(Prompt::Key {
-                    label: format!("Purge {} deleted message(s)? (y/n): ", self.deleted_count()),
+                    label: format!(
+                        "Purge {} deleted message(s)? (y/n): ",
+                        self.session.deleted_count()
+                    ),
                     kind: KeyKind::Purge { quit },
                 });
             }
         }
     }
-
-    /// Copy every deleted message into the trash mailbox: UID COPY on
-    /// the server for IMAP mailboxes, maildir delivery otherwise (the
-    /// deleted mark is dropped on the copy).
-    fn trash_deleted(&mut self, trash: &str) -> Result<()> {
-        let deleted: Vec<PathBuf> = self
-            .msgs
-            .iter()
-            .filter(|m| m.env.file.flags.deleted)
-            .map(|m| m.env.file.path.clone())
-            .collect();
-        match (remote::parse_spec(trash), &mut self.remote) {
-            (Some((account, folder)), Some(remote)) if remote.account.name == account => {
-                remote.copy_to_folder(&deleted, folder)
-            }
-            (Some(_), _) => anyhow::bail!("trash must be a folder of the open account"),
-            (None, Some(_)) => {
-                anyhow::bail!("an IMAP mailbox needs an imap:account/folder trash")
-            }
-            (None, None) => {
-                let dir = expand_tilde(trash);
-                maildir::create(&dir)?;
-                for m in self.msgs.iter().filter(|m| m.env.file.flags.deleted) {
-                    let bytes = std::fs::read(&m.env.file.path)?;
-                    let mut flags = m.env.file.flags;
-                    flags.deleted = false;
-                    maildir::deliver(&dir, &bytes, flags)?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    /// `purge` expunges deleted messages; without it they stay marked
-    /// and only flag changes are written.
-    fn sync(&mut self, purge: bool) {
-        if self.deny_readonly() {
-            return;
-        }
-        // $trash: purged messages move there first; a failed copy
-        // aborts the purge. Purging inside the trash deletes for real.
-        if purge
-            && self.deleted_count() > 0
-            && let Some(trash) = self.config.mail.trash.clone()
-            && trash != self.title
-            && expand_tilde(&trash) != self.dir
-            && let Err(err) = self.trash_deleted(&trash)
-        {
-            self.error(format!("trash failed: {err:#}; nothing purged"));
-            return;
-        }
-        if let Some(remote) = &mut self.remote {
-            let mut deletes: Vec<PathBuf> = Vec::new();
-            let mut flag_pushes: Vec<(PathBuf, maildir::Flags)> = Vec::new();
-            for m in &self.msgs {
-                if m.env.file.flags.deleted {
-                    if purge {
-                        deletes.push(m.env.file.path.clone());
-                    }
-                } else if m.dirty {
-                    flag_pushes.push((m.env.file.path.clone(), m.env.file.flags));
-                }
-            }
-            let result = flag_pushes
-                .iter()
-                .try_for_each(|(path, flags)| remote.push_flags(path, *flags))
-                .and_then(|()| {
-                    if deletes.is_empty() {
-                        Ok(())
-                    } else {
-                        remote.delete(&deletes)
-                    }
-                });
-            if let Err(err) = result {
-                // Nothing applied locally: everything stays pending.
-                self.error(format!("sync failed: {err:#}"));
-                return;
-            }
-        }
-        if let Some(mbox) = &mut self.mbox {
-            // The wanted end state per message id; untouched messages
-            // keep whatever the file already says.
-            let mut state: HashMap<String, Option<(maildir::Flags, bool)>> = HashMap::new();
-            for m in &self.msgs {
-                let Some(id) = mbox::id_of(&m.env.file.path) else {
-                    continue;
-                };
-                if m.env.file.flags.deleted && purge {
-                    state.insert(id, None);
-                } else if m.pending() {
-                    let is_new = m.env.file.is_new && !m.dirty;
-                    state.insert(id, Some((m.env.file.flags, is_new)));
-                }
-            }
-            if let Err(err) = mbox.write_back(&state) {
-                // Nothing applied locally: everything stays pending.
-                self.error(format!("sync failed: {err:#}"));
-                return;
-            }
-        }
-        let keep = self.selected_path();
-        let mut removed = 0usize;
-        let mut saved = 0usize;
-        let mut errors: Vec<String> = Vec::new();
-        self.msgs.retain_mut(|m| {
-            if m.env.file.flags.deleted {
-                if !purge {
-                    return true; // stays marked for a later purge
-                }
-                match maildir::remove(&m.env.file) {
-                    Ok(()) => {
-                        removed += 1;
-                        false
-                    }
-                    Err(err) => {
-                        errors.push(err.to_string());
-                        true
-                    }
-                }
-            } else {
-                if m.dirty {
-                    match maildir::store_flags(&m.env.file) {
-                        Ok(path) => {
-                            m.env.file.path = path;
-                            m.env.file.is_new = false;
-                            m.dirty = false;
-                            saved += 1;
-                        }
-                        Err(err) => errors.push(err.to_string()),
-                    }
-                }
-                true
-            }
-        });
-        self.dir_mtimes = dir_mtimes(&self.dir);
-        // The marks are on disk now, and the paths the stack keyed on
-        // have been renamed away: there is nothing left to walk back.
-        self.undo.clear();
-        self.resort(keep);
-        match errors.is_empty() {
-            true => self.notify(Notice::Synced {
-                deleted: removed,
-                updated: saved,
-            }),
-            false => self.note(format!("sync errors: {}", errors.join("; "))),
-        }
-    }
-}
-
-/// Sort key for subjects: case-insensitive, Re:/Fwd: prefixes stripped.
-fn subject_key(subject: &str) -> String {
-    let mut key = subject.trim().to_lowercase();
-    loop {
-        let stripped = key
-            .strip_prefix("re:")
-            .or_else(|| key.strip_prefix("fwd:"))
-            .or_else(|| key.strip_prefix("fw:"))
-            .map(|rest| rest.trim_start().to_string());
-        match stripped {
-            Some(next) => key = next,
-            None => break,
-        }
-    }
-    key
-}
-
-/// "[reverse-]date|from|subject|size|threads" from the config.
-fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
-    let (rev, name) = match spec.strip_prefix("reverse-") {
-        Some(rest) => (true, rest),
-        None => (false, spec),
-    };
-    let key = match name {
-        "date" | "date-sent" | "date-received" => SortKey::Date,
-        "from" => SortKey::From,
-        "subject" => SortKey::Subject,
-        "size" => SortKey::Size,
-        "threads" => SortKey::Threads,
-        _ => return None,
-    };
-    // Thread sort has no reverse variant.
-    Some((key, rev && key != SortKey::Threads))
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ThreadOp {
-    Delete,
-    Undelete,
-    Tag,
 }
 
 /// Which functions `;` (tag-prefix) can hand the tagged set to. The
@@ -6481,15 +5388,6 @@ fn takes_tagged(action: IndexAction) -> bool {
         action,
         Delete | Undelete | Flag | ToggleNew | Tag | Save | Copy | Pipe | Print | Bounce
     )
-}
-
-fn expand_tilde(input: &str) -> PathBuf {
-    if let Some(rest) = input.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return Path::new(&home).join(rest);
-    }
-    PathBuf::from(input)
 }
 
 fn is_ctrl(key: &KeyEvent) -> bool {
@@ -6547,23 +5445,6 @@ pub fn progress(msg: &str) {
     } else {
         eprint!("\r\x1b[K{msg}");
     }
-}
-
-/// Run the account's password command once per session. OAuth tokens
-/// expire, so those are fetched fresh for every connection instead.
-fn account_password(account: &Account) -> Result<String> {
-    if !matches!(account.auth_kind()?, rmut_core::config::AuthKind::Password) {
-        return account.secret();
-    }
-    static CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
-    let mut cache = CACHE.lock().unwrap();
-    let map = cache.get_or_insert_with(HashMap::new);
-    if let Some(password) = map.get(&account.name) {
-        return Ok(password.clone());
-    }
-    let password = account.password()?;
-    map.insert(account.name.clone(), password.clone());
-    Ok(password)
 }
 
 pub(crate) fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
@@ -6657,22 +5538,6 @@ pub(crate) fn run_sendmail(
     Ok(())
 }
 
-/// Visit order for a wrapping scan over `n` entries starting after
-/// (before, when backwards) `sel`: each index paired with a flag set
-/// once the walk passed the end (start). The starting index comes
-/// last, so a lone match under the cursor still counts as a wrap.
-fn wrap_order(n: usize, sel: usize, forward: bool) -> Vec<(usize, bool)> {
-    (1..=n)
-        .map(|step| {
-            if forward {
-                ((sel + step) % n, sel + step >= n)
-            } else {
-                ((sel + n - (step % n)) % n, step > sel)
-            }
-        })
-        .collect()
-}
-
 /// The first line matching `m` strictly after (before, when searching
 /// backwards) `from`, wrapping around; the flag reports the wrap. The
 /// starting line itself is only reached by going all the way around.
@@ -6689,15 +5554,6 @@ fn search_lines(
 
 #[cfg(test)]
 mod tests {
-    use super::subject_key;
-
-    #[test]
-    fn subject_key_strips_reply_prefixes() {
-        assert_eq!(subject_key("Re: Re: Lunch"), "lunch");
-        assert_eq!(subject_key("FWD: re: x"), "x");
-        assert_eq!(subject_key("Redo"), "redo");
-    }
-
     #[test]
     fn search_lines_steps_and_wraps() {
         use super::search_lines;
@@ -6721,23 +5577,5 @@ mod tests {
         // A regex argument works like the patterns do.
         let re = Matcher::new("^bet.");
         assert_eq!(search_lines(&lines, &re, 0, true), Some((2, false)));
-    }
-
-    #[test]
-    fn wrap_order_visits_everything_once() {
-        use super::wrap_order;
-        // Forward from 1 of 4: 2, 3, then around to 0 and back to 1.
-        assert_eq!(
-            wrap_order(4, 1, true),
-            vec![(2, false), (3, false), (0, true), (1, true)]
-        );
-        // Backwards from 1: 0, then around past the start.
-        assert_eq!(
-            wrap_order(4, 1, false),
-            vec![(0, false), (3, true), (2, true), (1, true)]
-        );
-        assert_eq!(wrap_order(0, 0, true), vec![]);
-        // A single entry: the walk comes straight back, marked wrapped.
-        assert_eq!(wrap_order(1, 0, true), vec![(0, true)]);
     }
 }

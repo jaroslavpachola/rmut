@@ -1,0 +1,17 @@
+[package]
+name = "rmut-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "rmut's mail session: an open mailbox and the operations over it, with no screen attached"
+keywords = ["mail", "maildir", "mbox", "imap", "mutt"]
+categories = ["email"]
+
+[dependencies]
+anyhow = { workspace = true }
+rmut-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

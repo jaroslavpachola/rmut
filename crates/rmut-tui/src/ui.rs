@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // Optionally keep a slice of the index visible above the pager
         // (mutt's pager_index_lines).
         let index_lines = app
+            .session
             .config
             .pager
             .index_lines
@@ -66,6 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // The sidebar takes a left slice of the index view.
         let content_area = if matches!(app.mode, Mode::Index) && app.sidebar_visible {
             let width = app
+                .session
                 .config
                 .sidebar
                 .width
@@ -173,8 +175,8 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 // ---- index ----
 
 fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
-    if app.visible.is_empty() {
-        let text = if app.limit.is_some() {
+    if app.session.visible.is_empty() {
+        let text = if app.session.limit.is_some() {
             "No messages match the limit (l clears it)."
         } else {
             "No mail in mailbox."
@@ -184,29 +186,30 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let rows = area.height as usize;
     // Keep the selection visible.
-    if app.sel < app.index_offset {
-        app.index_offset = app.sel;
-    } else if app.sel >= app.index_offset + rows {
-        app.index_offset = app.sel + 1 - rows;
+    if app.session.sel < app.index_offset {
+        app.index_offset = app.session.sel;
+    } else if app.session.sel >= app.index_offset + rows {
+        app.index_offset = app.session.sel + 1 - rows;
     }
     let width = area.width as usize;
     let mut lines = Vec::with_capacity(rows);
     // `~m` / `~=` in a [[color_index]] rule need the numbering on
     // screen and the repeated Message-IDs, counted once per draw.
     let mut id_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for m in &app.msgs {
+    for m in &app.session.msgs {
         if let Some(id) = m.env.msg_id.as_deref() {
             *id_counts.entry(id).or_default() += 1;
         }
     }
     for (vi, &mi) in app
+        .session
         .visible
         .iter()
         .enumerate()
         .skip(app.index_offset)
         .take(rows)
     {
-        let msg = &app.msgs[mi];
+        let msg = &app.session.msgs[mi];
         let env = &msg.env;
         let status = env.file.flags.status_char(env.file.is_new);
         let flagged = if env.file.flags.flagged { '!' } else { ' ' };
@@ -214,7 +217,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         // (" +TCFL") for how the mail relates to me. Precedence is
         // mutt's: sent by me, then To (alone, or among others), then
         // Cc, then a subscribed list.
-        let me = app.me();
+        let me = app.session.me();
         let mark = if env.tagged {
             '*'
         } else if me.wrote(&env.from_full) {
@@ -232,14 +235,15 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
             .to
             .iter()
             .chain(&env.cc)
-            .any(|a| app.subscribed.iter().any(|m| m.is_match(a)))
+            .any(|a| app.session.subscribed.iter().any(|m| m.is_match(a)))
         {
             'L'
         } else {
             ' '
         };
-        let (depth, hidden) = app.thread_info(mi);
+        let (depth, hidden) = app.session.thread_info(mi);
         let fmt = app
+            .session
             .config
             .index
             .format
@@ -266,7 +270,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 mark,
                 date: &message::format_index_date_with(
                     env.date,
-                    app.config.index.date_format.as_deref(),
+                    app.session.config.index.date_format.as_deref(),
                 ),
                 from: &env.from,
                 size: &humanize_size(env.file.size),
@@ -292,19 +296,19 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         // built-in slot colors.
         let pos = rmut_core::pattern::Position {
             number: vi + 1,
-            current: app.sel + 1,
-            last: app.visible.len(),
+            current: app.session.sel + 1,
+            last: app.session.visible.len(),
             duplicate: env
                 .msg_id
                 .as_deref()
                 .is_some_and(|id| id_counts.get(id).copied().unwrap_or(0) > 1),
         };
         if let Some((_, rule)) = app.index_rules.iter().find(|(patterns, _)| {
-            rmut_core::pattern::matches_in(patterns, env, app.scope(pos), None)
+            rmut_core::pattern::matches_in(patterns, env, app.session.scope(pos), None)
         }) {
             style = style.patch(*rule);
         }
-        if vi == app.sel {
+        if vi == app.session.sel {
             style = style.add_modifier(Modifier::REVERSED);
         }
         lines.push(Line::from(Span::styled(text, style)));
@@ -482,7 +486,7 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
         .map(|row| style_row(row, app))
         .collect();
     // mutt's $tilde: mark the void below end-of-message.
-    if app.config.pager.tilde {
+    if app.session.config.pager.tilde {
         while visible.len() < area.height as usize {
             visible.push(Line::raw("~"));
         }
@@ -657,7 +661,7 @@ fn draw_postponed(
 fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16) {
     let text = match &app.mode {
         Mode::Pager(pager) => {
-            let height = content_height.saturating_sub(app.config.pager.index_lines);
+            let height = content_height.saturating_sub(app.session.config.pager.index_lines);
             pager_status(app, pager, height, area.width as usize)
         }
         Mode::Compose { .. } => format!(
@@ -710,51 +714,61 @@ fn draw_message_line(frame: &mut Frame, area: Rect, app: &App) {
 
 fn index_status(app: &App, width: usize, rows: usize) -> String {
     let fmt = app
+        .session
         .config
         .ui
         .status_format
         .as_deref()
         .unwrap_or(format::DEFAULT_STATUS_FORMAT);
     format::render_status(fmt, width, &|spec| match spec {
-        'f' => app.title.clone(),
-        'm' => app.msgs.len().to_string(),
+        'f' => app.session.title.clone(),
+        'm' => app.session.msgs.len().to_string(),
         // Shown message count, only when a limit narrows the view.
         'M' => {
-            if app.visible.len() != app.msgs.len() {
-                app.visible.len().to_string()
+            if app.session.visible.len() != app.session.msgs.len() {
+                app.session.visible.len().to_string()
             } else {
                 String::new()
             }
         }
-        'n' => app.new_count().to_string(),
+        'n' => app.session.new_count().to_string(),
         'u' => app
+            .session
             .msgs
             .iter()
             .filter(|m| !m.env.file.flags.seen)
             .count()
             .to_string(),
-        'd' => app.deleted_count().to_string(),
+        'd' => app.session.deleted_count().to_string(),
         'F' => app
+            .session
             .msgs
             .iter()
             .filter(|m| m.env.file.flags.flagged)
             .count()
             .to_string(),
-        't' => app.msgs.iter().filter(|m| m.env.tagged).count().to_string(),
+        't' => app
+            .session
+            .msgs
+            .iter()
+            .filter(|m| m.env.tagged)
+            .count()
+            .to_string(),
         's' => format!(
             "{}{}",
-            app.sort.name(),
-            if app.sort_rev { "-rev" } else { "" }
+            app.session.sort.name(),
+            if app.session.sort_rev { "-rev" } else { "" }
         ),
         'V' => app
+            .session
             .limit
             .as_ref()
             .map(|(s, _)| s.clone())
             .unwrap_or_default(),
         'r' => {
-            if app.read_only {
+            if app.session.read_only {
                 "%".to_string() // mutt's readonly mark
-            } else if app.pending_count() > 0 {
+            } else if app.session.pending_count() > 0 {
                 "*".to_string()
             } else {
                 String::new()
@@ -763,7 +777,7 @@ fn index_status(app: &App, width: usize, rows: usize) -> String {
         'v' => env!("CARGO_PKG_VERSION").to_string(),
         // Index scroll position, like mutt's %P.
         'P' => {
-            let len = app.visible.len();
+            let len = app.session.visible.len();
             if len <= rows {
                 "all".into()
             } else if app.index_offset == 0 {
@@ -802,16 +816,21 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
         .find(|(n, _)| n == "Subject" || n == "Content-Type")
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
-    let msg = app.visible.get(app.sel).map(|&i| &app.msgs[i]);
+    let msg = app
+        .session
+        .visible
+        .get(app.session.sel)
+        .map(|&i| &app.session.msgs[i]);
     let fmt = app
+        .session
         .config
         .pager
         .format
         .as_deref()
         .unwrap_or(DEFAULT_PAGER_FORMAT);
     format::render_status(fmt, width, &|spec| match spec {
-        'C' => (app.sel + 1).to_string(),
-        'm' => app.visible.len().to_string(),
+        'C' => (app.session.sel + 1).to_string(),
+        'm' => app.session.visible.len().to_string(),
         's' => subject.to_string(),
         'n' => msg.map(|m| m.env.from.clone()).unwrap_or_default(),
         'Z' => msg
@@ -825,7 +844,7 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
             })
             .unwrap_or_default(),
         'P' => format!("{}%", shown * 100 / total),
-        'f' => app.title.clone(),
+        'f' => app.session.title.clone(),
         '%' => "%".to_string(),
         other => format!("%{other}"),
     })

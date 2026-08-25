@@ -192,14 +192,14 @@ fn run() -> Result<ExitCode> {
     eprint!("\r\x1b[K"); // clear the leftover progress line
     let mut app = opened?;
     // mutt's -z / -Z: report through the exit code without starting.
-    if cli.exit_if_empty && app.msgs.is_empty() {
+    if cli.exit_if_empty && app.session.msgs.is_empty() {
         return Ok(ExitCode::FAILURE);
     }
-    if cli.exit_unless_new && app.new_count() == 0 {
+    if cli.exit_unless_new && app.session.new_count() == 0 {
         return Ok(ExitCode::FAILURE);
     }
-    app.read_only = cli.read_only;
-    app.read_only_session = cli.read_only;
+    app.session.read_only = cli.read_only;
+    app.session.read_only_session = cli.read_only;
     if let Some(warning) = config_warning {
         app.note(warning);
     }
