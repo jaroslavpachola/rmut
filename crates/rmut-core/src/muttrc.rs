@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// Parsed import: the TOML text plus the alias lines found inline
-/// (rmut reads mutt-format alias files, so these just need moving).
+/// Parsed import: the TOML text plus the alias lines found, in
+/// muttrc form. rmut reads mutt-format alias files as they are, so
+/// these belong in one of those rather than in the TOML; the caller
+/// either writes them to the alias file or shows them with
+/// `alias_block`.
 pub struct Import {
     pub toml: String,
     pub aliases: Vec<String>,
@@ -481,6 +484,23 @@ fn word_boundaries(re: &str) -> String {
         .replace(r"\\>", r"\b")
         .replace(r"\<", r"\b")
         .replace(r"\>", r"\b")
+}
+
+/// The alias lines as a comment block, for the printed-for-review
+/// form of an import, which writes nothing anywhere.
+pub fn alias_block(aliases: &[String], target: &std::path::Path) -> String {
+    if aliases.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "\n# aliases found: rmut reads mutt-format alias files; put these\n\
+         # lines in {} (or point $RMUT_ALIASES at them):\n",
+        target.display()
+    );
+    for a in aliases {
+        out += &format!("#   {a}\n");
+    }
+    out
 }
 
 fn default_hook_pattern(pattern: &str) -> String {
@@ -1405,13 +1425,6 @@ impl State {
                 "set imap_pass/smtp_pass = (redacted)  (no IMAP/SMTP server, nowhere to put it)"
                     .into(),
             );
-        }
-        if !self.aliases.is_empty() {
-            out += "\n# aliases found: rmut reads mutt-format alias files; put these\n";
-            out += "# lines in ~/.config/rmut/aliases (or point $RMUT_ALIASES at them):\n";
-            for a in &self.aliases {
-                out += &format!("#   {a}\n");
-            }
         }
         if !self.satisfied.is_empty() {
             out += "\n# satisfied by rmut's defaults (nothing to configure):\n";
@@ -2462,12 +2475,18 @@ mod tests {
             "alias petr Petr Novak <petr@example.com>\nset sleep_time = 0\nmacro index x \"<shell-escape>ls\\n\"\n",
             Path::new("/"),
         );
-        assert_eq!(import.aliases.len(), 1);
+        // Aliases come back on their own: rmut keeps them in a
+        // mutt-format alias file, so the caller either writes that
+        // file or shows them with alias_block.
+        assert_eq!(import.aliases, ["alias petr Petr Novak <petr@example.com>"]);
+        assert!(!import.toml.contains("alias petr"), "{}", import.toml);
+        let block = alias_block(&import.aliases, Path::new("/home/x/.config/rmut/aliases"));
         assert!(
-            import
-                .toml
-                .contains("#   alias petr Petr Novak <petr@example.com>")
+            block.contains("#   alias petr Petr Novak <petr@example.com>"),
+            "{block}"
         );
+        assert!(block.contains("/home/x/.config/rmut/aliases"), "{block}");
+        assert!(alias_block(&[], Path::new("/x")).is_empty());
         assert!(import.toml.contains("set sleep_time = 0"));
         assert!(import.toml.contains("macro index x"), "{}", import.toml);
         assert!(import.toml.contains("mutt function names"));

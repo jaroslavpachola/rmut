@@ -3327,15 +3327,20 @@ def scenario_getting_started(tmp):
     # and will not overwrite one that is already there.
     muttrc = os.path.join(tmp, "start-muttrc")
     with open(muttrc, "w") as f:
-        f.write('set realname = "Started Here"\nset folder = ~/Mail\n')
+        f.write('set realname = "Started Here"\nset folder = ~/Mail\n'
+                'alias petr Petr Novak <petr@example.com>\n')
     out = os.path.join(tmp, "start-config", "config.toml")
-    r = Rmut(None, base_env(tmp, {"RMUT_CONFIG": out}),
-             args=("--import-muttrc", "-w", muttrc))
+    aliases = os.path.join(tmp, "start-config", "aliases")
+    env = base_env(tmp, {"RMUT_CONFIG": out, "RMUT_ALIASES": aliases})
+    r = Rmut(None, env, args=("--import-muttrc", "-w", muttrc))
     r.expect("wrote " + out)
     r.close()
     assert 'name = "Started Here"' in open(out).read()
-    r = Rmut(None, base_env(tmp, {"RMUT_CONFIG": out}),
-             args=("--import-muttrc", "-w", muttrc))
+    # Aliases live in a mutt-format file of their own, so the import
+    # writes that too rather than leaving them commented out.
+    assert open(aliases).read() == "alias petr Petr Novak <petr@example.com>\n"
+    assert "alias" not in open(out).read(), open(out).read()
+    r = Rmut(None, env, args=("--import-muttrc", "-w", muttrc))
     r.expect("already exists")
     r.close()
 

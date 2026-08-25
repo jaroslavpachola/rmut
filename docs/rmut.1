@@ -1064,6 +1064,15 @@ refusing to overwrite one that is already there:
   rmut \-\-import\-muttrc > ~/.config/rmut/config.toml
 .fi
 .PP
+Alias lines, including ones in a
+.B source
+d file, go to the alias file rather than the config: rmut keeps them
+in mutt's own format, so an existing alias file works as it stands.
+With
+.B \-w
+they are written to ~/.config/rmut/aliases (or $RMUT_ALIASES); without
+it they are printed as a comment block naming that file.
+.PP
 It understands identities, mailboxes, sendmail, editor, IMAP/SMTP
 accounts (including imap_authenticators/smtp_authenticators for
 OAuth), aliases, bindings, macros made of plain keys, color index

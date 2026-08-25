@@ -269,23 +269,49 @@ fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
         }
     };
     let import = rmut_core::muttrc::import_file(&path)?;
+    let alias_path = rmut_core::alias::default_path();
     if write {
         let target = rmut_core::config::path()
             .ok_or_else(|| anyhow::anyhow!("no $HOME, so no config path to write to"))?;
-        if target.exists() {
-            bail!(
-                "{} already exists: move it aside, or redirect the output instead",
-                target.display()
-            );
-        }
-        if let Some(dir) = target.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let aliases = alias_path.clone().filter(|_| !import.aliases.is_empty());
+        // Both targets are checked before either is written, so a
+        // half-done import cannot happen.
+        for t in [Some(&target), aliases.as_ref()].into_iter().flatten() {
+            if t.exists() {
+                bail!(
+                    "{} already exists: move it aside, or redirect the output instead",
+                    t.display()
+                );
+            }
+            if let Some(dir) = t.parent() {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
+            }
         }
         std::fs::write(&target, &import.toml)
             .with_context(|| format!("writing {}", target.display()))?;
         eprintln!("rmut: wrote {}", target.display());
+        if let Some(aliases) = aliases {
+            // mutt's own format, so the lines go across as they are.
+            let text = import.aliases.join("\n") + "\n";
+            std::fs::write(&aliases, text)
+                .with_context(|| format!("writing {}", aliases.display()))?;
+            eprintln!(
+                "rmut: wrote {} ({} alias(es))",
+                aliases.display(),
+                import.aliases.len()
+            );
+        }
     } else {
         print!("{}", import.toml);
+        // Printed, not written: the aliases come along as a
+        // comment block naming the file they belong in.
+        if let Some(target) = &alias_path {
+            print!(
+                "{}",
+                rmut_core::muttrc::alias_block(&import.aliases, target)
+            );
+        }
         // Printed at a terminal, so nothing was captured: say where it
         // was meant to go rather than leaving it scrolled off.
         if unsafe { libc::isatty(1) } == 1 {
@@ -297,7 +323,7 @@ fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
             );
         }
     }
-    if !import.aliases.is_empty() {
+    if !write && !import.aliases.is_empty() {
         eprintln!(
             "rmut: {} alias line(s) found; see the comment block in the output",
             import.aliases.len()

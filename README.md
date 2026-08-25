@@ -790,9 +790,15 @@ rmut --import-muttrc               # or print it, to look first
 ```
 
 `-w` saves it to `~/.config/rmut/config.toml`, creating the directory
-and refusing to overwrite a config that is already there. Without it
-the translation goes to stdout for review, so redirect it yourself if
-that is what you want.
+and refusing to overwrite a config that is already there. Any `alias`
+lines it found, including ones in a `source`d file, are written to
+`~/.config/rmut/aliases` at the same time: rmut keeps aliases in a
+mutt-format file of their own rather than in the TOML, so your mutt
+alias file works as it stands (point `$RMUT_ALIASES` at it if you
+would rather keep it where it is), and `a` in the index appends to
+it. Without `-w` the translation goes to stdout for review, aliases
+as a comment block, so redirect it yourself if that is what you
+want.
 
 The translation covers identity, folder/mailboxes, record/postponed,
 sendmail/editor/print_command/query_command/status_format, binds,
