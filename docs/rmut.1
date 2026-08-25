@@ -422,6 +422,16 @@ the last pattern
 .BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
 .BR b ", " e " and " a
 work as in the index.
+.SS While the network is busy
+The IMAP connection runs on a thread of its own, so the screen keeps
+drawing and the keys keep working while it talks. The message line
+says what it is doing ("fetching the message...", "syncing..."), and
+.B Ctrl+G
+gives up on it, as it does in mutt: the socket goes down, the
+operation says it was aborted, and the next one reconnects. The poll
+tick, a sync, and fetching a message body all work this way; opening
+a mailbox and the folder browser's listing still wait, bounded by
+.B [net] connect_timeout .
 .SS Prompts
 Every line prompt is a small line editor: Left/Right, Home/End (also
 ctrl+a / ctrl+e), Backspace and Del (ctrl+d) around the cursor,

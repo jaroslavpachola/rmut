@@ -1171,24 +1171,40 @@ and shippable whenever.
       $connect_timeout over; e2e scenario_network_timeouts points at
       TEST-NET-3, which black-holes
 
-## R55: network off the main thread
+## R55: network off the main thread (done, 1.55)
 
 Goal: the TUI keeps drawing while the network is slow, and you can
 give up. This is the round that was mis-filed as "only if a GUI is
 wanted": the TUI is what pays for it today.
 
-- [ ] IMAP work (open, fetch body, sync, append) off the calling
-      thread, with cancellation
-- [ ] mutt's Ctrl+G: abort the operation in flight. Today the key is
-      not even read, because the loop is inside the call
-- [ ] `check_new()` on the poll tick stops being synchronous work in
-      the draw loop; the IDLE watcher is already a thread, so this is
-      the last periodic block
-- [ ] Progress becomes notices (R50), so the "opening mailbox" line
-      stops being a `eprint!` behind ratatui's back
-- [ ] Wants R50 in place first, so results and progress have
-      somewhere to go. A GUI would need all of this too, but it is
-      not the reason to do it
+- [x] The connection lives on a thread of its own behind a channel:
+      the session sends a `Job`, the thread runs it against the
+      `Remote`, and the answer comes back as a `Done`. What the
+      session needs cheaply (account, folder, cache) is `Facts`,
+      beside the handle rather than down the channel
+- [x] An operation that needs the network parks itself as a
+      `Pending` and is carried on by `poll_network`, which the front
+      end calls every time round its loop. Done for the poll tick,
+      `$` sync, fetching bodies, and the sidebar's unread counts
+- [x] Fetching a body needed no continuation per caller: `have_bodies`
+      sends one fetch, parks the operation as `Again(...)`, and runs
+      it from the top when the bodies land. Copy, pipe, print and
+      bounce grew one guard each; opening a message became
+      `Request::ShowMessage`
+- [x] mutt's Ctrl+G: `net::Cutoff` shuts the socket from the front
+      end's thread, and `Remote::retry` knows an abort from a dropped
+      connection, so it does not helpfully re-run what the user gave
+      up on. e2e scenario_network_abort, against a server told to
+      dawdle four seconds
+- [x] Progress is a notice: the message line says what is running
+      from the moment it starts ("fetching the message... (Ctrl+G
+      aborts)"), and the connection's own lines replace it
+- [ ] Still waits for the server: opening a mailbox (the first
+      connect and a switch), the folder browser's listing, a
+      server-side `~b` search, and an append (saving to an IMAP
+      folder, an Fcc). Each is one user-initiated action, bounded by
+      R54's connect timeout; the machinery to move them is the same
+      `Pending`, if they prove worth it
 
 ## Beyond mutt (frozen: only on explicit request)
 

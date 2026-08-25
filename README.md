@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.54**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.55**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -197,6 +197,14 @@ unless the server reported flag changes or expunges. The
 password comes from `password_command` (e.g. `pass show mail/work`),
 run once per session, or from a stored `password`, if you accept a
 secret sitting in the config file (keep it chmod 600).
+
+The connection runs on a thread of its own, so a slow server does not
+stop the screen: the index keeps drawing, the keys keep working, the
+message line says what is happening ("fetching the message... (Ctrl+G
+aborts)"), and **Ctrl+G** gives up on it the way mutt's does, after
+which the next operation reconnects. The poll for new mail, `$` sync,
+fetching a message body and the sidebar's unread counts all work this
+way; opening a mailbox and listing folders still wait for the server.
 
 A server that does not answer costs seconds, not the OS default of
 about two minutes with nothing on screen: `[net] connect_timeout` (10s)
