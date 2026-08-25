@@ -46,8 +46,8 @@ pub enum Job {
     CheckNew,
     /// The folder browser's list, with UNSEEN counts.
     Folders,
-    /// One folder's UNSEEN count, for the sidebar.
-    Unseen(String),
+    /// The unread counts of these folders, for a sidebar.
+    Unseen(Vec<String>),
     /// Server-side `~b`: which UIDs hold this text.
     SearchBody(String),
     /// Another folder of the same account, on this connection.
@@ -81,7 +81,8 @@ pub enum Done {
     /// How many messages arrived (a check, or a switch).
     Arrived(usize),
     Folders(Vec<(String, usize)>),
-    Unseen(usize),
+    /// The counts asked for, in the order they were asked for.
+    Counts(Vec<usize>),
     Uids(Vec<u32>),
     /// Where an append landed.
     Folder(String),
@@ -312,7 +313,9 @@ fn do_job(remote: &mut Remote, job: Job) -> Result<Done> {
         }
         Job::CheckNew => Ok(Done::Arrived(remote.check_new()?)),
         Job::Folders => Ok(Done::Folders(remote.folders()?)),
-        Job::Unseen(mailbox) => Ok(Done::Unseen(remote.unseen(&mailbox))),
+        Job::Unseen(folders) => Ok(Done::Counts(
+            folders.iter().map(|f| remote.unseen(f)).collect(),
+        )),
         Job::SearchBody(term) => Ok(Done::Uids(remote.search_body(&term)?)),
         Job::Switch(mailbox) => {
             remote.switch(&mailbox)?;

@@ -226,6 +226,8 @@ enum Pending {
     /// The bodies an operation needed are here: run it again, and
     /// this time it finds everything it wants on disk.
     Again(Again),
+    /// The unread counts of these mailboxes, in this order.
+    Counts(Vec<String>),
 }
 
 /// An operation that asked for message bodies before it could run.
@@ -310,6 +312,9 @@ pub struct Session {
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
+    /// Unread counts of the open account's folders, as of the last
+    /// time the connection was free to count them.
+    unseen: HashMap<String, usize>,
     /// `rmut -R`: nothing is ever written, not even read marks.
     pub read_only: bool,
     /// `-R`: the whole session is read-only, so a mailbox switch
@@ -450,6 +455,7 @@ impl Session {
             idle: None,
             backfill: None,
             mailbox_new: HashMap::new(),
+            unseen: HashMap::new(),
             read_only: false,
             read_only_session: false,
             dir_mtimes: dir_mtimes(dir),
@@ -919,10 +925,11 @@ impl Session {
         self.check_other_mailboxes();
         // The counts moved: whatever shows them wants redrawing.
         self.requests.push(Request::MailboxesChanged);
-        if dir_mtimes(&self.dir) == self.dir_mtimes {
-            return;
+        if dir_mtimes(&self.dir) != self.dir_mtimes {
+            self.rescan();
         }
-        self.rescan();
+        // The server's own counts follow when it gets round to them.
+        self.refresh_unseen();
     }
 
     /// Collect whatever the connection has finished, and carry on the
@@ -1028,6 +1035,14 @@ impl Session {
                 Err(err) => self.error(format!("sync failed: {err:#}")),
                 Ok(_) => self.finish_sync(purge),
             },
+            Pending::Counts(specs) => {
+                if let Ok(Done::Counts(counts)) = done {
+                    for (spec, count) in specs.into_iter().zip(counts) {
+                        self.unseen.insert(spec, count);
+                    }
+                    self.requests.push(Request::MailboxesChanged);
+                }
+            }
             Pending::Again(again) => match done {
                 Err(err) => self.error(format!("cannot fetch message: {err:#}")),
                 Ok(_) => self.run_again(again),
@@ -1812,22 +1827,42 @@ impl Session {
     }
 
     /// How many unread messages a configured mailbox holds, for a
-    /// front end drawing a sidebar: a local maildir's new/ count, or
-    /// the account's own STATUS. Other accounts show 0 rather than
-    /// costing a connection.
-    pub fn unseen_count(&mut self, spec: &str) -> usize {
+    /// front end drawing a sidebar.
+    ///
+    /// A local maildir is counted on the spot. A folder on the server
+    /// costs a STATUS, so the number is the last one the connection
+    /// gave: [`Session::refresh_unseen`] asks for a fresh set in the
+    /// background, and says so when they land. Other accounts show 0
+    /// rather than costing a connection of their own.
+    pub fn unseen_count(&self, spec: &str) -> usize {
         match remote::parse_spec(spec) {
-            Some((account, folder)) => match &mut self.imap {
-                Some(imap) if imap.facts.account.name == account => {
-                    match imap.blocking(Job::Unseen(folder.to_string())) {
-                        Ok(Done::Unseen(n)) => n,
-                        _ => 0,
-                    }
-                }
-                _ => 0,
-            },
+            Some(_) => self.unseen.get(spec).copied().unwrap_or(0),
             None => maildir::new_count(&expand_tilde(spec)),
         }
+    }
+
+    /// Ask the server for the unread counts of the configured folders
+    /// of the open account. They land on a later poll.
+    fn refresh_unseen(&mut self) -> bool {
+        let Some(imap) = &self.imap else {
+            return false;
+        };
+        let account = imap.facts.account.name.clone();
+        let wanted: Vec<(String, String)> = self
+            .config
+            .mail
+            .mailboxes
+            .iter()
+            .filter_map(|spec| match remote::parse_spec(spec) {
+                Some((a, folder)) if a == account => Some((spec.clone(), folder.to_string())),
+                _ => None,
+            })
+            .collect();
+        if wanted.is_empty() {
+            return false;
+        }
+        let (specs, folders): (Vec<String>, Vec<String>) = wanted.into_iter().unzip();
+        self.start(Job::Unseen(folders), Pending::Counts(specs))
     }
 
     /// Put an edited message back: on IMAP the edited copy is
