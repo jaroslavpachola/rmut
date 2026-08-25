@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.41.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.42.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -172,7 +172,20 @@ toggle flagged mark
 toggle read/unread
 .TP
 .B t ;
-toggle the tag; apply the next function to tagged messages
+toggle the tag; apply the next function to the tagged messages.
+.B ;
+reaches
+.BR d ", " u ", " F ", " N ", " t ", " s ", " C ", " | ", " p " and " b :
+the marks apply to each,
+.BR s / C
+save or copy them all under one prompt and one undo step,
+.BR | / p
+pipe or print them concatenated into a single run of the command
+(mutt with $pipe_split unset), and
+.B b
+bounces them all to the same addresses. A function that takes one
+message, like resend or edit, says so rather than quietly acting on
+the message under the cursor
 .TP
 .B z
 cancel a message still held by
@@ -308,6 +321,15 @@ back to the index
 .TP
 .B Enter Backspace
 scroll one line
+.TP
+.B d u F t
+delete and advance; undelete; toggle the flagged mark; toggle the
+tag, all without leaving the message. Each is one undo step, like its
+index twin. toggle-new has no key here, since
+.B N
+is the backwards text search; bind it with
+.RB \(dq ":bind pager KEY toggle-new" \(dq
+if you want it
 .TP
 .B j k Down Up Right Left
 open the next / previous undeleted message (mutt's pager default;

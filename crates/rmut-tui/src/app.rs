@@ -461,6 +461,10 @@ pub struct App {
     display: message::Display,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
+    /// Set while a `;`-prefixed operation is being asked about (the
+    /// mailbox, the command, the y/n): the answer applies to the
+    /// tagged set, not to the message under the cursor.
+    tag_op: bool,
     /// Undo stack, oldest first: delete/flag/tag/read marks and the
     /// copies a save made, back to the state before each step.
     undo: Vec<UndoStep>,
@@ -871,6 +875,7 @@ impl App {
             quote_re,
             display,
             body_rules,
+            tag_op: false,
             undo: Vec::new(),
             outbox: Vec::new(),
             exit_notes: Vec::new(),
@@ -1894,6 +1899,16 @@ impl App {
     /// One index action, however it arrived: a key, a macro replay, or
     /// `:exec`.
     fn run_index_action(&mut self, action: IndexAction, apply_tagged: bool, page: usize) {
+        // Any new action ends a previous `;` operation, including one
+        // whose prompt was abandoned with Esc.
+        self.tag_op = false;
+        if apply_tagged && !takes_tagged(action) {
+            self.error_status(format!(
+                "{} takes one message, not the tagged set",
+                action.name()
+            ));
+            return;
+        }
         match action {
             IndexAction::Tag => {
                 if let Some(&i) = self.visible.get(self.sel) {
@@ -1917,10 +1932,18 @@ impl App {
                     self.status = Some("checked for new mail".into());
                 }
             }
-            IndexAction::Save => self.prompt_copy(true),
-            IndexAction::Copy => self.prompt_copy(false),
-            IndexAction::Pipe => self.prompt_pipe(),
-            IndexAction::Bounce => self.prompt_bounce(),
+            IndexAction::Save | IndexAction::Copy => {
+                self.tag_op = apply_tagged;
+                self.prompt_copy(action == IndexAction::Save);
+            }
+            IndexAction::Pipe => {
+                self.tag_op = apply_tagged;
+                self.prompt_pipe();
+            }
+            IndexAction::Bounce => {
+                self.tag_op = apply_tagged;
+                self.prompt_bounce();
+            }
             IndexAction::Resend => self.resend_current(),
             IndexAction::Edit => self.start_raw_edit(),
             IndexAction::CreateAlias => self.prompt_create_alias(),
@@ -2105,7 +2128,10 @@ impl App {
                 }
             }
             IndexAction::Folders => self.open_folder_browser(),
-            IndexAction::Print => self.confirm_print(),
+            IndexAction::Print => {
+                self.tag_op = apply_tagged;
+                self.confirm_print();
+            }
             IndexAction::SidebarToggle => {
                 self.sidebar_visible = !self.sidebar_visible;
                 self.refresh_sidebar();
@@ -2235,6 +2261,45 @@ impl App {
                         self.open_selected();
                     }
                     None => self.mode = Mode::Index,
+                }
+                return;
+            }
+            PagerAction::Undelete | PagerAction::Flag | PagerAction::ToggleNew => {
+                if self.part_pager() {
+                    self.error_status("Not available in this menu.");
+                    return;
+                }
+                if self.deny_readonly() {
+                    return;
+                }
+                if let Some(&i) = self.visible.get(self.sel) {
+                    let what = match action {
+                        PagerAction::Undelete => "undelete",
+                        PagerAction::Flag => "flag",
+                        _ => "toggle read",
+                    };
+                    self.push_undo(what, &[i]);
+                    let file = &mut self.msgs[i].env.file;
+                    match action {
+                        PagerAction::Undelete => file.flags.deleted = false,
+                        PagerAction::Flag => file.flags.flagged = !file.flags.flagged,
+                        _ => {
+                            file.flags.seen = !file.flags.seen;
+                            file.is_new = false;
+                        }
+                    }
+                    self.msgs[i].dirty = true;
+                }
+                return;
+            }
+            PagerAction::Tag => {
+                if self.part_pager() {
+                    self.error_status("Not available in this menu.");
+                    return;
+                }
+                if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("tag", &[i]);
+                    self.msgs[i].env.tagged = !self.msgs[i].env.tagged;
                 }
                 return;
             }
@@ -5037,9 +5102,27 @@ impl App {
 
     /// The selected message's raw bytes, completing a header-only IMAP
     /// cache file first. Failures land in the status line.
+    /// The messages an operation applies to: the tagged set when `;`
+    /// asked for it, otherwise the one under the cursor. Tagged means
+    /// tagged anywhere, limit or no limit, like the other tagged ops.
+    fn op_targets(&self) -> Vec<usize> {
+        if self.tag_op {
+            return (0..self.msgs.len())
+                .filter(|&i| self.msgs[i].env.tagged)
+                .collect();
+        }
+        self.visible.get(self.sel).copied().into_iter().collect()
+    }
+
     fn full_message_bytes(&mut self) -> Option<Vec<u8>> {
         let &i = self.visible.get(self.sel)?;
-        let path = self.msgs[i].env.file.path.clone();
+        self.message_bytes(i)
+    }
+
+    /// The raw message on disk, fetched first when the IMAP cache
+    /// holds headers only.
+    fn message_bytes(&mut self, i: usize) -> Option<Vec<u8>> {
+        let path = self.msgs.get(i)?.env.file.path.clone();
         if let Some(remote) = &mut self.remote
             && remote::is_partial(&path)
             && let Err(err) = remote.fetch_body(&path)
@@ -5064,70 +5147,95 @@ impl App {
             self.error_status("no mailbox given");
             return;
         }
-        let Some(&i) = self.visible.get(self.sel) else {
+        let targets = self.op_targets();
+        if targets.is_empty() {
             return;
-        };
-        let flags = self.msgs[i].env.file.flags;
-        let Some(bytes) = self.full_message_bytes() else {
-            return;
-        };
-        // What the undo of this step has to take back: the copy just
-        // delivered, and (for a save) the original's deleted mark.
+        }
+        // What the undo of this step has to take back: the copies just
+        // delivered, and (for a save) the originals' deleted marks.
         let mut created: Vec<PathBuf> = Vec::new();
+        let mut marks = Vec::new();
+        let mut copied = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
         let mut note = None;
-        let target = match remote::parse_spec(input) {
-            Some((account, folder)) => match &mut self.remote {
-                Some(remote) if remote.account.name == account => {
-                    match remote.append_to(folder, flags, &bytes) {
-                        Ok(folder) => {
-                            note = Some(format!("the copy in imap:{account}/{folder} stays"));
-                            format!("imap:{account}/{folder}")
-                        }
-                        Err(err) => {
-                            self.error_status(format!("cannot save: {err:#}"));
-                            return;
-                        }
+        let mut target = String::new();
+        for &i in &targets {
+            match self.copy_one(i, input, &mut created) {
+                Ok(shown) => {
+                    if shown.starts_with("imap:") {
+                        note = Some(format!("the copy in {shown} stays"));
                     }
+                    target = shown;
+                    marks.push(self.mark(i));
+                    copied.push(i);
                 }
-                _ => {
-                    self.error_status("can only save to a folder of the open account");
-                    return;
-                }
+                // One bad message does not undo the good ones: the
+                // rest still go, and the trouble is reported after.
+                Err(err) => errors.push(err),
+            }
+        }
+        let verb = if delete { "save" } else { "copy" };
+        if copied.is_empty() {
+            self.error_status(format!("cannot {verb}: {}", errors.join("; ")));
+            return;
+        }
+        self.push_undo_step(UndoStep {
+            what: format!("{verb} to {target}"),
+            marks,
+            sel: self.selected_path(),
+            created,
+            note,
+        });
+        let n = copied.len();
+        if delete {
+            for &i in &copied {
+                self.msgs[i].env.file.flags.deleted = true;
+                self.msgs[i].dirty = true;
+            }
+        }
+        let mut status = match (delete, n) {
+            (true, 1) => format!("saved to {target} (original marked deleted)"),
+            (true, _) => format!("saved {n} to {target} (originals marked deleted)"),
+            (false, 1) => format!("copied to {target}"),
+            (false, _) => format!("copied {n} to {target}"),
+        };
+        if !errors.is_empty() {
+            status += &format!("; {} failed: {}", errors.len(), errors.join("; "));
+            self.error_status(status);
+        } else {
+            self.status = Some(status);
+        }
+    }
+
+    /// One message into `spec`: a folder of the open IMAP account, or
+    /// a local maildir path (created if missing). Returns where it
+    /// went, and pushes the delivered file, which undo removes.
+    fn copy_one(
+        &mut self,
+        i: usize,
+        spec: &str,
+        created: &mut Vec<PathBuf>,
+    ) -> Result<String, String> {
+        let flags = self.msgs[i].env.file.flags;
+        let bytes = self.message_bytes(i).ok_or("cannot read the message")?;
+        match remote::parse_spec(spec) {
+            Some((account, folder)) => match &mut self.remote {
+                Some(remote) if remote.account.name == account => remote
+                    .append_to(folder, flags, &bytes)
+                    .map(|folder| format!("imap:{account}/{folder}"))
+                    .map_err(|err| format!("{err:#}")),
+                _ => Err("can only save to a folder of the open account".into()),
             },
             None => {
-                let dir = expand_tilde(input);
-                let result = maildir::create(&dir)
+                let dir = expand_tilde(spec);
+                maildir::create(&dir)
                     .and_then(|()| maildir::deliver(&dir, &bytes, flags))
                     .map(|path| {
                         created.push(path);
                         dir.display().to_string()
-                    });
-                match result {
-                    Ok(shown) => shown,
-                    Err(err) => {
-                        self.error_status(format!("cannot save: {err:#}"));
-                        return;
-                    }
-                }
+                    })
+                    .map_err(|err| format!("{err:#}"))
             }
-        };
-        let step = UndoStep {
-            what: match delete {
-                true => format!("save to {target}"),
-                false => format!("copy to {target}"),
-            },
-            marks: vec![self.mark(i)],
-            sel: self.selected_path(),
-            created,
-            note,
-        };
-        self.push_undo_step(step);
-        if delete {
-            self.msgs[i].env.file.flags.deleted = true;
-            self.msgs[i].dirty = true;
-            self.status = Some(format!("saved to {target} (original marked deleted)"));
-        } else {
-            self.status = Some(format!("copied to {target}"));
         }
     }
 
@@ -5174,19 +5282,40 @@ impl App {
         ));
     }
 
-    /// Pipe the raw message to a shell command, like mutt's |.
+    /// Pipe the raw message to a shell command, like mutt's |. With
+    /// `;` the tagged messages are concatenated into one run of the
+    /// command, which is what mutt does with $pipe_split unset.
     fn pipe_message(&mut self, command: &str) {
         if command.is_empty() {
             self.error_status("no command given");
             return;
         }
-        let Some(bytes) = self.full_message_bytes() else {
+        let Some(bytes) = self.op_bytes() else {
             return;
         };
+        let n = self.op_targets().len();
         match pipe_to(command, &bytes) {
-            Ok(()) => self.status = Some(format!("piped to {command}")),
+            Ok(()) => {
+                self.status = Some(match n {
+                    1 => format!("piped to {command}"),
+                    _ => format!("piped {n} messages to {command}"),
+                })
+            }
             Err(err) => self.error_status(format!("pipe failed: {err:#}")),
         }
+    }
+
+    /// Every message the operation applies to, back to back.
+    fn op_bytes(&mut self) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        for i in self.op_targets() {
+            let bytes = self.message_bytes(i)?;
+            out.extend_from_slice(&bytes);
+            if !bytes.ends_with(b"\n") {
+                out.push(b'\n');
+            }
+        }
+        Some(out)
     }
 
     fn prompt_bounce(&mut self) {
@@ -5207,8 +5336,12 @@ impl App {
             return;
         }
         self.bounce_to = Some(to.clone());
+        let n = self.op_targets().len();
         self.prompt = Some(Prompt::Key {
-            label: format!("Bounce message to {to}? (y/n): "),
+            label: match n {
+                1 => format!("Bounce message to {to}? (y/n): "),
+                _ => format!("Bounce {n} messages to {to}? (y/n): "),
+            },
             kind: KeyKind::Bounce,
         });
     }
@@ -5216,40 +5349,54 @@ impl App {
     /// Resend the message as-is to new recipients: Resent-* headers on
     /// top, the rest untouched.
     fn bounce_current(&mut self, to: &str) {
-        let Some(bytes) = self.full_message_bytes() else {
-            return;
-        };
         let rcpts = compose::addresses(to);
         if rcpts.is_empty() {
             self.error_status(format!("cannot parse the addresses in {to:?}"));
             return;
         }
+        let targets = self.op_targets();
+        let mut sent = 0usize;
+        for i in targets {
+            let Some(bytes) = self.message_bytes(i) else {
+                return;
+            };
+            if let Err(err) = self.bounce_one(&bytes, to, &rcpts) {
+                self.error_status(format!("bounce failed: {err:#}"));
+                return;
+            }
+            sent += 1;
+        }
+        self.status = Some(match sent {
+            1 => format!("message bounced to {to}"),
+            _ => format!("{sent} messages bounced to {to}"),
+        });
+    }
+
+    /// One message resent as-is: Resent-* headers on top, the rest
+    /// untouched.
+    fn bounce_one(&mut self, bytes: &[u8], to: &str, rcpts: &[String]) -> Result<()> {
         let host = maildir::hostname();
         let from = self
-            .current_identity(&rcpts)
+            .current_identity(rcpts)
             .from_line()
             .unwrap_or_else(|| default_from(&host));
         let text = compose::bounce_text(
-            &bytes,
+            bytes,
             &from,
             to,
             &compose::rfc2822_now(),
             &compose::make_message_id(&host),
         );
         let envelope_from = compose::bare_address(&from).unwrap_or_else(|| from.clone());
-        let result = match self.smtp_account() {
+        match self.smtp_account() {
             Some(account) => account_password(&account).and_then(|password| {
-                smtp::send(&account, &password, &envelope_from, &rcpts, text.as_bytes())
+                smtp::send(&account, &password, &envelope_from, rcpts, text.as_bytes())
             }),
             None => run_sendmail(
                 text.as_bytes(),
                 self.config.mail.sendmail.as_deref(),
-                Some(&rcpts),
+                Some(rcpts),
             ),
-        };
-        match result {
-            Ok(()) => self.status = Some(format!("message bounced to {to}")),
-            Err(err) => self.error_status(format!("bounce failed: {err:#}")),
         }
     }
 
@@ -5490,8 +5637,12 @@ impl App {
         if self.visible.get(self.sel).is_none() {
             return;
         }
+        let n = self.op_targets().len();
         self.prompt = Some(Prompt::Key {
-            label: "Print message? (y/n): ".into(),
+            label: match n {
+                1 => "Print message? (y/n): ".to_string(),
+                _ => format!("Print {n} messages? (y/n): "),
+            },
             kind: KeyKind::Print,
         });
     }
@@ -5499,23 +5650,30 @@ impl App {
     /// Pipe the message as displayed (brief headers, decoded body) to
     /// the configured print command, lpr by default.
     fn print_current(&mut self) {
-        let Some(&i) = self.visible.get(self.sel) else {
+        let targets = self.op_targets();
+        if targets.is_empty() {
             return;
-        };
-        let path = self.msgs[i].env.file.path.clone();
-        let view = match self.load_view(&path) {
-            Ok(v) => v,
-            Err(err) => {
-                self.error_status(format!("cannot print: {err:#}"));
-                return;
-            }
-        };
-        let mut text = String::new();
-        for (name, value) in &view.brief {
-            text += &format!("{name}: {value}\n");
         }
-        text.push('\n');
-        text += &view.body;
+        let mut text = String::new();
+        for i in targets.iter().copied() {
+            let path = self.msgs[i].env.file.path.clone();
+            let view = match self.load_view(&path) {
+                Ok(v) => v,
+                Err(err) => {
+                    self.error_status(format!("cannot print: {err:#}"));
+                    return;
+                }
+            };
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            for (name, value) in &view.brief {
+                text += &format!("{name}: {value}\n");
+            }
+            text.push('\n');
+            text += &view.body;
+        }
+        let n = targets.len();
         let command = self
             .config
             .mail
@@ -5523,7 +5681,12 @@ impl App {
             .clone()
             .unwrap_or_else(|| "lpr".into());
         match pipe_to(&command, text.as_bytes()) {
-            Ok(()) => self.status = Some(format!("printed via {command}")),
+            Ok(()) => {
+                self.status = Some(match n {
+                    1 => format!("printed via {command}"),
+                    _ => format!("printed {n} messages via {command}"),
+                })
+            }
             Err(err) => self.error_status(format!("print failed: {err:#}")),
         }
     }
@@ -5909,6 +6072,17 @@ fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
     };
     // Thread sort has no reverse variant.
     Some((key, rev && key != SortKey::Threads))
+}
+
+/// Which functions `;` (tag-prefix) can hand the tagged set to. The
+/// rest say so rather than quietly acting on one message: resend and
+/// edit open a draft or an editor, of which rmut has one at a time.
+fn takes_tagged(action: IndexAction) -> bool {
+    use IndexAction::*;
+    matches!(
+        action,
+        Delete | Undelete | Flag | ToggleNew | Tag | Save | Copy | Pipe | Print | Bounce
+    )
 }
 
 fn expand_tilde(input: &str) -> PathBuf {

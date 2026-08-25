@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.41**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.42**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -98,7 +98,8 @@ or `~/Maildir`.
 
 Index: `j`/`k` move, `Enter` view, `=`/`*` first/last, PgUp/PgDn or
 Ctrl+B/Ctrl+F page, `d`/`u` delete/undelete, `F` flag, `N` toggle
-read, `t` tag + `;` apply the next d/u/F/N to all tagged, `z` undo
+read, `t` tag + `;` apply the next mark, save, copy, pipe, print or
+bounce to all tagged, `z` undo
 the last of those (or cancel a held send), `s` save
 (copy to a mailbox + mark deleted), `$` sync changes to disk (asks
 before purging deleted messages, like mutt), `o` sort
@@ -124,7 +125,8 @@ deletions, like mutt), `x` abort without saving. Leaving a mailbox
 ages unread new mail to old (`O`), mutt's mark_old.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
-message, `d` delete and advance, `h` toggle full headers,
+message, `d` delete and advance, `u`/`F`/`t` undelete/flag/tag without
+leaving the message, `h` toggle full headers,
 `v` attachments, `m`/`r`/`g`/`L`/`f` compose/reply/list-reply/forward,
 `p` print,
 `s` save, `C`/`|`/`b` copy/pipe/bounce, `e`/Alt+e edit raw/resend,
@@ -423,6 +425,20 @@ PGP signature or encryption alike. The paragraphs themselves are your
 editor's doing, exactly as in mutt: a line that continues has to end
 with a space, and rmut adds none of its own.
 
+## Tagged operations
+
+`t` tags a message and `;` hands the tagged set to the next function:
+`d`/`u`/`F`/`N`/`t` mark them all, `s`/`C` save or copy them all (one
+prompt, one undo step), `|` and `p` pipe or print them concatenated
+into a single run of the command (mutt's `$pipe_split` unset), and
+`b` bounces them all to the same addresses, with the confirmation
+counting what it is about to do.
+
+A function that cannot take a set says so ("resend takes one message,
+not the tagged set") rather than quietly acting on the one under the
+cursor. `T` and Ctrl+T tag and untag by pattern; `;t` clears the tags,
+the way it does in mutt.
+
 ## Undo
 
 `z` walks back the last change to your messages: a delete or
@@ -471,7 +487,8 @@ the view to the marked ones, and a pattern search hops between them:
 put that hop on `.` and `,`.
 
 In the pager, `j`/`k` step over deleted messages by design (mutt does
-the same); `J`/`K` step to any message, deleted ones included.
+the same); `J`/`K` step to any message, deleted ones included, and
+`u` puts one back without going out to the index.
 
 ## Which part shows, and mailcap
 

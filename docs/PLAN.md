@@ -770,23 +770,32 @@ Where the daily feel still differs from mutt, worst first. The first
 round leads because those are the two places where a mutt hand's keys
 do something other than what they mean, rather than nothing at all.
 
-## R41: tagged and pager parity
+## R41: tagged and pager parity (done, 1.42)
 
 Goal: `;` and the pager stop lying about what they did.
 
-- [ ] `;` reaches every function that can take a set: save, copy,
-      pipe, print, bounce, resend. Today `handle_index_key` takes the
-      flag but only delete, undelete, flag and toggle-new read it, so
-      `;s` files one message of twelve and reports success
-- [ ] An action that cannot take the prefix says so, rather than
-      quietly acting on the current message: whichever way the first
-      box goes, silence is the wrong answer
-- [ ] The pager gains `u`, `F`, `N` and `t` (undelete, flag,
-      toggle-new, tag), which mutt's pager has and rmut's lacks: it
-      can delete and nothing else, though the pager is where triage
-      happens. The actions exist on the index side already
-- [ ] Both go on R39's undo stack, one step per keystroke, like
-      their index twins
+- [x] `;` reaches every function that can take a set: save, copy,
+      pipe, print, bounce. The prefix is remembered across the prompt
+      in `tag_op`, cleared at the top of every index action so an
+      abandoned prompt cannot leak into the next one, and `op_targets`
+      is what the operations iterate. Save and copy do one prompt, one
+      undo step (all the marks and all the delivered files in it), and
+      keep going when one message fails rather than stranding the
+      copies already made; pipe and print concatenate into a single
+      run of the command, which is mutt with $pipe_split unset; bounce
+      sends each to the same addresses, and the y/n counts what it is
+      about to do. Not resend or edit: those open a draft or an
+      editor, of which rmut has one at a time
+- [x] An action that cannot take the prefix says so ("resend takes
+      one message, not the tagged set"), rather than quietly acting on
+      the current message
+- [x] The pager gains `u`, `F` and `t` (undelete, flag, tag), which
+      mutt's pager has and rmut's lacked: it could delete and nothing
+      else, though the pager is where triage happens. toggle-new is
+      there as a function but unbound, since `N` is rmut's backwards
+      pager search; `:bind pager KEY toggle-new` gives it a key
+- [x] Both go on R39's undo stack, one step per keystroke, like their
+      index twins; e2e scenario_tagged_and_pager
 
 ## R42: thread operations
 

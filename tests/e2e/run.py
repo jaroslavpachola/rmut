@@ -2897,6 +2897,81 @@ def scenario_search_direction(tmp):
     r.close()
 
 
+def scenario_tagged_and_pager(tmp):
+    """R41: ; hands the tagged set to save, pipe and print, refuses
+    the functions that take one message, and the pager can mark a
+    message rather than only delete it."""
+    md = make_maildir(tmp, "md-tagged")
+    write_msgs(md, ["jane", "petr", "ci"])  # oldest first: ci, jane, petr
+    target = os.path.join(tmp, "md-tagged-archive")
+    piped = os.path.join(tmp, "tagged-pipe.txt")
+
+    def files():
+        return [os.path.join(md, sub, n)
+                for sub in ("cur", "new")
+                for n in os.listdir(os.path.join(md, sub))]
+
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:3")
+
+    # Tag the first two (t advances), then hand them to save.
+    r.keys(b"=tt")
+    r.settle()
+    r.keys(b";s" + target.encode() + b"\r")
+    r.expect("saved 2 to")
+    wait_for(lambda: len(os.listdir(os.path.join(target, "cur"))) == 2,
+             desc="both copies delivered")
+
+    # One undo step takes both copies and both delete marks back.
+    r.keys(b"z")
+    wait_for(lambda: os.listdir(os.path.join(target, "cur")) == [],
+             desc="both copies removed")
+    r.keys(b"$")
+    r.settle()
+    assert len(files()) == 3, files()
+
+    # A function that takes one message says so instead of quietly
+    # doing one of the twelve.
+    r.keys(b";e")
+    r.expect("takes one message, not the tagged set")
+
+    # Pipe gets them concatenated, in one run of the command.
+    r.keys(b";|cat >> " + piped.encode() + b"\r")
+    r.expect("piped 2 messages to")
+    wait_for(lambda: os.path.exists(piped)
+             and "CI failed on main" in open(piped, encoding="utf-8").read()
+             and "Lunch on Friday" in open(piped, encoding="utf-8").read(),
+             desc="both messages piped")
+
+    # ;t toggles the tag on the tagged, which is how mutt clears them.
+    r.keys(b";t")
+    r.settle()
+
+    # The pager can tag, and z takes that back from the pager too.
+    r.keys(b"=\r")
+    r.settle()
+    r.keys(b"t")
+    r.settle()
+    r.keys(b"z")
+    r.expect("undone: tag (1 message(s))")
+
+    # It can flag, and undelete what the index marked.
+    r.keys(b"F")
+    r.settle()
+    r.keys(b"i")
+    r.keys(b"dk\r")
+    r.settle()
+    r.keys(b"u")
+    r.settle()
+    r.keys(b"i$")
+    r.expect("synced: 0 deleted")
+    ci = [f for f in files() if "CI failed on main" in open(f, encoding="utf-8").read()]
+    assert len(ci) == 1, ci
+    assert "F" in os.path.basename(ci[0]).split(":2,")[-1], ci[0]
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2924,6 +2999,7 @@ SCENARIOS = [
     scenario_undo,
     scenario_undo_send,
     scenario_search_direction,
+    scenario_tagged_and_pager,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,
