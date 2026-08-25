@@ -1103,14 +1103,39 @@ Goal: collect the winnings.
 - [ ] Whatever the port cannot express stays where it is rather than
       being contorted
 
-## R54: non-blocking IO (only if a GUI is wanted)
+## R54: network timeouts
 
-Goal: not needed by the TUI, needed by anything with an event loop.
+Goal: nothing freezes for minutes. Small, independent of the split,
+and shippable whenever.
 
-- [ ] IMAP work off the calling thread, with cancellation, so a front
-      end that cannot block does not have to
-- [ ] The progress line becomes a notice like any other
-- [ ] Not started unless a GUI is: the TUI is happy blocking
+- [ ] `TcpStream::connect` has no connect timeout, so it takes the
+      OS default: an unreachable server freezes the TUI for about two
+      minutes, no keys read, no way out. `connect_timeout` with
+      something human (10s), against each address the name resolves
+      to
+- [ ] Read and write timeouts are 60s, which is a minute of frozen
+      screen per stalled operation. Shorter, and configurable
+- [ ] A timeout says which host and what it was doing, since "sync
+      failed" alone leaves you guessing
+
+## R55: network off the main thread
+
+Goal: the TUI keeps drawing while the network is slow, and you can
+give up. This is the round that was mis-filed as "only if a GUI is
+wanted": the TUI is what pays for it today.
+
+- [ ] IMAP work (open, fetch body, sync, append) off the calling
+      thread, with cancellation
+- [ ] mutt's Ctrl+G: abort the operation in flight. Today the key is
+      not even read, because the loop is inside the call
+- [ ] `check_new()` on the poll tick stops being synchronous work in
+      the draw loop; the IDLE watcher is already a thread, so this is
+      the last periodic block
+- [ ] Progress becomes notices (R50), so the "opening mailbox" line
+      stops being a `eprint!` behind ratatui's back
+- [ ] Wants R50 in place first, so results and progress have
+      somewhere to go. A GUI would need all of this too, but it is
+      not the reason to do it
 
 ## Beyond mutt (frozen: only on explicit request)
 
@@ -1140,8 +1165,9 @@ value-per-effort:
   instant without notmuch
 - Unified inbox: several accounts' inboxes merged into one live
   virtual mailbox (flagship-sized; after the parity rounds)
-- A GUI over the session library: only after R50-R53, and only worth
-  starting if the doubling of every round is accepted going in
+- A GUI over the session library: only after R50-R53 (and R55, which
+  it would need too), and only worth starting if the doubling of
+  every round is accepted going in
 
 Explicitly rejected even here: embedded scripting languages, HTML
 rendering engines, notmuch-tag write-back, the fat that sank other
