@@ -529,7 +529,8 @@ tilde, status_format, theme, beep, from, realname, reverse_name,
 edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
 attribution, indent_string, forward_format, include, askcc, askbcc,
 connect_timeout, net_timeout, pager_stop, markers, smart_wrap,
-collapse_unread, uncollapse_jump,
+collapse_unread, uncollapse_jump, quit, confirmappend, save_name,
+force_name,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -879,6 +880,22 @@ Seconds to wait for data on a live connection, default 30. Never off,
 and never under five: IMAP IDLE ticks on it to notice a stop request,
 and re-issues itself about every 25 minutes whatever it is set to.
 A timeout says which host and what it was doing.
+.SS [mail], the leaving and filing habits
+.TP
+.B quit
+"yes" (the default) leaves at once, "no" refuses,
+"ask\-yes" and "ask\-no" ask first (mutt's $quit).
+.TP
+.B confirmappend
+Ask before adding messages to a mailbox that already exists (mutt's
+$confirmappend). Off by default, where mutt asks.
+.TP
+.B save_name, force_name
+The save prompt offers the mailbox named after the sender's local
+part, under
+.BR folder :
+save_name when it exists, force_name whether or not (mutt's
+$save_name and $force_name).
 .SS [index] and [pager], the reading habits
 .TP
 .B pager_stop

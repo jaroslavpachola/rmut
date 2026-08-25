@@ -1176,18 +1176,8 @@ impl App {
                 }
             }
             IndexAction::Quit => {
-                // Like mutt: flag changes are written silently; only
-                // pending deletions raise a question (the purge one).
-                self.session.mark_old_unread();
-                if self.session.deleted_count() > 0 {
-                    let ask = self.session.ask_purge(true);
-                    self.open_ask(ask);
-                } else {
-                    if self.session.pending_count() > 0 {
-                        self.session.sync(true);
-                    }
-                    self.quit = true;
-                }
+                let ask = self.session.leave();
+                self.open_ask(ask);
             }
             IndexAction::Abort => self.quit = true,
             IndexAction::Down => self.session.select(self.session.sel.saturating_add(1)),

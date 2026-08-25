@@ -113,6 +113,11 @@ struct State {
     tilde: bool,
     status_format: Option<String>,
     no_beep: bool,
+    /// mutt's leaving and filing habits.
+    quit: Option<String>,
+    confirmappend: bool,
+    save_name: bool,
+    force_name: bool,
     /// mutt's reading habits: $pager_stop, and the three that are on
     /// by default, kept as Option so "yes" stays satisfied.
     pager_stop: bool,
@@ -760,6 +765,45 @@ impl State {
                     self.no_beep = true;
                 }
             }
+            "quit" => {
+                let want = v.trim().to_lowercase();
+                match want.as_str() {
+                    "yes" => self.satisfy(line, "q leaves at once, as in mutt"),
+                    "no" | "ask-yes" | "ask-no" => self.quit = Some(want),
+                    _ => self.skip(line, "quit wants yes / no / ask-yes / ask-no"),
+                }
+            }
+            "confirmappend" => {
+                if is_yes(value) {
+                    self.confirmappend = true;
+                } else {
+                    self.satisfy(line, "rmut adds to an existing mailbox without asking");
+                }
+            }
+            "save_name" => {
+                if is_yes(value) {
+                    self.save_name = true;
+                } else {
+                    self.satisfy(line, "the save prompt offers [mail] save, as rmut always has");
+                }
+            }
+            "force_name" => {
+                if is_yes(value) {
+                    self.force_name = true;
+                } else {
+                    self.satisfy(line, "rmut offers a named mailbox only when it exists");
+                }
+            }
+            "move" => {
+                if is_yes(value) {
+                    self.differently(
+                        line,
+                        "rmut leaves read mail where it is; a folder-hook with a macro can move it",
+                    );
+                } else {
+                    self.satisfy(line, "rmut leaves read mail where it is");
+                }
+            }
             "pager_stop" => {
                 if is_yes(value) {
                     self.pager_stop = true;
@@ -1304,6 +1348,10 @@ impl State {
             || self.forward_attach
             || self.forward_ask
             || self.fast_reply
+            || self.quit.is_some()
+            || self.confirmappend
+            || self.save_name
+            || self.force_name
             || self.alias_file.is_some()
             || self.attribution.is_some()
             || self.indent_string.is_some()
@@ -1378,6 +1426,18 @@ impl State {
             }
             if self.fast_reply {
                 out += "fast_reply = true\n";
+            }
+            if let Some(v) = &self.quit {
+                out += &format!("quit = {}\n", quote(v));
+            }
+            if self.confirmappend {
+                out += "confirmappend = true\n";
+            }
+            if self.save_name {
+                out += "save_name = true\n";
+            }
+            if self.force_name {
+                out += "force_name = true\n";
             }
             if let Some(v) = &self.alias_file {
                 out += &format!("alias_file = {}\n", quote(v));

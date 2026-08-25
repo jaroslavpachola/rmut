@@ -1303,16 +1303,30 @@ all of them one flag and a branch.
       satisfied), two session tests, one e2e scenario, one for the
       wrap. The muttrc of 90 is down to 36 unclaimed lines
 
-## R59: leaving and filing habits
+## R59: leaving and filing habits (done, 1.59)
 
 Goal: the questions mutt asks on the way out, and where mail lands.
 
-- [ ] `quit`: yes / no / ask-yes. rmut's `q` leaves without asking
-- [ ] `confirmappend`: ask before appending to an existing mailbox
-- [ ] `move` + `mbox`: read mail moves out of the spool into $mbox
-      when leaving, mutt's oldest habit
-- [ ] `save_name` / `force_name`: the default save target follows the
-      sender's address instead of $record
+- [x] `[mail] quit`: yes (the default, as mutt), no, ask-yes or
+      ask-no. Leaving moved into the session as `Session::leave`,
+      where the quit question, mark-old-unread, the purge question
+      and `Request::Quit` are one flow rather than four steps in the
+      key handler
+- [x] `[mail] confirmappend`: asks before adding to a mailbox that is
+      already there. Off by default, where mutt asks: rmut has never
+      asked, and changing that under a daily user is worse than a
+      setting they can turn on
+- [x] `[mail] save_name` / `force_name`: the save prompt offers
+      `=<sender's local part>` when such a mailbox exists, or
+      whether or not with force_name
+- [ ] `move` + `mbox` were dropped on purpose. Moving read mail out
+      of the spool is mutt's oldest habit and its riskiest: it
+      deletes from one mailbox and writes to another, after a sync
+      has cleared the undo stack. The importer says so rather than
+      claiming a hole, and a folder-hook with a macro does it for
+      anyone who wants it
+- [x] The muttrc of 90 is down to 31 unclaimed lines; three session
+      tests and e2e scenario_leaving_habits
 
 ## R60: threading knobs
 

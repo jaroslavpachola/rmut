@@ -881,3 +881,83 @@ fn uncollapse_jump_lands_on_the_unread_one() {
         "the cursor followed the unread message"
     );
 }
+
+// ---- leaving and filing habits
+
+#[test]
+fn quit_no_refuses_and_ask_yes_asks_first() {
+    let mut config = Config::default();
+    config.mail.quit = Some("no".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    assert!(f.session.leave().is_none());
+    assert_eq!(f.log.last_text(), "quitting is off ($quit = no)");
+    assert!(f.session.take_request().is_none(), "still here");
+
+    let mut config = Config::default();
+    config.mail.quit = Some("ask-yes".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.leave();
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Quit rmut? (y/n): ");
+    // n stays; Enter takes the yes that ask-yes names.
+    f.answer_key(ask, 'n');
+    assert!(f.session.take_request().is_none(), "n stayed");
+    let ask = f.session.leave();
+    let what = ask_kind(ask.unwrap());
+    f.session.answer(what, Answer::Key(Key::Enter));
+    assert!(
+        matches!(f.session.take_request(), Some(crate::Request::Quit)),
+        "Enter took the yes"
+    );
+}
+
+#[test]
+fn confirmappend_asks_before_adding_to_a_mailbox_that_exists() {
+    let target = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(target.path().join(sub)).unwrap();
+    }
+    let mut config = Config::default();
+    config.mail.confirmappend = true;
+    let mut f = Fixture::with_config(&["one"], config);
+    let path = target.path().to_str().unwrap().to_string();
+    let ask = f.session.ask_copy(false, false);
+    let ask = f.answer_line(ask, &path);
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        format!("Append messages to {path}? (y/n): ")
+    );
+    // n leaves the mailbox alone.
+    f.answer_key(ask, 'n');
+    assert_eq!(fs::read_dir(target.path().join("cur")).unwrap().count(), 0);
+    let ask = f.session.ask_copy(false, false);
+    let ask = f.answer_line(ask, &path);
+    f.answer_key(ask, 'y');
+    assert_eq!(fs::read_dir(target.path().join("cur")).unwrap().count(), 1);
+}
+
+#[test]
+fn save_name_offers_the_mailbox_named_after_the_sender() {
+    let folder = tempfile::tempdir().unwrap();
+    // $folder/s0 exists, so $save_name offers it; nothing else does.
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(folder.path().join("s0").join(sub)).unwrap();
+    }
+    let mut config = Config::default();
+    config.mail.folder = Some(folder.path().display().to_string());
+    config.mail.save_name = true;
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.ask_copy(true, false).unwrap();
+    match &ask {
+        Ask::Line { prefill, .. } => assert_eq!(prefill, "=s0"),
+        _ => panic!("a line was asked for"),
+    }
+    // Without a mailbox of that name, $save_name offers nothing and
+    // $force_name offers it anyway.
+    f.session.config.mail.save_name = false;
+    f.session.config.mail.force_name = true;
+    fs::remove_dir_all(folder.path().join("s0")).unwrap();
+    match f.session.ask_copy(true, false).unwrap() {
+        Ask::Line { prefill, .. } => assert_eq!(prefill, "=s0"),
+        _ => panic!("a line was asked for"),
+    }
+}

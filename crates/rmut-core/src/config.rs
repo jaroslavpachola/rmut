@@ -233,6 +233,18 @@ pub struct Mail {
     /// mutt's $fast_reply: replies skip the To and Subject prompts,
     /// forwards skip Subject (the ask-yes questions still run).
     pub fast_reply: bool,
+    /// mutt's $quit: "yes" (the default) leaves at once, "no"
+    /// refuses, "ask-yes" and "ask-no" ask first.
+    pub quit: Option<String>,
+    /// mutt's $confirmappend: ask before adding messages to a mailbox
+    /// that already exists. Off by default, where mutt asks: rmut has
+    /// never asked, and a save is one keystroke either way.
+    pub confirmappend: bool,
+    /// mutt's $save_name: the default save target is the sender's
+    /// local part under $folder, when such a mailbox exists.
+    pub save_name: bool,
+    /// mutt's $force_name: the same, whether or not it exists.
+    pub force_name: bool,
     /// mutt's $alias_file: where aliases are read from and where
     /// create-alias appends. $RMUT_ALIASES, then
     /// ~/.config/rmut/aliases, when unset.

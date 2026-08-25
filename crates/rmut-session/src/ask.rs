@@ -13,7 +13,7 @@
 //! end can do, because it owns the terminal, or the window, or in the
 //! case of a library caller nothing at all.
 
-use crate::{Msg, Security, Session, SortKey};
+use crate::{Msg, Security, Session, SortKey, mailbox_exists};
 
 /// A question waiting on an answer.
 pub enum Ask {
@@ -142,6 +142,14 @@ pub enum AskKind {
     PostponeAsk,
     /// mutt's `!`: a shell command to run with the display stood down.
     Shell,
+    /// mutt's $quit: leave the mailbox and the program?
+    QuitConfirm,
+    /// mutt's $confirmappend: the target mailbox exists; add to it?
+    AppendConfirm {
+        input: String,
+        delete: bool,
+        tagged: bool,
+    },
 }
 
 /// The pattern operations, mutt's D/U/T/Ctrl+T.
@@ -278,10 +286,35 @@ impl Session {
                 true => "Save to mailbox: ".into(),
                 false => "Copy to mailbox: ".into(),
             },
-            prefill: self.config.mail.save.clone().unwrap_or_default(),
+            prefill: self
+                .save_name_target()
+                .or_else(|| self.config.mail.save.clone())
+                .unwrap_or_default(),
             wants: Wants::Mailbox,
             what: AskKind::CopyTo { delete, tagged },
         })
+    }
+
+    /// mutt's $save_name and $force_name: the mailbox named after
+    /// the sender's local part, under $folder. $save_name offers it
+    /// when it is already there, $force_name whether or not.
+    fn save_name_target(&self) -> Option<String> {
+        if !self.config.mail.save_name && !self.config.mail.force_name {
+            return None;
+        }
+        let &i = self.visible.get(self.sel)?;
+        let from = rmut_core::message::first_header(&self.msgs[i].env.file.path, "From")?;
+        let address = rmut_core::compose::bare_address(&from)?;
+        let local = address.split('@').next()?.to_lowercase();
+        if local.is_empty() {
+            return None;
+        }
+        let spec = format!("={local}");
+        let expanded = self.expand_folder(&spec);
+        match self.config.mail.force_name || mailbox_exists(&expanded) {
+            true => Some(spec),
+            false => None,
+        }
     }
 
     pub fn ask_pipe(&self, tagged: bool) -> Option<Ask> {
@@ -342,6 +375,43 @@ impl Session {
             label: "Sort: (d)ate (f)rom (s)ubject si(z)e (t)hreads, uppercase reverses: ".into(),
             what: AskKind::Sort,
         }
+    }
+
+    /// Leaving for good: mutt's $quit decides whether to ask, and
+    /// what follows is the purge question, or nothing at all.
+    pub fn leave(&mut self) -> Option<Ask> {
+        match self.config.mail.quit.as_deref().unwrap_or("yes") {
+            "no" => {
+                self.error("quitting is off ($quit = no)");
+                None
+            }
+            "yes" => self.leave_now(),
+            quit => {
+                // ask-no asks the same question; what differs is
+                // what Enter takes.
+                self.quit_default = quit != "ask-no";
+                Some(Ask::Key {
+                    label: "Quit rmut? (y/n): ".into(),
+                    what: AskKind::QuitConfirm,
+                })
+            }
+        }
+    }
+
+    /// The leaving itself: mark what was left unread as old, and let
+    /// the purge question have the last word.
+    fn leave_now(&mut self) -> Option<Ask> {
+        self.mark_old_unread();
+        // Like mutt: flag changes are written silently; only pending
+        // deletions raise a question.
+        if self.deleted_count() > 0 {
+            return self.ask_purge(true);
+        }
+        if self.pending_count() > 0 {
+            self.sync(true);
+        }
+        self.requests.push(Request::Quit);
+        None
     }
 
     /// Purge the deleted messages before leaving this mailbox?
@@ -500,8 +570,46 @@ impl Session {
             }
             (AskKind::CopyTo { delete, tagged }, Answer::Line(input)) => {
                 let input = self.expand_folder(input);
+                // mutt's $confirmappend: adding to a mailbox that is
+                // already there is worth a question.
+                if self.config.mail.confirmappend && mailbox_exists(&input) {
+                    return Some(Ask::Key {
+                        label: format!("Append messages to {input}? (y/n): "),
+                        what: AskKind::AppendConfirm {
+                            input,
+                            delete,
+                            tagged,
+                        },
+                    });
+                }
                 self.copy_message(&input, delete, tagged);
                 None
+            }
+            (
+                AskKind::AppendConfirm {
+                    input,
+                    delete,
+                    tagged,
+                },
+                Answer::Key(key),
+            ) => {
+                // ask-yes, like mutt's: Enter takes the yes.
+                if matches!(key, Key::Char('y') | Key::Enter) {
+                    self.copy_message(&input, delete, tagged);
+                }
+                None
+            }
+            (AskKind::QuitConfirm, Answer::Key(key)) => {
+                let yes = match key {
+                    Key::Char('y') => true,
+                    Key::Char('n') => false,
+                    Key::Enter => self.quit_default,
+                    _ => false,
+                };
+                match yes {
+                    true => self.leave_now(),
+                    false => None,
+                }
             }
             (AskKind::Pipe { tagged }, Answer::Line(command)) => {
                 self.pipe_message(command, tagged);

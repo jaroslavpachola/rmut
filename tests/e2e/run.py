@@ -3598,6 +3598,46 @@ def scenario_reading_habits(tmp):
 
 
 
+def scenario_leaving_habits(tmp):
+    """R59: mutt's $quit asks before leaving, and $confirmappend asks
+    before adding to a mailbox that already exists."""
+    md = make_maildir(tmp, "md-leaving")
+    write_msgs(md, ["jane"])
+    target = make_maildir(tmp, "md-leaving-archive")
+    cfg = os.path.join(tmp, "leaving-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[mail]\nquit = "ask-yes"\nconfirmappend = true\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+
+    # $confirmappend: the target maildir is there, so it asks.
+    r.keys(b"C")  # copy, not save: the original stays put
+    r.expect("Copy to mailbox:")
+    r.keys(target.encode() + b"\r")
+    r.expect("Append messages to")
+    r.keys(b"n")
+    r.settle()
+    assert os.listdir(os.path.join(target, "cur")) == [], "n copied nothing"
+    r.keys(b"C")
+    r.expect("Copy to mailbox:")
+    r.keys(target.encode() + b"\r")
+    r.expect("Append messages to")
+    r.keys(b"y")
+    wait_for(lambda: len(os.listdir(os.path.join(target, "cur"))) == 1,
+             desc="the confirmed copy")
+
+    # $quit: q asks, n stays, y leaves.
+    r.keys(b"q")
+    r.expect("Quit rmut?")
+    r.keys(b"n")
+    r.expect("Msgs:1")
+    r.keys(b"q")
+    r.expect("Quit rmut?")
+    r.keys(b"y")
+    r.close()
+
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3650,6 +3690,7 @@ SCENARIOS = [
     scenario_network_abort,
     scenario_reply_text,
     scenario_reading_habits,
+    scenario_leaving_habits,
 ]
 
 

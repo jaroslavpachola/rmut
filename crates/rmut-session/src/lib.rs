@@ -107,6 +107,16 @@ pub enum ThreadOp {
     Tag,
 }
 
+/// Whether a save target is a mailbox that already holds mail, for
+/// mutt's $confirmappend. An `imap:` spec is one; a local path is one
+/// when it looks like a maildir.
+fn mailbox_exists(spec: &str) -> bool {
+    match remote::parse_spec(spec) {
+        Some(_) => true,
+        None => expand_tilde(spec).join("cur").is_dir(),
+    }
+}
+
 /// A compiled hook: the pattern its message must match, and what the
 /// hook carries (an enter-command line, or an Fcc mailbox).
 pub struct Hook {
@@ -357,6 +367,9 @@ pub struct Session {
     /// Set by Ctrl+G: the answer that comes back is the abort, not
     /// something to complain about.
     aborted: bool,
+    /// What Enter means at the quit question, from $quit's ask-yes or
+    /// ask-no.
+    quit_default: bool,
     /// The compose flow in progress: what is being answered about
     /// the draft that has not been written yet.
     setup: Option<ComposeSetup>,
@@ -477,6 +490,7 @@ impl Session {
             pending: None,
             progress_noted: false,
             aborted: false,
+            quit_default: true,
             setup: None,
             draft: None,
             attach_confirmed: false,
