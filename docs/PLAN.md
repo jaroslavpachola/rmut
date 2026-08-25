@@ -1207,6 +1207,105 @@ wanted": the TUI is what pays for it today.
       R54's connect timeout; the machinery to move them is the same
       `Pending`, if they prove worth it
 
+## Parity, second pass (proposed, 2026-08)
+
+R1-R55 took rmut from nothing to a mutt replacement this machine runs
+all day, and the roadmap is out of rounds. What is left is not guessed:
+`--import-muttrc` was pointed at a muttrc of 90 widely used settings
+(the ones that turn up in every dotfiles repo) and asked what it could
+not carry. Sixty lines came back as "no rmut equivalent". Sorted by
+what a mutt user would actually miss:
+
+    the reply and forward text     attribution, indent_string,
+                                   forward_format, include, askcc,
+                                   askbcc
+    settings rmut already has      sidebar_visible/width/format,
+                                   alias_file
+    settings rmut satisfies        imap_idle, header_cache,
+                                   message_cachedir, ssl_force_tls,
+                                   crypt_use_gpgme, mailcap_path
+    reading habits                 pager_stop, markers, smart_wrap,
+                                   collapse_unread, uncollapse_jump
+    leaving and filing habits      quit, confirmappend, move + mbox,
+                                   save_name, force_name, wait_key
+    threading knobs                strict_threads, duplicate_threads,
+                                   hide_missing, narrow_tree
+
+Scoring stays a non-goal, and so do the rest of the Non-goals below.
+Each round is small, shippable on its own, and testable off the pty
+now that R53 gave us somewhere to test.
+
+## R56: the reply and forward text
+
+Goal: the three strings every mutt user changes. rmut hardcodes all
+of them, in compose.rs: "On {date}, {from} wrote:", the `"> "` in
+`quote`, and `"[{addr}: {subject}]"`.
+
+- [ ] `[mail] attribution`, with mutt's specifiers (%a address, %n
+      name, %s subject, %d date, %i message-id, %{strftime})
+- [ ] `[mail] indent_string`, the quote prefix, default `"> "`
+- [ ] `[mail] forward_format`, mutt's `[%a: %s]` by default
+- [ ] `[mail] include`: yes / no / ask-yes / ask-no. Today the
+      question is always asked, which is mutt's ask-yes; the other
+      three are the point of the setting
+- [ ] `[mail] ask_cc` / `ask_bcc`: mutt asks for them after To when
+      set, and they are asks, which R52 made cheap
+- [ ] `--import-muttrc` carries all six over; e2e for the three
+      strings, session tests for the specifier expansion
+
+## R57: the importer stops saying "no rmut equivalent" when there is one
+
+Goal: the importer's promise is that nothing is dropped silently and
+nothing is claimed falsely. Two dozen lines break it in both
+directions.
+
+- [ ] Map what rmut has and the importer forgot: `sidebar_visible`,
+      `sidebar_width`, `sidebar_format` (as far as the format
+      translates), `alias_file`
+- [ ] Say "satisfied" rather than "skipped" for what rmut does by
+      design: `imap_idle` (always on), `header_cache` and
+      `message_cachedir` (rmut caches under ~/.cache/rmut),
+      `ssl_force_tls` and `ssl_starttls` (rmut always upgrades),
+      `crypt_use_gpgme`, `mailcap_path` (rmut reads MAILCAPS),
+      `implicit_autoview`
+- [ ] The report grows a third bucket if it needs one: satisfied,
+      skipped, and "rmut does this differently, here is how"
+
+## R58: reading habits
+
+Goal: the pager and index options that change how it feels to read,
+all of them one flag and a branch.
+
+- [ ] `pager_stop`: Space at the end of a message stops rather than
+      going to the next one
+- [ ] `markers`: the `+` on wrapped continuation lines, on by default
+      in mutt and not drawn by rmut at all
+- [ ] `smart_wrap`: break at word boundaries (rmut already does this;
+      the flag is to turn it off)
+- [ ] `collapse_unread` / `uncollapse_jump`: whether a thread with
+      unread mail folds, and where the cursor lands when one unfolds
+
+## R59: leaving and filing habits
+
+Goal: the questions mutt asks on the way out, and where mail lands.
+
+- [ ] `quit`: yes / no / ask-yes. rmut's `q` leaves without asking
+- [ ] `confirmappend`: ask before appending to an existing mailbox
+- [ ] `move` + `mbox`: read mail moves out of the spool into $mbox
+      when leaving, mutt's oldest habit
+- [ ] `save_name` / `force_name`: the default save target follows the
+      sender's address instead of $record
+
+## R60: threading knobs
+
+Goal: the four that change what a thread is.
+
+- [ ] `strict_threads`: References/In-Reply-To only, no subject
+      grouping (rmut's JWZ pass groups by subject as mutt does)
+- [ ] `duplicate_threads`: whether same-Message-ID copies collapse
+- [ ] `hide_missing` / `narrow_tree`: how the tree draws around
+      messages that are not in the mailbox
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
