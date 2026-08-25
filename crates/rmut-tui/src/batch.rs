@@ -89,10 +89,12 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())
     };
     match smtp_account(config) {
-        Some(account) => crate::app::send_via_smtp(&account, &final_text)?,
-        None => {
-            crate::app::run_sendmail(final_text.as_bytes(), config.mail.sendmail.as_deref(), None)?
-        }
+        Some(account) => rmut_session::send_via_smtp(&account, &final_text)?,
+        None => rmut_session::run_sendmail(
+            final_text.as_bytes(),
+            config.mail.sendmail.as_deref(),
+            None,
+        )?,
     }
     let mut note = String::from("message sent");
     if config.mail.copy == Some(false) {

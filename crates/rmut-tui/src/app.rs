@@ -3,20 +3,21 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use rmut_core::config::{Account, Config};
+use rmut_core::config::Config;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote;
-use rmut_core::{alias, command, compose, maildir, message, pgp, smtp};
+use rmut_core::{alias, command, compose, maildir, message, pgp};
 use rmut_session::{
-    Session, SortKey, ThreadOp, UndoStep, account_password, expand_tilde, parse_sort, wrap_order,
+    Session, SortKey, ThreadOp, account_password, default_from, expand_tilde, parse_sort, pipe_to,
+    run_sendmail, send_via_smtp, wrap_order,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -449,8 +450,6 @@ pub struct App {
     pub(crate) quote_re: regex_lite::Regex,
     /// Compiled $abort_noattach_regex, for the attachment reminder.
     attach_re: regex_lite::Regex,
-    /// ignore/unignore/hdr_order for the pager's brief header view.
-    display: message::Display,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     /// Set while a `;`-prefixed operation is being asked about (the
@@ -602,7 +601,6 @@ struct Derived {
     quote_re: regex_lite::Regex,
     /// $abort_noattach_regex: what counts as mentioning an attachment.
     attach_re: regex_lite::Regex,
-    display: message::Display,
 }
 
 impl Derived {
@@ -686,41 +684,6 @@ impl Derived {
             },
             None => default_quote_re(),
         };
-        // [pager] ignore/unignore/hdr_order override the classic
-        // five-header view field by field; entries are lowercased and
-        // hdr_order accepts mutt's trailing colons.
-        let mut rules = message::HeaderRules::default();
-        let clean = |list: &Vec<String>| {
-            list.iter()
-                .map(|n| n.trim_end_matches(':').to_lowercase())
-                .collect::<Vec<_>>()
-        };
-        if let Some(list) = &config.pager.ignore {
-            rules.ignore = clean(list);
-        }
-        if let Some(list) = &config.pager.unignore {
-            rules.unignore = clean(list);
-        }
-        if let Some(list) = &config.pager.hdr_order {
-            rules.order = clean(list);
-        }
-        // auto_view types with no command of their own take one from
-        // mailcap, where mutt looks too; a type with no copiousoutput
-        // entry there simply does not autoview, and shows as an
-        // attachment stub.
-        let mut filters: HashMap<String, String> = HashMap::new();
-        let mut mailcap: Option<Vec<rmut_core::mailcap::Entry>> = None;
-        for (mimetype, command) in &config.filters {
-            let mimetype = mimetype.to_lowercase();
-            if !command.trim().is_empty() {
-                filters.insert(mimetype, command.clone());
-                continue;
-            }
-            let entries = mailcap.get_or_insert_with(rmut_core::mailcap::load);
-            if let Some(command) = rmut_core::mailcap::command_for(entries, &mimetype) {
-                filters.insert(mimetype, command);
-            }
-        }
         (
             Derived {
                 theme,
@@ -752,17 +715,6 @@ impl Derived {
                 body_rules,
                 quote_re,
                 attach_re,
-                display: message::Display {
-                    filters,
-                    rules,
-                    reflow: config.pager.reflow_text.unwrap_or(true),
-                    alternative_order: config
-                        .pager
-                        .alternative_order
-                        .iter()
-                        .map(|t| t.to_lowercase())
-                        .collect(),
-                },
             },
             warnings,
         )
@@ -786,7 +738,6 @@ impl App {
             body_rules,
             quote_re,
             attach_re,
-            display,
         } = derived;
         // The config's own complaints come first: they are about the
         // setup, and the session's are about this mailbox.
@@ -805,7 +756,6 @@ impl App {
             pager_search_text: String::new(),
             quote_re,
             attach_re,
-            display,
             body_rules,
             tag_op: false,
             outbox: Vec::new(),
@@ -1328,7 +1278,7 @@ impl App {
             }
             KeyKind::Print => {
                 if code == KeyCode::Char('y') {
-                    self.print_current();
+                    self.session.print_current(self.tag_op);
                 }
             }
             KeyKind::PrintPart => {
@@ -1341,7 +1291,7 @@ impl App {
                 if code == KeyCode::Char('y')
                     && let Some(to) = to
                 {
-                    self.bounce_current(&to);
+                    self.session.bounce_current(&to, self.tag_op);
                 }
             }
         }
@@ -1416,7 +1366,7 @@ impl App {
                 self.session.config.mail.query_command.as_deref(),
             )
         } else {
-            let specs = match self.folder_candidates() {
+            let specs = match self.session.folder_candidates() {
                 Ok(specs) => specs,
                 Err(err) => {
                     self.error(format!("cannot list folders: {err:#}"));
@@ -1544,16 +1494,20 @@ impl App {
             LineKind::BrowseDir => self.browse_dir(input),
             LineKind::CreateDir => self.create_maildir(input),
             LineKind::SavePart => self.save_part(input),
-            LineKind::SaveMsg => self.copy_message(input, true),
-            LineKind::CopyMsg => self.copy_message(input, false),
-            LineKind::Pipe => self.pipe_message(input),
+            LineKind::SaveMsg => self.session.copy_message(input, true, self.tag_op),
+            LineKind::CopyMsg => self.session.copy_message(input, false, self.tag_op),
+            LineKind::Pipe => self.session.pipe_message(input, self.tag_op),
             LineKind::PipePart => self.pipe_part(input),
             LineKind::Query => self.run_query(input),
             LineKind::Notmuch => self.notmuch_search(input),
             LineKind::EnterCommand => self.run_command_line(input),
             LineKind::BounceTo => self.bounce_to_submitted(input),
             LineKind::AttachFile => self.attach_file_submitted(input),
-            LineKind::AliasNick => self.create_alias(input),
+            LineKind::AliasNick => {
+                if let Some(addr) = self.alias_addr.take() {
+                    self.session.create_alias(input, &addr);
+                }
+            }
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.subject_submitted(input),
             LineKind::EditTo => {
@@ -1670,7 +1624,7 @@ impl App {
             IndexAction::Quit => {
                 // Like mutt: flag changes are written silently; only
                 // pending deletions raise a question (the purge one).
-                self.mark_old_unread();
+                self.session.mark_old_unread();
                 if self.session.deleted_count() > 0 {
                     self.prompt_purge(true);
                 } else {
@@ -1824,7 +1778,7 @@ impl App {
             }
             IndexAction::Attachments => self.open_attachments(),
             IndexAction::ChangeMailbox => {
-                if self.ready_to_leave() {
+                if self.session.ready_to_leave() {
                     self.prompt = Some(Prompt::line(
                         "Open mailbox (Tab completes): ",
                         String::new(),
@@ -1833,7 +1787,7 @@ impl App {
                 }
             }
             IndexAction::ChangeMailboxReadOnly => {
-                if self.ready_to_leave() {
+                if self.session.ready_to_leave() {
                     self.prompt = Some(Prompt::line(
                         "Open mailbox read-only: ",
                         String::new(),
@@ -1873,7 +1827,7 @@ impl App {
             IndexAction::SidebarOpen => {
                 if !self.sidebar_visible {
                     self.note("the sidebar is hidden; B shows it");
-                } else if self.ready_to_leave()
+                } else if self.session.ready_to_leave()
                     && let Some((spec, _)) = self.sidebar.get(self.sidebar_sel).cloned()
                 {
                     self.open_mailbox_spec(&spec);
@@ -2338,7 +2292,7 @@ impl App {
         };
         if !is_text {
             // A configured filter can still render it (auto_view).
-            match self.display.filters.get(&mimetype).cloned() {
+            match self.session.display.filters.get(&mimetype).cloned() {
                 Some(command) => {
                     match message::filter_part(&msg_path, index, &command) {
                         Ok(body) => {
@@ -2636,7 +2590,7 @@ impl App {
             self.error("notmuch: no matches");
             return;
         }
-        if !self.ready_to_leave() {
+        if !self.session.ready_to_leave() {
             return;
         }
         let dir = remote::cache_base().join("notmuch");
@@ -2706,62 +2660,11 @@ impl App {
         }
     }
 
-    /// Mailbox specs for the folder browser and for Tab completion at
-    /// a mailbox prompt: the configured mailboxes, the open account's
-    /// folders (IMAP LIST), and maildirs discovered next to the open
-    /// one.
-    fn folder_candidates(&mut self) -> Result<Vec<(String, usize)>> {
-        // Local entries carry their new/ count; imap: specs of other
-        // accounts show without one (no connection just for a count).
-        let mut dirs: Vec<(String, usize)> = self
-            .session
-            .config
-            .mail
-            .mailboxes
-            .iter()
-            .filter(|m| m.starts_with("imap:") || expand_tilde(m).join("cur").is_dir())
-            .map(|m| {
-                let count = if m.starts_with("imap:") {
-                    0
-                } else {
-                    maildir::new_count(&expand_tilde(m))
-                };
-                (m.clone(), count)
-            })
-            .collect();
-        match &mut self.session.remote {
-            Some(remote) => {
-                let account = remote.account.name.clone();
-                dirs.extend(
-                    remote
-                        .folders()?
-                        .into_iter()
-                        .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
-                );
-            }
-            None => dirs.extend(
-                maildir::discover(&self.session.dir)
-                    .iter()
-                    .map(|p| (p.display().to_string(), maildir::new_count(p))),
-            ),
-        }
-        dirs.sort();
-        dirs.dedup_by(|a, b| {
-            if a.0 == b.0 {
-                b.1 = b.1.max(a.1);
-                true
-            } else {
-                false
-            }
-        });
-        Ok(dirs)
-    }
-
     fn open_folder_browser(&mut self) {
-        if !self.ready_to_leave() {
+        if !self.session.ready_to_leave() {
             return;
         }
-        let dirs = match self.folder_candidates() {
+        let dirs = match self.session.folder_candidates() {
             Ok(dirs) => dirs,
             Err(err) => {
                 self.error(format!("cannot list folders: {err:#}"));
@@ -2783,42 +2686,6 @@ impl App {
         };
     }
 
-    /// mutt's $mark_old (on by default): when leaving the mailbox,
-    /// unread new mail ages to old: moved out of new/ without the
-    /// seen flag, shown as O and no longer counted as new.
-    fn mark_old_unread(&mut self) {
-        if self.session.read_only {
-            return;
-        }
-        for m in &mut self.session.msgs {
-            if m.env.file.is_new
-                && !m.env.file.flags.seen
-                && !m.env.file.flags.deleted
-                && let Ok(path) = maildir::store_flags(&m.env.file)
-            {
-                m.env.file.path = path;
-                m.env.file.is_new = false;
-            }
-        }
-    }
-
-    /// Leaving the mailbox (c, sidebar open, folder browser): flag
-    /// changes are written silently like q; only pending deletions
-    /// block the switch. True when it is safe to go.
-    fn ready_to_leave(&mut self) -> bool {
-        if self.session.deleted_count() > 0 {
-            self.error("deleted messages pending; sync with $ or undelete first");
-            return false;
-        }
-        if self.session.pending_count() > 0 {
-            self.session.sync(false);
-            if self.session.pending_count() > 0 {
-                return false; // sync failed; its status says why
-            }
-        }
-        true
-    }
-
     /// mutt's Esc c: open it, then refuse to write to it. `-R` is
     /// the session-wide version and outlives the switch either way.
     fn open_mailbox_read_only(&mut self, spec: &str) {
@@ -2828,7 +2695,7 @@ impl App {
     }
 
     fn open_mailbox_spec(&mut self, spec: &str) {
-        self.mark_old_unread();
+        self.session.mark_old_unread();
         // Message-hook settings belong to the message being left, not
         // to the config the new mailbox inherits.
         self.clear_message_hooks();
@@ -3335,17 +3202,7 @@ impl App {
             return Some(from);
         }
         let rcpts = compose::addresses(to);
-        self.current_identity(&rcpts).from_line()
-    }
-
-    /// The identity in effect for this mailbox (and, when known, the
-    /// draft's recipients).
-    fn current_identity(&self, rcpts: &[String]) -> rmut_core::config::Identity {
-        self.session.config.identity_for(
-            &self.session.title,
-            rcpts,
-            self.session.remote.as_ref().map(|r| &r.account),
-        )
+        self.session.current_identity(&rcpts).from_line()
     }
 
     fn forward_attaches(&self) -> bool {
@@ -3458,6 +3315,7 @@ impl App {
         let from = match header_value(&head, "From") {
             Some(f) => f,
             None => self
+                .session
                 .current_identity(&[])
                 .from_line()
                 .unwrap_or_else(|| default_from(&maildir::hostname())),
@@ -3640,7 +3498,7 @@ impl App {
                 .unwrap_or_else(|| compose::content_type(&a.path).to_string());
             let mimetype = mimetype.as_str();
             let name = a.path.display().to_string();
-            match self.display.filters.get(mimetype).cloned() {
+            match self.session.display.filters.get(mimetype).cloned() {
                 Some(command) => match run_file_filter(&command, &a.path) {
                     Ok(text) => (name, text),
                     Err(err) => {
@@ -3895,6 +3753,7 @@ impl App {
         let (raw, files) = compose::extract_attachments(&raw);
         let host = maildir::hostname();
         let from = self
+            .session
             .current_identity(&[])
             .from_line()
             .unwrap_or_else(|| default_from(&host));
@@ -4024,7 +3883,7 @@ impl App {
             fcc: chosen,
             ..
         } = held;
-        let send_result = match self.smtp_account() {
+        let send_result = match self.session.smtp_account() {
             Some(account) => send_via_smtp(&account, &final_text),
             None => run_sendmail(
                 final_text.as_bytes(),
@@ -4199,26 +4058,6 @@ impl App {
                 entity.as_bytes(),
             ),
         }
-    }
-
-    /// Which account to submit outgoing mail through. Explicit sendmail
-    /// configuration ($RMUT_SENDMAIL or mail.sendmail) wins; otherwise
-    /// the open mailbox's account, or the first one with an smtp_host.
-    fn smtp_account(&self) -> Option<Account> {
-        if std::env::var("RMUT_SENDMAIL").is_ok() || self.session.config.mail.sendmail.is_some() {
-            return None;
-        }
-        if let Some(remote) = &self.session.remote
-            && remote.account.smtp_host.is_some()
-        {
-            return Some(remote.account.clone());
-        }
-        self.session
-            .config
-            .accounts
-            .iter()
-            .find(|a| a.smtp_host.is_some())
-            .cloned()
     }
 
     fn postponed_dir(&self) -> Option<PathBuf> {
@@ -4625,7 +4464,6 @@ impl App {
         self.body_rules = derived.body_rules;
         self.quote_re = derived.quote_re;
         self.attach_re = derived.attach_re;
-        self.display = derived.display;
         warnings
     }
 
@@ -4818,109 +4656,6 @@ impl App {
         ));
     }
 
-    /// Copy the message to a mailbox (local maildir path or a folder
-    /// of the open IMAP account); with `delete` the original is marked
-    /// deleted afterwards, mutt's s versus C.
-    fn copy_message(&mut self, input: &str, delete: bool) {
-        if input.is_empty() {
-            self.error("no mailbox given");
-            return;
-        }
-        let targets = self.session.op_targets(self.tag_op);
-        if targets.is_empty() {
-            return;
-        }
-        // What the undo of this step has to take back: the copies just
-        // delivered, and (for a save) the originals' deleted marks.
-        let mut created: Vec<PathBuf> = Vec::new();
-        let mut marks = Vec::new();
-        let mut copied = Vec::new();
-        let mut errors: Vec<String> = Vec::new();
-        let mut note = None;
-        let mut target = String::new();
-        for &i in &targets {
-            match self.copy_one(i, input, &mut created) {
-                Ok(shown) => {
-                    if shown.starts_with("imap:") {
-                        note = Some(format!("the copy in {shown} stays"));
-                    }
-                    target = shown;
-                    marks.push(self.session.mark(i));
-                    copied.push(i);
-                }
-                // One bad message does not undo the good ones: the
-                // rest still go, and the trouble is reported after.
-                Err(err) => errors.push(err),
-            }
-        }
-        let verb = if delete { "save" } else { "copy" };
-        if copied.is_empty() {
-            self.error(format!("cannot {verb}: {}", errors.join("; ")));
-            return;
-        }
-        self.session.push_undo_step(UndoStep {
-            what: format!("{verb} to {target}"),
-            marks,
-            sel: self.session.selected_path(),
-            created,
-            note,
-        });
-        let n = copied.len();
-        if delete {
-            for &i in &copied {
-                self.session.msgs[i].env.file.flags.deleted = true;
-                self.session.msgs[i].dirty = true;
-            }
-        }
-        let mut status = match (delete, n) {
-            (true, 1) => format!("saved to {target} (original marked deleted)"),
-            (true, _) => format!("saved {n} to {target} (originals marked deleted)"),
-            (false, 1) => format!("copied to {target}"),
-            (false, _) => format!("copied {n} to {target}"),
-        };
-        if !errors.is_empty() {
-            status += &format!("; {} failed: {}", errors.len(), errors.join("; "));
-            self.error(status);
-        } else {
-            self.note(status);
-        }
-    }
-
-    /// One message into `spec`: a folder of the open IMAP account, or
-    /// a local maildir path (created if missing). Returns where it
-    /// went, and pushes the delivered file, which undo removes.
-    fn copy_one(
-        &mut self,
-        i: usize,
-        spec: &str,
-        created: &mut Vec<PathBuf>,
-    ) -> Result<String, String> {
-        let flags = self.session.msgs[i].env.file.flags;
-        let bytes = self
-            .session
-            .message_bytes(i)
-            .ok_or("cannot read the message")?;
-        match remote::parse_spec(spec) {
-            Some((account, folder)) => match &mut self.session.remote {
-                Some(remote) if remote.account.name == account => remote
-                    .append_to(folder, flags, &bytes)
-                    .map(|folder| format!("imap:{account}/{folder}"))
-                    .map_err(|err| format!("{err:#}")),
-                _ => Err("can only save to a folder of the open account".into()),
-            },
-            None => {
-                let dir = expand_tilde(spec);
-                maildir::create(&dir)
-                    .and_then(|()| maildir::deliver(&dir, &bytes, flags))
-                    .map(|path| {
-                        created.push(path);
-                        dir.display().to_string()
-                    })
-                    .map_err(|err| format!("{err:#}"))
-            }
-        }
-    }
-
     /// Offer the selected message's sender for the alias file, with
     /// the address's local part as the suggested nick.
     fn prompt_create_alias(&mut self) {
@@ -4939,20 +4674,6 @@ impl App {
         self.prompt = Some(Prompt::line("Alias as (nick): ", nick, LineKind::AliasNick));
     }
 
-    fn create_alias(&mut self, nick: &str) {
-        let Some(addr) = self.alias_addr.take() else {
-            return;
-        };
-        if nick.is_empty() || nick.contains(char::is_whitespace) {
-            self.error("the alias nick must be one word");
-            return;
-        }
-        match alias::append(nick, &addr) {
-            Ok(_) => self.note(format!("added: alias {nick} {addr}")),
-            Err(err) => self.error(format!("cannot save the alias: {err:#}")),
-        }
-    }
-
     fn prompt_pipe(&mut self) {
         if self.session.visible.get(self.session.sel).is_none() {
             return;
@@ -4962,27 +4683,6 @@ impl App {
             String::new(),
             LineKind::Pipe,
         ));
-    }
-
-    /// Pipe the raw message to a shell command, like mutt's |. With
-    /// `;` the tagged messages are concatenated into one run of the
-    /// command, which is what mutt does with $pipe_split unset.
-    fn pipe_message(&mut self, command: &str) {
-        if command.is_empty() {
-            self.error("no command given");
-            return;
-        }
-        let Some(bytes) = self.session.op_bytes(self.tag_op) else {
-            return;
-        };
-        let n = self.session.op_targets(self.tag_op).len();
-        match pipe_to(command, &bytes) {
-            Ok(()) => self.note(match n {
-                1 => format!("piped to {command}"),
-                _ => format!("piped {n} messages to {command}"),
-            }),
-            Err(err) => self.error(format!("pipe failed: {err:#}")),
-        }
     }
 
     fn prompt_bounce(&mut self) {
@@ -5011,60 +4711,6 @@ impl App {
             },
             kind: KeyKind::Bounce,
         });
-    }
-
-    /// Resend the message as-is to new recipients: Resent-* headers on
-    /// top, the rest untouched.
-    fn bounce_current(&mut self, to: &str) {
-        let rcpts = compose::addresses(to);
-        if rcpts.is_empty() {
-            self.error(format!("cannot parse the addresses in {to:?}"));
-            return;
-        }
-        let targets = self.session.op_targets(self.tag_op);
-        let mut sent = 0usize;
-        for i in targets {
-            let Some(bytes) = self.session.message_bytes(i) else {
-                return;
-            };
-            if let Err(err) = self.bounce_one(&bytes, to, &rcpts) {
-                self.error(format!("bounce failed: {err:#}"));
-                return;
-            }
-            sent += 1;
-        }
-        self.note(match sent {
-            1 => format!("message bounced to {to}"),
-            _ => format!("{sent} messages bounced to {to}"),
-        });
-    }
-
-    /// One message resent as-is: Resent-* headers on top, the rest
-    /// untouched.
-    fn bounce_one(&mut self, bytes: &[u8], to: &str, rcpts: &[String]) -> Result<()> {
-        let host = maildir::hostname();
-        let from = self
-            .current_identity(rcpts)
-            .from_line()
-            .unwrap_or_else(|| default_from(&host));
-        let text = compose::bounce_text(
-            bytes,
-            &from,
-            to,
-            &compose::rfc2822_now(),
-            &compose::make_message_id(&host),
-        );
-        let envelope_from = compose::bare_address(&from).unwrap_or_else(|| from.clone());
-        match self.smtp_account() {
-            Some(account) => account_password(&account).and_then(|password| {
-                smtp::send(&account, &password, &envelope_from, rcpts, text.as_bytes())
-            }),
-            None => run_sendmail(
-                text.as_bytes(),
-                self.session.config.mail.sendmail.as_deref(),
-                Some(rcpts),
-            ),
-        }
     }
 
     /// mutt's edit function (`e`): the selected message's raw bytes go
@@ -5230,46 +4876,6 @@ impl App {
         }
     }
 
-    /// Fetch (IMAP), parse, and PGP-process a message the way the
-    /// pager shows it.
-    fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
-        // Cached IMAP messages start header-only; get the body now.
-        if let Some(remote) = &mut self.session.remote
-            && remote::is_partial(path)
-        {
-            remote.fetch_body(path).context("cannot fetch message")?;
-            // The body is here now: %l can show its line count.
-            if let Some(m) = self
-                .session
-                .msgs
-                .iter_mut()
-                .find(|m| m.env.file.path == path)
-                && let Ok(raw) = std::fs::read(path)
-            {
-                m.env.lines = Some(message::body_lines(&raw));
-            }
-        }
-        let mut view = message::load_with(path, &self.display)?;
-        // PGP messages: decrypt/verify via gpg, prepend the verdict
-        // line to whatever body ends up shown.
-        if let Ok(raw) = std::fs::read(path)
-            && let Some(p) = pgp::view(&self.session.config.pgp, &raw)
-        {
-            match p.body {
-                // A decrypted PGP/MIME entity is a MIME tree of its
-                // own: render it whole, so attachments inside
-                // encrypted mail are announced like any others.
-                Some(pgp::Body::Entity(raw)) => {
-                    view.body = message::render_entity(&raw, &self.display);
-                }
-                Some(pgp::Body::Text(text)) => view.body = text,
-                None => {}
-            }
-            view.body = format!("{}\n\n{}", p.note, view.body);
-        }
-        Ok(view)
-    }
-
     fn open_selected(&mut self) {
         self.session.mark_read();
         // Opening a message ends the pager search, like mutt (whose
@@ -5280,7 +4886,7 @@ impl App {
             return;
         };
         let path = self.session.msgs[i].env.file.path.clone();
-        match self.load_view(&path) {
+        match self.session.load_view(&path) {
             Ok(view) => {
                 self.mode = Mode::Pager(Pager {
                     view,
@@ -5306,49 +4912,6 @@ impl App {
             },
             kind: KeyKind::Print,
         });
-    }
-
-    /// Pipe the message as displayed (brief headers, decoded body) to
-    /// the configured print command, lpr by default.
-    fn print_current(&mut self) {
-        let targets = self.session.op_targets(self.tag_op);
-        if targets.is_empty() {
-            return;
-        }
-        let mut text = String::new();
-        for i in targets.iter().copied() {
-            let path = self.session.msgs[i].env.file.path.clone();
-            let view = match self.load_view(&path) {
-                Ok(v) => v,
-                Err(err) => {
-                    self.error(format!("cannot print: {err:#}"));
-                    return;
-                }
-            };
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            for (name, value) in &view.brief {
-                text += &format!("{name}: {value}\n");
-            }
-            text.push('\n');
-            text += &view.body;
-        }
-        let n = targets.len();
-        let command = self
-            .session
-            .config
-            .mail
-            .print
-            .clone()
-            .unwrap_or_else(|| "lpr".into());
-        match pipe_to(&command, text.as_bytes()) {
-            Ok(()) => self.note(match n {
-                1 => format!("printed via {command}"),
-                _ => format!("printed {n} messages via {command}"),
-            }),
-            Err(err) => self.error(format!("print failed: {err:#}")),
-        }
     }
 
     /// Write all pending changes to the maildir: T-flagged messages are
@@ -5406,14 +4969,6 @@ fn write_draft(text: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn default_from(hostname: &str) -> String {
-    if let Ok(email) = std::env::var("EMAIL") {
-        return email;
-    }
-    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    format!("{user}@{hostname}")
-}
-
 /// Set once the ratatui alternate screen is up: progress switches
 /// from stderr lines (the initial open runs before ratatui::init) to
 /// direct writes on the terminal's bottom row.
@@ -5447,34 +5002,6 @@ pub fn progress(msg: &str) {
     }
 }
 
-pub(crate) fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
-    let from = compose::from_address(text).context("cannot parse the From address")?;
-    let (rcpts, text) = compose::smtp_envelope(text)?;
-    anyhow::ensure!(!rcpts.is_empty(), "no recipient addresses");
-    let password = account_password(account)?;
-    smtp::send(account, &password, &from, &rcpts, text.as_bytes())
-}
-
-/// Run a shell command with `bytes` on its stdin.
-fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("running {command}"))?;
-    child
-        .stdin
-        .take()
-        .context("no stdin on print child")?
-        .write_all(bytes)?;
-    let status = child.wait()?;
-    anyhow::ensure!(status.success(), "{command} exited with {status}");
-    Ok(())
-}
-
 /// One [filters] command over a file on disk (compose menu view):
 /// the file is its stdin, its stdout is the rendered text.
 fn run_file_filter(command: &str, path: &Path) -> Result<String> {
@@ -5487,55 +5014,6 @@ fn run_file_filter(command: &str, path: &Path) -> Result<String> {
         .with_context(|| format!("running {command}"))?;
     anyhow::ensure!(out.status.success(), "{command} exited with {}", out.status);
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// With `rcpts` the addresses go on the command line (a bounce keeps
-/// its Resent-To out of -t's reach); otherwise -t reads To/Cc/Bcc.
-pub(crate) fn run_sendmail(
-    bytes: &[u8],
-    configured: Option<&str>,
-    rcpts: Option<&[String]>,
-) -> Result<()> {
-    let command = std::env::var("RMUT_SENDMAIL")
-        .ok()
-        .or_else(|| configured.map(String::from));
-    let (prog, mut args) = match command {
-        Some(v) => {
-            let mut it = v.split_whitespace().map(String::from);
-            let p = it.next().context("sendmail command is empty")?;
-            (p, it.collect::<Vec<_>>())
-        }
-        None => {
-            let p = if Path::new("/usr/sbin/sendmail").exists() {
-                "/usr/sbin/sendmail".to_string()
-            } else {
-                "sendmail".to_string()
-            };
-            (p, Vec::new())
-        }
-    };
-    match rcpts {
-        Some(rcpts) => {
-            args.push("-oi".into());
-            args.extend(rcpts.iter().cloned());
-        }
-        None => args.extend(["-t".into(), "-oi".into()]),
-    }
-    let mut child = Command::new(&prog)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("running {prog}"))?;
-    child
-        .stdin
-        .take()
-        .context("no stdin on sendmail child")?
-        .write_all(bytes)?;
-    let status = child.wait()?;
-    anyhow::ensure!(status.success(), "{prog} exited with {status}");
-    Ok(())
 }
 
 /// The first line matching `m` strictly after (before, when searching
