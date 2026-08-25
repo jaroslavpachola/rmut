@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.43.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.44.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -687,6 +687,23 @@ it, and so does leaving rmut: quitting is not cancelling. Batch sends
 never hold, having no terminal to press
 .B z
 at. rmut's own; mutt has no equivalent.
+.TP
+.B folder
+mutt's $folder: where mailboxes live, so
+.BI = x
+and
+.BI + x
+name a mailbox under it and
+.BR = " or " +
+alone is the folder itself. Expanded wherever a mailbox is named: the
+change-folder, save and copy prompts, the compose menu's Fcc, and the
+configured mailboxes, trash, sent, postponed and fcc-hook targets, as
+well as inside a macro, which is what lets an imported
+.RB \(dq "<save-message>=archive<enter>" \(dq
+land where it means to. An account spec works as the folder
+("imap:work"), making
+.B =Archive
+that account's Archive. Tab completion works on real paths only.
 .SS [index]
 .TP
 .B format

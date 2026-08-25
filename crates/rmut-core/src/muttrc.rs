@@ -1093,7 +1093,12 @@ impl State {
             }
         }
         let sent_local = self.sent.as_deref().filter(|_| imap.is_none());
-        if !mailboxes.is_empty()
+        // $folder itself is worth carrying over: rmut expands +x / =x
+        // at runtime too, which is what makes an imported macro like
+        // "<save-message>=archive<enter>" land in the right mailbox.
+        let folder_setting = self.folder.clone().filter(|f| !is_imap_url(f));
+        if folder_setting.is_some()
+            || !mailboxes.is_empty()
             || sent_local.is_some()
             || self.postponed.is_some()
             || self.sendmail.is_some()
@@ -1118,6 +1123,9 @@ impl State {
             || self.text_flowed
         {
             out += "\n[mail]\n";
+            if let Some(f) = &folder_setting {
+                out += &format!("folder = {}\n", quote(f));
+            }
             for (key, values) in [
                 ("lists", &self.lists),
                 ("subscribed", &self.subscribed),
@@ -1933,6 +1941,9 @@ mod tests {
         );
         assert_eq!(cfg.mail.sent.as_deref(), Some("~/Mail/sent"));
         assert_eq!(cfg.mail.postponed.as_deref(), Some("~/Mail/drafts"));
+        // $folder carries over, so rmut expands +x / =x at runtime as
+        // well: an imported macro can still say "=archive".
+        assert_eq!(cfg.mail.folder.as_deref(), Some("~/Mail"));
     }
 
     #[test]

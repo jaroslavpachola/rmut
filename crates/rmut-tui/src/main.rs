@@ -170,6 +170,9 @@ fn run() -> Result<ExitCode> {
         return import_muttrc(cli.spec.as_deref());
     }
     let (mut config, config_warning) = rmut_core::config::load_default();
+    // +x / =x in any configured mailbox becomes a real name once,
+    // here, so nothing downstream has to know about $folder.
+    config.expand_folders();
     if cli.send_mode {
         return send_batch(&mut config, &cli);
     }
@@ -229,6 +232,7 @@ fn send_batch(config: &mut rmut_core::config::Config, cli: &Cli) -> Result<ExitC
             rmut_core::command::apply(config, &cmd).map_err(|e| anyhow::anyhow!("{e}"))?;
         }
     }
+    config.expand_folders();
     let out = batch::Outgoing {
         to: cli.recipients.join(", "),
         cc: cli.cc.clone(),

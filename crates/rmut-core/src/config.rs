@@ -194,6 +194,11 @@ pub struct IdentityRule {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Mail {
+    /// mutt's $folder: where mailboxes live, so `=x` and `+x` name a
+    /// mailbox under it, at a prompt or in a macro. An IMAP account
+    /// spec works too ("imap:work"), making `=Archive` mean
+    /// imap:work/Archive.
+    pub folder: Option<String>,
     pub mailboxes: Vec<String>,
     pub sent: Option<String>,
     pub postponed: Option<String>,
@@ -671,6 +676,52 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     pi == p.len()
 }
 
+/// mutt's `+x` / `=x`: a mailbox named under $folder. `=` or `+`
+/// alone is $folder itself; anything else, and any name at all when
+/// no folder is configured, comes back untouched. This runs on every
+/// mailbox rmut is handed, typed or configured, before anything
+/// tries to read it as a path or an imap: spec.
+pub fn expand_folder(spec: &str, folder: Option<&str>) -> String {
+    let Some(rest) = spec.strip_prefix(['=', '+']) else {
+        return spec.to_string();
+    };
+    let Some(folder) = folder
+        .map(|f| f.trim_end_matches('/'))
+        .filter(|f| !f.is_empty())
+    else {
+        return spec.to_string();
+    };
+    match rest.is_empty() {
+        true => folder.to_string(),
+        false => format!("{folder}/{rest}"),
+    }
+}
+
+impl Config {
+    /// Expand `=x` / `+x` in every mailbox the config names, so the
+    /// rest of the program only ever sees real paths and imap: specs.
+    /// Idempotent: an expanded name no longer starts with = or +.
+    pub fn expand_folders(&mut self) {
+        let folder = self.mail.folder.clone();
+        let folder = folder.as_deref();
+        let one = |slot: &mut Option<String>| {
+            if let Some(v) = slot {
+                *v = expand_folder(v, folder);
+            }
+        };
+        one(&mut self.mail.sent);
+        one(&mut self.mail.postponed);
+        one(&mut self.mail.trash);
+        one(&mut self.mail.save);
+        for m in &mut self.mail.mailboxes {
+            *m = expand_folder(m, folder);
+        }
+        for hook in &mut self.fcc_hooks {
+            hook.mailbox = expand_folder(&hook.mailbox, folder);
+        }
+    }
+}
+
 pub fn path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("RMUT_CONFIG") {
         return Some(PathBuf::from(p));
@@ -720,6 +771,45 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_shorthand_expands_everywhere_a_mailbox_is_named() {
+        assert_eq!(expand_folder("=archive", Some("~/Mail")), "~/Mail/archive");
+        assert_eq!(expand_folder("+archive", Some("~/Mail/")), "~/Mail/archive");
+        // = or + alone is $folder itself.
+        assert_eq!(expand_folder("=", Some("~/Mail")), "~/Mail");
+        // An IMAP account works as $folder, so =x is one of its folders.
+        assert_eq!(
+            expand_folder("=Archive", Some("imap:work")),
+            "imap:work/Archive"
+        );
+        // Nothing to expand, or nowhere to expand to: untouched.
+        assert_eq!(expand_folder("~/other", Some("~/Mail")), "~/other");
+        assert_eq!(expand_folder("=archive", None), "=archive");
+        assert_eq!(expand_folder("=archive", Some("")), "=archive");
+
+        let mut cfg: Config = toml::from_str(
+            r#"
+            [mail]
+            folder = "~/Mail"
+            mailboxes = ["=inbox", "~/elsewhere"]
+            sent = "+sent"
+            trash = "=Trash"
+            [[fcc_hooks]]
+            pattern = "~A"
+            mailbox = "=work"
+            "#,
+        )
+        .unwrap();
+        cfg.expand_folders();
+        assert_eq!(cfg.mail.mailboxes, ["~/Mail/inbox", "~/elsewhere"]);
+        assert_eq!(cfg.mail.sent.as_deref(), Some("~/Mail/sent"));
+        assert_eq!(cfg.mail.trash.as_deref(), Some("~/Mail/Trash"));
+        assert_eq!(cfg.fcc_hooks[0].mailbox, "~/Mail/work");
+        // Idempotent: an expanded name no longer starts with = or +.
+        cfg.expand_folders();
+        assert_eq!(cfg.mail.trash.as_deref(), Some("~/Mail/Trash"));
+    }
 
     #[test]
     fn parses_partial_config() {

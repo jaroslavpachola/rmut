@@ -189,6 +189,21 @@ pub enum LineKind {
 
 impl LineKind {
     /// History bucket, mutt-style: one shared list per input class.
+    /// The kinds whose answer names a mailbox, so `=x` / `+x` expand
+    /// before anything reads it. Same list as the "mailbox" history
+    /// bucket below.
+    fn takes_mailbox(self) -> bool {
+        matches!(
+            self,
+            LineKind::ChangeDir
+                | LineKind::SaveMsg
+                | LineKind::CopyMsg
+                | LineKind::BrowseDir
+                | LineKind::CreateDir
+                | LineKind::EditFcc
+        )
+    }
+
     fn history_bucket(self) -> &'static str {
         match self {
             LineKind::Limit
@@ -1780,6 +1795,18 @@ impl App {
     }
 
     fn run_line_prompt(&mut self, kind: LineKind, input: &str) {
+        // mutt's +x / =x: a mailbox under $folder, wherever one is
+        // typed. Macros come through here too, which is what makes an
+        // imported "<save-message>=archive<enter>" work.
+        let expanded;
+        let input = match kind.takes_mailbox() {
+            true => {
+                expanded =
+                    rmut_core::config::expand_folder(input, self.config.mail.folder.as_deref());
+                expanded.as_str()
+            }
+            false => input,
+        };
         match kind {
             LineKind::Limit => {
                 let keep = self.selected_path();
@@ -4575,6 +4602,8 @@ impl App {
         if commands.is_empty() {
             return;
         }
+        // A `:set trash="=Trash"` names a mailbox too.
+        self.config.expand_folders();
         reports.extend(self.recompile());
         if sort_before
             != (

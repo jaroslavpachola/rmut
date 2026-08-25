@@ -830,20 +830,31 @@ Alt+V (mutt's `Esc v`), so half the map is drawn.
       `Msg::pending()`, or the motion lands on messages nobody wants
       to revisit
 
-## R43: the = and + folder shorthand
+## R43: the = and + folder shorthand (done, 1.44)
 
 Goal: mutt's $folder-relative mailbox names, everywhere a mailbox is
 named.
 
-- [ ] `[mail] folder`, imported from `set folder`: the importer
-      already reads it, but only to expand +/= at import time
-- [ ] One expansion point beside `expand_tilde`, which today knows
-      only `~/`: `=x` and `+x` mean `$folder/x`, so change-folder,
-      save, copy, the Fcc prompt and the hook targets all get it,
-      and `=` alone means $folder itself
-- [ ] It also unbreaks imported macros: `macro index S
-      "<save-message>=archive<enter>"` currently files into a maildir
-      named, literally, `=archive`
+- [x] `[mail] folder`, imported from `set folder`: the importer read
+      it already, but only to expand +/= at import time, and now
+      carries it over so the running rmut knows it too. An account
+      spec works as the folder ("imap:work"), so `=Archive` is that
+      account's folder
+- [x] `config::expand_folder` is the one expansion, reached two ways:
+      `Config::expand_folders` rewrites every mailbox the config
+      names (mailboxes, sent, postponed, trash, save, fcc-hook
+      targets) once at load, after the `-e` commands and after any
+      `:set`, and `run_line_prompt` expands what was typed at the
+      mailbox prompts before anything reads it. Everything
+      downstream keeps seeing plain paths and imap: specs, so
+      `expand_tilde` and `parse_spec` did not have to learn anything
+- [x] It also unbreaks imported macros: a macro's keys go through the
+      same prompt, so `macro index S "<save-message>=archive<enter>"`
+      now files where it means to instead of into a maildir named,
+      literally, `=archive`
+- [x] Known limit, matching where the work stops: Tab completion at a
+      mailbox prompt still completes real paths, not `=` names;
+      e2e scenario_folder_shorthand
 
 ## R44: paper cuts
 

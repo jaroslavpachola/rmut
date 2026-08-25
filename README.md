@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.43**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.44**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -428,6 +428,30 @@ PGP signature or encryption alike. The paragraphs themselves are your
 editor's doing, exactly as in mutt: a line that continues has to end
 with a space, and rmut adds none of its own.
 
+## Mailbox names: `=` and `+`
+
+Set `[mail] folder` and a mailbox can be named under it, the way mutt
+does it:
+
+```toml
+[mail]
+folder = "~/Mail"            # or an account: "imap:work"
+mailboxes = ["=inbox", "=lists"]
+trash = "=trash"
+```
+
+`=x` and `+x` mean `$folder/x`, and `=` alone is the folder itself.
+It works wherever a mailbox is named: the change-folder prompt, save
+and copy, the compose menu's Fcc, the configured mailboxes, trash,
+sent, postponed and the fcc-hook targets. It also works in a macro,
+which is what lets an imported mutt line like
+`macro index S "<save-message>=archive<enter>"` land where it means
+to. Tab completion still works on real paths only, so complete first
+or type the shorthand whole.
+
+With `folder = "imap:work"`, `=Archive` is that account's Archive
+folder.
+
 ## Threads
 
 `o t` sorts by threads, and then the thread is a unit you can act on:
@@ -596,6 +620,9 @@ name = "Jane Work"           # matching rules overlay [identity] in
 email = "jane@work.example.com"    # order, unset fields fall through
 
 [mail]
+folder = "~/Maildir"         # mutt's $folder: "=x" and "+x" name a
+                             # mailbox under it, at a prompt or in a
+                             # macro ("imap:work" works too)
 mailboxes = ["~/Maildir"]    # default mailbox + folder browser entries;
                              # local ones are watched for new mail
                              # ("new mail in ..." in the status line)

@@ -3060,6 +3060,62 @@ def scenario_thread_ops(tmp):
     r.close()
 
 
+def scenario_folder_shorthand(tmp):
+    """R43: =x and +x name a mailbox under [mail] folder, whether
+    typed at a prompt, replayed from a macro, or written in the
+    config."""
+    root = os.path.join(tmp, "Mail")
+    md = make_maildir(root, "inbox")
+    make_maildir(root, "archive")
+    write_msgs(md, ["jane", "ci"])
+    cfg = os.path.join(tmp, "shorthand-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nfolder = "{root}"\n'
+                'mailboxes = ["=inbox", "=archive"]\n'
+                'trash = "=trash"\n'
+                '[macros.index]\n'
+                'A = "s=archive<enter>"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:2")
+
+    # Typed at the save prompt.
+    r.keys(b"=s")
+    r.expect("Save to mailbox:")
+    r.keys(b"=archive\r")
+    r.repaint()
+    r.expect("saved to " + os.path.join(root, "archive"))
+    wait_for(lambda: len(os.listdir(os.path.join(root, "archive", "cur"))) == 1,
+             desc="the copy under =archive")
+    r.keys(b"z")
+    r.repaint()
+
+    # Replayed from a macro, which is how an imported mutt config
+    # reaches it: "<save-message>=archive<enter>".
+    r.keys(b"A")
+    r.repaint()
+    r.expect("original marked deleted")
+    wait_for(lambda: len(os.listdir(os.path.join(root, "archive", "cur"))) == 1,
+             desc="the copy the macro saved")
+
+    # Configured: the trash mailbox is =trash, and purging creates it
+    # there rather than in a directory called "=trash".
+    r.keys(b"$y")
+    wait_for(lambda: os.path.isdir(os.path.join(root, "trash", "cur"))
+             and len(os.listdir(os.path.join(root, "trash", "cur"))) == 1,
+             desc="the purged message in =trash")
+    # A literal "=trash" directory would mean the expansion never ran;
+    # it would land in the process's cwd, so that is where to look.
+    assert not os.path.exists("=trash"), "a literal =trash directory was created"
+
+    # And at the change-folder prompt.
+    r.keys(b"c=archive\r")
+    r.repaint()
+    r.expect(os.path.join(root, "archive"))
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3089,6 +3145,7 @@ SCENARIOS = [
     scenario_search_direction,
     scenario_tagged_and_pager,
     scenario_thread_ops,
+    scenario_folder_shorthand,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,
