@@ -91,6 +91,8 @@ struct State {
     text_flowed: bool,
     /// `set noreflow_text`: leave a flowed part's line breaks alone.
     no_reflow_text: bool,
+    /// `alternative_order`: preferred types in a multipart/alternative.
+    alternative_order: Vec<String>,
     hdr_unignore: Vec<String>,
     hdr_order: Vec<String>,
     pager_format: Option<String>,
@@ -225,9 +227,23 @@ fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
             "bind" => st.bind(&tokens[1..], &line),
             "macro" => st.mutt_macro(&tokens[1..], &line),
             "color" => st.color(&tokens[1..], &line),
-            "auto_view" => {
+            "auto_view" | "unauto_view" => {
                 for mime in &tokens[1..] {
-                    st.auto_view(mime, &line);
+                    st.auto_view(cmd == "auto_view", mime, &line);
+                }
+            }
+            "alternative_order" | "unalternative_order" => {
+                for mime in &tokens[1..] {
+                    let mime = mime.to_lowercase();
+                    if cmd == "alternative_order" {
+                        if !st.alternative_order.contains(&mime) {
+                            st.alternative_order.push(mime);
+                        }
+                    } else if mime == "*" {
+                        st.alternative_order.clear();
+                    } else {
+                        st.alternative_order.retain(|t| *t != mime);
+                    }
                 }
             }
             "folder-hook" | "send-hook" => {
@@ -902,25 +918,26 @@ impl State {
         }
     }
 
-    fn auto_view(&mut self, mime: &str, line: &str) {
-        match mime {
-            "text/html" => {
-                // The command lives in mailcap, which is not read;
-                // w3m is the usual suspect; adjust after import.
-                self.filters
-                    .entry("text/html".into())
-                    .or_insert_with(|| "w3m -dump -T text/html -O UTF-8".into());
+    /// `auto_view` / `unauto_view`: a [filters] entry per type. The
+    /// command is left empty, which is rmut's "look it up in mailcap",
+    /// exactly where mutt looks for it.
+    fn auto_view(&mut self, add: bool, mime: &str, line: &str) {
+        let mime = mime.to_lowercase();
+        if !add {
+            if mime == "*" {
+                self.filters.clear();
+            } else {
+                self.filters.remove(&mime);
             }
-            m if m.starts_with("text/") => {
-                self.satisfy(line, "text parts already display inline");
-            }
+            return;
+        }
+        match mime.as_str() {
             "application/pgp" | "application/pgp-signature" | "application/pgp-encrypted" => {
                 self.satisfy(line, "PGP is handled natively");
             }
-            _ => self.skip(
-                line,
-                "add a [filters] entry with a command that reads the part on stdin",
-            ),
+            _ => {
+                self.filters.entry(mime).or_default();
+            }
         }
     }
 
@@ -1200,6 +1217,7 @@ impl State {
             || !self.hdr_unignore.is_empty()
             || !self.hdr_order.is_empty()
             || self.no_reflow_text
+            || !self.alternative_order.is_empty()
         {
             out += "\n[pager]\n";
             if let Some(n) = self.pager_index_lines {
@@ -1234,9 +1252,13 @@ impl State {
             if self.no_reflow_text {
                 out += "reflow_text = false\n";
             }
+            if !self.alternative_order.is_empty() {
+                let items: Vec<String> = self.alternative_order.iter().map(|s| quote(s)).collect();
+                out += &format!("alternative_order = [{}]\n", items.join(", "));
+            }
         }
         if !self.filters.is_empty() {
-            out += "\n[filters]\n# auto_view: the command reads the part on stdin (from mailcap\n# in mutt; adjust to taste)\n";
+            out += "\n[filters]\n# auto_view: an empty command means rmut takes it from your\n# mailcap (the first copiousoutput entry), as mutt does; put a\n# command here to override it\n";
             for (mime, command) in &self.filters {
                 out += &format!("{} = {}\n", quote(mime), quote(command));
             }
@@ -2157,30 +2179,39 @@ mod tests {
             "auto_view application/pgp-signature application/pgp\n",
             "auto_view text/html\n",
             "auto_view text/calendar\n",
+            "unauto_view text/calendar\n",
+            "alternative_order text/enriched text/plain TEXT/HTML\n",
+            "unalternative_order text/enriched\n",
             "set imap_peek           = yes\n",
             "set menu_scroll\n",
             "bind index % noop\n",
             "color index black   cyan    \"~T\"\n",
         ));
-        assert!(
-            cfg.filters.get("text/html").unwrap().contains("w3m"),
-            "html filter"
-        );
+        // Every auto_view type becomes a [filters] entry; the command
+        // is left empty, which is rmut's "take it from mailcap", the
+        // very place mutt takes it from.
+        for mime in [
+            "application/zip",
+            "text/x-patch",
+            "text/x-diff",
+            "text/html",
+        ] {
+            assert_eq!(
+                cfg.filters.get(mime).map(String::as_str),
+                Some(""),
+                "{mime}"
+            );
+        }
+        // unauto_view takes one back off.
+        assert!(!cfg.filters.contains_key("text/calendar"), "{toml}");
+        assert_eq!(cfg.pager.alternative_order, ["text/plain", "text/html"]);
         // black-on-cyan: the background is the visible color.
         assert_eq!(cfg.colors.get("tagged").map(String::as_str), Some("cyan"));
         assert!(toml.contains("# satisfied by rmut's defaults"), "{toml}");
-        for satisfied in [
-            "x-patch",
-            "pgp-signature",
-            "imap_peek",
-            "menu_scroll",
-            "noop",
-        ] {
+        for satisfied in ["pgp-signature", "imap_peek", "menu_scroll", "noop"] {
             assert!(toml.contains(satisfied), "{satisfied} missing:\n{toml}");
         }
-        // zip and calendar have no obvious command: they stay visible.
         assert!(toml.contains("application/zip"), "{toml}");
-        assert!(toml.contains("text/calendar"), "{toml}");
     }
 
     #[test]

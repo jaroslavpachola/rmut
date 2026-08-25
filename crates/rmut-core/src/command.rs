@@ -74,6 +74,15 @@ pub enum Command {
     /// addresses (`*` un-does the lot).
     Alternates(Vec<String>),
     Unalternates(Vec<String>),
+    /// mutt's `auto_view` / `unauto_view`: MIME types rendered inline
+    /// by a filter. auto_view leaves the command to mailcap (an empty
+    /// [filters] value); `unauto_view *` clears the lot.
+    AutoView(Vec<String>),
+    UnAutoView(Vec<String>),
+    /// mutt's `alternative_order` / `unalternative_order`: which part
+    /// of a multipart/alternative wins (`*` un-does the lot).
+    AlternativeOrder(Vec<String>),
+    UnAlternativeOrder(Vec<String>),
     /// mutt's `my_hdr`: one "Name: value" line for every draft.
     MyHdr(String),
     /// `unmy_hdr NAME...`, or `*` for all of them.
@@ -172,6 +181,15 @@ pub fn parse(line: &str) -> Result<Vec<Command>, String> {
         "unalternates" => {
             want(args, "unalternates PATTERN...").map(|p| vec![Command::Unalternates(p)])
         }
+        "auto_view" => want(args, "auto_view MIMETYPE...").map(|t| vec![Command::AutoView(t)]),
+        "unauto_view" => {
+            want(args, "unauto_view MIMETYPE...").map(|t| vec![Command::UnAutoView(t)])
+        }
+        "alternative_order" => {
+            want(args, "alternative_order MIMETYPE...").map(|t| vec![Command::AlternativeOrder(t)])
+        }
+        "unalternative_order" => want(args, "unalternative_order MIMETYPE...")
+            .map(|t| vec![Command::UnAlternativeOrder(t)]),
         "my_hdr" => {
             // The value carries colons and spaces, so it comes off the
             // raw line rather than from the tokens.
@@ -335,6 +353,44 @@ pub fn apply(cfg: &mut Config, cmd: &Command) -> Result<Option<String>, String> 
                     cfg.mail.alternates.clear();
                 } else {
                     cfg.mail.alternates.retain(|a| a != p);
+                }
+            }
+            Ok(None)
+        }
+        Command::AutoView(types) => {
+            for t in types {
+                // The command comes from mailcap, like mutt; a
+                // [filters] entry set by hand is left alone.
+                cfg.filters.entry(t.to_lowercase()).or_default();
+            }
+            Ok(None)
+        }
+        Command::UnAutoView(types) => {
+            for t in types {
+                if t == "*" {
+                    cfg.filters.clear();
+                } else {
+                    cfg.filters.remove(&t.to_lowercase());
+                }
+            }
+            Ok(None)
+        }
+        Command::AlternativeOrder(types) => {
+            for t in types {
+                let t = t.to_lowercase();
+                if !cfg.pager.alternative_order.contains(&t) {
+                    cfg.pager.alternative_order.push(t);
+                }
+            }
+            Ok(None)
+        }
+        Command::UnAlternativeOrder(types) => {
+            for t in types {
+                if t == "*" {
+                    cfg.pager.alternative_order.clear();
+                } else {
+                    let t = t.to_lowercase();
+                    cfg.pager.alternative_order.retain(|a| *a != t);
                 }
             }
             Ok(None)
@@ -616,6 +672,46 @@ mod tests {
         assert!(cfg.mail.my_hdr.is_empty());
         assert!(parse("my_hdr Organization").is_err());
         assert!(parse("alternates").is_err());
+    }
+
+    #[test]
+    fn auto_view_and_alternative_order_at_the_prompt() {
+        let mut cfg = Config::default();
+        for line in [
+            "auto_view text/html Application/Zip",
+            "auto_view text/calendar",
+            "unauto_view text/calendar",
+            "alternative_order text/plain TEXT/HTML",
+            "alternative_order text/plain",
+            "unalternative_order text/html",
+        ] {
+            for cmd in parse(line).expect(line) {
+                apply(&mut cfg, &cmd).expect(line);
+            }
+        }
+        // auto_view leaves the command to mailcap: an empty value.
+        let mut types: Vec<&str> = cfg.filters.keys().map(String::as_str).collect();
+        types.sort_unstable();
+        assert_eq!(types, ["application/zip", "text/html"]);
+        assert!(cfg.filters.values().all(String::is_empty));
+        // A command set by hand survives a later auto_view for the type.
+        cfg.filters
+            .insert("text/html".into(), "w3m -dump -T text/html".into());
+        for cmd in parse("auto_view text/html").unwrap() {
+            apply(&mut cfg, &cmd).unwrap();
+        }
+        assert_eq!(
+            cfg.filters.get("text/html").map(String::as_str),
+            Some("w3m -dump -T text/html")
+        );
+        // The order keeps its first mention and drops duplicates.
+        assert_eq!(cfg.pager.alternative_order, ["text/plain"]);
+        for cmd in parse("unauto_view *").unwrap() {
+            apply(&mut cfg, &cmd).unwrap();
+        }
+        assert!(cfg.filters.is_empty());
+        assert!(parse("auto_view").is_err());
+        assert!(parse("alternative_order").is_err());
     }
 
     #[test]

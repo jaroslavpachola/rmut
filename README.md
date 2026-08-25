@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.37**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.38**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -421,6 +421,32 @@ PGP signature or encryption alike. The paragraphs themselves are your
 editor's doing, exactly as in mutt: a line that continues has to end
 with a space, and rmut adds none of its own.
 
+## Which part shows, and mailcap
+
+A `multipart/alternative` message carries the same text twice or more.
+mutt's `alternative_order` decides which copy you read, most wanted
+type first; `text/*` matches a whole main type, and anything not
+listed falls back to rmut's ranking (a part with a filter, then
+enriched over plain over html):
+
+```toml
+[pager]
+alternative_order = ["text/plain", "text/html"]
+```
+
+`[filters]` is mutt's `auto_view`: a MIME type and the command that
+turns it into text on stdout. Leave the command empty and rmut takes
+it from your mailcap, exactly where mutt takes it from: the first
+`copiousoutput` entry for the type, skipping one whose `test=` fails
+or that wants the terminal, with `%s` given a temporary file. The
+files are `$MAILCAPS`, or `~/.mailcap`, `/etc/mailcap`,
+`/usr/etc/mailcap`, `/usr/local/etc/mailcap`. A type with no such
+entry simply does not autoview, and the part stays an attachment.
+
+`auto_view`, `unauto_view`, `alternative_order` and
+`unalternative_order` all work at the `:` prompt as well, and import
+from a muttrc.
+
 ## Hooks
 
 Beyond `[[identities]]` (the from/realname half of folder-hook and
@@ -525,9 +551,13 @@ index_lines = 10             # keep a slice of the index above the pager
 context = 3                  # overlapping lines when paging
 reflow_text = true           # false: keep a format=flowed part's own
                              # line breaks instead of rewrapping it
+alternative_order = ["text/plain", "text/html"]
+                             # which part of a multipart/alternative
+                             # shows, most wanted first ("text/*" ok)
 
 [filters]                    # auto_view: render a part via a command
 "text/html" = "w3m -dump -T text/html -O UTF-8"
+"text/calendar" = ""         # empty: take the command from mailcap
 
 [ui]
 theme = "default"            # or "mono"
@@ -597,6 +627,8 @@ defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, with
 `auth`/`token_command` when `*_authenticators` names
 oauthbearer/xoauth2, reverse_name, alternates/unalternates,
 my_hdr/unmy_hdr, text_flowed/reflow_text,
+auto_view/unauto_view (the command left to mailcap),
+alternative_order/unalternative_order,
 folder-hooks/send-hooks that only set from/realname into
 `[[identities]]` rules, every other folder-hook plus message-hook,
 reply-hook, fcc-hook/fcc-save-hook and crypt-hook into their own hook

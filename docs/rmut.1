@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.37.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.38.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -260,7 +260,8 @@ The body is the whole MIME tree rendered like mutt: text parts and
 [filters]-rendered parts inline, each attachment announced with
 .B [\-\- Attachment #N \-\-]
 marker lines, multipart/alternative collapsed to its best part
-(auto_view filters win, then text/plain over text/html), embedded
+(alternative_order first, then auto_view filters, then text/plain
+over text/html), embedded
 message/rfc822 shown as its headers plus body, and a one\-line stub
 for anything undisplayable.
 .TP 12
@@ -381,6 +382,8 @@ written back to the configuration file.
   :ignore x-spam-score     # and unignore, to bring one back
   :alternates 'jane@old\.example\.com'  # unalternates removes
   :my_hdr Organization: Acme   # unmy_hdr Organization removes
+  :auto_view text/html         # unauto_view text/html removes
+  :alternative_order text/plain text/html   # unalternative_order
   :alias jane Jane Doe <jane@example.com>
   :push "<enter>"      # keys into the input queue
   :exec sync           # run one function now
@@ -656,6 +659,14 @@ paragraph and survives as
 marks, space-stuffing is undone, DelSp is honoured, and
 .B "-- "
 stays a fixed line.
+.TP
+.B alternative_order
+mutt's alternative_order: MIME types, most wanted first, deciding
+which part of a multipart/alternative shows.
+.BR text/* -style
+wildcards match a whole main type. Consulted before the auto_view
+filters and the built-in text ranking; a message with none of the
+listed types falls back to them.
 .SS [ui]
 .TP
 .B theme
@@ -703,6 +714,18 @@ MIME type \(-> shell command rendering the part (stdin to stdout),
 e.g. "text/html" = "w3m \-dump \-T text/html" \(em mutt's auto_view.
 Applied to matching parts wherever they sit in the message, preferred
 in multipart/alternative, and used in the attachment viewer.
+.PP
+An empty command means mutt's arrangement: rmut takes it from mailcap
+(RFC 1524), the first
+.B copiousoutput
+entry for the type, skipping one whose
+.B test=
+command fails or that asks for the terminal, and giving
+.B %s
+a temporary file holding the part. The files are $MAILCAPS when set,
+otherwise ~/.mailcap, /etc/mailcap, /usr/etc/mailcap and
+/usr/local/etc/mailcap. A type with no such entry does not autoview,
+and the part shows as an attachment.
 .SS [keys.index], [keys.pager]
 Remaps,
 .IR action " = " key ,
@@ -872,6 +895,11 @@ Mutt-style alias file, lines of "alias nick address..."
 .RB ( $RMUT_ALIASES
 overrides).
 .TP
+.I ~/.mailcap
+Where an auto_view type with an empty [filters] command gets one
+.RB ( $MAILCAPS
+overrides the search path; /etc/mailcap and the rest follow).
+.TP
 .I ~/.cache/rmut/
 IMAP caches, mbox mirrors and the header cache
 .RB ( $XDG_CACHE_HOME
@@ -880,6 +908,10 @@ overrides the parent).
 .TP
 .B RMUT_CONFIG, RMUT_ALIASES
 Alternate configuration and alias files.
+.TP
+.B MAILCAPS
+Colon-separated mailcap files, searched in order for an auto_view
+command.
 .TP
 .B MAIL
 Fallback mailbox when none is configured.

@@ -239,8 +239,17 @@ pub fn encrypt(cfg: &Pgp, recipients: &[String], sign: bool, data: &[u8]) -> Res
 /// (when decryption produced one) and a one-line status note. gpg
 /// trouble goes in the note; the original body stays available.
 pub struct View {
-    pub body: Option<String>,
+    pub body: Option<Body>,
     pub note: String,
+}
+
+/// What decryption produced, when it produced anything.
+pub enum Body {
+    /// Plain text, from inline PGP: show it as it stands.
+    Text(String),
+    /// A MIME entity, from PGP/MIME: the caller renders the tree, so
+    /// attachments inside encrypted mail show like any others.
+    Entity(Vec<u8>),
 }
 
 fn note(text: &str) -> String {
@@ -293,17 +302,13 @@ fn view_mime_encrypted(cfg: &Pgp, mail: &ParsedMail) -> View {
     };
     match decrypt(cfg, &cipher) {
         Ok(opened) => {
-            // The plaintext is itself a MIME entity.
-            let body = parse_mail(&opened.plaintext)
-                .ok()
-                .and_then(|m| message::extract_text(&m))
-                .unwrap_or_else(|| String::from_utf8_lossy(&opened.plaintext).into_owned());
             let text = match &opened.sig {
                 Some(sig) => format!("decrypted; {}", sig_phrase(sig)),
                 None => "decrypted".into(),
             };
             View {
-                body: Some(body),
+                // The plaintext is itself a MIME entity.
+                body: Some(Body::Entity(opened.plaintext)),
                 note: note(&text),
             }
         }
@@ -358,7 +363,9 @@ fn view_inline(cfg: &Pgp, text: &str, encrypted: bool) -> View {
                 (None, false) => "signed, no verdict from gpg".into(),
             };
             View {
-                body: Some(String::from_utf8_lossy(&opened.plaintext).into_owned()),
+                body: Some(Body::Text(
+                    String::from_utf8_lossy(&opened.plaintext).into_owned(),
+                )),
                 note: note(&phrase),
             }
         }
@@ -494,6 +501,15 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+
+    /// Whatever decryption produced, as text (a PGP/MIME entity comes
+    /// back raw, headers and all).
+    fn body_text(v: &View) -> String {
+        match v.body.as_ref().expect("a decrypted body") {
+            Body::Text(t) => t.clone(),
+            Body::Entity(raw) => String::from_utf8_lossy(raw).into_owned(),
+        }
+    }
 
     /// A fake gpg: a shell script that inspects "$@", reads stdin, and
     /// prints canned stdout/status lines. $D is its own directory, for
@@ -683,7 +699,7 @@ echo "[GNUPG:] GOODSIG AAA Jane <j@x>" >&2
 printf 'Content-Type: text/plain\r\n\r\nthe secret plan\r\n'"#,
         );
         let v = view(&cfg, MIME_ENCRYPTED.as_bytes()).unwrap();
-        assert!(v.body.unwrap().contains("the secret plan"));
+        assert!(body_text(&v).contains("the secret plan"));
         assert!(v.note.contains("decrypted"), "{}", v.note);
         assert!(
             v.note.contains("good signature from Jane <j@x>"),
@@ -767,7 +783,7 @@ printf 'inline secret'"#,
         let msg =
             "From: a@x\r\n\r\n-----BEGIN PGP MESSAGE-----\r\nXYZ\r\n-----END PGP MESSAGE-----\r\n";
         let v = view(&cfg, msg.as_bytes()).unwrap();
-        assert_eq!(v.body.as_deref(), Some("inline secret"));
+        assert_eq!(body_text(&v), "inline secret");
         assert!(v.note.contains("decrypted"), "{}", v.note);
 
         let (_dir, cfg) = stub(
@@ -777,7 +793,7 @@ printf 'stripped text'"#,
         );
         let msg = "From: a@x\r\n\r\n-----BEGIN PGP SIGNED MESSAGE-----\r\nHash: SHA256\r\n\r\nstripped text\r\n-----BEGIN PGP SIGNATURE-----\r\nSSS\r\n-----END PGP SIGNATURE-----\r\n";
         let v = view(&cfg, msg.as_bytes()).unwrap();
-        assert_eq!(v.body.as_deref(), Some("stripped text"));
+        assert_eq!(body_text(&v), "stripped text");
         assert!(v.note.contains("good signature"), "{}", v.note);
     }
 

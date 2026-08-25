@@ -682,17 +682,39 @@ what comes in, `space_stuff` for what goes out.
       `compose::flow_plain`. The paragraphs are the editor's doing,
       like mutt: rmut adds no trailing spaces of its own
 
-## R38: MIME polish
+## R38: MIME polish (done, 1.38)
 
-Goal: the remaining display-selection knobs.
+Goal: the remaining display-selection knobs. What the pager needs to
+turn a message into text now travels as one `message::Display`
+(filters, header rules, $reflow_text, $alternative_order) instead of
+a lengthening argument list.
 
-- [ ] alternative_order / unalternative_order (importer too),
-      slotting into pick_alternative
-- [ ] unauto_view; read ~/.mailcap for filters when [filters] has no
-      entry (copiousoutput entries only)
-- [ ] decrypted PGP/MIME entities render through the full tree
+- [x] alternative_order / unalternative_order (importer too),
+      slotting into pick_alternative. MIME types most wanted first,
+      `text/*` wildcards included, consulted before the auto_view
+      filters and before the built-in text ranking, which still has
+      the last word when a message carries none of the listed types.
+      Both work at the `:` prompt
+- [x] unauto_view; read ~/.mailcap for filters when [filters] has no
+      entry (copiousoutput entries only). `core::mailcap` reads
+      RFC 1524: continuation lines, escaped semicolons, `type/*`
+      wildcards, `test=` (run, must succeed) and `needsterminal`
+      (passed over, it cannot render into the pager), from $MAILCAPS
+      or mutt's default list. A `%s` command gets a temporary file
+      holding the part, since only stdin filters can be piped.
+      Resolution happens where the config is compiled, so a type
+      whose mailcap entry is missing simply does not autoview.
+      `auto_view` and `unauto_view` work at the `:` prompt, and the
+      importer no longer guesses a command for text/html: an
+      auto_view type imports as an empty `[filters]` entry, which is
+      exactly mutt's "the command is in my mailcap"
+- [x] decrypted PGP/MIME entities render through the full tree
       (attachments inside encrypted mail), not just their first text
-      part
+      part. `pgp::View` hands back either `Body::Text` (inline PGP,
+      plain text) or `Body::Entity` (PGP/MIME, a MIME tree), and
+      `message::render_entity` renders the tree the way the pager
+      renders any message, so an attachment inside encrypted mail is
+      announced like any other
 
 ## Beyond mutt (frozen: only on explicit request)
 

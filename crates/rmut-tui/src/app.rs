@@ -402,7 +402,7 @@ pub struct App {
     /// Compiled $quote_regexp classifying quoted body lines.
     pub(crate) quote_re: regex_lite::Regex,
     /// ignore/unignore/hdr_order for the pager's brief header view.
-    head_rules: message::HeaderRules,
+    display: message::Display,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     /// Width and content rows from the last key dispatch, for actions
@@ -574,7 +574,7 @@ struct Derived {
     index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     quote_re: regex_lite::Regex,
-    head_rules: message::HeaderRules,
+    display: message::Display,
 }
 
 impl Derived {
@@ -646,20 +646,37 @@ impl Derived {
         // [pager] ignore/unignore/hdr_order override the classic
         // five-header view field by field; entries are lowercased and
         // hdr_order accepts mutt's trailing colons.
-        let mut head_rules = message::HeaderRules::default();
+        let mut rules = message::HeaderRules::default();
         let clean = |list: &Vec<String>| {
             list.iter()
                 .map(|n| n.trim_end_matches(':').to_lowercase())
                 .collect::<Vec<_>>()
         };
         if let Some(list) = &config.pager.ignore {
-            head_rules.ignore = clean(list);
+            rules.ignore = clean(list);
         }
         if let Some(list) = &config.pager.unignore {
-            head_rules.unignore = clean(list);
+            rules.unignore = clean(list);
         }
         if let Some(list) = &config.pager.hdr_order {
-            head_rules.order = clean(list);
+            rules.order = clean(list);
+        }
+        // auto_view types with no command of their own take one from
+        // mailcap, where mutt looks too; a type with no copiousoutput
+        // entry there simply does not autoview, and shows as an
+        // attachment stub.
+        let mut filters: HashMap<String, String> = HashMap::new();
+        let mut mailcap: Option<Vec<rmut_core::mailcap::Entry>> = None;
+        for (mimetype, command) in &config.filters {
+            let mimetype = mimetype.to_lowercase();
+            if !command.trim().is_empty() {
+                filters.insert(mimetype, command.clone());
+                continue;
+            }
+            let entries = mailcap.get_or_insert_with(rmut_core::mailcap::load);
+            if let Some(command) = rmut_core::mailcap::command_for(entries, &mimetype) {
+                filters.insert(mimetype, command);
+            }
         }
         (
             Derived {
@@ -694,7 +711,17 @@ impl Derived {
                 index_rules,
                 body_rules,
                 quote_re,
-                head_rules,
+                display: message::Display {
+                    filters,
+                    rules,
+                    reflow: config.pager.reflow_text.unwrap_or(true),
+                    alternative_order: config
+                        .pager
+                        .alternative_order
+                        .iter()
+                        .map(|t| t.to_lowercase())
+                        .collect(),
+                },
             },
             warnings,
         )
@@ -731,7 +758,7 @@ impl App {
             index_rules,
             body_rules,
             quote_re,
-            head_rules,
+            display,
         } = derived;
         if skipped > 0 {
             warnings.push(format!("{skipped} unreadable message(s) skipped"));
@@ -776,7 +803,7 @@ impl App {
             pager_search: None,
             pager_search_text: String::new(),
             quote_re,
-            head_rules,
+            display,
             body_rules,
             view_size: (80, 24),
             thread_depth: vec![0; count],
@@ -2429,7 +2456,7 @@ impl App {
         };
         if !is_text {
             // A configured filter can still render it (auto_view).
-            match self.config.filters.get(&mimetype).cloned() {
+            match self.display.filters.get(&mimetype).cloned() {
                 Some(command) => {
                     match message::filter_part(&msg_path, index, &command) {
                         Ok(body) => {
@@ -3693,7 +3720,7 @@ impl App {
                 .unwrap_or_else(|| compose::content_type(&a.path).to_string());
             let mimetype = mimetype.as_str();
             let name = a.path.display().to_string();
-            match self.config.filters.get(mimetype).cloned() {
+            match self.display.filters.get(mimetype).cloned() {
                 Some(command) => match run_file_filter(&command, &a.path) {
                     Ok(text) => (name, text),
                     Err(err) => {
@@ -4525,7 +4552,7 @@ impl App {
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
         self.quote_re = derived.quote_re;
-        self.head_rules = derived.head_rules;
+        self.display = derived.display;
         warnings
     }
 
@@ -5110,19 +5137,21 @@ impl App {
                 m.env.lines = Some(message::body_lines(&raw));
             }
         }
-        let mut view = message::load_with(
-            path,
-            &self.config.filters,
-            &self.head_rules,
-            self.config.pager.reflow_text.unwrap_or(true),
-        )?;
+        let mut view = message::load_with(path, &self.display)?;
         // PGP messages: decrypt/verify via gpg, prepend the verdict
         // line to whatever body ends up shown.
         if let Ok(raw) = std::fs::read(path)
             && let Some(p) = pgp::view(&self.config.pgp, &raw)
         {
-            if let Some(body) = p.body {
-                view.body = body;
+            match p.body {
+                // A decrypted PGP/MIME entity is a MIME tree of its
+                // own: render it whole, so attachments inside
+                // encrypted mail are announced like any others.
+                Some(pgp::Body::Entity(raw)) => {
+                    view.body = message::render_entity(&raw, &self.display);
+                }
+                Some(pgp::Body::Text(text)) => view.body = text,
+                None => {}
             }
             view.body = format!("{}\n\n{}", p.note, view.body);
         }

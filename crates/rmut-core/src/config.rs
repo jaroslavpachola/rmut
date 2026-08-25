@@ -96,7 +96,9 @@ pub struct Config {
     /// e.g. "text/html" = "w3m -dump -T text/html", mutt's auto_view.
     /// Applied to matching parts wherever they sit in the message,
     /// preferred in multipart/alternative, and used in the attachment
-    /// viewer.
+    /// viewer. An empty command means mutt's arrangement: the command
+    /// comes from mailcap, from the first `copiousoutput` entry for
+    /// the type; a type with no such entry simply does not autoview.
     pub filters: HashMap<String, String>,
     pub keys: Keys,
     /// Macros: a key that replays a sequence of keys, per menu:
@@ -312,6 +314,11 @@ pub struct Pager {
     /// put back into paragraphs and wrapped at the display width
     /// instead of keeping the sender's line breaks.
     pub reflow_text: Option<bool>,
+    /// mutt's alternative_order: MIME types, most wanted first, that
+    /// decide which part of a multipart/alternative shows. `text/*`
+    /// wildcards allowed; consulted before the auto_view filters and
+    /// the built-in text ranking.
+    pub alternative_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -6,6 +6,7 @@ pub mod flowed;
 pub mod format;
 pub mod hdrcache;
 pub mod imap;
+pub mod mailcap;
 pub mod maildir;
 pub mod mailto;
 pub mod mbox;

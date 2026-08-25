@@ -265,26 +265,41 @@ pub fn weed(all: &[(String, String)], rules: &HeaderRules) -> Vec<(String, Strin
     shown
 }
 
-pub fn load(path: &Path) -> Result<MessageView> {
-    load_with(
-        path,
-        &std::collections::HashMap::new(),
-        &HeaderRules::default(),
-        true,
-    )
+/// Everything the pager needs to turn a message into text: mutt's
+/// auto_view filters, the header weeding rules, $reflow_text and
+/// $alternative_order.
+#[derive(Debug, Clone)]
+pub struct Display {
+    /// MIME type → shell command rendering the part (stdin → stdout),
+    /// mutt's auto_view. Types are lowercase.
+    pub filters: std::collections::HashMap<String, String>,
+    pub rules: HeaderRules,
+    /// mutt's $reflow_text: put a `format=flowed` part back into
+    /// paragraphs rather than keeping the sender's line breaks.
+    pub reflow: bool,
+    /// mutt's $alternative_order: MIME types (`text/*` allowed), most
+    /// wanted first, consulted before anything else in a
+    /// multipart/alternative.
+    pub alternative_order: Vec<String>,
 }
 
-/// Like `load`, but parts whose MIME type appears in `filters` render
-/// through that shell command (stdin → stdout), mutt's auto_view;
-/// `rules` weeds the brief header block and any embedded
-/// message/rfc822 headers, and `reflow` (mutt's $reflow_text) joins
-/// the lines of a `format=flowed` part back into paragraphs.
-pub fn load_with(
-    path: &Path,
-    filters: &std::collections::HashMap<String, String>,
-    rules: &HeaderRules,
-    reflow: bool,
-) -> Result<MessageView> {
+impl Default for Display {
+    fn default() -> Display {
+        Display {
+            filters: std::collections::HashMap::new(),
+            rules: HeaderRules::default(),
+            reflow: true,
+            alternative_order: Vec::new(),
+        }
+    }
+}
+
+pub fn load(path: &Path) -> Result<MessageView> {
+    load_with(path, &Display::default())
+}
+
+/// Like `load`, but under an explicit `Display`.
+pub fn load_with(path: &Path, disp: &Display) -> Result<MessageView> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
     let all: Vec<(String, String)> = mail
@@ -292,12 +307,29 @@ pub fn load_with(
         .iter()
         .map(|h| (h.get_key(), h.get_value()))
         .collect();
-    let brief = weed(&all, rules);
+    let brief = weed(&all, &disp.rules);
     let mut body = String::new();
-    if !render(&mail, filters, rules, reflow, &mut body) && body.is_empty() {
+    if !render(&mail, disp, &mut body) && body.is_empty() {
         body = "[-- no displayable text part --]".into();
     }
     Ok(MessageView { brief, all, body })
+}
+
+/// Render a MIME entity that is not a file of its own — the plaintext
+/// gpg hands back for a PGP/MIME message — exactly as the pager
+/// renders a message body: the whole tree, attachments announced,
+/// filters applied. Text that is not MIME at all comes back as it is.
+pub fn render_entity(raw: &[u8], disp: &Display) -> String {
+    let Ok(mail) = parse_mail(raw) else {
+        return String::from_utf8_lossy(raw).into_owned();
+    };
+    let mut out = String::new();
+    // Nothing displayable means it was not really a MIME entity (a
+    // sender who armored plain text without headers): show the text.
+    if !render(&mail, disp, &mut out) || out.trim().is_empty() {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    out
 }
 
 /// Mutt's pager rendering: the whole MIME tree, depth-first. Text
@@ -309,17 +341,11 @@ pub fn load_with(
 /// that cannot display leave a one-line stub. Returns whether
 /// anything actually displayed (as opposed to only stubs), so the
 /// caller can tell an empty body from an undisplayable message.
-fn render(
-    part: &ParsedMail,
-    filters: &std::collections::HashMap<String, String>,
-    rules: &HeaderRules,
-    reflow: bool,
-    out: &mut String,
-) -> bool {
+fn render(part: &ParsedMail, disp: &Display, out: &mut String) -> bool {
     let ty = part.ctype.mimetype.clone();
     if ty == "multipart/alternative" {
-        return match pick_alternative(&part.subparts, filters) {
-            Some(best) => render(best, filters, rules, reflow, out),
+        return match pick_alternative(&part.subparts, disp) {
+            Some(best) => render(best, disp, out),
             None => {
                 gap(out);
                 out.push_str("[-- multipart/alternative: no displayable part --]\n");
@@ -331,11 +357,11 @@ fn render(
         let mut shown = false;
         for (i, sub) in part.subparts.iter().enumerate() {
             marker(sub, i + 1, out);
-            shown |= render(sub, filters, rules, reflow, out);
+            shown |= render(sub, disp, out);
         }
         return shown;
     }
-    if let Some(command) = filters.get(&ty) {
+    if let Some(command) = disp.filters.get(&ty) {
         gap(out);
         let text = part
             .get_body_raw()
@@ -363,11 +389,11 @@ fn render(
                 .iter()
                 .map(|h| (h.get_key(), h.get_value()))
                 .collect();
-            for (name, value) in weed(&all, rules) {
+            for (name, value) in weed(&all, &disp.rules) {
                 out.push_str(&format!("{name}: {value}\n"));
             }
             out.push('\n');
-            return render(&embedded, filters, rules, reflow, out);
+            return render(&embedded, disp, out);
         }
         gap(out);
         out.push_str("[-- message/rfc822: cannot parse --]\n");
@@ -380,7 +406,7 @@ fn render(
         // RFC 3676: a flowed part goes back to one line per paragraph
         // so the pager wraps it at the display width, rather than
         // keeping whatever width the sender happened to use.
-        match flowed_delsp(part).filter(|_| reflow) {
+        match flowed_delsp(part).filter(|_| disp.reflow) {
             Some(delsp) => out.push_str(&crate::flowed::unflow(&text, delsp)),
             None => out.push_str(&text),
         }
@@ -410,18 +436,26 @@ fn flowed_delsp(part: &ParsedMail) -> Option<bool> {
     Some(value("delsp").as_deref() == Some("yes"))
 }
 
-/// Mutt's alternative_handler order (sans alternative_order): a part
-/// with an auto_view filter wins, then the richest text part
-/// (html < plain < enriched, later parts win ties, like mutt), then
-/// anything displayable at all.
+/// Mutt's alternative_handler order: $alternative_order first, most
+/// wanted type first; then a part with an auto_view filter; then the
+/// richest text part (html < plain < enriched, later parts win ties,
+/// like mutt); then anything displayable at all.
 fn pick_alternative<'a, 'b>(
     subs: &'a [ParsedMail<'b>],
-    filters: &std::collections::HashMap<String, String>,
+    disp: &Display,
 ) -> Option<&'a ParsedMail<'b>> {
+    for want in &disp.alternative_order {
+        if let Some(p) = subs
+            .iter()
+            .find(|p| type_matches(want, &p.ctype.mimetype) && displayable(p, &disp.filters))
+        {
+            return Some(p);
+        }
+    }
     if let Some(p) = subs
         .iter()
         .rev()
-        .find(|p| filters.contains_key(&p.ctype.mimetype))
+        .find(|p| disp.filters.contains_key(&p.ctype.mimetype))
     {
         return Some(p);
     }
@@ -439,7 +473,20 @@ fn pick_alternative<'a, 'b>(
     {
         return Some(p);
     }
-    subs.iter().find(|p| displayable(p, filters))
+    subs.iter().find(|p| displayable(p, &disp.filters))
+}
+
+/// An $alternative_order entry against a part's type: an exact match,
+/// or mutt's `type/*` wildcard (a bare `type` means the same).
+fn type_matches(want: &str, mimetype: &str) -> bool {
+    let want = want.trim().to_lowercase();
+    if want.is_empty() {
+        return false;
+    }
+    match want.strip_suffix("/*").unwrap_or(&want) {
+        main if main == want && want.contains('/') => want == mimetype,
+        main => mimetype.split('/').next() == Some(main),
+    }
 }
 
 /// Can this part (or anything inside it) show in the pager?
@@ -516,8 +563,45 @@ pub fn filter_part(path: &Path, index: usize, command: &str) -> Result<String> {
     run_filter(command, &bytes)
 }
 
-/// sh -c `command` with the part on stdin, capturing stdout.
+/// sh -c `command` with the part on stdin, capturing stdout. A
+/// mailcap command with `%s` wants the part in a file instead
+/// (RFC 1524), so it gets a temporary one, removed afterwards.
 fn run_filter(command: &str, input: &[u8]) -> Result<String> {
+    match command.contains("%s") {
+        true => {
+            let file = TempPart::new(input)?;
+            let quoted = format!(
+                "'{}'",
+                file.path.display().to_string().replace('\'', r"'\''")
+            );
+            run_piped(&command.replace("%s", &quoted), b"")
+        }
+        false => run_piped(command, input),
+    }
+}
+
+/// A part written out for a `%s` filter, deleted when it drops.
+struct TempPart {
+    path: std::path::PathBuf,
+}
+
+impl TempPart {
+    fn new(input: &[u8]) -> Result<TempPart> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("rmut-part-{}-{n}", std::process::id()));
+        fs::write(&path, input).with_context(|| format!("writing {}", path.display()))?;
+        Ok(TempPart { path })
+    }
+}
+
+impl Drop for TempPart {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn run_piped(command: &str, input: &[u8]) -> Result<String> {
     use std::io::Write as _;
     let mut child = std::process::Command::new("sh")
         .arg("-c")
@@ -924,14 +1008,85 @@ mod tests {
         std::fs::write(&path, FLOWED).unwrap();
         let plain = load_with(
             &path,
-            &std::collections::HashMap::new(),
-            &HeaderRules::default(),
-            false,
+            &Display {
+                reflow: false,
+                ..Display::default()
+            },
         )
         .unwrap()
         .body;
         // Untouched, CRLF and all, exactly as the part arrived.
         assert!(plain.contains("This paragraph was \r\nsplit"), "{plain:?}");
+    }
+
+    #[test]
+    fn alternative_order_outranks_the_text_ranking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("msg");
+        std::fs::write(&path, ALTERNATIVE).unwrap();
+        let order = |types: &[&str]| Display {
+            alternative_order: types.iter().map(|t| t.to_string()).collect(),
+            ..Display::default()
+        };
+        // html asked for by name beats plain, which the ranking prefers.
+        let body = load_with(&path, &order(&["text/html"])).unwrap().body;
+        assert!(body.contains("<b>html version</b>"), "{body}");
+        assert!(!body.contains("plain version"), "{body}");
+        // First entry that is actually there wins.
+        let body = load_with(&path, &order(&["text/enriched", "text/plain"]))
+            .unwrap()
+            .body;
+        assert!(body.contains("plain version"), "{body}");
+        // A wildcard takes the first part of that main type.
+        let body = load_with(&path, &order(&["text/*"])).unwrap().body;
+        assert!(body.contains("plain version"), "{body}");
+        // Nothing listed matches: back to the ranking.
+        let body = load_with(&path, &order(&["application/pdf"])).unwrap().body;
+        assert!(body.contains("plain version"), "{body}");
+        // An order entry beats an auto_view filter, unlike the ranking.
+        let body = load_with(
+            &path,
+            &Display {
+                filters: std::collections::HashMap::from([(
+                    "text/html".to_string(),
+                    "cat".to_string(),
+                )]),
+                alternative_order: vec!["text/plain".into()],
+                ..Display::default()
+            },
+        )
+        .unwrap()
+        .body;
+        assert!(body.contains("plain version"), "{body}");
+    }
+
+    #[test]
+    fn render_entity_shows_the_whole_tree() {
+        // What gpg hands back for an encrypted message with an
+        // attachment: text plus a part that only a marker can show.
+        let entity = concat!(
+            "Content-Type: multipart/mixed; boundary=\"m\"\r\n",
+            "\r\n",
+            "--m\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "the secret plan\r\n",
+            "--m\r\n",
+            "Content-Type: application/pdf\r\n",
+            "Content-Disposition: attachment; filename=\"plan.pdf\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "\r\n",
+            "cGxhbg==\r\n",
+            "--m--\r\n",
+        );
+        let body = render_entity(entity.as_bytes(), &Display::default());
+        assert!(body.contains("the secret plan"), "{body}");
+        assert!(body.contains("[-- Attachment #2: plan.pdf --]"), "{body}");
+        // Not MIME at all: the text comes back as it stands.
+        assert_eq!(
+            render_entity(b"just words", &Display::default()),
+            "just words"
+        );
     }
 
     #[test]
@@ -947,9 +1102,15 @@ mod tests {
         std::fs::write(&path, ALTERNATIVE).unwrap();
         let filters =
             std::collections::HashMap::from([("text/html".to_string(), "cat".to_string())]);
-        let body = load_with(&path, &filters, &HeaderRules::default(), true)
-            .unwrap()
-            .body;
+        let body = load_with(
+            &path,
+            &Display {
+                filters,
+                ..Display::default()
+            },
+        )
+        .unwrap()
+        .body;
         assert!(body.contains("[-- Autoview using cat --]"), "{body}");
         assert!(body.contains("<b>html version</b>"), "{body}");
         assert!(!body.contains("plain version"), "{body}");

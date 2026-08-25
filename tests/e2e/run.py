@@ -920,7 +920,13 @@ def scenario_pgp(tmp):
             '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
             '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
             '  echo "[GNUPG:] GOODSIG AAA Jane <jane@example.com>" >&2\n'
-            "  printf 'Content-Type: text/plain\\r\\n\\r\\nthe secret plan\\r\\n' ;;\n"
+            # The plaintext is a MIME tree of its own: text plus an
+            # attachment, which the pager announces like any other.
+            "  printf 'Content-Type: multipart/mixed; boundary=\"m\"\\r\\n\\r\\n"
+            "--m\\r\\nContent-Type: text/plain\\r\\n\\r\\nthe secret plan\\r\\n"
+            "--m\\r\\nContent-Type: application/pdf\\r\\n"
+            "Content-Disposition: attachment; filename=\"plan.pdf\"\\r\\n\\r\\n"
+            "PDFBYTES\\r\\n--m--\\r\\n' ;;\n"
             "*--detach-sign*)\n"
             "  cat >/dev/null\n"
             '  echo "[GNUPG:] SIG_CREATED D 1 8 00 12 FPR" >&2\n'
@@ -956,7 +962,8 @@ def scenario_pgp(tmp):
     r = Rmut(md, env)
     r.expect("Msgs:2", "sealed orders")
     r.keys(b"\r")  # newest = the encrypted message
-    r.expect("the secret plan", "decrypted", "good signature from Jane")
+    r.expect("the secret plan", "decrypted", "good signature from Jane",
+             "[-- Attachment #2: plan.pdf --]")
     r.keys(b"i")
     # Compose, pick sign from the security menu, send.
     r.keys(b"m")
@@ -2604,6 +2611,94 @@ def scenario_format_flowed(tmp):
     r.close()
 
 
+def scenario_mime_polish(tmp):
+    """R38: alternative_order decides which part of an alternative
+    shows, auto_view takes its command from mailcap (copiousoutput
+    only, %s through a temp file), and unauto_view takes it off."""
+    md = make_maildir(tmp, "md-mime")
+    with open(os.path.join(md, "cur", "1752000000.10.host:2,S"), "w") as f:
+        f.write("From: Alt Sender <alt@example.com>\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: two flavours\r\n"
+                "Date: Wed, 8 Jul 2026 12:00:00 +0200\r\n"
+                "Message-ID: <alt1@example.com>\r\n"
+                "MIME-Version: 1.0\r\n"
+                'Content-Type: multipart/alternative; boundary="b"\r\n'
+                "\r\n"
+                "--b\r\nContent-Type: text/plain\r\n\r\n"
+                "the plain flavour\r\n"
+                "--b\r\nContent-Type: text/html\r\n\r\n"
+                "<b>the rich flavour</b>\r\n"
+                "--b--\r\n")
+    with open(os.path.join(md, "cur", "1751900000.11.host:2,S"), "w") as f:
+        f.write("From: Odd Sender <odd@example.com>\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: odd parts\r\n"
+                "Date: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+                "Message-ID: <odd1@example.com>\r\n"
+                "MIME-Version: 1.0\r\n"
+                'Content-Type: multipart/mixed; boundary="m"\r\n'
+                "\r\n"
+                "--m\r\nContent-Type: text/plain\r\n\r\n"
+                "see the parts below\r\n"
+                "--m\r\nContent-Type: application/x-thing\r\n\r\n"
+                "the thing payload\r\n"
+                "--m\r\nContent-Type: video/mpeg\r\n\r\n"
+                "not really a film\r\n"
+                "--m--\r\n")
+    htmlfilter = os.path.join(tmp, "htmlfilter.sh")
+    with open(htmlfilter, "w") as f:
+        f.write("#!/bin/sh\nprintf 'FILTEREDHTML '\nsed -e 's/<[^>]*>//g'\n")
+    os.chmod(htmlfilter, 0o755)
+    mailcap = os.path.join(tmp, "test-mailcap")
+    with open(mailcap, "w") as f:
+        f.write("# a test mailcap\n"
+                "text/html; false; copiousoutput; test=false\n"
+                f"text/html; {htmlfilter}; copiousoutput; test=true\n"
+                "application/x-thing; cat %s; \\\n"
+                "  copiousoutput\n"
+                # needsterminal cannot render into the pager, and there
+                # is no other entry: the part stays a stub.
+                "video/mpeg; mpv %s; needsterminal\n")
+    cfg = os.path.join(tmp, "mime-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                '[pager]\nalternative_order = ["text/html"]\n'
+                '[filters]\n"application/x-thing" = ""\n"video/mpeg" = ""\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg, "MAILCAPS": mailcap})
+    r = Rmut(md, env)
+    r.expect("Msgs:2", "two flavours")
+
+    # alternative_order asked for html, so html is what shows, raw:
+    # no filter is configured for it yet.
+    r.keys(b"\r")
+    r.expect("<b>the rich flavour</b>")
+    r.keys(b"i")
+
+    # auto_view text/html: the command comes from mailcap, skipping
+    # the entry whose test= fails.
+    r.keys(b":auto_view text/html\r")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Autoview using", "FILTEREDHTML the rich flavour")
+    r.keys(b"i")
+
+    # unauto_view puts it back to raw html, unalternative_order back
+    # to the plain part.
+    r.keys(b":unauto_view text/html\r:unalternative_order text/html\r")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("the plain flavour")
+    r.keys(b"i")
+
+    # The other message: a mailcap command with %s gets the part in a
+    # temp file, and a needsterminal entry is passed over.
+    r.keys(b"k\r")
+    r.expect("the thing payload", "video/mpeg is unsupported")
+    r.keys(b"ix")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2627,6 +2722,7 @@ SCENARIOS = [
     scenario_alternates_my_hdr,
     scenario_hooks,
     scenario_format_flowed,
+    scenario_mime_polish,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,
