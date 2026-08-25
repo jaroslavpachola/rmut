@@ -14,10 +14,10 @@ use rmut_core::config::Config;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote;
-use rmut_core::{alias, command, compose, maildir, message, pgp};
+use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
-    Session, SortKey, ThreadOp, default_from, expand_tilde, parse_sort, pipe_to, run_sendmail,
-    send_via_smtp, wrap_order,
+    Compose, ComposeBase, ComposeKind, ComposeSetup, Held, Security, Session, SortKey, ThreadOp,
+    default_from, draft_full, expand_tilde, parse_sort, pipe_to, wrap_order, write_draft,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -25,8 +25,6 @@ use crate::theme::Theme;
 
 /// neomutt's $abort_noattach_regex default: the words that make a
 /// draft look like it should have carried a file.
-const DEFAULT_ATTACH_KEYWORD: &str = r"\b(attach|attached|attaching|attachment|attachments)\b";
-
 pub struct Pager {
     pub view: message::MessageView,
     pub scroll: usize,
@@ -258,125 +256,6 @@ pub(crate) fn byte_at(buf: &str, cursor: usize) -> usize {
         .unwrap_or(buf.len())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ComposeKind {
-    New,
-    Reply,
-    GroupReply,
-    /// mutt's list-reply: the mailing list is the only recipient.
-    ListReply,
-    Forward,
-}
-
-/// Snapshot of the message being replied to / forwarded, taken when the
-/// compose flow starts.
-pub struct ComposeBase {
-    path: PathBuf,
-    reply_to: String,
-    /// The From header as written, the reply target when the
-    /// Reply-To question is answered no.
-    from_hdr: String,
-    /// The message has a Reply-To differing from From, worth the
-    /// mutt $reply_to (ask-yes) question.
-    has_reply_to: bool,
-    orig_to: String,
-    orig_cc: String,
-    /// List-Post's posting address, when the list published one.
-    list_post: Option<String>,
-    /// Mail-Followup-To as the sender wrote it, honored by a group
-    /// reply (mutt does the same).
-    followup_to: String,
-    /// Bare author address, for the forward subject's %a.
-    from_addr: String,
-    from_display: String,
-    subject: String,
-    date: i64,
-    msg_id: Option<String>,
-    references: Vec<String>,
-}
-
-pub struct ComposeSetup {
-    kind: ComposeKind,
-    base: Option<ComposeBase>,
-    to: Option<String>,
-    /// Parked here while the include-original question is up.
-    subject: Option<String>,
-    /// mime_forward = "ask": the question's answer, once given.
-    fwd_attach: Option<bool>,
-}
-
-/// PGP treatment for an outgoing draft, chosen at the send prompt.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Security {
-    None,
-    Sign,
-    Encrypt,
-    Both,
-}
-
-impl Security {
-    fn label(self) -> &'static str {
-        match self {
-            Security::None => "",
-            Security::Sign => "sign",
-            Security::Encrypt => "encrypt",
-            Security::Both => "sign+encrypt",
-        }
-    }
-}
-
-/// A draft file going through editor → send/postpone/discard.
-pub struct Compose {
-    pub path: PathBuf,
-    /// Postponed original to delete once the message is sent.
-    pub recall_source: Option<PathBuf>,
-    pub security: Security,
-    /// Original message to attach as message/rfc822 (forward =
-    /// "attach", mutt's mime_forward).
-    pub attach: Option<PathBuf>,
-    /// Header block withheld from the editor (edit_headers = false);
-    /// draft_full puts it back for send/postpone/attachments.
-    pub hidden_head: Option<String>,
-    /// Fcc chosen in the compose menu (`f`): None = the default sent
-    /// copy, Some("") = keep no copy, Some(path) = that maildir.
-    pub fcc: Option<String>,
-}
-
-/// A message that has been sent but is waiting out $undo_send before
-/// it goes anywhere. The finalized text is ready to transmit; the
-/// draft it came from is kept whole, so cancelling puts the compose
-/// menu back exactly as it was.
-struct Held {
-    state: Compose,
-    text: String,
-    /// The Fcc target as it was decided at send time (menu, then
-    /// fcc-hook); None means the default sent copy.
-    fcc: Option<String>,
-    /// What the status line calls it: the subject, or the recipients.
-    label: String,
-    due: Instant,
-}
-
-/// First value of a (single-line) header in a draft head block.
-fn header_value(head: &str, name: &str) -> Option<String> {
-    head.lines().find_map(|l| {
-        let (k, v) = l.split_once(':')?;
-        k.trim()
-            .eq_ignore_ascii_case(name)
-            .then(|| v.trim().to_string())
-    })
-}
-
-/// The draft as a full message: the file as edited, with any withheld
-/// header block put back in front.
-fn draft_full(c: &Compose) -> std::io::Result<String> {
-    let text = std::fs::read_to_string(&c.path)?;
-    Ok(match &c.hidden_head {
-        Some(head) => format!("{}\n\n{}", head.trim_end(), text),
-        None => text,
-    })
-}
-
 /// Tab-completion state at an address prompt: candidates for the token
 /// at `start`, `expect` being the whole buffer after the last
 /// insertion (an edit in between restarts the match).
@@ -446,19 +325,12 @@ pub struct App {
     /// Its raw text, prefilling the next Search for: prompt (mutt
     /// prefills from its searchbuf the same way).
     pub(crate) pager_search_text: String,
-    /// Compiled $quote_regexp classifying quoted body lines.
-    pub(crate) quote_re: regex_lite::Regex,
-    /// Compiled $abort_noattach_regex, for the attachment reminder.
-    attach_re: regex_lite::Regex,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     /// Set while a `;`-prefixed operation is being asked about (the
     /// mailbox, the command, the y/n): the answer applies to the
     /// tagged set, not to the message under the cursor.
     tag_op: bool,
-    /// Messages sent but still inside their $undo_send window, oldest
-    /// first. They go out when the timer runs out or rmut exits.
-    outbox: Vec<Held>,
     /// Trouble from the send at exit, printed once the terminal is
     /// back (nobody would see a status line by then).
     pub exit_notes: Vec<String>,
@@ -526,11 +398,6 @@ impl App {
     }
 }
 
-/// mutt's $quote_regexp default.
-pub(crate) fn default_quote_re() -> regex_lite::Regex {
-    regex_lite::Regex::new(r"^([ \t]*[|>:}#])+").expect("default quote_regexp compiles")
-}
-
 /// An rmut action name or a mutt function name, resolved to the rmut
 /// name the key tables use. None when the menu has no such function.
 fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
@@ -557,9 +424,6 @@ struct Derived {
     keymap: Keymap,
     index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
-    quote_re: regex_lite::Regex,
-    /// $abort_noattach_regex: what counts as mentioning an attachment.
-    attach_re: regex_lite::Regex,
 }
 
 impl Derived {
@@ -618,39 +482,12 @@ impl Derived {
             }
             body_rules.push((re, style));
         }
-        let attach_re = {
-            let spec = config
-                .mail
-                .attach_keyword
-                .clone()
-                .unwrap_or_else(|| DEFAULT_ATTACH_KEYWORD.to_string());
-            match regex_lite::Regex::new(&format!("(?i){spec}")) {
-                Ok(re) => re,
-                Err(err) => {
-                    warnings.push(format!("bad attach_keyword {spec:?}: {err}"));
-                    regex_lite::Regex::new(&format!("(?i){DEFAULT_ATTACH_KEYWORD}"))
-                        .expect("the default compiles")
-                }
-            }
-        };
-        let quote_re = match &config.pager.quote_regexp {
-            Some(spec) => match regex_lite::Regex::new(spec) {
-                Ok(re) => re,
-                Err(err) => {
-                    warnings.push(format!("bad quote_regexp {spec:?}: {err}"));
-                    default_quote_re()
-                }
-            },
-            None => default_quote_re(),
-        };
         (
             Derived {
                 theme,
                 keymap,
                 index_rules,
                 body_rules,
-                quote_re,
-                attach_re,
             },
             warnings,
         )
@@ -668,8 +505,6 @@ impl App {
             keymap,
             index_rules,
             body_rules,
-            quote_re,
-            attach_re,
         } = derived;
         // The config's own complaints come first: they are about the
         // setup, and the session's are about this mailbox.
@@ -686,11 +521,8 @@ impl App {
             notices: notices.clone(),
             pager_search: None,
             pager_search_text: String::new(),
-            quote_re,
-            attach_re,
             body_rules,
             tag_op: false,
-            outbox: Vec::new(),
             exit_notes: Vec::new(),
             view_size: (80, 24),
             theme,
@@ -767,7 +599,12 @@ impl App {
                 terminal.clear()?;
             }
             self.sync_message_hooks();
-            self.tick_outbox();
+            // A send that failed on the way out hands its draft
+            // back: the compose menu opens on it again.
+            if let Some(draft) = self.session.tick_outbox() {
+                self.compose = Some(draft);
+                self.open_compose_menu();
+            }
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             // Macro-queued keys run first, without waiting for input.
             let key = match self.pending_keys.pop_front() {
@@ -810,7 +647,7 @@ impl App {
         }
         // Whatever is still inside its $undo_send window goes out now:
         // quitting is not cancelling.
-        self.flush_outbox();
+        self.exit_notes.extend(self.session.flush_outbox());
         Ok(())
     }
 
@@ -1112,7 +949,9 @@ impl App {
             KeyKind::PostponeAsk => match code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     self.mode = Mode::Index;
-                    self.postpone_draft();
+                    if let Some(draft) = self.compose.take() {
+                        self.session.postpone_draft(draft);
+                    }
                 }
                 KeyCode::Char('n') => {
                     self.mode = Mode::Index;
@@ -2002,7 +1841,7 @@ impl App {
             &pager.view,
             width,
             pager.full_headers,
-            &self.quote_re,
+            &self.session.quote_re,
             pager.hide_quoted,
         );
         let max_scroll = lines.saturating_sub(page);
@@ -2050,7 +1889,7 @@ impl App {
                     &pager.view,
                     width,
                     pager.full_headers,
-                    &self.quote_re,
+                    &self.session.quote_re,
                     pager.hide_quoted,
                 );
                 pager.scroll = pager.scroll.min(lines.saturating_sub(page));
@@ -2060,7 +1899,7 @@ impl App {
                     &pager.view,
                     width,
                     pager.full_headers,
-                    &self.quote_re,
+                    &self.session.quote_re,
                     pager.hide_quoted,
                 );
                 let quoted = |i: usize| matches!(rows[i].kind, crate::ui::RowKind::Quoted(_));
@@ -2104,7 +1943,7 @@ impl App {
             &pager.view,
             width,
             pager.full_headers,
-            &self.quote_re,
+            &self.session.quote_re,
             pager.hide_quoted,
         );
         match search_lines(&lines, &matcher, pager.scroll, forward) {
@@ -2589,54 +2428,11 @@ impl App {
 
     // ---- compose ----
 
-    fn compose_base(&self) -> Option<ComposeBase> {
-        let &mi = self.session.visible.get(self.session.sel)?;
-        let env = &self.session.msgs[mi].env;
-        let view = message::load(&env.file.path).ok()?;
-        let get = |name: &str| {
-            view.all
-                .iter()
-                .filter(|(k, _)| k.eq_ignore_ascii_case(name))
-                .map(|(_, v)| v.clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let from_hdr = get("From");
-        let (reply_to, has_reply_to) = {
-            let rt = get("Reply-To");
-            if rt.trim().is_empty() {
-                (from_hdr.clone(), false)
-            } else {
-                let differs = rt.trim() != from_hdr.trim();
-                (rt, differs)
-            }
-        };
-        Some(ComposeBase {
-            path: env.file.path.clone(),
-            reply_to,
-            from_hdr,
-            has_reply_to,
-            orig_to: get("To"),
-            orig_cc: get("Cc"),
-            list_post: compose::list_post_address(&get("List-Post")),
-            followup_to: get("Mail-Followup-To"),
-            from_addr: compose::addresses(&get("From"))
-                .into_iter()
-                .next()
-                .unwrap_or_default(),
-            from_display: env.from.clone(),
-            subject: env.subject.clone(),
-            date: env.date,
-            msg_id: env.msg_id.clone(),
-            references: env.references.clone(),
-        })
-    }
-
     fn start_compose(&mut self, kind: ComposeKind) {
         let base = if kind == ComposeKind::New {
             None
         } else {
-            match self.compose_base() {
+            match self.session.compose_base() {
                 Some(b) => Some(b),
                 None => {
                     self.error("no message selected");
@@ -2644,7 +2440,7 @@ impl App {
                 }
             }
         };
-        if kind == ComposeKind::New && self.has_postponed() {
+        if kind == ComposeKind::New && self.session.has_postponed() {
             self.prompt = Some(Prompt::Key {
                 label: "(n)ew message or (r)ecall postponed? ".into(),
                 kind: KeyKind::Recall,
@@ -2658,10 +2454,12 @@ impl App {
         // mutt's $autoedit (with edit_headers): no prompts, no
         // questions: the defaults land in the draft and the editor
         // opens; everything stays editable there and in the menu.
-        if self.session.config.mail.autoedit && self.edit_headers() {
+        if self.session.config.mail.autoedit && self.session.edit_headers() {
             let to = match (&kind, &base) {
                 (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => b.reply_to.clone(),
-                (ComposeKind::ListReply, Some(b)) => self.list_target(b).unwrap_or_default(),
+                (ComposeKind::ListReply, Some(b)) => {
+                    self.session.list_target(b).unwrap_or_default()
+                }
                 _ => String::new(),
             };
             let subject = match (&kind, &base) {
@@ -2710,59 +2508,15 @@ impl App {
         self.open_to_prompt(true);
     }
 
-    /// The To prompt, prefilled for replies with Reply-To (the
-    /// question's yes) or the plain From (its no).
-    /// Where a list reply goes: the list's own List-Post address when
-    /// it published one, else the first To/Cc address that matches a
-    /// configured list.
-    fn list_target(&self, base: &ComposeBase) -> Option<String> {
-        if let Some(addr) = &base.list_post {
-            return Some(addr.clone());
-        }
-        let mut candidates = compose::addresses(&base.orig_to);
-        candidates.extend(compose::addresses(&base.orig_cc));
-        candidates
-            .into_iter()
-            .find(|a| self.session.lists.iter().any(|m| m.is_match(a)))
-    }
-
-    /// mutt's $followup_to: mail going to a known list carries a
-    /// Mail-Followup-To, so replies land on the list. Being subscribed
-    /// leaves my own address out, since the list copy is the one I get.
-    fn followup_header(&self, to: &str, cc: Option<&str>, from: &str) -> Option<String> {
-        if self.session.lists.is_empty() {
-            return None;
-        }
-        let mut rcpts = compose::addresses(to);
-        rcpts.extend(compose::addresses(cc.unwrap_or_default()));
-        if !rcpts
-            .iter()
-            .any(|a| self.session.lists.iter().any(|m| m.is_match(a)))
-        {
-            return None;
-        }
-        let subscribed = rcpts
-            .iter()
-            .any(|a| self.session.subscribed.iter().any(|m| m.is_match(a)));
-        let value = compose::followup_to(
-            to,
-            cc.unwrap_or_default(),
-            self.session.me(),
-            subscribed,
-            from,
-        );
-        (!value.is_empty()).then_some(value)
-    }
-
     /// `L`: reply to the mailing list. Refuses when the message names
     /// no list rmut knows of, rather than quietly replying to the
     /// author, which is the mistake list-reply exists to prevent.
     fn start_list_reply(&mut self) {
-        let Some(base) = self.compose_base() else {
+        let Some(base) = self.session.compose_base() else {
             self.error("no message selected");
             return;
         };
-        if self.list_target(&base).is_none() {
+        if self.session.list_target(&base).is_none() {
             self.error(if self.session.lists.is_empty() {
                 "no mailing lists configured (mail.lists / mail.subscribed)"
             } else {
@@ -2792,7 +2546,7 @@ impl App {
             ComposeKind::ListReply => setup
                 .base
                 .as_ref()
-                .and_then(|b| self.list_target(b))
+                .and_then(|b| self.session.list_target(b))
                 .unwrap_or_default(),
             ComposeKind::New | ComposeKind::Forward => String::new(),
         };
@@ -2952,7 +2706,9 @@ impl App {
                     }
                 }
                 ComposeKind::Forward
-                    if setup.fwd_attach.unwrap_or_else(|| self.forward_attaches()) =>
+                    if setup
+                        .fwd_attach
+                        .unwrap_or_else(|| self.session.forward_attaches()) =>
                 {
                     // The original goes along whole; nothing to quote.
                     attach = Some(b.path.clone());
@@ -2964,9 +2720,10 @@ impl App {
                 ComposeKind::New => {}
             }
         }
-        let from = self.compose_from(setup.base.as_ref(), &to);
+        let from = self.session.compose_from(setup.base.as_ref(), &to);
         let followup =
-            self.followup_header(&to, cc.as_deref(), from.as_deref().unwrap_or_default());
+            self.session
+                .followup_header(&to, cc.as_deref(), from.as_deref().unwrap_or_default());
         let text = compose::draft_text(
             &compose::DraftHeaders {
                 from,
@@ -2987,12 +2744,12 @@ impl App {
             },
             None => text,
         };
-        match self.stage_draft(&text) {
+        match self.session.stage_draft(&text) {
             Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: None,
-                    security: self.default_security(),
+                    security: self.session.default_security(),
                     attach,
                     hidden_head,
                     fcc: None,
@@ -3000,45 +2757,6 @@ impl App {
             }
             Err(err) => self.error(format!("cannot write draft: {err:#}")),
         }
-    }
-
-    /// mutt's edit_headers (default false, like mutt): whether the
-    /// header block is part of the editor buffer.
-    fn edit_headers(&self) -> bool {
-        self.session.config.mail.edit_headers.unwrap_or(false)
-    }
-
-    /// Write a fresh draft file for the editor: the whole text (with
-    /// any `my_hdr` merged in), or (with edit_headers = false) only
-    /// the body, the header block withheld for draft_full to rejoin.
-    fn stage_draft(&self, text: &str) -> Result<(PathBuf, Option<String>)> {
-        // mutt's my_hdr lands here, so every draft the TUI opens
-        // carries it: with edit_headers the editor shows the lines,
-        // without it they ride along in the withheld head.
-        let text = compose::apply_my_hdr(text, &self.session.config.mail.my_hdr);
-        if self.edit_headers() {
-            return Ok((write_draft(&text)?, None));
-        }
-        let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
-        Ok((write_draft(body)?, Some(head.to_string())))
-    }
-
-    /// From line for a new draft: reverse_name picks the address the
-    /// replied-to message came to; otherwise the layered identity
-    /// (global, account, matching [[identities]] rules).
-    fn compose_from(&self, base: Option<&ComposeBase>, to: &str) -> Option<String> {
-        if self.session.config.identity.reverse_name
-            && let Some(b) = base
-            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, self.session.me())
-        {
-            return Some(from);
-        }
-        let rcpts = compose::addresses(to);
-        self.session.current_identity(&rcpts).from_line()
-    }
-
-    fn forward_attaches(&self) -> bool {
-        self.session.config.mail.forward.as_deref() == Some("attach")
     }
 
     fn edit_draft(&mut self, terminal: &mut DefaultTerminal, compose: Compose) {
@@ -3136,15 +2854,15 @@ impl App {
     }
 
     fn draft_header(&self, name: &str) -> String {
-        header_value(&self.draft_head(), name).unwrap_or_default()
+        rmut_session::header_value(&self.draft_head(), name).unwrap_or_default()
     }
 
     /// Header lines the compose menu shows; From falls back to the
     /// identity that send would use.
     pub fn compose_header_lines(&self) -> Vec<(&'static str, String)> {
         let head = self.draft_head();
-        let get = |n: &str| header_value(&head, n).unwrap_or_default();
-        let from = match header_value(&head, "From") {
+        let get = |n: &str| rmut_session::header_value(&head, n).unwrap_or_default();
+        let from = match rmut_session::header_value(&head, "From") {
             Some(f) => f,
             None => self
                 .session
@@ -3163,7 +2881,7 @@ impl App {
             Some(fcc) => fcc,
             None if self.session.config.mail.copy == Some(false) => "(no copy)".into(),
             None => {
-                let default = self.default_fcc();
+                let default = self.session.default_fcc(self.compose.as_ref());
                 if default.is_empty() {
                     "(nearby Sent maildir)".into()
                 } else {
@@ -3256,7 +2974,7 @@ impl App {
             KeyCode::Char('f') => {
                 let buf = match self.compose.as_ref().and_then(|c| c.fcc.clone()) {
                     Some(fcc) => fcc,
-                    None => self.default_fcc(),
+                    None => self.session.default_fcc(self.compose.as_ref()),
                 };
                 self.prompt = Some(Prompt::line("Fcc: ", buf, LineKind::EditFcc));
             }
@@ -3277,7 +2995,9 @@ impl App {
             }
             KeyCode::Char('P') => {
                 self.mode = Mode::Index;
-                self.postpone_draft();
+                if let Some(draft) = self.compose.take() {
+                    self.session.postpone_draft(draft);
+                }
             }
             KeyCode::Char('q') => {
                 self.prompt = Some(Prompt::Key {
@@ -3354,25 +3074,6 @@ impl App {
         let mut lines = vec![title, String::new()];
         lines.extend(text.lines().map(String::from));
         self.mode = Mode::Help { lines, scroll: 0 };
-    }
-
-    /// The sent copy's default target, as the Fcc line shows it. An
-    /// fcc-hook matching the draft on screen wins, so the menu shows
-    /// where the copy is really going.
-    fn default_fcc(&self) -> String {
-        if let Some(compose) = &self.compose
-            && let Ok(full) = draft_full(compose)
-            && let Some(mailbox) = self.session.fcc_hook_target(&full, &compose.path)
-        {
-            return mailbox;
-        }
-        match &self.session.remote {
-            Some(remote) => format!(
-                "imap:{}/{}",
-                remote.account.name, remote.account.sent_folder
-            ),
-            None => self.session.config.mail.sent.clone().unwrap_or_default(),
-        }
     }
 
     /// d / ctrl+t on the compose menu: prompt for the selected
@@ -3532,19 +3233,6 @@ impl App {
         self.open_compose_menu();
     }
 
-    /// Initial security for a fresh draft, from the [pgp] config.
-    fn default_security(&self) -> Security {
-        match (
-            self.session.config.pgp.sign_by_default,
-            self.session.config.pgp.encrypt_by_default,
-        ) {
-            (true, true) => Security::Both,
-            (true, false) => Security::Sign,
-            (false, true) => Security::Encrypt,
-            (false, false) => Security::None,
-        }
-    }
-
     fn send_draft(&mut self) {
         let Some(compose_state) = self.compose.take() else {
             return;
@@ -3558,7 +3246,8 @@ impl App {
         };
         // neomutt's $abort_noattach: the body says "attached" and
         // nothing is. Asked once per draft; an answered draft sends.
-        if !mem::take(&mut self.attach_confirmed) && self.attachment_forgotten(&raw, &compose_state)
+        if !mem::take(&mut self.attach_confirmed)
+            && self.session.attachment_forgotten(&raw, &compose_state)
         {
             self.compose = Some(compose_state);
             match self.session.config.mail.abort_noattach.as_deref() {
@@ -3620,7 +3309,7 @@ impl App {
             },
             None => None,
         };
-        let final_text = match self.secure_message(
+        let final_text = match self.session.secure_message(
             compose_state.security,
             final_text,
             &files,
@@ -3641,9 +3330,9 @@ impl App {
             fcc: compose_state.fcc.clone().or(hook_fcc),
             label: {
                 let head = raw.split_once("\n\n").map_or(raw.as_str(), |(h, _)| h);
-                header_value(head, "Subject")
+                rmut_session::header_value(head, "Subject")
                     .filter(|s| !s.trim().is_empty())
-                    .or_else(|| header_value(head, "To"))
+                    .or_else(|| rmut_session::header_value(head, "To"))
                     .unwrap_or_else(|| "message".into())
             },
             state: compose_state,
@@ -3655,39 +3344,10 @@ impl App {
                 "sending {} in {}s (z cancels)",
                 held.label, self.session.config.mail.undo_send
             ));
-            self.outbox.push(held);
+            self.session.hold_send(held);
             return;
         }
-        self.deliver(held);
-    }
-
-    /// Anything due in the outbox goes out; whatever still waits owns
-    /// the status line, counting down.
-    fn tick_outbox(&mut self) {
-        while self.outbox.first().is_some_and(|h| h.due <= Instant::now()) {
-            let held = self.outbox.remove(0);
-            self.deliver(held);
-        }
-        if let Some(next) = self.outbox.first()
-            && !self.notice().is_some_and(|n| n.is_error())
-        {
-            let left = next.due.saturating_duration_since(Instant::now()).as_secs() + 1;
-            self.note(format!("sending {} in {left}s (z cancels)", next.label));
-        }
-    }
-
-    /// Send everything still waiting, on the way out: the messages
-    /// were confirmed, only `z` takes one back.
-    pub fn flush_outbox(&mut self) {
-        while !self.outbox.is_empty() {
-            let held = self.outbox.remove(0);
-            let label = held.label.clone();
-            self.deliver(held);
-            if let Some(err) = self.notice().filter(|n| n.is_error()).map(|n| n.text()) {
-                self.exit_notes.push(format!("{label}: {err}"));
-                self.clear_notice();
-            }
-        }
+        self.session.deliver(held);
     }
 
     /// Take the newest held message back to its compose menu, draft
@@ -3696,269 +3356,19 @@ impl App {
     /// still inside its $undo_send window is the most recent thing
     /// done, so it is what undo takes back first.
     fn undo_last(&mut self) {
-        if self.cancel_send() {
+        if let Some(draft) = self.session.cancel_send() {
+            self.compose = Some(draft);
+            self.open_compose_menu();
             return;
         }
         self.session.undo_last();
-    }
-
-    fn cancel_send(&mut self) -> bool {
-        let Some(held) = self.outbox.pop() else {
-            return false;
-        };
-        self.note(format!("send cancelled: {}", held.label));
-        self.compose = Some(held.state);
-        self.open_compose_menu();
-        true
-    }
-
-    /// Transmit a held message and keep the Fcc copy.
-    fn deliver(&mut self, held: Held) {
-        let Held {
-            state: compose_state,
-            text: final_text,
-            fcc: chosen,
-            ..
-        } = held;
-        let send_result = match self.session.smtp_account() {
-            Some(account) => send_via_smtp(&account, &final_text),
-            None => run_sendmail(
-                final_text.as_bytes(),
-                self.session.config.mail.sendmail.as_deref(),
-                None,
-            ),
-        };
-        match send_result {
-            Ok(()) => {
-                let mut note = String::from("message sent");
-                let skip_copy = chosen.as_deref() == Some("")
-                    || (chosen.is_none() && self.session.config.mail.copy == Some(false));
-                if skip_copy {
-                    // Nothing kept, on request.
-                } else if let Some(fcc) = chosen
-                    .as_deref()
-                    .filter(|f| Some(*f) != Some(self.default_fcc().as_str()))
-                {
-                    // An explicit Fcc: a local maildir path.
-                    let dir = expand_tilde(fcc);
-                    let flags = maildir::Flags {
-                        seen: true,
-                        ..Default::default()
-                    };
-                    if dir.join("cur").is_dir()
-                        && maildir::deliver(&dir, final_text.as_bytes(), flags).is_ok()
-                    {
-                        note += &format!(", copy in {fcc}");
-                    } else {
-                        note += &format!(", Fcc to {fcc} failed");
-                    }
-                } else {
-                    match &mut self.session.remote {
-                        // Fcc goes to the account's Sent folder on the
-                        // server.
-                        Some(remote) => match remote.append_sent(final_text.as_bytes()) {
-                            Ok(folder) => note += &format!(", copy in {folder}"),
-                            Err(_) => note += ", Fcc to Sent failed",
-                        },
-                        None => {
-                            let sent_dir = self
-                                .session
-                                .config
-                                .mail
-                                .sent
-                                .as_deref()
-                                .map(expand_tilde)
-                                .filter(|p| p.join("cur").is_dir())
-                                .or_else(|| {
-                                    maildir::find_special(&self.session.dir, &["sent", "sent-mail"])
-                                });
-                            match sent_dir {
-                                Some(sent) => {
-                                    let flags = maildir::Flags {
-                                        seen: true,
-                                        ..Default::default()
-                                    };
-                                    match maildir::deliver(&sent, final_text.as_bytes(), flags) {
-                                        Ok(_) => note += ", copy in Sent",
-                                        Err(_) => note += ", Fcc to Sent failed",
-                                    }
-                                }
-                                None => note += " (no Sent maildir, no copy kept)",
-                            }
-                        }
-                    }
-                }
-                let _ = std::fs::remove_file(&compose_state.path);
-                if let Some(src) = &compose_state.recall_source {
-                    let _ = std::fs::remove_file(src);
-                }
-                self.note(note);
-            }
-            Err(err) => {
-                self.error(format!("send failed: {err:#}"));
-                self.compose = Some(compose_state);
-                self.open_compose_menu();
-            }
-        }
-    }
-
-    /// neomutt's attachment reminder: does the body mention one when
-    /// nothing is attached? Quoted lines and anything below a `-- `
-    /// signature do not count, so a reply to "see attached" and a
-    /// signature naming one are not false alarms.
-    fn attachment_forgotten(&self, raw: &str, compose: &Compose) -> bool {
-        if self
-            .session
-            .config
-            .mail
-            .abort_noattach
-            .as_deref()
-            .unwrap_or("no")
-            == "no"
-        {
-            return false;
-        }
-        if compose.attach.is_some() || !compose::extract_attachments(raw).1.is_empty() {
-            return false;
-        }
-        let body = raw.split_once("\n\n").map_or("", |(_, body)| body);
-        for line in body.lines() {
-            if line.trim_end() == "--" || line == "-- " {
-                break;
-            }
-            if self.quote_re.is_match(line) {
-                continue;
-            }
-            if self.attach_re.is_match(line) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Assemble the outgoing message from a finalized draft: `files`
-    /// and the forwarded `original` first turn it into multipart/mixed,
-    /// then the chosen PGP treatment wraps whatever entity resulted.
-    fn secure_message(
-        &self,
-        security: Security,
-        text: String,
-        files: &[compose::Attachment],
-        original: Option<&[u8]>,
-    ) -> Result<String> {
-        let cfg = &self.session.config.pgp;
-        // Encrypt to every recipient plus the sender, so the Fcc copy
-        // stays readable.
-        let recipients = |text: &str| -> Result<Vec<String>> {
-            let (mut rcpts, _) = compose::smtp_envelope(text)?;
-            if let Some(from) = compose::from_address(text) {
-                rcpts.push(from);
-            }
-            // mutt's crypt-hook: a recipient with a key of its own is
-            // encrypted to that key id, not to its address.
-            for r in &mut rcpts {
-                if let Some(key) = self.session.crypt_key_for(r) {
-                    *r = key;
-                }
-            }
-            rcpts.sort();
-            rcpts.dedup();
-            Ok(rcpts)
-        };
-        let flowed = self.session.config.mail.text_flowed;
-        if files.is_empty() && original.is_none() {
-            return match security {
-                // No MIME wrapper at all, so $text_flowed has to
-                // declare the body itself.
-                Security::None if flowed => Ok(compose::flow_plain(&text)),
-                Security::None => Ok(text),
-                Security::Sign => pgp::sign_message(cfg, &text, flowed),
-                Security::Encrypt | Security::Both => pgp::encrypt_message(
-                    cfg,
-                    &recipients(&text)?,
-                    security == Security::Both,
-                    &text,
-                    flowed,
-                ),
-            };
-        }
-        let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
-        let entity = compose::mixed_entity(body, files, original, flowed)?;
-        match security {
-            Security::None => Ok(format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())),
-            Security::Sign => pgp::sign_entity(cfg, head, entity.as_bytes()),
-            Security::Encrypt | Security::Both => pgp::encrypt_entity(
-                cfg,
-                &recipients(&text)?,
-                security == Security::Both,
-                head,
-                entity.as_bytes(),
-            ),
-        }
-    }
-
-    fn postponed_dir(&self) -> Option<PathBuf> {
-        self.session
-            .config
-            .mail
-            .postponed
-            .as_deref()
-            .map(expand_tilde)
-            .filter(|p| p.join("cur").is_dir())
-            .or_else(|| {
-                maildir::find_special(
-                    &self.session.dir,
-                    &["drafts", "postponed", "rmut-postponed"],
-                )
-            })
-    }
-
-    fn has_postponed(&self) -> bool {
-        self.postponed_dir()
-            .and_then(|d| maildir::scan(&d).ok())
-            .is_some_and(|files| !files.is_empty())
-    }
-
-    fn postpone_draft(&mut self) {
-        let Some(compose_state) = self.compose.take() else {
-            return;
-        };
-        let target = match self.postponed_dir() {
-            Some(d) => Ok(d),
-            None => {
-                let d = self.session.dir.join(".rmut-postponed");
-                maildir::create(&d).map(|()| d)
-            }
-        };
-        let result = target.and_then(|dir| {
-            // The full message, headers included, so the recall (and
-            // the postponed picker's subject) sees them.
-            let bytes = draft_full(&compose_state)?.into_bytes();
-            let flags = maildir::Flags {
-                draft: true,
-                seen: true,
-                ..Default::default()
-            };
-            maildir::deliver(&dir, &bytes, flags)
-        });
-        match result {
-            Ok(path) => {
-                let _ = std::fs::remove_file(&compose_state.path);
-                self.note(format!("postponed to {}", path.display()));
-            }
-            Err(err) => {
-                self.error(format!(
-                    "postpone failed: {err:#}; draft at {}",
-                    compose_state.path.display()
-                ));
-            }
-        }
     }
 
     /// Recall a postponed draft: straight into the editor when there
     /// is one, a picker when there are several.
     fn recall_postponed(&mut self) {
         let files = self
+            .session
             .postponed_dir()
             .and_then(|dir| maildir::scan(&dir).ok())
             .unwrap_or_default();
@@ -3969,7 +3379,7 @@ impl App {
         }
         if files.len() == 1 {
             let file = files.remove(0);
-            self.recall_file(file.path);
+            self.pending_editor = self.session.recall_file(file.path);
             return;
         }
         files.sort_by_key(|f| std::cmp::Reverse(f.path.metadata().and_then(|m| m.modified()).ok()));
@@ -3984,25 +3394,6 @@ impl App {
             })
             .collect();
         self.mode = Mode::Postponed { drafts, sel: 0 };
-    }
-
-    fn recall_file(&mut self, source: PathBuf) {
-        let result = std::fs::read_to_string(&source)
-            .map_err(anyhow::Error::from)
-            .and_then(|content| self.stage_draft(&content));
-        match result {
-            Ok((path, hidden_head)) => {
-                self.pending_editor = Some(Compose {
-                    path,
-                    recall_source: Some(source),
-                    security: self.default_security(),
-                    attach: None,
-                    hidden_head,
-                    fcc: None,
-                });
-            }
-            Err(err) => self.error(format!("cannot recall: {err:#}")),
-        }
     }
 
     fn handle_postponed_key(&mut self, key: KeyEvent) {
@@ -4025,7 +3416,7 @@ impl App {
                 };
                 if let Some(path) = path {
                     self.mode = Mode::Index;
-                    self.recall_file(path);
+                    self.pending_editor = self.session.recall_file(path);
                 }
             }
             _ => {}
@@ -4227,8 +3618,6 @@ impl App {
         self.keymap = derived.keymap;
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
-        self.quote_re = derived.quote_re;
-        self.attach_re = derived.attach_re;
         // The session recompiles its own half: the hooks, the
         // matchers, and what the pager reads a message through.
         warnings.extend(self.session.recompile());
@@ -4338,7 +3727,7 @@ impl App {
     /// already filled in, straight into the editor, skipping the
     /// prompts the `m` key would ask.
     pub fn start_mailto(&mut self, m: &rmut_core::mailto::Mailto) {
-        let from = self.compose_from(None, &m.to);
+        let from = self.session.compose_from(None, &m.to);
         let text = compose::draft_text(
             &compose::DraftHeaders {
                 from,
@@ -4359,12 +3748,12 @@ impl App {
             },
             None => text,
         };
-        match self.stage_draft(&text) {
+        match self.session.stage_draft(&text) {
             Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: None,
-                    security: self.default_security(),
+                    security: self.session.default_security(),
                     attach: None,
                     hidden_head,
                     fcc: None,
@@ -4613,14 +4002,14 @@ impl App {
         if self.session.full_message_bytes().is_none() {
             return;
         }
-        let Some(base) = self.compose_base() else {
+        let Some(base) = self.session.compose_base() else {
             self.error("no message selected");
             return;
         };
         let body = message::body_text(&base.path).unwrap_or_default();
         let text = compose::draft_text(
             &compose::DraftHeaders {
-                from: self.compose_from(None, &base.orig_to),
+                from: self.session.compose_from(None, &base.orig_to),
                 to: base.orig_to.clone(),
                 cc: (!base.orig_cc.trim().is_empty()).then(|| base.orig_cc.clone()),
                 subject: base.subject.clone(),
@@ -4629,12 +4018,12 @@ impl App {
             },
             &body,
         );
-        match self.stage_draft(&text) {
+        match self.session.stage_draft(&text) {
             Ok((path, hidden_head)) => {
                 self.pending_editor = Some(Compose {
                     path,
                     recall_source: None,
-                    security: self.default_security(),
+                    security: self.session.default_security(),
                     attach: None,
                     hidden_head,
                     fcc: None,
@@ -4723,18 +4112,6 @@ fn takes_tagged(action: IndexAction) -> bool {
 
 fn is_ctrl(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
-}
-
-fn write_draft(text: &str) -> Result<PathBuf> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "rmut-draft-{}-{}.eml",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed),
-    ));
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
 }
 
 /// Set once the ratatui alternate screen is up: progress switches

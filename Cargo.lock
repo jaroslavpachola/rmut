@@ -614,6 +614,7 @@ name = "rmut-session"
 version = "1.50.0"
 dependencies = [
  "anyhow",
+ "regex-lite",
  "rmut-core",
  "tempfile",
 ]

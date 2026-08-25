@@ -476,7 +476,7 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
         &pager.view,
         app.pager_wrap(area.width as usize),
         pager.full_headers,
-        &app.quote_re,
+        &app.session.quote_re,
         pager.hide_quoted,
     );
     let mut visible: Vec<Line> = rows
@@ -804,7 +804,7 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
         &pager.view,
         app.pager_wrap(width),
         pager.full_headers,
-        &app.quote_re,
+        &app.session.quote_re,
         pager.hide_quoted,
     )
     .max(1);
@@ -853,8 +853,8 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::{RowKind, humanize_size, pager_rows, quote_depth, wrap_line};
-    use crate::app::default_quote_re;
     use rmut_core::message::MessageView;
+    use rmut_session::default_quote_re;
 
     #[test]
     fn quote_depth_counts_prefix_marks() {
