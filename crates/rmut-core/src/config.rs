@@ -754,8 +754,11 @@ pub fn load_default() -> (Config, Option<String>) {
     let Ok(text) = std::fs::read_to_string(&p) else {
         return (Config::default(), None);
     };
-    match toml::from_str(&text) {
-        Ok(cfg) => (cfg, None),
+    match toml::from_str::<Config>(&text) {
+        Ok(cfg) => {
+            let warning = secret_exposed(&cfg, &p);
+            (cfg, warning)
+        }
         Err(err) => {
             let first = err
                 .to_string()
@@ -769,6 +772,31 @@ pub fn load_default() -> (Config, Option<String>) {
             )
         }
     }
+}
+
+/// A plaintext `password` in a config anyone can read is the one
+/// mistake worth interrupting for: the file holds the keys to the
+/// mail. Says so once at startup, and only when the bits are
+/// actually open, so a 600 config stays quiet.
+fn secret_exposed(cfg: &Config, path: &std::path::Path) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let holds_password = cfg
+        .accounts
+        .iter()
+        .any(|a| a.password.as_ref().is_some_and(|p| !p.is_empty()));
+    if !holds_password {
+        return None;
+    }
+    let mode = std::fs::metadata(path).ok()?.permissions().mode();
+    if mode & 0o077 == 0 {
+        return None;
+    }
+    // The imperative first: the message line clips at the window
+    // edge, and the path is usually the long part.
+    Some(format!(
+        "chmod 600 {} (it holds a password and others can read it)",
+        path.display()
+    ))
 }
 
 impl Identity {
@@ -785,6 +813,45 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readable_config_holding_a_password_warns() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        let with_password: Config = toml::from_str(
+            r#"
+            [[accounts]]
+            name = "work"
+            user = "jane"
+            password = "hunter2"
+            "#,
+        )
+        .unwrap();
+        let with_command: Config = toml::from_str(
+            r#"
+            [[accounts]]
+            name = "work"
+            user = "jane"
+            password_command = "gpg -q -d ~/.config/rmut/imap.gpg"
+            "#,
+        )
+        .unwrap();
+
+        let mode =
+            |m: u32| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(0o644);
+        let warning = secret_exposed(&with_password, &path).expect("a warning");
+        assert!(warning.starts_with("chmod 600 "), "{warning}");
+        // Shut when the bits are shut, and when there is no secret to
+        // expose in the first place.
+        mode(0o600);
+        assert!(secret_exposed(&with_password, &path).is_none());
+        mode(0o644);
+        assert!(secret_exposed(&with_command, &path).is_none());
+        assert!(secret_exposed(&Config::default(), &path).is_none());
+    }
 
     #[test]
     fn folder_shorthand_expands_everywhere_a_mailbox_is_named() {

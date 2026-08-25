@@ -288,14 +288,12 @@ fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
                     .with_context(|| format!("creating {}", dir.display()))?;
             }
         }
-        std::fs::write(&target, &import.toml)
-            .with_context(|| format!("writing {}", target.display()))?;
+        write_private(&target, &import.toml)?;
         eprintln!("rmut: wrote {}", target.display());
         if let Some(aliases) = aliases {
             // mutt's own format, so the lines go across as they are.
             let text = import.aliases.join("\n") + "\n";
-            std::fs::write(&aliases, text)
-                .with_context(|| format!("writing {}", aliases.display()))?;
+            write_private(&aliases, &text)?;
             eprintln!(
                 "rmut: wrote {} ({} alias(es))",
                 aliases.display(),
@@ -330,6 +328,23 @@ fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Write a file only its owner can read: an imported config carries
+/// whatever `set imap_pass` held, and an alias file is nobody else's
+/// business either.
+fn write_private(path: &std::path::Path, text: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 fn expand_tilde(input: &str) -> PathBuf {

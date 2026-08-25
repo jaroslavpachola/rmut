@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.48.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.49.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1079,6 +1079,36 @@ OAuth), aliases, bindings, macros made of plain keys, color index
 rules, index_format, status_format, trash and more. Anything without
 an rmut equivalent is kept as a comment for review; stored passwords
 next to an OAuth setup are redacted.
+.SH CREDENTIALS
+An account's password can sit in the config as
+.BR password ,
+which is where
+.B \-\-import\-muttrc
+puts
+.BR "set imap_pass" ,
+and it is the weakest of the options: the config is a plain file and
+whoever reads it reads your mail. rmut creates the files it writes at
+mode 600 and says so at startup when a config holding a password is
+readable by anyone else.
+.PP
+.B password_command
+keeps the secret elsewhere: its first line of output is the password,
+it runs once per session, and a failure takes the connection down
+with its message, so a locked store fails closed. Anything that
+prints the password will do:
+.PP
+.nf
+  password_command = "pass show mail/work"
+  password_command = "gpg -q -d ~/.config/rmut/imap.gpg"
+  password_command = "secret-tool lookup service imap user jane"
+  password_command = "cat /media/crypt/mail-pass"
+.fi
+.PP
+For OAuth2,
+.B auth
+= xoauth2 or oauthbearer with
+.B token_command
+runs the helper for every connection, tokens being short-lived.
 .SH FILES
 .TP
 .I ~/.config/rmut/config.toml

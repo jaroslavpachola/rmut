@@ -3340,6 +3340,10 @@ def scenario_getting_started(tmp):
     # writes that too rather than leaving them commented out.
     assert open(aliases).read() == "alias petr Petr Novak <petr@example.com>\n"
     assert "alias" not in open(out).read(), open(out).read()
+    # An imported config carries whatever set imap_pass held, so both
+    # files are written for their owner only.
+    assert oct(os.stat(out).st_mode)[-3:] == "600", oct(os.stat(out).st_mode)
+    assert oct(os.stat(aliases).st_mode)[-3:] == "600"
     r = Rmut(None, env, args=("--import-muttrc", "-w", muttrc))
     r.expect("already exists")
     r.close()
@@ -3426,6 +3430,31 @@ def scenario_purge_question(tmp):
     r.close()
 
 
+def scenario_password_permissions(tmp):
+    """A config holding a plaintext password, readable by anyone, is
+    worth saying out loud at startup."""
+    md = make_maildir(tmp, "md-secret")
+    write_msgs(md, ["jane"])
+    cfg = os.path.join(tmp, "secret-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[[accounts]]\nname = "work"\nuser = "jane"\n'
+                'password = "hunter2"\nimap_host = "imap.example.com"\n')
+    os.chmod(cfg, 0o644)
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), cols=200)
+    r.expect("chmod 600", "others can read it")
+    r.keys(b"x")
+    r.close()
+
+    # Shut the bits and it says nothing.
+    os.chmod(cfg, 0o600)
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), cols=200)
+    r.expect("Msgs:1")
+    r.settle()
+    assert "chmod 600" not in squash(r.buf), "warned about a 600 config"
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3461,6 +3490,7 @@ SCENARIOS = [
     scenario_getting_started,
     scenario_control_chars,
     scenario_purge_question,
+    scenario_password_permissions,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

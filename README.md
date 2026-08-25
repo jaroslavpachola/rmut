@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.48**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.49**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -471,6 +471,43 @@ or type the shorthand whole.
 With `folder = "imap:work"`, `=Archive` is that account's Archive
 folder.
 
+## Credentials
+
+An account's password can sit in the config as `password = "..."`,
+and `--import-muttrc` puts `set imap_pass` there because that is
+where mutt had it. It is the weakest of the options: the config is a
+plain file in `~/.config`, and anyone who can read it can read your
+mail. rmut writes the files it creates at mode 600, and says so at
+startup if a config holding a password is readable by anyone else:
+
+```
+chmod 600 /home/you/.config/rmut/config.toml (it holds a password and others can read it)
+```
+
+Better is to keep the secret somewhere else and name the command that
+fetches it. `password_command` runs once per session, and its first
+line of output is the password:
+
+```toml
+[[accounts]]
+name = "work"
+user = "jane"
+# pick one:
+password_command = "pass show mail/work"          # pass(1), GPG-backed
+password_command = "gpg -q -d ~/.config/rmut/imap.gpg"   # a file you encrypted
+password_command = "secret-tool lookup service imap user jane"   # libsecret
+password_command = "cat /media/crypt/mail-pass"   # an encrypted volume
+```
+
+Anything that prints the password works. A GPG-backed one prompts
+once per session and gpg-agent remembers it for a while; a command
+that fails takes the connection down with its message, so a locked
+store fails closed rather than silently.
+
+For a provider that wants OAuth2 rather than a password, `auth =
+"xoauth2"` (or `"oauthbearer"`) with `token_command` runs the token
+helper for every connection, since tokens expire.
+
 ## Threads
 
 `o t` sorts by threads, and then the thread is a unit you can act on:
@@ -762,7 +799,7 @@ L = "l~f jane<enter>"        # literals + <enter>/<esc>/<ctrl+x>/...;
 name = "work"
 user = "jane@example.com"
 password_command = "pass show mail/work"   # first stdout line
-# password = "..."                         # alternative; keep the file chmod 600
+# password = "..."                         # alternative, but see Credentials below
 # auth = "xoauth2"                         # or "oauthbearer": OAuth2 with
 # token_command = "oauth2ms"               # a fresh access token per connection
 imap_host = "imap.example.com"             # imap_port = 993 (implicit TLS; 143 = STARTTLS)

@@ -990,6 +990,27 @@ instead of sitting under it. Reported from use, and right.
       overtake the keys just typed and repaint the screen as it was
       before they were read
 
+## R49: credentials (done, 1.49)
+
+Goal: stop the import from leaving a password where anyone can read
+it, and say plainly where a secret should live instead. Found in use:
+an imported config sat at mode 664 in ~/.config with an IMAP password
+in it.
+
+- [x] `--import-muttrc -w` writes the config and the alias file with
+      `create_new` at mode 600, rather than letting the umask decide
+      what an imported `set imap_pass` is worth
+- [x] A config that holds a plaintext `password` and is readable by
+      group or other says so at startup, with the imperative first
+      ("chmod 600 <path> ...") because the message line clips at the
+      window edge and the path is the long part. Quiet at 600, and
+      quiet when the account uses `password_command`
+- [x] README and man page grew a Credentials section: what
+      `password_command` is for, that it runs once per session and
+      fails closed, and four one-liners that cover the usual stores
+      (pass, a gpg file, libsecret, an encrypted volume);
+      e2e scenario_password_permissions
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
