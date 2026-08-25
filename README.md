@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.39**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.40**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -99,7 +99,7 @@ or `~/Maildir`.
 Index: `j`/`k` move, `Enter` view, `=`/`*` first/last, PgUp/PgDn or
 Ctrl+B/Ctrl+F page, `d`/`u` delete/undelete, `F` flag, `N` toggle
 read, `t` tag + `;` apply the next d/u/F/N to all tagged, `z` undo
-the last of those, `s` save
+the last of those (or cancel a held send), `s` save
 (copy to a mailbox + mark deleted), `$` sync changes to disk (asks
 before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
@@ -292,7 +292,7 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `from`, `realname`, `reverse_name`, `edit_headers`, `fast_reply`,
 `autoedit`, `copy`, `forward`/`mime_forward`, `sendmail`, `editor`,
 `print_command`, `query_command`, `trash`, `record`, `postponed`,
-`new_mail_command`, `mail_check`, `metoo`, `text_flowed`,
+`new_mail_command`, `mail_check`, `undo_send`, `metoo`, `text_flowed`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -440,6 +440,26 @@ the deleted ones are gone. Up to 32 steps are kept.
 This one is rmut's own; mutt has nothing like it. It is cheap here
 because rmut already defers every mark to the sync.
 
+### Undo send
+
+`[mail] undo_send` holds a sent message for that many seconds before
+anything leaves the machine:
+
+```toml
+[mail]
+undo_send = 10   # 0 (the default) sends at once, as mutt does
+```
+
+The status line counts the seconds down, and `z` takes the message
+back: not just cancelled, but returned to its compose menu with the
+draft as you left it, ready to edit and send again. A held message is
+the most recent thing you did, so `z` reaches it before it reaches
+the mark history.
+
+The timer running out sends it, and so does leaving rmut: quitting is
+not cancelling. Batch sends (`-s` and friends) never hold, since
+there is no terminal to press `z` at.
+
 ## Which part shows, and mailcap
 
 A `multipart/alternative` message carries the same text twice or more.
@@ -548,6 +568,8 @@ alternates = ['jane@old\.example\.com']   # my other addresses
 my_hdr = ["Organization: Acme"]           # on every draft
 metoo = false                # true: a group reply copies me too
 text_flowed = false          # true: send text/plain; format=flowed
+undo_send = 0                # seconds a sent message waits, so z can
+                             # take it back (0 sends at once)
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default

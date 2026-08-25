@@ -372,6 +372,21 @@ pub struct Compose {
     pub fcc: Option<String>,
 }
 
+/// A message that has been sent but is waiting out $undo_send before
+/// it goes anywhere. The finalized text is ready to transmit; the
+/// draft it came from is kept whole, so cancelling puts the compose
+/// menu back exactly as it was.
+struct Held {
+    state: Compose,
+    text: String,
+    /// The Fcc target as it was decided at send time (menu, then
+    /// fcc-hook); None means the default sent copy.
+    fcc: Option<String>,
+    /// What the status line calls it: the subject, or the recipients.
+    label: String,
+    due: Instant,
+}
+
 /// First value of a (single-line) header in a draft head block.
 fn header_value(head: &str, name: &str) -> Option<String> {
     head.lines().find_map(|l| {
@@ -442,6 +457,12 @@ pub struct App {
     /// Undo stack, oldest first: delete/flag/tag/read marks and the
     /// copies a save made, back to the state before each step.
     undo: Vec<UndoStep>,
+    /// Messages sent but still inside their $undo_send window, oldest
+    /// first. They go out when the timer runs out or rmut exits.
+    outbox: Vec<Held>,
+    /// Trouble from the send at exit, printed once the terminal is
+    /// back (nobody would see a status line by then).
+    pub exit_notes: Vec<String>,
     /// Width and content rows from the last key dispatch, for actions
     /// (prompt submissions) that arrive without a size at hand.
     view_size: (usize, usize),
@@ -843,6 +864,8 @@ impl App {
             display,
             body_rules,
             undo: Vec::new(),
+            outbox: Vec::new(),
+            exit_notes: Vec::new(),
             view_size: (80, 24),
             thread_depth: vec![0; count],
             thread_root: (0..count).collect(),
@@ -995,6 +1018,7 @@ impl App {
                 terminal.clear()?;
             }
             self.sync_message_hooks();
+            self.tick_outbox();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             // Macro-queued keys run first, without waiting for input.
             let key = match self.pending_keys.pop_front() {
@@ -1030,6 +1054,9 @@ impl App {
                 self.edit_raw(&mut terminal, path);
             }
         }
+        // Whatever is still inside its $undo_send window goes out now:
+        // quitting is not cancelling.
+        self.flush_outbox();
         Ok(())
     }
 
@@ -2193,6 +2220,10 @@ impl App {
                     }
                     None => self.mode = Mode::Index,
                 }
+                return;
+            }
+            PagerAction::Undo => {
+                self.undo_last();
                 return;
             }
             PagerAction::Search => {
@@ -4044,6 +4075,85 @@ impl App {
                 return;
             }
         };
+        // The menu's Fcc wins, then any fcc-hook; empty means keep no
+        // copy, and $copy = no makes that the default.
+        let held = Held {
+            text: final_text,
+            fcc: compose_state.fcc.clone().or(hook_fcc),
+            label: {
+                let head = raw.split_once("\n\n").map_or(raw.as_str(), |(h, _)| h);
+                header_value(head, "Subject")
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| header_value(head, "To"))
+                    .unwrap_or_else(|| "message".into())
+            },
+            state: compose_state,
+            due: Instant::now() + Duration::from_secs(self.config.mail.undo_send),
+        };
+        // $undo_send: the message waits, and z takes it back.
+        if self.config.mail.undo_send > 0 {
+            self.status = Some(format!(
+                "sending {} in {}s (z cancels)",
+                held.label, self.config.mail.undo_send
+            ));
+            self.outbox.push(held);
+            return;
+        }
+        self.deliver(held);
+    }
+
+    /// Anything due in the outbox goes out; whatever still waits owns
+    /// the status line, counting down.
+    fn tick_outbox(&mut self) {
+        while self.outbox.first().is_some_and(|h| h.due <= Instant::now()) {
+            let held = self.outbox.remove(0);
+            self.deliver(held);
+        }
+        if let Some(next) = self.outbox.first()
+            && !self.status_error
+        {
+            let left = next.due.saturating_duration_since(Instant::now()).as_secs() + 1;
+            self.status = Some(format!("sending {} in {left}s (z cancels)", next.label));
+        }
+    }
+
+    /// Send everything still waiting, on the way out: the messages
+    /// were confirmed, only `z` takes one back.
+    pub fn flush_outbox(&mut self) {
+        while !self.outbox.is_empty() {
+            let held = self.outbox.remove(0);
+            let label = held.label.clone();
+            self.deliver(held);
+            if self.status_error {
+                self.exit_notes.push(format!(
+                    "{label}: {}",
+                    self.status.take().unwrap_or_default()
+                ));
+                self.status_error = false;
+            }
+        }
+    }
+
+    /// Take the newest held message back to its compose menu, draft
+    /// and all. Returns false when nothing was waiting.
+    fn cancel_send(&mut self) -> bool {
+        let Some(held) = self.outbox.pop() else {
+            return false;
+        };
+        self.status = Some(format!("send cancelled: {}", held.label));
+        self.compose = Some(held.state);
+        self.open_compose_menu();
+        true
+    }
+
+    /// Transmit a held message and keep the Fcc copy.
+    fn deliver(&mut self, held: Held) {
+        let Held {
+            state: compose_state,
+            text: final_text,
+            fcc: chosen,
+            ..
+        } = held;
         let send_result = match self.smtp_account() {
             Some(account) => send_via_smtp(&account, &final_text),
             None => run_sendmail(
@@ -4055,9 +4165,6 @@ impl App {
         match send_result {
             Ok(()) => {
                 let mut note = String::from("message sent");
-                // The menu's Fcc wins, then any fcc-hook; empty means
-                // keep no copy, and $copy = no makes that the default.
-                let chosen = compose_state.fcc.clone().or(hook_fcc);
                 let skip_copy = chosen.as_deref() == Some("")
                     || (chosen.is_none() && self.config.mail.copy == Some(false));
                 if skip_copy {
@@ -4834,6 +4941,11 @@ impl App {
     /// is removed. Writing the mailbox drops the stack, so a step here
     /// is always one that has not reached disk.
     fn undo_last(&mut self) {
+        // A message still inside its $undo_send window is the most
+        // recent thing done, so it is what undo takes back first.
+        if self.cancel_send() {
+            return;
+        }
         let Some(step) = self.undo.pop() else {
             self.status = Some("nothing to undo".into());
             return;

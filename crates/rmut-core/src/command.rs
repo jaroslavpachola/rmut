@@ -258,6 +258,7 @@ enum Slot<'a> {
     FlagOpt(&'a mut Option<bool>),
     Num16(&'a mut u16),
     NumUsize(&'a mut usize),
+    NumU64(&'a mut u64),
     NumU64Opt(&'a mut Option<u64>),
     NumI64Opt(&'a mut Option<i64>),
 }
@@ -305,6 +306,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "sidebar_width" => Num16(&mut cfg.sidebar.width),
         "pager_context" => NumUsize(&mut cfg.pager.context),
         "mail_check" => NumU64Opt(&mut cfg.mail.poll_seconds),
+        "undo_send" => NumU64(&mut cfg.mail.undo_send),
         "wrap" => NumI64Opt(&mut cfg.pager.wrap),
         _ => return None,
     })
@@ -474,6 +476,7 @@ fn set(cfg: &mut Config, name: &str, value: &str) -> Result<(), String> {
         Slot::FlagOpt(field) => *field = Some(is_yes(value)),
         Slot::Num16(field) => *field = u16::try_from(num(value)?.max(0)).unwrap_or(u16::MAX),
         Slot::NumUsize(field) => *field = usize::try_from(num(value)?.max(0)).unwrap_or(0),
+        Slot::NumU64(field) => *field = num(value)?.max(0) as u64,
         Slot::NumU64Opt(field) => *field = Some(num(value)?.max(0) as u64),
         Slot::NumI64Opt(field) => *field = Some(num(value)?),
     }
@@ -494,6 +497,7 @@ fn unset(cfg: &mut Config, name: &str) -> Result<(), String> {
         Slot::FlagOpt(field) => *field = Some(false),
         Slot::Num16(field) => *field = 0,
         Slot::NumUsize(field) => *field = 0,
+        Slot::NumU64(field) => *field = 0,
         Slot::NumU64Opt(field) => *field = None,
         Slot::NumI64Opt(field) => *field = None,
     }
@@ -520,6 +524,7 @@ fn query(cfg: &mut Config, name: &str) -> Result<String, String> {
         Slot::FlagOpt(field) => flag_text(name, field.unwrap_or(false)),
         Slot::Num16(field) => format!("{name}={field}"),
         Slot::NumUsize(field) => format!("{name}={field}"),
+        Slot::NumU64(field) => format!("{name}={field}"),
         Slot::NumU64Opt(field) => match field {
             Some(n) => format!("{name}={n}"),
             None => format!("{name} is unset"),

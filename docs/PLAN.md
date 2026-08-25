@@ -741,6 +741,29 @@ Asked for by name; the rest of that list stays frozen.
 - [x] No redo: the stack goes one way, which is what a "that was
       wrong" key is for; e2e scenario_undo
 
+## R40: undo send (done, 1.40)
+
+Goal: the second "Beyond mutt" item, asked for by name. Mail waits a
+few seconds before it goes anywhere, and the same `z` takes it back.
+
+- [x] `[mail] undo_send` (seconds, 0 = off, settable at the `:`
+      prompt): a sent message is finalized as usual and then parked
+      in an outbox instead of handed to sendmail/SMTP. The main
+      loop's one-second tick delivers what is due and counts the rest
+      down on the status line
+- [x] Cancelling is not just "not sending": the held entry keeps the
+      whole `Compose`, so `z` puts the compose menu back with the
+      draft as it was, ready to edit and send again. A resend
+      re-finalizes, so the Message-ID and Date are the new ones
+- [x] `z` reaches a held send before the mark history, in both index
+      and pager: the send is the most recent thing done, which is
+      what a single undo key should take back first
+- [x] The timer running out sends it, and so does leaving rmut:
+      quitting is not cancelling. Trouble during that last send has
+      no status line left to appear on, so it is printed to stderr
+      once the terminal is back. Batch sends never hold, having no
+      terminal to press `z` at; e2e scenario_undo_send
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
@@ -750,8 +773,7 @@ each starts only when explicitly asked for by name. Ranked by
 value-per-effort:
 
 - Undo: shipped as R39 above (asked for by name, 2026-08)
-- Undo send: outgoing mail waits N seconds with a cancel key before
-  sendmail/SMTP fires
+- Undo send: shipped as R40 above (asked for by name, 2026-08)
 - text/calendar: render meeting invites (when/where/who) in the
   pager instead of a base64 blob; maybe accept/decline replies
 - Attachment reminder: body mentions an attachment but none attached,

@@ -265,6 +265,11 @@ pub struct Mail {
     /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
     /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
     pub new_mail_command: Option<String>,
+    /// Seconds a sent message waits before it actually goes out, so
+    /// `z` can take it back (rmut's own; mutt sends at once). 0 is
+    /// off. A held message is sent when the timer runs out or when
+    /// rmut exits; batch sends (-s and friends) never hold.
+    pub undo_send: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -211,6 +211,11 @@ fn run() -> Result<ExitCode> {
     app::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = app.run(terminal);
     ratatui::restore();
+    // Trouble with a message held by $undo_send and sent on the way
+    // out: the status line is gone by now, so say it here.
+    for note in &app.exit_notes {
+        eprintln!("rmut: {note}");
+    }
     result.map(|()| ExitCode::SUCCESS)
 }
 

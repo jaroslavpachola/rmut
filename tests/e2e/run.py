@@ -2779,6 +2779,66 @@ def scenario_undo(tmp):
     r.close()
 
 
+def scenario_undo_send(tmp):
+    """Beyond mutt: undo_send holds a sent message for a few seconds,
+    z takes it back to the compose menu, and what is still waiting
+    goes out when rmut exits."""
+    md = make_maildir(tmp, "md-undosend")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-undosend.eml")
+    sendmail = os.path.join(tmp, "sendmail-undosend.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "undosend-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "body of the held message\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "undosend-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                'undo_send = 2\ncopy = false\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+
+    def compose(subject):
+        r.keys(b"m")
+        r.expect("To:")
+        r.keys(b"bob@example.org\r")
+        r.settle()
+        r.keys(subject.encode() + b"\r")
+        r.expect("y:Send")
+        r.keys(b"y")
+
+    # Sent, but held: z takes it back to the compose menu, and the
+    # window passes with nothing sent.
+    compose("held then cancelled")
+    r.expect("in 2s (z cancels)")
+    r.keys(b"z")
+    r.expect("cancelled")
+    time.sleep(3)
+    assert not os.path.exists(sent_file), open(sent_file).read()
+
+    # The draft is intact in the menu: send it again and let it go.
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: held then cancelled" in open(sent_file).read(),
+             desc="the held message sent after its window")
+    assert "body of the held message" in open(sent_file).read()
+
+    # Quitting is not cancelling: what is still waiting goes out.
+    compose("still waiting at exit")
+    r.settle()
+    r.keys(b"x")
+    # The send happens as rmut winds down, so wait for it before
+    # dropping the pty (closing it would signal the child first).
+    wait_for(lambda: "Subject: still waiting at exit" in open(sent_file).read(),
+             desc="the held message sent on the way out")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2804,6 +2864,7 @@ SCENARIOS = [
     scenario_format_flowed,
     scenario_mime_polish,
     scenario_undo,
+    scenario_undo_send,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

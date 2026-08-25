@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.39.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.40.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -175,9 +175,11 @@ toggle read/unread
 toggle the tag; apply the next function to tagged messages
 .TP
 .B z
-undo the last delete, undelete, flag, read toggle, tag, pattern
-sweep, save or copy \(em one step per action, however many messages
-it touched. The step remembers the messages as they stood, so undoing
+cancel a message still held by
+.BR undo_send ,
+or else undo the last delete, undelete, flag, read toggle, tag,
+pattern sweep, save or copy \(em one step per action, however many
+messages it touched. The step remembers the messages as they stood, so undoing
 puts their marks back, and a save's copy is removed again. Writing
 the mailbox
 .RB ( $ ", " q )
@@ -404,7 +406,7 @@ pager_format, pager_index_lines, pager_context, quote_regexp, wrap,
 tilde, status_format, theme, beep, from, realname, reverse_name,
 edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
 sendmail, editor, print_command, query_command, trash, record,
-postponed, new_mail_command, mail_check, metoo, text_flowed,
+postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
 sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt.
 An unknown option, a bad number, an unbindable key or an unknown
@@ -608,6 +610,17 @@ and space-stuff it (RFC 3676, mutt's $text_flowed), in the plain case,
 under attachments, and inside a PGP layer alike. The paragraphs are
 your editor's doing: a line that continues has to end with a space,
 and rmut adds none of its own.
+.TP
+.B undo_send
+Seconds a sent message waits before anything leaves the machine, so
+.B z
+can take it back; 0 (the default) sends at once, as mutt does. The
+status line counts down, and cancelling returns the message to its
+compose menu with the draft as it was. The timer running out sends
+it, and so does leaving rmut: quitting is not cancelling. Batch sends
+never hold, having no terminal to press
+.B z
+at. rmut's own; mutt has no equivalent.
 .SS [index]
 .TP
 .B format
