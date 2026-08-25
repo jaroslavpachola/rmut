@@ -1011,13 +1011,17 @@ impl State {
             ("error", _) => {
                 self.colors.insert("error", vivid);
             }
-            ("index", Some("~D")) => {
+            // rmut has a slot of its own for these three, but a slot
+            // carries one colour: a line that paints a background as
+            // well keeps both, as a rule, which is what it looked
+            // like in mutt.
+            ("index", Some("~D")) if bg == "default" => {
                 self.colors.insert("deleted", vivid);
             }
-            ("index", Some("~F")) => {
+            ("index", Some("~F")) if bg == "default" => {
                 self.colors.insert("flagged", vivid);
             }
-            ("index", Some("~T")) => {
+            ("index", Some("~T")) if bg == "default" => {
                 self.colors.insert("tagged", vivid);
             }
             // Any other pattern rmut's engine parses becomes a
@@ -1747,6 +1751,26 @@ mod tests {
     }
 
     #[test]
+    fn index_colors_keep_a_background() {
+        let (cfg, toml) = to_config(concat!(
+            "color index black magenta \"~D\"\n",
+            "color index brightred default \"~F\"\n",
+        ));
+        // A background means mutt painted a bar: both colours stay,
+        // as a [[color_index]] rule.
+        let deleted = cfg.color_index.iter().find(|r| r.pattern == "~D").unwrap();
+        assert_eq!(deleted.fg.as_deref(), Some("black"));
+        assert_eq!(deleted.bg.as_deref(), Some("magenta"));
+        // No background: one visible colour, which is what the
+        // built-in slot holds.
+        assert_eq!(
+            cfg.colors.get("flagged").map(String::as_str),
+            Some("lightred")
+        );
+        assert!(toml.contains("[[color_index]]"), "{toml}");
+    }
+
+    #[test]
     fn attachment_reminder_imports() {
         let (cfg, toml) = to_config(concat!(
             "set abort_noattach = ask-yes\n",
@@ -2267,8 +2291,16 @@ mod tests {
         // unauto_view takes one back off.
         assert!(!cfg.filters.contains_key("text/calendar"), "{toml}");
         assert_eq!(cfg.pager.alternative_order, ["text/plain", "text/html"]);
-        // black-on-cyan: the background is the visible color.
-        assert_eq!(cfg.colors.get("tagged").map(String::as_str), Some("cyan"));
+        // black-on-cyan keeps both colours, as a rule: the slot holds
+        // one, and mutt painted a bar.
+        let tagged = cfg
+            .color_index
+            .iter()
+            .find(|r| r.pattern == "~T")
+            .expect("a ~T rule");
+        assert_eq!(tagged.fg.as_deref(), Some("black"));
+        assert_eq!(tagged.bg.as_deref(), Some("cyan"));
+        assert!(!cfg.colors.contains_key("tagged"));
         assert!(toml.contains("# satisfied by rmut's defaults"), "{toml}");
         for satisfied in ["pgp-signature", "imap_peek", "menu_scroll", "noop"] {
             assert!(toml.contains(satisfied), "{satisfied} missing:\n{toml}");

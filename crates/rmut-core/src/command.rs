@@ -619,9 +619,11 @@ fn color(
         }
         ("header" | "hdrdefault", _) => named("header", fg),
         ("error", _) => named("error", vivid),
-        ("index", Some("~D")) => named("deleted", vivid),
-        ("index", Some("~F")) => named("flagged", vivid),
-        ("index", Some("~T")) => named("tagged", vivid),
+        // One colour goes to the built-in slot; a line that paints a
+        // background as well keeps both, as a [[color_index]] rule.
+        ("index", Some("~D")) if bg == "default" => named("deleted", vivid),
+        ("index", Some("~F")) if bg == "default" => named("flagged", vivid),
+        ("index", Some("~T")) if bg == "default" => named("tagged", vivid),
         ("index", Some(pattern)) => {
             crate::pattern::parse(pattern).map_err(|err| format!("bad pattern: {err}"))?;
             cfg.color_index.push(rule(pattern, fg, bg));

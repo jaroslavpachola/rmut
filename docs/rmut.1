@@ -845,7 +845,15 @@ plus
 and/or
 .BR bg .
 The first matching rule wins over the slot colors; broken rules warn
-and drop.
+and drop. mutt's
+.B "color index"
+lines import here, except
+.BR ~D ", " ~F " and " ~T
+with no background, which have slots of their own
+.RB ( deleted ", " flagged ", " tagged );
+those slots hold one colour, so a line painting a background, like
+.BR "color index black magenta \(dq~D\(dq" ,
+keeps both as a rule instead.
 .SS [[color_body]]
 Regex rules for pager body spans (mutt's `color body`):
 .B pattern

@@ -721,15 +721,18 @@ status_format = "---rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? 
 
 [[color_index]]              # mutt's `color index FG BG PATTERN`:
 pattern = "~f boss@example.com"   # any limit/search pattern; first
-fg = "yellow"                # matching rule colors the index line
-# bg = "blue"
+fg = "yellow"                # matching rule colors the index line,
+# bg = "blue"                # over the [colors] slots below
 
 [sidebar]                    # left pane: mail.mailboxes with new-mail
 visible = false              # counts (B toggles at runtime; bold =
 width = 24                   # has new mail, > marks the open one)
 
 [colors]                     # status_fg status_bg deleted flagged
-deleted = "red"              # tagged header
+deleted = "red"              # tagged header. One colour each: for
+                             # mutt's `color index black magenta ~D`
+                             # (a painted bar) use a [[color_index]]
+                             # rule, which takes fg and bg both
 
 [keys.index]                 # remap: action = "key" (see ? for actions)
 sync = "w"
