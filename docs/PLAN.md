@@ -1096,20 +1096,30 @@ Goal: the model half moves out.
       questions), `run_command_line` and the message-hook sync it
       drives, and the compose menu's own editing
 
-## R52: asks, not prompts
+## R52: asks, not prompts (done, 1.52)
 
 Goal: the part that actually makes a second front end possible.
 
-- [ ] The session says what it needs ("a mailbox name", "purge 3
-      deleted?") and the front end answers, instead of the session
-      opening a `Prompt`. R51 left `send_draft`, `run_command_line`
-      and the compose menu behind for exactly this. A TUI answers on the message line; anything
-      else can answer however it likes
-- [ ] The same for the handoffs that currently suspend the TUI: the
-      editor, `!`, and Ctrl+Z become requests the front end honours
-      or refuses
-- [ ] `Mode` stays in the TUI: which menu is on screen is not the
-      session's business
+- [x] `Ask` and `AskKind`: the session says what it needs ("Save to
+      mailbox: ", "Purge 3 deleted message(s)? (y/n): ") and the
+      front end answers with the `AskKind` it came with, which can
+      lead to the next question. The TUI draws them on its message
+      line; a test answers straight away. The index side went first
+      (limit, search, the pattern marks, save/copy, pipe, print,
+      bounce, create-alias, sort, purge), then the config commands
+      and the hooks that run them, then the compose flow, then the
+      draft and the send
+- [x] `Request`, the other way: `Quit`, `ConfigChanged`, `Command`
+      (a `bind` the session cannot do), `ShowDraft`, `Editor`,
+      `Shell`, `Suspend`. mutt's `!` is an ask ending in a request,
+      and a front end that cannot suspend simply does not honour that
+      one
+- [x] `Mode` stays in the TUI: which menu is on screen is not the
+      session's business, and neither is which row the cursor is on
+- [x] What is left in app.rs is the front end: keys, menus, drawing,
+      the pager, the attachment menu, the folder browser. 3021 lines,
+      from 6716 when R50 started; the session crate is 4501 across
+      four files
 
 ## R53: tests where the logic is
 

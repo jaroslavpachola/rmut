@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.51**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.52**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -880,4 +880,12 @@ An operation reports what it did as a `notice::Notice` rather than
 writing into a status field, and the front end installs the sink that
 receives it: the terminal keeps the last notice for its message line,
 a test reads the values. A session with no sink installed is silent.
-See [docs/PLAN.md](docs/PLAN.md) for where that line is headed.
+
+When an operation needs an answer it hands back an `Ask` ("Save to
+mailbox: ", "Purge 3 deleted message(s)? (y/n): ") rather than opening
+a prompt, and the front end answers with the `AskKind` it came with;
+answering can produce the next question. What only a front end can do
+comes back as a `Request`: quit, run an editor or a shell command,
+suspend, show the draft again. A front end that cannot do one of them
+simply does not honour it. See [docs/PLAN.md](docs/PLAN.md) for where
+that line is headed.
