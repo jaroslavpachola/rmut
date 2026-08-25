@@ -764,6 +764,77 @@ few seconds before it goes anywhere, and the same `z` takes it back.
       once the terminal is back. Batch sends never hold, having no
       terminal to press `z` at; e2e scenario_undo_send
 
+## Proposed rounds (2026-08, from the ergonomics review against mutt)
+
+Where the daily feel still differs from mutt, worst first. The first
+round leads because those are the two places where a mutt hand's keys
+do something other than what they mean, rather than nothing at all.
+
+## R41: tagged and pager parity
+
+Goal: `;` and the pager stop lying about what they did.
+
+- [ ] `;` reaches every function that can take a set: save, copy,
+      pipe, print, bounce, resend. Today `handle_index_key` takes the
+      flag but only delete, undelete, flag and toggle-new read it, so
+      `;s` files one message of twelve and reports success
+- [ ] An action that cannot take the prefix says so, rather than
+      quietly acting on the current message: whichever way the first
+      box goes, silence is the wrong answer
+- [ ] The pager gains `u`, `F`, `N` and `t` (undelete, flag,
+      toggle-new, tag), which mutt's pager has and rmut's lacks: it
+      can delete and nothing else, though the pager is where triage
+      happens. The actions exist on the index side already
+- [ ] Both go on R39's undo stack, one step per keystroke, like
+      their index twins
+
+## R42: thread operations
+
+Goal: act on the thread, not the message. `thread_root` and
+`thread_depth` are already maintained and folding sits on Alt+v /
+Alt+V (mutt's `Esc v`), so half the map is drawn.
+
+- [ ] Alt+d / Alt+u delete and undelete the whole thread, Alt+t tags
+      it (mutt's `Esc d` / `Esc u` / `Esc t`: a terminal sends
+      `Esc x` as Alt+x, so the keys match by construction)
+- [ ] Ctrl+D / Ctrl+U for the subthread, the selected message and its
+      descendants (mutt's delete-subthread / undelete-subthread)
+- [ ] Alt+n / Alt+p jump to the next / previous thread root
+- [ ] One undo step per thread operation, however many messages it
+      touched, which is what makes "delete this thread" safe to try
+
+## R43: the = and + folder shorthand
+
+Goal: mutt's $folder-relative mailbox names, everywhere a mailbox is
+named.
+
+- [ ] `[mail] folder`, imported from `set folder`: the importer
+      already reads it, but only to expand +/= at import time
+- [ ] One expansion point beside `expand_tilde`, which today knows
+      only `~/`: `=x` and `+x` mean `$folder/x`, so change-folder,
+      save, copy, the Fcc prompt and the hook targets all get it,
+      and `=` alone means $folder itself
+- [ ] It also unbreaks imported macros: `macro index S
+      "<save-message>=archive<enter>"` currently files into a maildir
+      named, literally, `=archive`
+
+## R44: paper cuts
+
+Goal: small mutt keys rmut does not have. Any of these can ride along
+with an earlier round instead of waiting for its own.
+
+- [ ] Space pages down in the index (it already does in the pager;
+      in mutt it does in every menu)
+- [ ] Ctrl+L redraws, for when a filter or an editor scribbles on the
+      terminal and nothing repaints it
+- [ ] `!` runs a shell command
+- [ ] `Esc c` opens a mailbox read-only (rmut has `-R`, which is the
+      whole session or nothing)
+- [ ] `Esc /` searches the other way (mutt's search-opposite)
+- [ ] Not a one-liner, kept here for company: Ctrl+Z suspends (mutt's
+      $suspend, on by default), which needs SIGTSTP with the terminal
+      saved and restored around it
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
