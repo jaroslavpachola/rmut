@@ -1011,6 +1011,107 @@ in it.
       (pass, a gpg file, libsecret, an encrypted volume);
       e2e scenario_password_permissions
 
+## The session split (proposed, 2026-08)
+
+Goal: rmut's logic in a library, with the TUI as one front end over
+it. The point is testability first: a GUI becomes possible, but it is
+not what pays for the work.
+
+Where the line sits today, counted rather than guessed.
+`rmut-core` (14k lines) is already UI-free: maildir, mbox, IMAP,
+SMTP, compose, PGP, patterns, threading, the importer, mailcap,
+flowed. `rmut-tui` is 9.5k, 6.7k of it `app.rs`, whose methods split:
+
+    really UI (modes, prompts, keys, drawing)   59 methods  2572 lines
+    model, plus a status message                46 methods  1371 lines
+    pure model                                  77 methods  1072 lines
+
+So about 2.4k lines are application logic wearing a TUI coat. The
+middle row is the lever: `sync`, `copy_message`, `undo_last`,
+`thread_mark`, `open_mailbox_spec`, `deliver` touch the UI only
+through `self.status = Some(...)`, which is a notification, not
+rendering.
+
+Why it is worth doing on its own: the e2e suite drives a pty and
+scrapes the screen, which has cost real time in cell-diff holes,
+resize races, and assertions that could not tell two outcomes apart
+(R42, R48). Logic tested against a session returns values instead,
+leaving the pty suite for what it is good at, the keymap and the
+drawing.
+
+The risk, recorded so the decision is made with open eyes: two front
+ends double every round. Each feature either lands twice or the GUI
+lags, and a lagging front end is worse than none. Nothing here
+commits to a GUI; it makes one possible.
+
+Each round below is shippable on its own and must leave behaviour and
+the suite unchanged.
+
+## R50: notices instead of a status field
+
+Goal: the enabling step, and mechanical.
+
+- [ ] `enum Notice { Info(String), Error(String) }` emitted through a
+      sink the front end installs, replacing `self.status = Some(...)`
+      and `error_status` in the 46 methods that only touch the UI
+      that way
+- [ ] The TUI installs a sink that keeps the latest notice and draws
+      it on the message line, so what the user sees does not change
+- [ ] Typed variants where a test wants structure rather than prose
+      (`Synced { deleted, updated }` is the obvious first one); the
+      rest stay `Info(String)` until something needs otherwise
+- [ ] No crate moves in this round
+
+## R51: the session crate
+
+Goal: the model half moves out.
+
+- [ ] `rmut-session` holds the open mailbox (msgs, visible, sel,
+      sort, limit, threads, collapsed), the operations (marks, tagged
+      and thread ops, sync, save/copy/pipe/print/bounce), the undo
+      stack, the outbox, the hooks and the derived config
+- [ ] `rmut-tui` keeps `Mode`, prompts, the keymap, the theme and
+      `ui.rs`, and drives the session
+- [ ] One area at a time, each a commit that keeps the suite green:
+      sync and the mark operations first, compose last, being the
+      most entangled
+
+## R52: asks, not prompts
+
+Goal: the part that actually makes a second front end possible.
+
+- [ ] The session says what it needs ("a mailbox name", "purge 3
+      deleted?") and the front end answers, instead of the session
+      opening a `Prompt`. A TUI answers on the message line; anything
+      else can answer however it likes
+- [ ] The same for the handoffs that currently suspend the TUI: the
+      editor, `!`, and Ctrl+Z become requests the front end honours
+      or refuses
+- [ ] `Mode` stays in the TUI: which menu is on screen is not the
+      session's business
+
+## R53: tests where the logic is
+
+Goal: collect the winnings.
+
+- [ ] The scenarios that are really about logic (undo, tagged
+      operations, thread operations, hooks, fcc, the attachment
+      reminder) become session tests asserting on values
+- [ ] The pty suite keeps what it is for: keys, drawing, the
+      importer, the batch CLI, and the end-to-end paths through
+      sendmail, IMAP and gpg
+- [ ] Whatever the port cannot express stays where it is rather than
+      being contorted
+
+## R54: non-blocking IO (only if a GUI is wanted)
+
+Goal: not needed by the TUI, needed by anything with an event loop.
+
+- [ ] IMAP work off the calling thread, with cancellation, so a front
+      end that cannot block does not have to
+- [ ] The progress line becomes a notice like any other
+- [ ] Not started unless a GUI is: the TUI is happy blocking
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
@@ -1039,6 +1140,8 @@ value-per-effort:
   instant without notmuch
 - Unified inbox: several accounts' inboxes merged into one live
   virtual mailbox (flagship-sized; after the parity rounds)
+- A GUI over the session library: only after R50-R53, and only worth
+  starting if the doubling of every round is accepted going in
 
 Explicitly rejected even here: embedded scripting languages, HTML
 rendering engines, notmuch-tag write-back, the fat that sank other
