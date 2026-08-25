@@ -3,11 +3,51 @@
 //! writes go straight through to the socket.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+
+/// Seconds to wait for a connection, and for data on one. Process
+/// wide, because the connections are made from threads (IDLE, the
+/// backfill) that have the account but not the config; the session
+/// sets them from the config at startup and after a `:set`.
+static CONNECT_SECS: AtomicU64 = AtomicU64::new(10);
+static IO_SECS: AtomicU64 = AtomicU64::new(30);
+
+/// Anything shorter than this is not a timeout, it is a way to make
+/// slow servers unusable. IDLE also ticks on the io timeout, so it
+/// can never be off.
+const MIN_IO_SECS: u64 = 5;
+
+/// Set both, in seconds; a connect timeout of 0 waits as long as the
+/// OS does.
+pub fn set_timeouts(connect_secs: u64, io_secs: u64) {
+    CONNECT_SECS.store(connect_secs, Ordering::Relaxed);
+    IO_SECS.store(io_secs.max(MIN_IO_SECS), Ordering::Relaxed);
+}
+
+/// How long a read or a write waits before giving up.
+pub fn io_timeout() -> Duration {
+    Duration::from_secs(IO_SECS.load(Ordering::Relaxed).max(MIN_IO_SECS))
+}
+
+fn connect_timeout() -> Option<Duration> {
+    match CONNECT_SECS.load(Ordering::Relaxed) {
+        0 => None,
+        secs => Some(Duration::from_secs(secs)),
+    }
+}
+
+/// Whether an io error is a timeout, so the message can say so.
+fn timed_out(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
+}
 
 pub(crate) enum Stream {
     Plain(TcpStream),
@@ -71,15 +111,45 @@ pub(crate) fn is_timeout(err: &anyhow::Error) -> bool {
 }
 
 pub(crate) fn connect(host: &str, port: u16, tls: bool) -> Result<Stream> {
-    let tcp =
-        TcpStream::connect((host, port)).with_context(|| format!("connecting to {host}:{port}"))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(60)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(60)))?;
+    let tcp = connect_tcp(host, port)?;
+    tcp.set_read_timeout(Some(io_timeout()))?;
+    tcp.set_write_timeout(Some(io_timeout()))?;
     if tls {
         wrap_tls(tcp, host)
     } else {
         Ok(Stream::Plain(tcp))
     }
+}
+
+/// Connect, with a timeout of our own rather than the OS's.
+///
+/// `TcpStream::connect` waits out the kernel's SYN retries, which is
+/// about two minutes with nothing on screen; a name that resolves to
+/// several addresses is tried in turn, each getting the full wait.
+fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let Some(timeout) = connect_timeout() else {
+        return TcpStream::connect((host, port))
+            .with_context(|| format!("connecting to {host}:{port}"));
+    };
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .with_context(|| format!("resolving {host}"))?
+        .collect();
+    ensure!(!addrs.is_empty(), "{host} resolves to nothing");
+    let mut last = None;
+    for addr in &addrs {
+        match TcpStream::connect_timeout(addr, timeout) {
+            Ok(tcp) => return Ok(tcp),
+            Err(err) => last = Some(err),
+        }
+    }
+    let err = last.expect("at least one address was tried");
+    let secs = timeout.as_secs();
+    let said = match timed_out(&err) {
+        true => format!("connecting to {host}:{port} timed out after {secs}s"),
+        false => format!("connecting to {host}:{port}"),
+    };
+    Err(anyhow::Error::from(err).context(said))
 }
 
 pub(crate) fn wrap_tls(tcp: TcpStream, host: &str) -> Result<Stream> {
@@ -98,19 +168,38 @@ pub(crate) fn wrap_tls(tcp: TcpStream, host: &str) -> Result<Stream> {
 /// Buffered reader over a `Stream`; writes bypass the read buffer.
 pub(crate) struct Conn {
     stream: Stream,
+    /// Who is on the other end, for anything that goes wrong.
+    peer: String,
     buf: Vec<u8>,
     start: usize,
     end: usize,
 }
 
 impl Conn {
-    pub(crate) fn new(stream: Stream) -> Conn {
+    pub(crate) fn new(stream: Stream, peer: impl Into<String>) -> Conn {
         Conn {
             stream,
+            peer: peer.into(),
             buf: vec![0; 8192],
             start: 0,
             end: 0,
         }
+    }
+
+    /// "imap.example.com:993 timed out after 30s while reading", or
+    /// the plain error with the server named.
+    fn io_error(&self, err: std::io::Error, doing: &str) -> anyhow::Error {
+        let peer = &self.peer;
+        // The io error stays in the chain: `is_timeout` and
+        // `is_connection_error` read it, and IDLE ticks on it.
+        let said = match timed_out(&err) {
+            true => format!(
+                "{peer} timed out after {}s while {doing}",
+                io_timeout().as_secs()
+            ),
+            false => format!("{doing} {peer}"),
+        };
+        anyhow::Error::from(err).context(said)
     }
 
     /// Give the stream back (STARTTLS); the read buffer must be empty.
@@ -125,7 +214,8 @@ impl Conn {
                 // A signal (e.g. SIGCHLD from a gpg child) can interrupt
                 // the read; that is not an error, try again.
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                other => break other.context("reading from server")?,
+                Ok(n) => break n,
+                Err(err) => return Err(self.io_error(err, "reading from")),
             }
         };
         if self.end == 0 {
@@ -176,8 +266,31 @@ impl Conn {
     }
 
     pub(crate) fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.stream.write_all(bytes).context("writing to server")?;
-        self.stream.flush().context("writing to server")?;
+        self.stream
+            .write_all(bytes)
+            .map_err(|err| self.io_error(err, "writing to"))?;
+        self.stream
+            .flush()
+            .map_err(|err| self.io_error(err, "writing to"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeouts_are_never_off_and_never_too_short() {
+        // A read timeout is IDLE's heartbeat as well as its patience,
+        // so it is clamped rather than honoured as given.
+        set_timeouts(10, 1);
+        assert_eq!(io_timeout().as_secs(), MIN_IO_SECS);
+        assert_eq!(connect_timeout(), Some(Duration::from_secs(10)));
+        // A connect timeout of zero is mutt's "wait for the OS".
+        set_timeouts(0, 45);
+        assert_eq!(connect_timeout(), None);
+        assert_eq!(io_timeout().as_secs(), 45);
+        set_timeouts(10, 30);
     }
 }

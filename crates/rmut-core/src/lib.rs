@@ -12,7 +12,7 @@ pub mod mailto;
 pub mod mbox;
 pub mod message;
 pub mod muttrc;
-mod net;
+pub mod net;
 pub mod notice;
 pub mod pattern;
 pub mod pgp;

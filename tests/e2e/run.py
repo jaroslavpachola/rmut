@@ -3415,6 +3415,34 @@ def scenario_password_permissions(tmp):
     r.close()
 
 
+def scenario_network_timeouts(tmp):
+    """R54: an unreachable server costs seconds, not the OS default of
+    about two minutes, and the message says which host and what it was
+    doing. 203.0.113.1 is TEST-NET-3: it black-holes, so the connect
+    waits out the timeout rather than being refused."""
+    md = make_maildir(tmp, "md-timeout")
+    write_msgs(md, ["jane"])
+    cfg = os.path.join(tmp, "timeout-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                '[net]\nconnect_timeout = 2\n'
+                '[[accounts]]\nname = "slow"\nuser = "jarda"\n'
+                'password = "x"\nimap_host = "203.0.113.1"\nimap_port = 993\n')
+    env = dict(os.environ)
+    env.update(base_env(tmp, {"RMUT_CONFIG": cfg}))
+    start = time.time()
+    proc = subprocess.run([RMUT, "imap:slow"], env=env, capture_output=True,
+                          timeout=30)
+    took = time.time() - start
+    err = proc.stderr.decode()
+    assert proc.returncode != 0, err
+    assert "timed out after 2s" in err, err
+    assert "203.0.113.1:993" in err, err
+    # The OS would have taken about two minutes over the same address.
+    assert took < 15, f"{took:.1f}s"
+
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3463,7 +3491,9 @@ SCENARIOS = [
     scenario_tag_save_sort,
     scenario_import_muttrc,
     scenario_attachment_pager,
+    scenario_network_timeouts,
 ]
+
 
 
 def main():

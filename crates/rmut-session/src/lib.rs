@@ -422,6 +422,7 @@ impl Session {
             requests: Vec::new(),
             notices: Box::new(Silence),
         };
+        session.apply_timeouts();
         let mut hook_warnings = Vec::new();
         session.quote_re = quote_re_from_config(&session.config, &mut hook_warnings);
         session.attach_re = attach_re_from_config(&session.config, &mut hook_warnings);
@@ -452,6 +453,9 @@ impl Session {
         config: Config,
         progress: remote::Progress,
     ) -> Result<(Session, Vec<String>)> {
+        // Before the first connection, not after: an unreachable
+        // server is exactly what the config's patience is for.
+        rmut_core::net::set_timeouts(config.net.connect_timeout, config.net.timeout);
         match remote::parse_spec(spec) {
             Some((account_name, mailbox)) => {
                 let account = config
@@ -494,6 +498,7 @@ impl Session {
     /// command changed it.
     pub fn recompile(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
+        self.apply_timeouts();
         self.display = display_from_config(&self.config);
         self.quote_re = quote_re_from_config(&self.config, &mut warnings);
         self.attach_re = attach_re_from_config(&self.config, &mut warnings);
@@ -502,6 +507,13 @@ impl Session {
         self.subscribed = self.config.subscribed_matchers();
         self.alternates = self.config.alternate_matchers();
         warnings
+    }
+
+    /// Hand the network layer the config's patience. It is process
+    /// wide, because the connections are made from threads that have
+    /// an account but not a config.
+    fn apply_timeouts(&self) {
+        rmut_core::net::set_timeouts(self.config.net.connect_timeout, self.config.net.timeout);
     }
 
     /// The hook tables, compiled from the config; a bad pattern warns

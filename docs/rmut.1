@@ -836,6 +836,20 @@ which part of a multipart/alternative shows.
 wildcards match a whole main type. Consulted before the auto_view
 filters and the built-in text ranking; a message with none of the
 listed types falls back to them.
+.SS [net]
+.TP
+.B connect_timeout
+Seconds to wait for a connection, default 10; 0 waits as long as the
+OS does, which is about two minutes with nothing on screen. mutt's
+$connect_timeout, and
+.B \-\-import\-muttrc
+brings it over.
+.TP
+.B timeout
+Seconds to wait for data on a live connection, default 30. Never off,
+and never under five: IMAP IDLE ticks on it to notice a stop request,
+and re-issues itself about every 25 minutes whatever it is set to.
+A timeout says which host and what it was doing.
 .SS [ui]
 .TP
 .B theme

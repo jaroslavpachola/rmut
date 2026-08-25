@@ -25,13 +25,19 @@ pub fn send(
     // Port 465 is TLS from the first byte; anything else negotiates
     // STARTTLS (unless smtp_tls = false, for tests).
     let implicit_tls = account.smtp_tls && account.smtp_port == 465;
-    let mut conn = Conn::new(net::connect(host, account.smtp_port, implicit_tls)?);
+    let mut conn = Conn::new(
+        net::connect(host, account.smtp_port, implicit_tls)?,
+        format!("{host}:{}", account.smtp_port),
+    );
     expect(&mut conn, 220).context("SMTP greeting")?;
     let mut caps = ehlo(&mut conn)?;
     if account.smtp_tls && !implicit_tls {
         command(&mut conn, "STARTTLS", 220)?;
         let tcp = conn.into_stream().into_tcp()?;
-        conn = Conn::new(net::wrap_tls(tcp, host)?);
+        conn = Conn::new(
+            net::wrap_tls(tcp, host)?,
+            format!("{host}:{}", account.smtp_port),
+        );
         caps = ehlo(&mut conn)?;
     }
     authenticate(&mut conn, &caps, account, password).context("SMTP authentication")?;

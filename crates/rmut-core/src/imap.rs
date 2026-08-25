@@ -53,13 +53,23 @@ pub struct Fetched {
     pub body: Option<Vec<u8>>,
 }
 
+/// How many read timeouts make up mutt's ~25 minute IDLE window, so a
+/// short io timeout does not turn into a chatty re-IDLE loop.
+fn idle_waits(timeout: std::time::Duration) -> u32 {
+    const WINDOW_SECS: u64 = 25 * 60;
+    (WINDOW_SECS / timeout.as_secs().max(1)).max(1) as u32
+}
+
 impl Client {
     pub fn connect(host: &str, port: u16, tls: bool) -> Result<Client> {
         // Port 993 is TLS from the first byte; on any other port the
         // session is upgraded with STARTTLS before LOGIN (unless
         // imap_tls = false, for tests).
         let implicit = tls && port == 993;
-        let mut conn = Conn::new(net::connect(host, port, implicit)?);
+        let mut conn = Conn::new(
+            net::connect(host, port, implicit)?,
+            format!("{host}:{port}"),
+        );
         let greeting = read_line(&mut conn)?;
         ensure!(
             greeting.text.starts_with("* OK") || greeting.text.starts_with("* PREAUTH"),
@@ -80,7 +90,7 @@ impl Client {
                 }
             }
             let tcp = conn.into_stream().into_tcp()?;
-            conn = Conn::new(net::wrap_tls(tcp, host)?);
+            conn = Conn::new(net::wrap_tls(tcp, host)?, format!("{host}:{port}"));
         }
         Ok(Client { conn, tag: 0 })
     }
@@ -284,8 +294,8 @@ impl Client {
     }
 
     /// RFC 2177 IDLE: block until the server announces a change, `stop`
-    /// is set (checked whenever the socket's 60 s read timeout fires),
-    /// or ~25 minutes pass; re-issue before the server's half-hour
+    /// is set (checked whenever the socket's read timeout fires), or
+    /// ~25 minutes pass; re-issue before the server's half-hour
     /// limit. True = the mailbox changed.
     pub fn idle(&mut self, stop: &std::sync::atomic::AtomicBool) -> Result<bool> {
         use std::sync::atomic::Ordering;
@@ -294,7 +304,10 @@ impl Client {
         self.expect_continuation()?;
         let mut event = false;
         let mut waits = 0;
-        while !stop.load(Ordering::Relaxed) && waits < 25 {
+        // However long a read waits, keep the IDLE itself to about
+        // 25 minutes: the timeout is the heartbeat, not the limit.
+        let budget = idle_waits(net::io_timeout());
+        while !stop.load(Ordering::Relaxed) && waits < budget {
             match read_line(&mut self.conn) {
                 Ok(line) if line.text.starts_with('*') => {
                     event = true;
@@ -766,6 +779,16 @@ mod tests {
         // IMAP4rev1 must not read as IDLE support.
         assert!(!client.supports_idle().unwrap());
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn the_idle_window_is_the_same_however_long_a_read_waits() {
+        // mutt re-issues IDLE before the server's half hour; the read
+        // timeout is only how often the stop flag is looked at.
+        assert_eq!(idle_waits(std::time::Duration::from_secs(60)), 25);
+        assert_eq!(idle_waits(std::time::Duration::from_secs(30)), 50);
+        assert_eq!(idle_waits(std::time::Duration::from_secs(5)), 300);
+        assert_eq!(idle_waits(std::time::Duration::from_secs(0)), 1500);
     }
 
     #[test]

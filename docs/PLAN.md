@@ -1149,20 +1149,27 @@ Goal: collect the winnings.
       assertions. The winnings are precision and 0.01s feedback on
       the logic, not a faster suite
 
-## R54: network timeouts
+## R54: network timeouts (done, 1.54)
 
 Goal: nothing freezes for minutes. Small, independent of the split,
 and shippable whenever.
 
-- [ ] `TcpStream::connect` has no connect timeout, so it takes the
-      OS default: an unreachable server freezes the TUI for about two
-      minutes, no keys read, no way out. `connect_timeout` with
-      something human (10s), against each address the name resolves
-      to
-- [ ] Read and write timeouts are 60s, which is a minute of frozen
-      screen per stalled operation. Shorter, and configurable
-- [ ] A timeout says which host and what it was doing, since "sync
-      failed" alone leaves you guessing
+- [x] `connect_timeout` (10s by default) against each address the
+      name resolves to, in place of `TcpStream::connect` waiting out
+      the kernel's SYN retries. `[net] connect_timeout = 0` waits as
+      long as the OS does, as mutt's does
+- [x] Read and write timeouts are `[net] timeout`, 30s by default
+      rather than 60, never off and never under five: IMAP IDLE ticks
+      on it to notice a stop request, and now works out its own ~25
+      minute window from it instead of assuming 60s ticks
+- [x] A timeout says which host and what it was doing
+      ("203.0.113.1:993 timed out after 2s", "imap.example.com:993
+      timed out after 30s while reading"), and the io error stays in
+      the chain so the retry and IDLE paths still recognise it
+- [x] Both settable at runtime (`:set connect_timeout`,
+      `:set net_timeout`), and `--import-muttrc` brings mutt's
+      $connect_timeout over; e2e scenario_network_timeouts points at
+      TEST-NET-3, which black-holes
 
 ## R55: network off the main thread
 

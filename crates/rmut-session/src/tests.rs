@@ -719,3 +719,21 @@ fn a_pattern_op_takes_the_same_terms_as_a_limit() {
     assert!(!f.is_tagged("ci"));
     assert!(f.log.said("2 tagged"), "{}", f.log.last_text());
 }
+
+// ---- how long the network gets
+
+#[test]
+fn the_config_decides_how_long_a_connection_waits() {
+    let config = Config::default();
+    assert_eq!(config.net.connect_timeout, 10, "seconds, by default");
+    assert_eq!(config.net.timeout, 30);
+    let mut f = Fixture::with_config(&["one"], config);
+    // Settable while running, like mutt's $connect_timeout. What the
+    // numbers mean to the socket is net.rs's own test; they are a
+    // process-wide setting, so asserting on them here would depend on
+    // what the other tests in this file happen to be doing.
+    f.session.run_command_line("set net_timeout=45");
+    assert_eq!(f.session.config.net.timeout, 45);
+    f.session.run_command_line("set connect_timeout=0");
+    assert_eq!(f.session.config.net.connect_timeout, 0);
+}

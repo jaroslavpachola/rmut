@@ -307,6 +307,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "pager_context" => NumUsize(&mut cfg.pager.context),
         "mail_check" => NumU64Opt(&mut cfg.mail.poll_seconds),
         "undo_send" => NumU64(&mut cfg.mail.undo_send),
+        "connect_timeout" => NumU64(&mut cfg.net.connect_timeout),
+        "net_timeout" => NumU64(&mut cfg.net.timeout),
         "delete" => Text(&mut cfg.mail.delete),
         "abort_noattach" => Text(&mut cfg.mail.abort_noattach),
         "abort_noattach_regex" => Text(&mut cfg.mail.attach_keyword),

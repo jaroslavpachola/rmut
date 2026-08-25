@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.53**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.54**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -197,6 +197,13 @@ unless the server reported flag changes or expunges. The
 password comes from `password_command` (e.g. `pass show mail/work`),
 run once per session, or from a stored `password`, if you accept a
 secret sitting in the config file (keep it chmod 600).
+
+A server that does not answer costs seconds, not the OS default of
+about two minutes with nothing on screen: `[net] connect_timeout` (10s)
+bounds the connection and `[net] timeout` (30s) bounds waiting for data
+on a live one, and both say which host and what they were doing.
+Both take `:set connect_timeout=...` / `:set net_timeout=...` at
+runtime, and `--import-muttrc` brings mutt's `$connect_timeout` over.
 
 For Gmail/O365-style **OAuth2**, set `auth = "xoauth2"` (or
 `"oauthbearer"`, RFC 7628) and a `token_command` whose first output
@@ -758,6 +765,12 @@ alternative_order = ["text/plain", "text/html"]
 [filters]                    # auto_view: render a part via a command
 "text/html" = "w3m -dump -T text/html -O UTF-8"
 "text/calendar" = ""         # empty: take the command from mailcap
+
+[net]                        # how long the network gets before rmut
+connect_timeout = 10         # says so; 0 waits as long as the OS
+timeout = 30                 # does (about two minutes). timeout is
+                             # data on a live connection, never off:
+                             # IMAP IDLE ticks on it, minimum 5
 
 [ui]
 theme = "default"            # or "mono"

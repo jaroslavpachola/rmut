@@ -84,6 +84,7 @@ pub struct Config {
     pub index: Index,
     pub pager: Pager,
     pub ui: Ui,
+    pub net: Net,
     pub sidebar: Sidebar,
     pub colors: HashMap<String, String>,
     /// Pattern → color rules for index lines, evaluated in order.
@@ -343,6 +344,31 @@ pub struct Pager {
     /// wildcards allowed; consulted before the auto_view filters and
     /// the built-in text ranking.
     pub alternative_order: Vec<String>,
+}
+
+/// How long to wait on the network before saying so. A mail client
+/// that blocks has nothing to draw and no keys to read, so these are
+/// short by default: an unreachable server should cost seconds, not
+/// the OS default of about two minutes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Net {
+    /// Seconds to wait for a connection (mutt's $connect_timeout).
+    /// 0 waits as long as the OS does.
+    pub connect_timeout: u64,
+    /// Seconds to wait for data on a live connection. Never off:
+    /// IMAP IDLE uses it as its heartbeat, and anything under five
+    /// seconds is treated as five.
+    pub timeout: u64,
+}
+
+impl Default for Net {
+    fn default() -> Self {
+        Net {
+            connect_timeout: 10,
+            timeout: 30,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

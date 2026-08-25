@@ -109,6 +109,8 @@ struct State {
     tilde: bool,
     status_format: Option<String>,
     no_beep: bool,
+    /// mutt's $connect_timeout, in seconds.
+    connect_timeout: Option<u64>,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
     macros_index: BTreeMap<String, String>,
@@ -714,6 +716,11 @@ impl State {
                     self.satisfy(line, "inline forwarding is rmut's default");
                 }
             }
+            "connect_timeout" => match v.parse::<i64>() {
+                // mutt waits for the OS when it is zero or negative.
+                Ok(secs) => self.connect_timeout = Some(secs.max(0) as u64),
+                Err(_) => self.skip(line, "connect_timeout wants a number"),
+            },
             "beep" => {
                 if is_yes(&v) {
                     self.satisfy(line, "beeping on errors is rmut's default");
@@ -1377,6 +1384,10 @@ impl State {
             if bg != "default" {
                 out += &format!("bg = {}\n", quote(bg));
             }
+        }
+        if let Some(secs) = self.connect_timeout {
+            out += "\n[net]\n";
+            out += &format!("connect_timeout = {secs}\n");
         }
         if self.status_format.is_some() || self.no_beep {
             out += "\n[ui]\n";
@@ -2201,6 +2212,15 @@ mod tests {
         assert_eq!(cfg.pgp.sign_key.as_deref(), Some("0xDEADBEEF"));
         assert!(cfg.pgp.sign_by_default);
         assert!(!cfg.pgp.encrypt_by_default);
+    }
+
+    #[test]
+    fn connect_timeout_carries_over() {
+        let (cfg, toml) = to_config("set connect_timeout=15\n");
+        assert_eq!(cfg.net.connect_timeout, 15, "{toml}");
+        // mutt waits for the OS when it is zero or less.
+        let (cfg, _) = to_config("set connect_timeout=-1\n");
+        assert_eq!(cfg.net.connect_timeout, 0);
     }
 
     #[test]
