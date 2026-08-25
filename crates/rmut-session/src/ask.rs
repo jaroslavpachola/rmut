@@ -102,6 +102,18 @@ pub enum AskKind {
     AliasNick {
         addr: String,
     },
+    /// mutt's $reply_to (ask-yes): reply to the Reply-To address?
+    ReplyTo,
+    /// Who the draft goes to.
+    ComposeTo,
+    /// What it is about.
+    ComposeSubject,
+    /// mutt's $abort_nosubject (ask-yes): no subject, abort?
+    NoSubject,
+    /// mutt's $include (ask-yes): quote the original in the reply?
+    IncludeReply,
+    /// mime_forward = "ask": forward the original as an attachment?
+    ForwardAttach,
 }
 
 /// The pattern operations, mutt's D/U/T/Ctrl+T.
@@ -165,6 +177,10 @@ pub enum Request {
     /// A command line the session does not handle, because it binds a
     /// key, queues one, or runs a function.
     Command(rmut_core::command::Command),
+    /// Open an editor on this draft, and put it back on screen
+    /// afterwards. Only the front end knows how to stand its display
+    /// down for one.
+    Editor(crate::Compose),
 }
 
 impl Session {
@@ -350,6 +366,46 @@ impl Session {
                 self.create_alias(nick, &addr);
                 None
             }
+            // ---- the compose flow: one question leads to the next
+            (AskKind::ReplyTo, Answer::Key(key)) => match key {
+                Key::Char('y') | Key::Enter => self.answer_reply_to(true),
+                Key::Char('n') => self.answer_reply_to(false),
+                _ => {
+                    self.cancel_setup();
+                    self.note("reply cancelled");
+                    None
+                }
+            },
+            (AskKind::ComposeTo, Answer::Line(input)) => self.answer_to(input),
+            (AskKind::ComposeSubject, Answer::Line(input)) => self.answer_subject(input),
+            (AskKind::NoSubject, Answer::Key(key)) => match key {
+                // ask-yes: Enter aborts, like mutt.
+                Key::Char('n') => self.answer_subject_kept(),
+                _ => {
+                    self.cancel_setup();
+                    self.error("aborted (no subject)");
+                    None
+                }
+            },
+            (AskKind::IncludeReply, Answer::Key(key)) => match key {
+                Key::Char('n') => self.answer_include(false),
+                Key::Char('y') | Key::Enter => self.answer_include(true),
+                _ => {
+                    self.cancel_setup();
+                    self.note("reply cancelled");
+                    None
+                }
+            },
+            (AskKind::ForwardAttach, Answer::Key(key)) => match key {
+                // ask-yes: Enter takes the attachment.
+                Key::Char('n') => self.answer_forward_attach(false),
+                Key::Char('y') | Key::Enter => self.answer_forward_attach(true),
+                _ => {
+                    self.cancel_setup();
+                    self.note("forward cancelled");
+                    None
+                }
+            },
             (AskKind::BounceTo { tagged }, Answer::Line(input)) => {
                 let to = rmut_core::alias::expand(input, &rmut_core::alias::load_default());
                 if to.trim().is_empty() {

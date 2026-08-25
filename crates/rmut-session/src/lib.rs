@@ -24,6 +24,7 @@ use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thr
 
 mod ask;
 mod commands;
+mod drafts;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
 pub use commands::CommandRun;
@@ -295,6 +296,9 @@ pub struct Session {
     pub quote_re: regex_lite::Regex,
     /// Compiled $abort_noattach_regex, for the attachment reminder.
     attach_re: regex_lite::Regex,
+    /// The compose flow in progress: what is being answered about
+    /// the draft that has not been written yet.
+    setup: Option<ComposeSetup>,
     /// The config as it was before the active message-hooks changed
     /// it, so leaving the message puts every setting back.
     hook_base: Option<Box<Config>>,
@@ -401,6 +405,7 @@ impl Session {
             quote_re: default_quote_re(),
             attach_re: default_attach_re(),
             config,
+            setup: None,
             hook_base: None,
             active_message_hooks: Vec::new(),
             requests: Vec::new(),

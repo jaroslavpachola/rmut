@@ -16,9 +16,8 @@ use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote;
 use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
-    Answer, Ask, AskKind, Compose, ComposeBase, ComposeKind, ComposeSetup, Held, Key, PatternOp,
-    Request, Security, Session, ThreadOp, Wants, default_from, draft_full, expand_tilde, pipe_to,
-    wrap_order, write_draft,
+    Answer, Ask, AskKind, Compose, ComposeKind, Held, Key, PatternOp, Request, Security, Session,
+    ThreadOp, Wants, default_from, draft_full, expand_tilde, pipe_to, wrap_order, write_draft,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -108,8 +107,6 @@ pub enum LineKind {
     /// A shell command to run with the TUI stood down (mutt's !).
     Shell,
     SavePart,
-    ComposeTo,
-    ComposeSubject,
     /// A file path to add as an `Attach:` line (send prompt `a`).
     AttachFile,
     /// Compose menu header edits (t/c/b/s), back to the menu after.
@@ -151,9 +148,7 @@ impl LineKind {
                 Wants::Other => "other",
             },
             LineKind::PagerSearch => "pattern",
-            LineKind::ComposeTo | LineKind::EditTo | LineKind::EditCc | LineKind::EditBcc => {
-                "address"
-            }
+            LineKind::EditTo | LineKind::EditCc | LineKind::EditBcc => "address",
             LineKind::ChangeDir
             | LineKind::ChangeDirReadOnly
             | LineKind::BrowseDir
@@ -163,11 +158,9 @@ impl LineKind {
             LineKind::PipePart | LineKind::Shell => "command",
             LineKind::Notmuch => "notmuch",
             LineKind::EnterCommand => "command",
-            LineKind::ComposeSubject
-            | LineKind::EditSubject
-            | LineKind::Query
-            | LineKind::EditDesc
-            | LineKind::EditType => "other",
+            LineKind::EditSubject | LineKind::Query | LineKind::EditDesc | LineKind::EditType => {
+                "other"
+            }
         }
     }
 }
@@ -180,14 +173,6 @@ pub enum KeyKind {
     Recall,
     /// Confirm printing the selected attachment part.
     PrintPart,
-    /// mutt's $reply_to (ask-yes): reply to the Reply-To address?
-    ReplyTo,
-    /// mutt's $abort_nosubject (ask-yes): no subject, abort?
-    NoSubject,
-    /// mime_forward = "ask": forward the original as an attachment?
-    ForwardAttach,
-    /// mutt's $include (ask-yes): quote the original in the reply?
-    IncludeReply,
     /// Compose menu q, like mutt: postpone (yes) or discard (no)?
     PostponeAsk,
     /// $abort_noattach = ask: the body mentions an attachment and
@@ -316,7 +301,6 @@ pub struct App {
     view_size: (usize, usize),
     pub theme: Theme,
     pub keymap: Keymap,
-    compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
     /// Message whose raw bytes go through $EDITOR next loop tick
@@ -493,7 +477,6 @@ impl App {
             view_size: (80, 24),
             theme,
             keymap,
-            compose_setup: None,
             compose: None,
             pending_editor: None,
             pending_raw_edit: None,
@@ -554,6 +537,7 @@ impl App {
             match request {
                 Request::Quit => self.quit = true,
                 Request::ConfigChanged => warnings.extend(self.recompile_ui()),
+                Request::Editor(compose) => self.pending_editor = Some(compose),
                 Request::Command(cmd) => {
                     let outcome = match &cmd {
                         command::Command::Push(seq) => self.push_command(seq),
@@ -569,6 +553,20 @@ impl App {
             }
         }
         warnings
+    }
+
+    /// mutt asks before a new message when there are postponed
+    /// drafts, since recalling one is a menu rather than an answer.
+    fn start_compose(&mut self, kind: ComposeKind) {
+        if kind == ComposeKind::New && self.session.has_postponed() {
+            self.prompt = Some(Prompt::Key {
+                label: "(n)ew message or (r)ecall postponed? ".into(),
+                kind: KeyKind::Recall,
+            });
+            return;
+        }
+        let ask = self.session.start_compose(kind);
+        self.open_ask(ask);
     }
 
     /// Something worth saying that is not a complaint.
@@ -787,7 +785,7 @@ impl App {
             Some(Prompt::Line { buf, cursor, .. }) => match key.code {
                 KeyCode::Esc => {
                     self.prompt = None;
-                    self.compose_setup = None;
+                    self.session.cancel_setup();
                     // Escaping a sub-prompt of the send flow (attach
                     // file) returns to the compose menu.
                     if self.compose.is_some() {
@@ -949,25 +947,17 @@ impl App {
             },
             KeyKind::Recall => match code {
                 KeyCode::Char('r') => self.recall_postponed(),
-                KeyCode::Char('n') => self.continue_setup(ComposeKind::New, None),
+                KeyCode::Char('n') => {
+                    let ask = self.session.start_compose(ComposeKind::New);
+                    self.open_ask(ask);
+                }
                 _ => {}
             },
-            KeyKind::ReplyTo => match code {
-                KeyCode::Char('y') | KeyCode::Enter => self.open_to_prompt(true),
-                KeyCode::Char('n') => self.open_to_prompt(false),
-                _ => {
-                    self.compose_setup = None;
-                    self.note("reply cancelled");
+            KeyKind::PrintPart => {
+                if code == KeyCode::Char('y') {
+                    self.print_part();
                 }
-            },
-            KeyKind::NoSubject => match code {
-                // ask-yes: Enter aborts, like mutt.
-                KeyCode::Char('n') => self.subject_ready(String::new()),
-                _ => {
-                    self.compose_setup = None;
-                    self.error("aborted (no subject)");
-                }
-            },
+            }
             KeyKind::NoAttach => match code {
                 // ask-no: Enter goes back to the menu, where `a`
                 // attaches the file that was forgotten.
@@ -980,54 +970,6 @@ impl App {
                     self.open_compose_menu();
                 }
             },
-            KeyKind::IncludeReply => {
-                let subject = self
-                    .compose_setup
-                    .as_mut()
-                    .and_then(|s| s.subject.take())
-                    .unwrap_or_default();
-                match code {
-                    KeyCode::Char('n') => self.finish_compose_setup(&subject, false),
-                    KeyCode::Char('y') | KeyCode::Enter => {
-                        self.finish_compose_setup(&subject, true)
-                    }
-                    _ => {
-                        self.compose_setup = None;
-                        self.note("reply cancelled");
-                    }
-                }
-            }
-            KeyKind::ForwardAttach => {
-                let subject = self
-                    .compose_setup
-                    .as_mut()
-                    .and_then(|s| s.subject.take())
-                    .unwrap_or_default();
-                match code {
-                    KeyCode::Char('n') => {
-                        if let Some(s) = &mut self.compose_setup {
-                            s.fwd_attach = Some(false);
-                        }
-                        self.finish_compose_setup(&subject, true);
-                    }
-                    // ask-yes: Enter takes the attachment.
-                    KeyCode::Char('y') | KeyCode::Enter => {
-                        if let Some(s) = &mut self.compose_setup {
-                            s.fwd_attach = Some(true);
-                        }
-                        self.finish_compose_setup(&subject, true);
-                    }
-                    _ => {
-                        self.compose_setup = None;
-                        self.note("forward cancelled");
-                    }
-                }
-            }
-            KeyKind::PrintPart => {
-                if code == KeyCode::Char('y') {
-                    self.print_part();
-                }
-            }
         }
     }
 
@@ -1048,8 +990,7 @@ impl App {
             LineKind::Ask {
                 wants: Wants::Address,
                 ..
-            } | LineKind::ComposeTo
-                | LineKind::EditTo
+            } | LineKind::EditTo
                 | LineKind::EditCc
                 | LineKind::EditBcc
         );
@@ -1190,8 +1131,6 @@ impl App {
             LineKind::Notmuch => self.notmuch_search(input),
             LineKind::EnterCommand => self.run_command_line(input),
             LineKind::AttachFile => self.attach_file_submitted(input),
-            LineKind::ComposeTo => self.setup_to_submitted(input),
-            LineKind::ComposeSubject => self.subject_submitted(input),
             LineKind::EditTo => {
                 self.set_draft_header("To", &alias::expand(input, &alias::load_default()))
             }
@@ -1397,7 +1336,10 @@ impl App {
             IndexAction::Compose => self.start_compose(ComposeKind::New),
             IndexAction::Reply => self.start_compose(ComposeKind::Reply),
             IndexAction::GroupReply => self.start_compose(ComposeKind::GroupReply),
-            IndexAction::ListReply => self.start_list_reply(),
+            IndexAction::ListReply => {
+                let ask = self.session.start_list_reply();
+                self.open_ask(ask);
+            }
             IndexAction::Forward => self.start_compose(ComposeKind::Forward),
             IndexAction::Sort => {
                 let ask = self.session.ask_sort();
@@ -1672,7 +1614,8 @@ impl App {
                 return;
             }
             PagerAction::ListReply => {
-                self.start_list_reply();
+                let ask = self.session.start_list_reply();
+                self.open_ask(ask);
                 return;
             }
             PagerAction::Forward => {
@@ -2328,339 +2271,6 @@ impl App {
     }
 
     // ---- compose ----
-
-    fn start_compose(&mut self, kind: ComposeKind) {
-        let base = if kind == ComposeKind::New {
-            None
-        } else {
-            match self.session.compose_base() {
-                Some(b) => Some(b),
-                None => {
-                    self.error("no message selected");
-                    return;
-                }
-            }
-        };
-        if kind == ComposeKind::New && self.session.has_postponed() {
-            self.prompt = Some(Prompt::Key {
-                label: "(n)ew message or (r)ecall postponed? ".into(),
-                kind: KeyKind::Recall,
-            });
-            return;
-        }
-        self.continue_setup(kind, base);
-    }
-
-    fn continue_setup(&mut self, kind: ComposeKind, base: Option<ComposeBase>) {
-        // mutt's $autoedit (with edit_headers): no prompts, no
-        // questions: the defaults land in the draft and the editor
-        // opens; everything stays editable there and in the menu.
-        if self.session.config.mail.autoedit && self.session.edit_headers() {
-            let to = match (&kind, &base) {
-                (ComposeKind::Reply | ComposeKind::GroupReply, Some(b)) => b.reply_to.clone(),
-                (ComposeKind::ListReply, Some(b)) => {
-                    self.session.list_target(b).unwrap_or_default()
-                }
-                _ => String::new(),
-            };
-            let subject = match (&kind, &base) {
-                (
-                    ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply,
-                    Some(b),
-                ) => compose::reply_subject(&b.subject),
-                (ComposeKind::Forward, Some(b)) => {
-                    compose::forward_subject(&b.from_addr, &b.subject)
-                }
-                _ => String::new(),
-            };
-            self.compose_setup = Some(ComposeSetup {
-                kind,
-                base,
-                to: Some(to),
-                subject: None,
-                fwd_attach: None,
-            });
-            self.finish_compose_setup(&subject, true);
-            return;
-        }
-        let ask_reply_to = matches!(kind, ComposeKind::Reply | ComposeKind::GroupReply)
-            && base.as_ref().is_some_and(|b| b.has_reply_to);
-        self.compose_setup = Some(ComposeSetup {
-            kind,
-            base,
-            to: None,
-            subject: None,
-            fwd_attach: None,
-        });
-        if ask_reply_to {
-            // mutt's $reply_to = ask-yes.
-            let addr = self
-                .compose_setup
-                .as_ref()
-                .and_then(|s| s.base.as_ref())
-                .map(|b| b.reply_to.clone())
-                .unwrap_or_default();
-            self.prompt = Some(Prompt::Key {
-                label: format!("Reply to {addr}? (y/n): "),
-                kind: KeyKind::ReplyTo,
-            });
-            return;
-        }
-        self.open_to_prompt(true);
-    }
-
-    /// `L`: reply to the mailing list. Refuses when the message names
-    /// no list rmut knows of, rather than quietly replying to the
-    /// author, which is the mistake list-reply exists to prevent.
-    fn start_list_reply(&mut self) {
-        let Some(base) = self.session.compose_base() else {
-            self.error("no message selected");
-            return;
-        };
-        if self.session.list_target(&base).is_none() {
-            self.error(if self.session.lists.is_empty() {
-                "no mailing lists configured (mail.lists / mail.subscribed)"
-            } else {
-                "not a message from a known mailing list"
-            });
-            return;
-        }
-        self.continue_setup(ComposeKind::ListReply, Some(base));
-    }
-
-    fn open_to_prompt(&mut self, use_reply_to: bool) {
-        let Some(setup) = &self.compose_setup else {
-            return;
-        };
-        let to_prefill = match setup.kind {
-            ComposeKind::Reply | ComposeKind::GroupReply => setup
-                .base
-                .as_ref()
-                .map(|b| {
-                    if use_reply_to {
-                        b.reply_to.clone()
-                    } else {
-                        b.from_hdr.clone()
-                    }
-                })
-                .unwrap_or_default(),
-            ComposeKind::ListReply => setup
-                .base
-                .as_ref()
-                .and_then(|b| self.session.list_target(b))
-                .unwrap_or_default(),
-            ComposeKind::New | ComposeKind::Forward => String::new(),
-        };
-        // mutt's $fast_reply: replies take the prefills without the
-        // To and Subject prompts (forwards still need a recipient).
-        if self.session.config.mail.fast_reply
-            && matches!(
-                setup.kind,
-                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
-            )
-            && setup.base.is_some()
-        {
-            let subject = setup
-                .base
-                .as_ref()
-                .map(|b| compose::reply_subject(&b.subject))
-                .unwrap_or_default();
-            if let Some(setup) = &mut self.compose_setup {
-                setup.to = Some(to_prefill);
-            }
-            self.subject_submitted(&subject);
-            return;
-        }
-        self.prompt = Some(Prompt::line("To: ", to_prefill, LineKind::ComposeTo));
-    }
-
-    fn setup_to_submitted(&mut self, input: &str) {
-        let to = alias::expand(input, &alias::load_default());
-        let Some(setup) = &mut self.compose_setup else {
-            return;
-        };
-        setup.to = Some(to);
-        let subject_prefill = match (&setup.kind, &setup.base) {
-            (ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply, Some(b)) => {
-                compose::reply_subject(&b.subject)
-            }
-            (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.from_addr, &b.subject),
-            _ => String::new(),
-        };
-        // $fast_reply also skips the Subject prompt on forwards.
-        if self.session.config.mail.fast_reply && !subject_prefill.is_empty() {
-            self.subject_submitted(&subject_prefill);
-            return;
-        }
-        self.prompt = Some(Prompt::line(
-            "Subject: ",
-            subject_prefill,
-            LineKind::ComposeSubject,
-        ));
-    }
-
-    /// After the Subject prompt: mutt's $abort_nosubject (ask-yes) on
-    /// an empty subject, then on replies mutt's $include (ask-yes).
-    fn subject_submitted(&mut self, input: &str) {
-        if input.trim().is_empty() {
-            self.prompt = Some(Prompt::Key {
-                label: "No subject, abort? (y/n): ".into(),
-                kind: KeyKind::NoSubject,
-            });
-            return;
-        }
-        self.subject_ready(input.to_string());
-    }
-
-    fn subject_ready(&mut self, subject: String) {
-        let is_reply = self.compose_setup.as_ref().is_some_and(|s| {
-            matches!(
-                s.kind,
-                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
-            ) && s.base.is_some()
-        });
-        let ask_fwd = self.session.config.mail.forward.as_deref() == Some("ask")
-            && self
-                .compose_setup
-                .as_ref()
-                .is_some_and(|s| s.kind == ComposeKind::Forward && s.base.is_some());
-        if is_reply {
-            if let Some(setup) = &mut self.compose_setup {
-                setup.subject = Some(subject);
-            }
-            self.prompt = Some(Prompt::Key {
-                label: "Include message in reply? (y/n): ".into(),
-                kind: KeyKind::IncludeReply,
-            });
-        } else if ask_fwd {
-            // mime_forward = "ask": whole original vs inline quote.
-            if let Some(setup) = &mut self.compose_setup {
-                setup.subject = Some(subject);
-            }
-            self.prompt = Some(Prompt::Key {
-                label: "Forward as attachment? (y/n): ".into(),
-                kind: KeyKind::ForwardAttach,
-            });
-        } else {
-            self.finish_compose_setup(&subject, true);
-        }
-    }
-
-    fn finish_compose_setup(&mut self, subject: &str, include: bool) {
-        let Some(setup) = self.compose_setup.take() else {
-            return;
-        };
-        // mutt's reply-hook: in force while this reply's draft is
-        // built, so `set from`, edit_headers and my_hdr all see it.
-        let reply_hooks = self
-            .session
-            .apply_reply_hooks(setup.base.as_ref(), setup.kind);
-        self.finish_compose_draft(setup, subject, include);
-        self.session.restore_after_reply_hooks(reply_hooks);
-    }
-
-    fn finish_compose_draft(&mut self, setup: ComposeSetup, subject: &str, include: bool) {
-        let mut to = setup.to.unwrap_or_default();
-        let mut cc = None;
-        let mut in_reply_to = None;
-        let mut references = None;
-        let mut body = String::new();
-        let mut attach = None;
-        if let Some(b) = &setup.base {
-            match setup.kind {
-                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply => {
-                    if include {
-                        let orig = message::body_text(&b.path).unwrap_or_default();
-                        body =
-                            compose::quote(&compose::attribution(&b.from_display, b.date), &orig);
-                    }
-                    in_reply_to = b.msg_id.clone();
-                    let mut refs = b.references.clone();
-                    if let Some(id) = &b.msg_id
-                        && !refs.contains(id)
-                    {
-                        refs.push(id.clone());
-                    }
-                    if !refs.is_empty() {
-                        references = Some(refs.join(" "));
-                    }
-                    if setup.kind == ComposeKind::GroupReply {
-                        // mutt honors a sender's Mail-Followup-To: it
-                        // is exactly the recipient set they asked for,
-                        // so it replaces To and leaves Cc alone.
-                        if !b.followup_to.trim().is_empty() {
-                            to = b.followup_to.trim().to_string();
-                        } else {
-                            // Everyone else on the original, minus the
-                            // recipient already in To and (mutt's
-                            // $metoo off) my own addresses: replying to
-                            // all should not mail me a copy.
-                            let joined = compose::group_recipients(
-                                &b.orig_to,
-                                &b.orig_cc,
-                                &to,
-                                self.session.me(),
-                                self.session.config.mail.metoo,
-                            );
-                            if !joined.is_empty() {
-                                cc = Some(joined);
-                            }
-                        }
-                    }
-                }
-                ComposeKind::Forward
-                    if setup
-                        .fwd_attach
-                        .unwrap_or_else(|| self.session.forward_attaches()) =>
-                {
-                    // The original goes along whole; nothing to quote.
-                    attach = Some(b.path.clone());
-                }
-                ComposeKind::Forward => {
-                    let orig = message::body_text(&b.path).unwrap_or_default();
-                    body = compose::forward_body(&b.from_display, b.date, &b.subject, &orig);
-                }
-                ComposeKind::New => {}
-            }
-        }
-        let from = self.session.compose_from(setup.base.as_ref(), &to);
-        let followup =
-            self.session
-                .followup_header(&to, cc.as_deref(), from.as_deref().unwrap_or_default());
-        let text = compose::draft_text(
-            &compose::DraftHeaders {
-                from,
-                to,
-                cc,
-                subject: subject.to_string(),
-                in_reply_to,
-                references,
-            },
-            &body,
-        );
-        // DraftHeaders has no Mail-Followup-To slot; it goes ahead of
-        // the blank line, where edit_headers shows it like any other.
-        let text = match followup {
-            Some(value) => match text.split_once("\n\n") {
-                Some((head, rest)) => format!("{head}\nMail-Followup-To: {value}\n\n{rest}"),
-                None => text,
-            },
-            None => text,
-        };
-        match self.session.stage_draft(&text) {
-            Ok((path, hidden_head)) => {
-                self.pending_editor = Some(Compose {
-                    path,
-                    recall_source: None,
-                    security: self.session.default_security(),
-                    attach,
-                    hidden_head,
-                    fcc: None,
-                });
-            }
-            Err(err) => self.error(format!("cannot write draft: {err:#}")),
-        }
-    }
 
     fn edit_draft(&mut self, terminal: &mut DefaultTerminal, compose: Compose) {
         let editor = self.session.config.mail.editor.clone().unwrap_or_else(|| {
