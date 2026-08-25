@@ -96,6 +96,14 @@ pub enum ThreadOp {
     Tag,
 }
 
+/// A compiled hook: the pattern its message must match, and what the
+/// hook carries (an enter-command line, or an Fcc mailbox).
+pub struct Hook {
+    patterns: Vec<Pattern>,
+    /// The command line to run, or the mailbox to file the copy in.
+    pub value: String,
+}
+
 /// One open mailbox and everything rmut knows about it.
 pub struct Session {
     /// The maildir on disk: the mailbox itself, or the cache mirror of
@@ -163,6 +171,14 @@ pub struct Session {
     pub read_only_session: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
     pub(crate) dir_mtimes: (Option<SystemTime>, Option<SystemTime>),
+    /// Compiled hook tables (patterns plus the line or mailbox each
+    /// carries). The front end still runs a hook's command line,
+    /// because one can rebind a key; which hooks match a message is
+    /// the session's answer to give.
+    pub message_hooks: Vec<Hook>,
+    pub reply_hooks: Vec<Hook>,
+    fcc_hooks: Vec<Hook>,
+    crypt_hooks: Vec<(pattern::Matcher, String)>,
     /// ignore/unignore/hdr_order and the [filters] table: how a
     /// message's parts turn into the text a reader sees.
     pub display: message::Display,
@@ -255,10 +271,18 @@ impl Session {
             read_only: false,
             read_only_session: false,
             dir_mtimes: dir_mtimes(dir),
+            message_hooks: Vec::new(),
+            reply_hooks: Vec::new(),
+            fcc_hooks: Vec::new(),
+            crypt_hooks: Vec::new(),
             display: display_from_config(&config),
             config,
             notices: Box::new(Silence),
         };
+        let mut hook_warnings = Vec::new();
+        session.compile_hooks_from_config(&mut hook_warnings);
+        hook_warnings.append(&mut warnings);
+        let mut warnings = hook_warnings;
         if let Some(spec) = session.config.index.sort.clone() {
             match parse_sort(&spec) {
                 Some((sort, rev)) => {
@@ -323,11 +347,49 @@ impl Session {
 
     /// Recompile what the session derives from the config, after a
     /// command changed it.
-    pub fn recompile(&mut self) {
+    pub fn recompile(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
         self.display = display_from_config(&self.config);
+        self.compile_hooks_from_config(&mut warnings);
         self.lists = self.config.list_matchers();
         self.subscribed = self.config.subscribed_matchers();
         self.alternates = self.config.alternate_matchers();
+        warnings
+    }
+
+    /// The hook tables, compiled from the config; a bad pattern warns
+    /// and drops rather than failing the whole table.
+    fn compile_hooks_from_config(&mut self, warnings: &mut Vec<String>) {
+        self.message_hooks = compile_hooks(
+            "message-hook",
+            self.config
+                .message_hooks
+                .iter()
+                .map(|h| (&h.pattern, &h.command)),
+            warnings,
+        );
+        self.reply_hooks = compile_hooks(
+            "reply-hook",
+            self.config
+                .reply_hooks
+                .iter()
+                .map(|h| (&h.pattern, &h.command)),
+            warnings,
+        );
+        self.fcc_hooks = compile_hooks(
+            "fcc-hook",
+            self.config
+                .fcc_hooks
+                .iter()
+                .map(|h| (&h.pattern, &h.mailbox)),
+            warnings,
+        );
+        self.crypt_hooks = self
+            .config
+            .crypt_hooks
+            .iter()
+            .map(|h| (pattern::Matcher::new(&h.address), h.key.clone()))
+            .collect();
     }
 
     /// Hand the session the front end's notice sink. Until this is
@@ -1650,6 +1712,68 @@ impl Session {
             .identity_for(&self.title, rcpts, self.remote.as_ref().map(|r| &r.account))
     }
 
+    /// Indices of the message-hooks the selected message matches.
+    pub fn matching_message_hooks(&self) -> Vec<usize> {
+        let Some(env) = self.visible.get(self.sel).map(|&mi| &self.msgs[mi].env) else {
+            return Vec::new();
+        };
+        // `~m` and `~=` want the whole list; a hook asks about one
+        // message, so only its own numbering is filled in.
+        let pos = pattern::Position {
+            number: self.sel + 1,
+            current: self.sel + 1,
+            last: self.visible.len(),
+            duplicate: false,
+        };
+        self.message_hooks
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| pattern::matches_in(&h.patterns, env, self.scope(pos), None))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// mutt's reply-hook: the command lines whose pattern matches the
+    /// message being replied to. Running them is the front end's, and
+    /// so is putting the config back afterwards.
+    pub fn reply_hook_lines(&self, path: &Path) -> Vec<String> {
+        if self.reply_hooks.is_empty() {
+            return Vec::new();
+        }
+        let Some(env) = self.msgs.iter().find(|m| m.env.file.path == *path) else {
+            return Vec::new();
+        };
+        let scope = self.scope(pattern::Position::default());
+        self.reply_hooks
+            .iter()
+            .filter(|h| pattern::matches_in(&h.patterns, &env.env, scope, None))
+            .map(|h| h.value.clone())
+            .collect()
+    }
+
+    /// mutt's fcc-hook: the mailbox the first matching entry names for
+    /// this outgoing draft, or None when nothing matches.
+    pub fn fcc_hook_target(&self, draft: &str, path: &Path) -> Option<String> {
+        if self.fcc_hooks.is_empty() {
+            return None;
+        }
+        let env = compose::draft_envelope(draft, path);
+        let scope = self.scope(pattern::Position::default());
+        self.fcc_hooks
+            .iter()
+            .find(|h| pattern::matches_in(&h.patterns, &env, scope, None))
+            .map(|h| h.value.clone())
+    }
+
+    /// mutt's crypt-hook: a recipient with a hook of its own is
+    /// encrypted to that key id instead of to its address.
+    pub fn crypt_key_for(&self, address: &str) -> Option<String> {
+        self.crypt_hooks
+            .iter()
+            .find(|(m, _)| m.is_match(address))
+            .map(|(_, key)| key.clone())
+    }
+
     pub fn error(&mut self, msg: impl Into<String>) {
         self.notify(Notice::Error(msg.into()));
     }
@@ -1898,6 +2022,30 @@ fn display_from_config(config: &Config) -> message::Display {
             .map(|t| t.to_lowercase())
             .collect(),
     }
+}
+
+/// Compile a hook table, dropping (with a warning) any entry whose
+/// pattern does not parse or whose value is empty.
+fn compile_hooks<'a>(
+    what: &str,
+    entries: impl Iterator<Item = (&'a String, &'a String)>,
+    warnings: &mut Vec<String>,
+) -> Vec<Hook> {
+    let mut out = Vec::new();
+    for (spec, value) in entries {
+        if value.trim().is_empty() {
+            warnings.push(format!("{what} {spec:?} has nothing to do"));
+            continue;
+        }
+        match pattern::parse(spec) {
+            Ok(patterns) => out.push(Hook {
+                patterns,
+                value: value.clone(),
+            }),
+            Err(err) => warnings.push(format!("bad {what} pattern {spec:?}: {err}")),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

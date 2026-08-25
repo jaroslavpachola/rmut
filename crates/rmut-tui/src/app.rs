@@ -467,12 +467,6 @@ pub struct App {
     view_size: (usize, usize),
     pub theme: Theme,
     pub keymap: Keymap,
-    /// Compiled hook tables (patterns plus the line or mailbox each
-    /// carries).
-    message_hooks: Vec<Hook>,
-    reply_hooks: Vec<Hook>,
-    fcc_hooks: Vec<Hook>,
-    crypt_hooks: Vec<(pattern::Matcher, String)>,
     /// The config as it was before the active message-hooks changed
     /// it, so leaving the message puts every setting back.
     hook_base: Option<Box<Config>>,
@@ -555,47 +549,12 @@ fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
     }
 }
 
-/// A compiled hook: the pattern its message must match, and what the
-/// hook carries (an enter-command line, or an Fcc mailbox).
-struct Hook {
-    patterns: Vec<Pattern>,
-    value: String,
-}
-
-/// Compile a hook table, dropping (with a warning) any entry whose
-/// pattern does not parse or whose value is empty.
-fn compile_hooks<'a>(
-    what: &str,
-    entries: impl Iterator<Item = (&'a String, &'a String)>,
-    warnings: &mut Vec<String>,
-) -> Vec<Hook> {
-    let mut out = Vec::new();
-    for (spec, value) in entries {
-        if value.trim().is_empty() {
-            warnings.push(format!("{what} {spec:?} has nothing to do"));
-            continue;
-        }
-        match pattern::parse(spec) {
-            Ok(patterns) => out.push(Hook {
-                patterns,
-                value: value.clone(),
-            }),
-            Err(err) => warnings.push(format!("bad {what} pattern {spec:?}: {err}")),
-        }
-    }
-    out
-}
-
 /// Everything the running app derives from [`Config`]: compiled rules,
 /// the theme, and the key tables. Kept in one place so `:` commands can
 /// rebuild it after changing the config, exactly as startup built it.
 struct Derived {
     theme: Theme,
     keymap: Keymap,
-    message_hooks: Vec<Hook>,
-    reply_hooks: Vec<Hook>,
-    fcc_hooks: Vec<Hook>,
-    crypt_hooks: Vec<(pattern::Matcher, String)>,
     index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     quote_re: regex_lite::Regex,
@@ -688,29 +647,6 @@ impl Derived {
             Derived {
                 theme,
                 keymap,
-                message_hooks: compile_hooks(
-                    "message-hook",
-                    config
-                        .message_hooks
-                        .iter()
-                        .map(|h| (&h.pattern, &h.command)),
-                    &mut warnings,
-                ),
-                reply_hooks: compile_hooks(
-                    "reply-hook",
-                    config.reply_hooks.iter().map(|h| (&h.pattern, &h.command)),
-                    &mut warnings,
-                ),
-                fcc_hooks: compile_hooks(
-                    "fcc-hook",
-                    config.fcc_hooks.iter().map(|h| (&h.pattern, &h.mailbox)),
-                    &mut warnings,
-                ),
-                crypt_hooks: config
-                    .crypt_hooks
-                    .iter()
-                    .map(|h| (pattern::Matcher::new(&h.address), h.key.clone()))
-                    .collect(),
                 index_rules,
                 body_rules,
                 quote_re,
@@ -730,10 +666,6 @@ impl App {
         let Derived {
             theme,
             keymap,
-            message_hooks,
-            reply_hooks,
-            fcc_hooks,
-            crypt_hooks,
             index_rules,
             body_rules,
             quote_re,
@@ -763,10 +695,6 @@ impl App {
             view_size: (80, 24),
             theme,
             keymap,
-            message_hooks,
-            reply_hooks,
-            fcc_hooks,
-            crypt_hooks,
             hook_base: None,
             active_message_hooks: Vec::new(),
             compose_setup: None,
@@ -3530,7 +3458,7 @@ impl App {
     fn default_fcc(&self) -> String {
         if let Some(compose) = &self.compose
             && let Ok(full) = draft_full(compose)
-            && let Some(mailbox) = self.fcc_hook_target(&full)
+            && let Some(mailbox) = self.session.fcc_hook_target(&full, &compose.path)
         {
             return mailbox;
         }
@@ -3749,7 +3677,12 @@ impl App {
         }
         // mutt's fcc-hook, evaluated on the draft as it stands after
         // the editor; an Fcc picked in the menu still wins.
-        let hook_fcc = self.fcc_hook_target(&raw);
+        let draft_path = self
+            .compose
+            .as_ref()
+            .map(|c| c.path.clone())
+            .unwrap_or_default();
+        let hook_fcc = self.session.fcc_hook_target(&raw, &draft_path);
         let (raw, files) = compose::extract_attachments(&raw);
         let host = maildir::hostname();
         let from = self
@@ -4020,7 +3953,7 @@ impl App {
             // mutt's crypt-hook: a recipient with a key of its own is
             // encrypted to that key id, not to its address.
             for r in &mut rcpts {
-                if let Some(key) = self.crypt_key_for(r) {
+                if let Some(key) = self.session.crypt_key_for(r) {
                     *r = key;
                 }
             }
@@ -4293,10 +4226,10 @@ impl App {
     /// what it was as soon as the match set changes. Cheap when
     /// nothing matches, so the draw loop can call it every frame.
     fn sync_message_hooks(&mut self) {
-        if self.message_hooks.is_empty() && self.active_message_hooks.is_empty() {
+        if self.session.message_hooks.is_empty() && self.active_message_hooks.is_empty() {
             return;
         }
-        let matching = self.matching_message_hooks();
+        let matching = self.session.matching_message_hooks();
         if matching == self.active_message_hooks {
             return;
         }
@@ -4315,7 +4248,7 @@ impl App {
         }
         self.hook_base = Some(Box::new(self.session.config.clone()));
         for i in matching {
-            let Some(line) = self.message_hooks.get(i).map(|h| h.value.clone()) else {
+            let Some(line) = self.session.message_hooks.get(i).map(|h| h.value.clone()) else {
                 continue;
             };
             self.run_hook("message-hook", &line);
@@ -4335,32 +4268,6 @@ impl App {
         }
     }
 
-    /// Indices of the message-hooks the selected message matches.
-    fn matching_message_hooks(&self) -> Vec<usize> {
-        let Some(env) = self
-            .session
-            .visible
-            .get(self.session.sel)
-            .map(|&mi| &self.session.msgs[mi].env)
-        else {
-            return Vec::new();
-        };
-        // `~m` and `~=` want the whole list; a hook asks about one
-        // message, so only its own numbering is filled in.
-        let pos = pattern::Position {
-            number: self.session.sel + 1,
-            current: self.session.sel + 1,
-            last: self.session.visible.len(),
-            duplicate: false,
-        };
-        self.message_hooks
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| pattern::matches_in(&h.patterns, env, self.session.scope(pos), None))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
     /// mutt's reply-hook: the lines matching the message being replied
     /// to, applied for as long as the reply's draft is being built.
     /// Returns the config to put back, or None when nothing matched.
@@ -4369,7 +4276,7 @@ impl App {
         base: Option<&ComposeBase>,
         kind: ComposeKind,
     ) -> Option<Box<Config>> {
-        if self.reply_hooks.is_empty()
+        if self.session.reply_hooks.is_empty()
             || !matches!(
                 kind,
                 ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
@@ -4377,20 +4284,7 @@ impl App {
         {
             return None;
         }
-        let path = &base?.path;
-        let env = self
-            .session
-            .msgs
-            .iter()
-            .find(|m| m.env.file.path == *path)
-            .map(|m| &m.env)?;
-        let scope = self.session.scope(pattern::Position::default());
-        let lines: Vec<String> = self
-            .reply_hooks
-            .iter()
-            .filter(|h| pattern::matches_in(&h.patterns, env, scope, None))
-            .map(|h| h.value.clone())
-            .collect();
+        let lines = self.session.reply_hook_lines(&base?.path);
         if lines.is_empty() {
             return None;
         }
@@ -4411,34 +4305,6 @@ impl App {
         }
     }
 
-    /// mutt's fcc-hook: the mailbox the first matching entry names for
-    /// this outgoing draft, or None when nothing matches.
-    fn fcc_hook_target(&self, draft: &str) -> Option<String> {
-        if self.fcc_hooks.is_empty() {
-            return None;
-        }
-        let path = self
-            .compose
-            .as_ref()
-            .map(|c| c.path.clone())
-            .unwrap_or_default();
-        let env = compose::draft_envelope(draft, &path);
-        let scope = self.session.scope(pattern::Position::default());
-        self.fcc_hooks
-            .iter()
-            .find(|h| pattern::matches_in(&h.patterns, &env, scope, None))
-            .map(|h| h.value.clone())
-    }
-
-    /// mutt's crypt-hook: a recipient with a hook of its own is
-    /// encrypted to that key id instead of to its address.
-    fn crypt_key_for(&self, address: &str) -> Option<String> {
-        self.crypt_hooks
-            .iter()
-            .find(|(m, _)| m.is_match(address))
-            .map(|(_, key)| key.clone())
-    }
-
     /// Run one hook's command line, naming the hook when it fails so
     /// it is clear where a bad line came from.
     fn run_hook(&mut self, what: &str, line: &str) {
@@ -4452,18 +4318,16 @@ impl App {
     /// Recompile the config-derived state (theme, key tables, color
     /// rules, quote regexp, header rules) and hand back any warnings.
     fn recompile(&mut self) -> Vec<String> {
-        let (derived, warnings) = Derived::from_config(&self.session.config);
+        let (derived, mut warnings) = Derived::from_config(&self.session.config);
         self.theme = derived.theme;
         self.keymap = derived.keymap;
-        self.session.recompile();
-        self.message_hooks = derived.message_hooks;
-        self.reply_hooks = derived.reply_hooks;
-        self.fcc_hooks = derived.fcc_hooks;
-        self.crypt_hooks = derived.crypt_hooks;
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
         self.quote_re = derived.quote_re;
         self.attach_re = derived.attach_re;
+        // The session recompiles its own half: the hooks, the
+        // matchers, and what the pager reads a message through.
+        warnings.extend(self.session.recompile());
         warnings
     }
 
