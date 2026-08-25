@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.44**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.45**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -102,14 +102,17 @@ read, `t` tag + `;` apply the next mark, save, copy, pipe, print or
 bounce to all tagged, `z` undo
 the last of those (or cancel a held send), `s` save
 (copy to a mailbox + mark deleted), `$` sync changes to disk (asks
-before purging deleted messages, like mutt), `o` sort
+before purging deleted messages, like mutt), Space page down,
+Ctrl+L repaint, `!` shell command, Ctrl+Z suspend (fg brings it
+back), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
 Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
 step between threads (all of these want thread sort), `l` limit,
 `/` search
 + `n` next (Alt+/ searches backwards, and `n` then keeps going that
-way), `c` open mailbox by path (Tab completes mailboxes,
+way), `c` open mailbox by path (Alt+c opens it read-only; Tab completes
+mailboxes,
 account folders and nearby maildirs; empty Tab opens the folder
 browser), `y` folder browser (with
 new/unseen counts; folders holding new mail show bold), `G` check

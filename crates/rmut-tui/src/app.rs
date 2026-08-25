@@ -165,6 +165,10 @@ pub enum LineKind {
     /// The `:` prompt: one config command (mutt's enter-command).
     EnterCommand,
     ChangeDir,
+    /// The same, opened read-only (mutt's Esc c).
+    ChangeDirReadOnly,
+    /// A shell command to run with the TUI stood down (mutt's !).
+    Shell,
     SavePart,
     SaveMsg,
     CopyMsg,
@@ -196,6 +200,7 @@ impl LineKind {
         matches!(
             self,
             LineKind::ChangeDir
+                | LineKind::ChangeDirReadOnly
                 | LineKind::SaveMsg
                 | LineKind::CopyMsg
                 | LineKind::BrowseDir
@@ -220,13 +225,14 @@ impl LineKind {
             | LineKind::EditCc
             | LineKind::EditBcc => "address",
             LineKind::ChangeDir
+            | LineKind::ChangeDirReadOnly
             | LineKind::SaveMsg
             | LineKind::CopyMsg
             | LineKind::BrowseDir
             | LineKind::CreateDir
             | LineKind::EditFcc => "mailbox",
             LineKind::SavePart | LineKind::AttachFile => "file",
-            LineKind::Pipe | LineKind::PipePart => "command",
+            LineKind::Pipe | LineKind::PipePart | LineKind::Shell => "command",
             LineKind::Notmuch => "notmuch",
             LineKind::EnterCommand => "command",
             LineKind::ComposeSubject
@@ -564,6 +570,16 @@ pub struct App {
     mailbox_new: HashMap<String, usize>,
     /// `rmut -R`: nothing is ever written, not even read marks.
     pub read_only: bool,
+    /// `-R`: the whole session is read-only, so a mailbox switch
+    /// cannot quietly make it writable again. Alt+c sets `read_only`
+    /// for one mailbox without touching this.
+    pub read_only_session: bool,
+    /// Ctrl+L: clear and repaint before the next draw.
+    redraw: bool,
+    /// `!`: a shell command to run with the TUI stood down.
+    pending_shell: Option<String>,
+    /// Ctrl+Z: stop, and pick the terminal back up on SIGCONT.
+    pending_suspend: bool,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
@@ -932,6 +948,10 @@ impl App {
             sidebar_visible: config_sidebar_visible,
             mailbox_new: HashMap::new(),
             read_only: false,
+            read_only_session: false,
+            redraw: false,
+            pending_shell: None,
+            pending_suspend: false,
             tag_next: false,
             quit: false,
         };
@@ -1042,7 +1062,9 @@ impl App {
         let poll_every = Duration::from_secs(self.config.mail.poll_seconds.unwrap_or(5).max(1));
         let mut last_poll = Instant::now();
         while !self.quit {
-            if PROGRESS_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            if PROGRESS_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed)
+                || mem::take(&mut self.redraw)
+            {
                 terminal.clear()?;
             }
             self.sync_message_hooks();
@@ -1081,6 +1103,12 @@ impl App {
             if let Some(path) = self.pending_raw_edit.take() {
                 self.edit_raw(&mut terminal, path);
             }
+            if let Some(command) = self.pending_shell.take() {
+                self.run_shell(&mut terminal, &command);
+            }
+            if mem::take(&mut self.pending_suspend) {
+                self.suspend(&mut terminal);
+            }
         }
         // Whatever is still inside its $undo_send window goes out now:
         // quitting is not cancelling.
@@ -1092,6 +1120,17 @@ impl App {
         // Rows available for content: total minus help line and status line.
         let page = height.saturating_sub(2).max(1);
         self.view_size = (width, page);
+        // Ctrl+L repaints from the menus that have no keymap of their
+        // own; the index and pager route it through theirs, so it can
+        // be rebound there.
+        if is_ctrl(&key)
+            && key.code == KeyCode::Char('l')
+            && self.prompt.is_none()
+            && !matches!(self.mode, Mode::Index | Mode::Pager(_))
+        {
+            self.redraw = true;
+            return;
+        }
         if self.prompt.is_some() {
             self.handle_prompt_key(key);
         } else if matches!(self.mode, Mode::Index) {
@@ -1873,6 +1912,12 @@ impl App {
                 self.apply_pattern(input, "untagged", |m| m.env.tagged = false)
             }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
+            LineKind::ChangeDirReadOnly => self.open_mailbox_read_only(input),
+            LineKind::Shell => {
+                if !input.is_empty() {
+                    self.pending_shell = Some(input.to_string());
+                }
+            }
             LineKind::BrowseDir => self.browse_dir(input),
             LineKind::CreateDir => self.create_maildir(input),
             LineKind::SavePart => self.save_part(input),
@@ -2158,6 +2203,24 @@ impl App {
                     ));
                 }
             }
+            IndexAction::ChangeMailboxReadOnly => {
+                if self.ready_to_leave() {
+                    self.prompt = Some(Prompt::line(
+                        "Open mailbox read-only: ",
+                        String::new(),
+                        LineKind::ChangeDirReadOnly,
+                    ));
+                }
+            }
+            IndexAction::Shell => {
+                self.prompt = Some(Prompt::line(
+                    "Shell command: ",
+                    String::new(),
+                    LineKind::Shell,
+                ));
+            }
+            IndexAction::Redraw => self.redraw = true,
+            IndexAction::Suspend => self.pending_suspend = true,
             IndexAction::Folders => self.open_folder_browser(),
             IndexAction::Print => {
                 self.tag_op = apply_tagged;
@@ -2332,6 +2395,14 @@ impl App {
                     self.push_undo("tag", &[i]);
                     self.msgs[i].env.tagged = !self.msgs[i].env.tagged;
                 }
+                return;
+            }
+            PagerAction::Redraw => {
+                self.redraw = true;
+                return;
+            }
+            PagerAction::Suspend => {
+                self.pending_suspend = true;
                 return;
             }
             PagerAction::Undo => {
@@ -3121,6 +3192,14 @@ impl App {
         true
     }
 
+    /// mutt's Esc c: open it, then refuse to write to it. `-R` is
+    /// the session-wide version and outlives the switch either way.
+    fn open_mailbox_read_only(&mut self, spec: &str) {
+        self.open_mailbox_spec(spec);
+        self.read_only = true;
+        self.status = Some(format!("{} (read-only)", self.title));
+    }
+
     fn open_mailbox_spec(&mut self, spec: &str) {
         self.mark_old_unread();
         // Message-hook settings belong to the message being left, not
@@ -3148,6 +3227,8 @@ impl App {
                         ));
                     }
                     app.remote = Some(remote);
+                    app.read_only_session = self.read_only_session;
+                    app.read_only = self.read_only_session;
                     app.sidebar_visible = self.sidebar_visible;
                     app.refresh_sidebar();
                     *self = app;
@@ -3159,7 +3240,11 @@ impl App {
         }
         match App::open_spec(spec, self.config.clone()) {
             Ok(mut app) => {
-                // The runtime sidebar toggle survives a mailbox switch.
+                // The runtime sidebar toggle survives a mailbox switch,
+                // and so does a -R session: it is not a property of the
+                // mailbox that was open.
+                app.read_only_session = self.read_only_session;
+                app.read_only = self.read_only_session;
                 app.sidebar_visible = self.sidebar_visible;
                 app.refresh_sidebar();
                 *self = app;
@@ -5448,6 +5533,40 @@ impl App {
             return;
         }
         self.pending_raw_edit = self.selected_path();
+    }
+
+    /// mutt's `!`: stand the TUI down, run the command on the real
+    /// terminal, and wait before painting over whatever it printed.
+    fn run_shell(&mut self, terminal: &mut DefaultTerminal, command: &str) {
+        ratatui::restore();
+        let status = Command::new("sh").arg("-c").arg(command).status();
+        {
+            use std::io::BufRead as _;
+            let mut out = std::io::stdout();
+            let _ = write!(out, "\nPress Enter to continue... ");
+            let _ = out.flush();
+            let mut line = String::new();
+            let _ = std::io::stdin().lock().read_line(&mut line);
+        }
+        *terminal = ratatui::init();
+        let _ = terminal.clear();
+        match status {
+            Ok(s) if s.success() => self.status = Some(format!("{command} finished")),
+            Ok(s) => self.error_status(format!("{command} exited with {s}")),
+            Err(err) => self.error_status(format!("cannot run {command}: {err}")),
+        }
+    }
+
+    /// mutt's Ctrl+Z: hand the terminal back and stop, the way any
+    /// job does. The default SIGTSTP action does the stopping, so the
+    /// shell's fg resumes us right here, and the screen is repainted.
+    fn suspend(&mut self, terminal: &mut DefaultTerminal) {
+        ratatui::restore();
+        // SAFETY: raise(3) on the calling process, no handler of ours.
+        unsafe { libc::raise(libc::SIGTSTP) };
+        *terminal = ratatui::init();
+        let _ = terminal.clear();
+        self.redraw = true;
     }
 
     fn edit_raw(&mut self, terminal: &mut DefaultTerminal, path: PathBuf) {

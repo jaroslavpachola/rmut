@@ -3116,6 +3116,68 @@ def scenario_folder_shorthand(tmp):
     r.close()
 
 
+def scenario_paper_cuts(tmp):
+    """R44: Space pages the index, ! runs a shell command, Alt+c opens
+    a mailbox read-only, Ctrl+L repaints and Ctrl+Z suspends."""
+    md = make_maildir(tmp, "md-cuts")
+    for n in range(1, 11):
+        with open(os.path.join(md, "cur", f"17520000{n:02d}.9.host:2,S"), "w") as f:
+            f.write(f"From: Sender {n} <s{n}@example.com>\r\n"
+                    "To: jarda@example.com\r\n"
+                    f"Subject: message number {n}\r\n"
+                    f"Date: Mon, 6 Jul 2026 {n:02d}:00:00 +0200\r\n"
+                    f"Message-ID: <cut{n}@example.com>\r\n\r\nbody {n}\r\n")
+    other = make_maildir(tmp, "md-cuts-other")
+    write_msgs(other, ["jane"])
+    touched = os.path.join(tmp, "shell-escape-ran")
+
+    # A short window, so one page is a known number of rows: content
+    # is rows - 2, and PageDown moves the cursor by that much.
+    r = Rmut(md, base_env(tmp), rows=10)
+    r.expect("Msgs:10")
+    r.keys(b"=")
+    r.settle()
+    r.keys(b" ")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 9/10")
+    r.keys(b"i")
+
+    # Ctrl+L cannot be seen directly (a repaint of the same screen),
+    # but it must not disturb anything: the keys after it still work.
+    r.keys(b"\x0c")
+    r.settle()
+
+    # ! runs a command with the TUI stood down, then waits.
+    r.keys(b"!touch " + touched.encode() + b"\r")
+    wait_for(lambda: os.path.exists(touched), desc="the shell command ran")
+    r.keys(b"\r")  # "Press Enter to continue"
+    r.repaint()
+    r.expect("finished")
+
+    # Alt+c opens read-only: the mailbox loads, and marks are refused.
+    r.keys(b"\x1bc" + other.encode() + b"\r")
+    r.repaint()
+    r.expect("read-only")
+    r.keys(b"d")
+    r.repaint()
+    r.expect("Mailbox is read-only.")
+
+    # Ctrl+Z hands the terminal back and raises SIGTSTP. The stop
+    # itself cannot be asserted here: pty.fork makes rmut a session
+    # leader, so its process group is orphaned and the kernel discards
+    # stop signals. What this does cover is the terminal handoff
+    # around it, which is the part that can wreck a session: the
+    # screen comes back and the keys still work.
+    r.keys(b"\x1a")
+    r.settle()
+    r.repaint()
+    r.keys(b"\r")
+    r.expect("Message 1/1")
+    r.keys(b"ix")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3146,6 +3208,7 @@ SCENARIOS = [
     scenario_tagged_and_pager,
     scenario_thread_ops,
     scenario_folder_shorthand,
+    scenario_paper_cuts,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

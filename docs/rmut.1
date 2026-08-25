@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.44.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.45.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -153,7 +153,7 @@ always shows the live keymap.
 .B j k Up Down
 next / previous message
 .TP
-.B PgUp PgDn Ctrl+B Ctrl+F
+.B Space PgUp PgDn Ctrl+B Ctrl+F
 page up / down
 .TP
 .B = *
@@ -254,8 +254,10 @@ or Alt+/ the other way), which the macro example below binds to
 and
 .BR , .
 .TP
-.B c y
-open a mailbox by path; browse nearby mailboxes. At the path prompt
+.B c Alt+c y
+open a mailbox by path; open one read-only (mutt's Esc c, where
+.B \-R
+is the whole session); browse nearby mailboxes. At the path prompt
 Tab completes the configured mailboxes, the open account's folders
 and nearby maildirs (repeated Tab cycles); Tab on an empty prompt
 opens the folder browser. The save/copy prompts complete the same
@@ -324,6 +326,14 @@ disable the key with [mail] notmuch = false
 .TP
 .B B Ctrl+N Ctrl+P Ctrl+O
 toggle the sidebar; move its highlight; open the highlighted mailbox
+.TP
+.B ! Ctrl+L Ctrl+Z
+run a shell command with rmut stood down, waiting for Enter before
+painting over what it printed; repaint the screen; suspend rmut, the
+way any job suspends, with the terminal handed back and picked up
+again on
+.BR fg .
+Ctrl+L works in every menu; Ctrl+Z in the index and the pager
 .SS Pager
 The body is the whole MIME tree rendered like mutt: text parts and
 [filters]-rendered parts inline, each attachment announced with

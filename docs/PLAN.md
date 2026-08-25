@@ -856,21 +856,35 @@ named.
       mailbox prompt still completes real paths, not `=` names;
       e2e scenario_folder_shorthand
 
-## R44: paper cuts
+## R44: paper cuts (done, 1.45)
 
 Goal: small mutt keys rmut does not have. Any of these can ride along
 with an earlier round instead of waiting for its own.
 
-- [ ] Space pages down in the index (it already does in the pager;
+- [x] Space pages down in the index (it already does in the pager;
       in mutt it does in every menu)
-- [ ] Ctrl+L redraws, for when a filter or an editor scribbles on the
-      terminal and nothing repaints it
-- [ ] `!` runs a shell command
-- [ ] `Esc c` opens a mailbox read-only (rmut has `-R`, which is the
-      whole session or nothing)
-- [ ] Not a one-liner, kept here for company: Ctrl+Z suspends (mutt's
+- [x] Ctrl+L redraws, for when a filter or an editor scribbles on the
+      terminal and nothing repaints it. It is an action in the index
+      and pager keymaps, so it shows in `?` and can be rebound, plus
+      a fallback in `handle_key` for the menus that have no keymap of
+      their own (compose, attachments, browser, help)
+- [x] `!` runs a shell command with the TUI stood down, the same
+      terminal handoff the editor uses, and waits for Enter before
+      painting over whatever it printed
+- [x] `Alt+c` opens a mailbox read-only (mutt's `Esc c`; `-R` stays
+      the session-wide version). Fixed on the way: `-R` was lost on
+      any mailbox switch, since `open_mailbox_spec` replaces the App
+      wholesale, so a read-only session quietly became writable. The
+      session flag now rides across the switch and the per-mailbox
+      one does not
+- [x] Not a one-liner, kept here for company: Ctrl+Z suspends (mutt's
       $suspend, on by default), which needs SIGTSTP with the terminal
-      saved and restored around it
+      saved and restored around it. The stop itself cannot be
+      exercised by the e2e suite: `pty.fork` makes rmut a session
+      leader, so its process group is orphaned and the kernel
+      discards stop signals. The scenario covers the handoff around
+      it, which is the part that can wreck a session;
+      e2e scenario_paper_cuts
 
 ## R45: search direction (done, 1.41)
 

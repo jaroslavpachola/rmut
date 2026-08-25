@@ -194,6 +194,7 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
     app.read_only = cli.read_only;
+    app.read_only_session = cli.read_only;
     if let Some(warning) = config_warning {
         app.status = Some(warning);
     }

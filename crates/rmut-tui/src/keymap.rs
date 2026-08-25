@@ -144,6 +144,7 @@ pub enum IndexAction {
     NextNew,
     PrevNew,
     ChangeMailbox,
+    ChangeMailboxReadOnly,
     Folders,
     Attachments,
     FoldThread,
@@ -178,6 +179,9 @@ pub enum IndexAction {
     Query,
     Notmuch,
     EnterCommand,
+    Shell,
+    Redraw,
+    Suspend,
     Help,
 }
 
@@ -204,6 +208,8 @@ pub enum PagerAction {
     ToggleNew,
     Tag,
     Undo,
+    Redraw,
+    Suspend,
     Headers,
     Search,
     SearchNext,
@@ -257,6 +263,7 @@ impl IndexAction {
             NextNew => "next-new",
             PrevNew => "previous-new",
             ChangeMailbox => "change-mailbox",
+            ChangeMailboxReadOnly => "change-mailbox-readonly",
             Folders => "folders",
             Attachments => "attachments",
             FoldThread => "fold-thread",
@@ -291,6 +298,9 @@ impl IndexAction {
             Query => "query",
             Notmuch => "notmuch",
             EnterCommand => "enter-command",
+            Shell => "shell-escape",
+            Redraw => "refresh",
+            Suspend => "suspend",
             Help => "help",
         }
     }
@@ -325,6 +335,7 @@ impl IndexAction {
             NextNew => "jump to the next new or unread message",
             PrevNew => "jump to the previous new or unread message",
             ChangeMailbox => "open a mailbox by path",
+            ChangeMailboxReadOnly => "open a mailbox read-only (Alt+c)",
             Folders => "browse nearby mailboxes",
             Attachments => "list message parts",
             FoldThread => "fold/unfold current thread",
@@ -359,6 +370,9 @@ impl IndexAction {
             Query => "look up addresses with query_command",
             Notmuch => "notmuch search into a read-only view",
             EnterCommand => "run a config command (set/bind/macro/color/...)",
+            Shell => "run a shell command",
+            Redraw => "repaint the screen",
+            Suspend => "suspend rmut (fg brings it back)",
             Help => "this help",
         }
     }
@@ -393,6 +407,7 @@ impl IndexAction {
             NextNew,
             PrevNew,
             ChangeMailbox,
+            ChangeMailboxReadOnly,
             Folders,
             Attachments,
             FoldThread,
@@ -427,6 +442,9 @@ impl IndexAction {
             Query,
             Notmuch,
             EnterCommand,
+            Shell,
+            Redraw,
+            Suspend,
             Help,
         ]
     }
@@ -464,6 +482,8 @@ impl PagerAction {
             ToggleNew => "toggle-new",
             Tag => "tag",
             Undo => "undo",
+            Redraw => "refresh",
+            Suspend => "suspend",
             Headers => "headers",
             Search => "search",
             SearchNext => "search-next",
@@ -511,6 +531,8 @@ impl PagerAction {
             ToggleNew => "toggle read/unread (unbound here: N is the backwards search)",
             Tag => "toggle the tag on this message",
             Undo => "cancel a held send, or undo the last mark change",
+            Redraw => "repaint the screen",
+            Suspend => "suspend rmut (fg brings it back)",
             Headers => "toggle full headers",
             Search => "search the displayed text (unlike the index /, which matches messages)",
             SearchNext => "next match of the pager search",
@@ -558,6 +580,8 @@ impl PagerAction {
             ToggleNew,
             Tag,
             Undo,
+            Redraw,
+            Suspend,
             Headers,
             Search,
             SearchNext,
@@ -638,6 +662,7 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ctrl('f'), PageDown),
         (KeyPattern::plain(K::PageUp), PageUp),
         (KeyPattern::ctrl('b'), PageUp),
+        (KeyPattern::ch(' '), PageDown),
         (KeyPattern::ch('='), First),
         (KeyPattern::plain(K::Home), First),
         (KeyPattern::ch('*'), Last),
@@ -667,6 +692,7 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
             PrevNew,
         ),
         (KeyPattern::ch('c'), ChangeMailbox),
+        (KeyPattern::alt('c'), ChangeMailboxReadOnly),
         (KeyPattern::ch('y'), Folders),
         (KeyPattern::ch('v'), Attachments),
         (KeyPattern::alt('v'), FoldThread),
@@ -701,6 +727,9 @@ fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
         (KeyPattern::ch('Q'), Query),
         (KeyPattern::ch('X'), Notmuch),
         (KeyPattern::ch(':'), EnterCommand),
+        (KeyPattern::ch('!'), Shell),
+        (KeyPattern::ctrl('l'), Redraw),
+        (KeyPattern::ctrl('z'), Suspend),
         (KeyPattern::ch('?'), Help),
     ]
 }
@@ -741,6 +770,8 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         // toggle-new has no default key here: mutt's N is rmut's
         // backwards pager search. `:bind pager <key> toggle-new`.
         (KeyPattern::ch('z'), Undo),
+        (KeyPattern::ctrl('l'), Redraw),
+        (KeyPattern::ctrl('z'), Suspend),
         (KeyPattern::ch('h'), Headers),
         (KeyPattern::ch('/'), Search),
         (KeyPattern::ch('n'), SearchNext),
