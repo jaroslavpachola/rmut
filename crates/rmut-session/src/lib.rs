@@ -12,7 +12,7 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use rmut_core::config::{Account, Config};
@@ -299,6 +299,13 @@ pub struct Session {
     /// The compose flow in progress: what is being answered about
     /// the draft that has not been written yet.
     setup: Option<ComposeSetup>,
+    /// The draft in hand: written, and being looked at. A front end
+    /// shows it however it shows drafts; the session owns what it
+    /// says.
+    draft: Option<Compose>,
+    /// The attachment reminder has been answered for this draft: the
+    /// next send goes through without asking again.
+    attach_confirmed: bool,
     /// The config as it was before the active message-hooks changed
     /// it, so leaving the message puts every setting back.
     hook_base: Option<Box<Config>>,
@@ -406,6 +413,8 @@ impl Session {
             attach_re: default_attach_re(),
             config,
             setup: None,
+            draft: None,
+            attach_confirmed: false,
             hook_base: None,
             active_message_hooks: Vec::new(),
             requests: Vec::new(),
@@ -2183,11 +2192,10 @@ impl Session {
 
     /// Anything due in the outbox goes out; whatever still waits owns
     /// the status line, counting down.
-    pub fn tick_outbox(&mut self) -> Option<Compose> {
-        let mut back = None;
+    pub fn tick_outbox(&mut self) {
         while self.outbox.first().is_some_and(|h| h.due <= Instant::now()) {
             let held = self.outbox.remove(0);
-            back = back.or(self.deliver(held));
+            self.deliver(held);
         }
         if let Some(next) = self.outbox.first()
             && !self.notice().is_some_and(|n| n.is_error())
@@ -2195,7 +2203,6 @@ impl Session {
             let left = next.due.saturating_duration_since(Instant::now()).as_secs() + 1;
             self.note(format!("sending {} in {left}s (z cancels)", next.label));
         }
-        back
     }
 
     /// Send everything still waiting, on the way out: the messages
@@ -2227,17 +2234,20 @@ impl Session {
 
     /// Take the newest held message back, draft and all. None when
     /// nothing was waiting.
-    pub fn cancel_send(&mut self) -> Option<Compose> {
-        let held = self.outbox.pop()?;
+    pub fn cancel_send(&mut self) -> bool {
+        let Some(held) = self.outbox.pop() else {
+            return false;
+        };
         self.note(format!("send cancelled: {}", held.label));
-        Some(held.state)
+        self.hand_back(held.state);
+        true
     }
 
     /// Transmit a held message and keep the Fcc copy.
     /// Transmit a held message and keep the Fcc copy. A send that
     /// fails hands the draft back, for the front end to put on screen
     /// again.
-    pub fn deliver(&mut self, held: Held) -> Option<Compose> {
+    pub fn deliver(&mut self, held: Held) {
         let Held {
             state: compose_state,
             text: final_text,
@@ -2316,11 +2326,10 @@ impl Session {
                     let _ = std::fs::remove_file(src);
                 }
                 self.note(note);
-                None
             }
             Err(err) => {
                 self.error(format!("send failed: {err:#}"));
-                Some(compose_state)
+                self.hand_back(compose_state);
             }
         }
     }
@@ -2485,6 +2494,314 @@ impl Session {
                 None
             }
         }
+    }
+
+    /// The draft's header block, wherever it currently lives.
+    pub fn draft_head(&self) -> String {
+        let Some(c) = &self.draft else {
+            return String::new();
+        };
+        match &c.hidden_head {
+            Some(head) => head.clone(),
+            None => {
+                let text = std::fs::read_to_string(&c.path).unwrap_or_default();
+                match text.split_once("\n\n") {
+                    Some((head, _)) => head.to_string(),
+                    None => text.trim_end().to_string(),
+                }
+            }
+        }
+    }
+
+    /// Rewrite the draft's header block in place (hidden or in-file).
+    pub fn edit_draft_head(&mut self, f: impl Fn(&str) -> String) {
+        let Some(c) = &mut self.draft else {
+            return;
+        };
+        match &mut c.hidden_head {
+            Some(head) => *head = f(head),
+            None => {
+                if let Ok(text) = std::fs::read_to_string(&c.path) {
+                    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
+                    let _ = std::fs::write(&c.path, format!("{}\n\n{body}", f(head)));
+                }
+            }
+        }
+    }
+
+    /// Replace (or add, or with an empty value drop) one header.
+    pub fn set_draft_header(&mut self, name: &str, value: &str) {
+        let value = value.trim().to_string();
+        let name = name.to_string();
+        self.edit_draft_head(|head| {
+            let mut lines: Vec<&str> = head
+                .lines()
+                .filter(|l| {
+                    !l.split_once(':')
+                        .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(&name))
+                })
+                .collect();
+            let added = format!("{name}: {value}");
+            if !value.is_empty() {
+                lines.push(&added);
+            }
+            lines.join("\n")
+        });
+    }
+
+    pub fn draft_header(&self, name: &str) -> String {
+        header_value(&self.draft_head(), name).unwrap_or_default()
+    }
+
+    /// Send the draft in hand. It may need a question answered
+    /// first, and if it cannot go the draft stays in hand with a
+    /// request to put it back on screen.
+    pub fn send_draft(&mut self) -> Option<Ask> {
+        let compose_state = self.draft.take()?;
+        let raw = match draft_full(&compose_state) {
+            Ok(r) => r,
+            Err(err) => {
+                self.error(format!("cannot read draft: {err}"));
+                return None;
+            }
+        };
+        // neomutt's $abort_noattach: the body says "attached" and
+        // nothing is. Asked once per draft; an answered draft sends.
+        if !mem::take(&mut self.attach_confirmed) && self.attachment_forgotten(&raw, &compose_state)
+        {
+            self.draft = Some(compose_state);
+            match self.config.mail.abort_noattach.as_deref() {
+                // neomutt's "yes" aborts outright: attach the file,
+                // or take the word out of the body.
+                Some("yes") => {
+                    self.error("no attachment: not sent (abort_noattach); a attaches one");
+                    self.requests.push(Request::ShowDraft);
+                    return None;
+                }
+                _ => {
+                    return Some(Ask::Key {
+                        label:
+                            "The body mentions an attachment and none is attached. Send? (y/n): "
+                                .into(),
+                        what: AskKind::NoAttach,
+                    });
+                }
+            }
+        }
+        // mutt's fcc-hook, evaluated on the draft as it stands after
+        // the editor; an Fcc picked in the menu still wins.
+        let draft_path = self
+            .draft
+            .as_ref()
+            .map(|c| c.path.clone())
+            .unwrap_or_default();
+        let hook_fcc = self.fcc_hook_target(&raw, &draft_path);
+        let (raw, files) = compose::extract_attachments(&raw);
+        let host = maildir::hostname();
+        let from = self
+            .current_identity(&[])
+            .from_line()
+            .unwrap_or_else(|| default_from(&host));
+        let final_text = match compose::finalize(
+            &raw,
+            &from,
+            &compose::make_message_id(&host),
+            &compose::rfc2822_now(),
+        ) {
+            Ok(t) => t,
+            Err(err) => {
+                self.error(format!("{err}; press e to edit"));
+                self.hand_back(compose_state);
+                return None;
+            }
+        };
+        let original = match &compose_state.attach {
+            Some(path) => match std::fs::read(path) {
+                Ok(bytes) => Some(bytes),
+                Err(err) => {
+                    self.error(format!("cannot attach the original: {err}"));
+                    self.hand_back(compose_state);
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let final_text = match self.secure_message(
+            compose_state.security,
+            final_text,
+            &files,
+            original.as_deref(),
+        ) {
+            Ok(t) => t,
+            Err(err) => {
+                self.error(format!("{err:#}; e edits, s changes security"));
+                self.hand_back(compose_state);
+                return None;
+            }
+        };
+        // The menu's Fcc wins, then any fcc-hook; empty means keep no
+        // copy, and $copy = no makes that the default.
+        let held = Held {
+            text: final_text,
+            fcc: compose_state.fcc.clone().or(hook_fcc),
+            label: {
+                let head = raw.split_once("\n\n").map_or(raw.as_str(), |(h, _)| h);
+                header_value(head, "Subject")
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| header_value(head, "To"))
+                    .unwrap_or_else(|| "message".into())
+            },
+            state: compose_state,
+            due: Instant::now() + Duration::from_secs(self.config.mail.undo_send),
+        };
+        // $undo_send: the message waits, and z takes it back.
+        if self.config.mail.undo_send > 0 {
+            self.note(format!(
+                "sending {} in {}s (z cancels)",
+                held.label, self.config.mail.undo_send
+            ));
+            self.hold_send(held);
+            return None;
+        }
+        self.deliver(held);
+        None
+    }
+
+    /// The attachment reminder is answered for this draft: the next
+    /// send goes through without asking again.
+    fn confirm_attachment(&mut self) {
+        self.attach_confirmed = true;
+    }
+
+    /// A draft that could not go: back in hand, and back on screen.
+    fn hand_back(&mut self, draft: Compose) {
+        self.draft = Some(draft);
+        self.requests.push(Request::ShowDraft);
+    }
+
+    /// The draft in hand, for a front end showing it.
+    pub fn draft(&self) -> Option<&Compose> {
+        self.draft.as_ref()
+    }
+
+    pub fn draft_mut(&mut self) -> Option<&mut Compose> {
+        self.draft.as_mut()
+    }
+
+    /// Take it out of the session's hands (the front end is about to
+    /// edit it, postpone it, or throw it away).
+    pub fn take_draft(&mut self) -> Option<Compose> {
+        self.draft.take()
+    }
+
+    /// Put one back, after an editor has been over it.
+    pub fn set_draft(&mut self, draft: Compose) {
+        self.draft = Some(draft);
+    }
+
+    /// The submitted d / ctrl+t edit: rewrite the k-th Attach: line
+    /// with the new description or content-type.
+    /// The submitted description or content-type for the k-th
+    /// `Attach:` line.
+    pub fn set_attach_field(&mut self, k: usize, input: &str, is_type: bool) {
+        let value = input.trim().to_string();
+        self.edit_draft_head(|head| {
+            let mut seen = 0usize;
+            head.lines()
+                .map(|l| {
+                    let is_attach = l
+                        .split_once(':')
+                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
+                    if is_attach {
+                        // Count like extract_attachments (empty-value
+                        // lines don't), so k matches the menu entry.
+                        let (_, mut atts) = compose::extract_attachments(l);
+                        if let Some(mut a) = atts.pop() {
+                            let idx = seen;
+                            seen += 1;
+                            if idx == k {
+                                let new = (!value.is_empty()).then(|| value.clone());
+                                if is_type {
+                                    a.mime = new;
+                                } else {
+                                    a.description = new;
+                                }
+                                return compose::attach_line(&a);
+                            }
+                        }
+                    }
+                    l.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    }
+
+    /// D in the compose menu: drop the selected Attach: line (the
+    /// body and a forwarded original cannot be detached).
+    /// Drop the `Attach:` line the menu's `sel`-th row stands for.
+    pub fn detach(&mut self, sel: usize) {
+        let fixed = 1 + usize::from(self.draft().is_some_and(|c| c.attach.is_some()));
+        if sel < fixed {
+            self.error("only Attach: files can be detached");
+            return;
+        }
+        let k = sel - fixed;
+        self.edit_draft_head(|head| {
+            let mut seen = 0usize;
+            head.lines()
+                .filter(|l| {
+                    let is_attach = l
+                        .split_once(':')
+                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
+                    if is_attach {
+                        seen += 1;
+                        seen - 1 != k
+                    } else {
+                        true
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    }
+
+    /// Add an `Attach:` line to the draft's header block without a
+    /// trip through the editor (send prompt `a`).
+    /// A file added to the draft as an `Attach:` line.
+    pub fn attach_file(&mut self, input: &str) {
+        let input = input.trim();
+        if !input.is_empty() {
+            if !expand_tilde(input).is_file() {
+                self.error(format!("{input} is not a file"));
+            } else if let Some(c) = self.draft_mut() {
+                // Quote paths with spaces the way extract_attachments
+                // reads them back.
+                let value = if input.contains(char::is_whitespace) && !input.starts_with('"') {
+                    format!("\"{input}\"")
+                } else {
+                    input.to_string()
+                };
+                let result = match &mut c.hidden_head {
+                    // Withheld headers: the Attach: line joins them.
+                    Some(head) => {
+                        *head = format!("{}\nAttach: {value}", head.trim_end());
+                        Ok(())
+                    }
+                    None => std::fs::read_to_string(&c.path).and_then(|text| {
+                        let updated = match text.split_once("\n\n") {
+                            Some((head, body)) => format!("{head}\nAttach: {value}\n\n{body}"),
+                            None => format!("{}\nAttach: {value}\n", text.trim_end()),
+                        };
+                        std::fs::write(&c.path, updated)
+                    }),
+                };
+                if let Err(err) = result {
+                    self.error(format!("cannot attach: {err}"));
+                }
+            }
+        }
+        self.requests.push(Request::ShowDraft);
     }
 
     pub fn error(&mut self, msg: impl Into<String>) {

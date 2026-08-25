@@ -13,7 +13,7 @@
 //! end can do, because it owns the terminal, or the window, or in the
 //! case of a library caller nothing at all.
 
-use crate::{Msg, Session, SortKey};
+use crate::{Msg, Security, Session, SortKey};
 
 /// A question waiting on an answer.
 pub enum Ask {
@@ -114,6 +114,28 @@ pub enum AskKind {
     IncludeReply,
     /// mime_forward = "ask": forward the original as an attachment?
     ForwardAttach,
+    /// $abort_noattach = ask: the body mentions an attachment and
+    /// none is attached. Send it anyway?
+    NoAttach,
+    /// A header of the draft in hand, edited from the compose menu.
+    EditHeader {
+        name: String,
+    },
+    /// Where the sent copy goes (empty keeps none).
+    EditFcc,
+    /// A file to attach.
+    AttachFile,
+    /// The description or the content-type of the k-th attachment.
+    AttachField {
+        k: usize,
+        is_type: bool,
+    },
+    /// mutt's compose menu `p`: sign, encrypt, both, or neither.
+    Security,
+    /// Leaving the compose menu: postpone the draft, or throw it away?
+    PostponeAsk,
+    /// mutt's `!`: a shell command to run with the display stood down.
+    Shell,
 }
 
 /// The pattern operations, mutt's D/U/T/Ctrl+T.
@@ -177,6 +199,13 @@ pub enum Request {
     /// A command line the session does not handle, because it binds a
     /// key, queues one, or runs a function.
     Command(rmut_core::command::Command),
+    /// The draft is back in the front end's hands: put it on screen
+    /// again, however drafts are shown.
+    ShowDraft,
+    /// Run a shell command with the display stood down, mutt's `!`.
+    Shell(String),
+    /// Stop, and pick the display back up when the job resumes.
+    Suspend,
     /// Open an editor on this draft, and put it back on screen
     /// afterwards. Only the front end knows how to stand its display
     /// down for one.
@@ -325,6 +354,110 @@ impl Session {
         }
     }
 
+    /// A header of the draft in hand (To, Cc, Bcc, Subject).
+    pub fn ask_header(&self, name: &str) -> Option<Ask> {
+        self.draft()?;
+        Some(Ask::Line {
+            label: format!("{name}: "),
+            prefill: self.draft_header(name),
+            wants: match name {
+                "Subject" => Wants::Other,
+                _ => Wants::Address,
+            },
+            what: AskKind::EditHeader {
+                name: name.to_string(),
+            },
+        })
+    }
+
+    /// Where the sent copy goes, prefilled with where it would go.
+    pub fn ask_fcc(&self) -> Option<Ask> {
+        let draft = self.draft()?;
+        Some(Ask::Line {
+            label: "Fcc: ".into(),
+            prefill: match draft.fcc.clone() {
+                Some(fcc) => fcc,
+                None => self.default_fcc(Some(draft)),
+            },
+            wants: Wants::Mailbox,
+            what: AskKind::EditFcc,
+        })
+    }
+
+    pub fn ask_attach_file(&self) -> Option<Ask> {
+        self.draft()?;
+        Some(Ask::Line {
+            label: "Attach file: ".into(),
+            prefill: String::new(),
+            wants: Wants::Other,
+            what: AskKind::AttachFile,
+        })
+    }
+
+    /// The description (or content-type) of the attachment the menu's
+    /// `sel`-th row stands for.
+    pub fn ask_attach_field(&mut self, sel: usize, is_type: bool) -> Option<Ask> {
+        let draft = self.draft()?;
+        let fixed = 1 + usize::from(draft.attach.is_some());
+        if sel < fixed {
+            self.error("only Attach: files can be edited");
+            return None;
+        }
+        let k = sel - fixed;
+        let attachment = crate::draft_full(draft)
+            .ok()
+            .map(|full| rmut_core::compose::extract_attachments(&full).1)
+            .and_then(|mut atts| (k < atts.len()).then(|| atts.swap_remove(k)))?;
+        let prefill = match is_type {
+            true => attachment
+                .mime
+                .clone()
+                .unwrap_or_else(|| rmut_core::compose::content_type(&attachment.path).to_string()),
+            false => attachment.description.clone().unwrap_or_default(),
+        };
+        Some(Ask::Line {
+            label: match is_type {
+                true => "Content-Type: ".into(),
+                false => "Description: ".into(),
+            },
+            prefill,
+            wants: Wants::Other,
+            what: AskKind::AttachField { k, is_type },
+        })
+    }
+
+    pub fn ask_security(&self) -> Option<Ask> {
+        self.draft()?;
+        Some(Ask::Key {
+            label: "Security: (e)ncrypt (s)ign (b)oth (c)lear: ".into(),
+            what: AskKind::Security,
+        })
+    }
+
+    pub fn ask_postpone(&self) -> Option<Ask> {
+        self.draft()?;
+        Some(Ask::Key {
+            label: "Postpone this message? (y/n): ".into(),
+            what: AskKind::PostponeAsk,
+        })
+    }
+
+    /// mutt's `!`: run something with the display out of the way.
+    pub fn ask_shell(&self) -> Ask {
+        Ask::Line {
+            label: "Shell command: ".into(),
+            prefill: String::new(),
+            wants: Wants::Command,
+            what: AskKind::Shell,
+        }
+    }
+
+    /// Ctrl+Z: ask to be put in the background. A front end that
+    /// cannot be suspended simply does not honour it.
+    pub fn request_suspend(&mut self) {
+        self.requests.push(Request::Suspend);
+    }
+
     /// Hand back an answer. The next question, when there is one.
     pub fn answer(&mut self, what: AskKind, answer: Answer<'_>) -> Option<Ask> {
         match (what, answer) {
@@ -373,6 +506,77 @@ impl Session {
                 _ => {
                     self.cancel_setup();
                     self.note("reply cancelled");
+                    None
+                }
+            },
+            (AskKind::EditHeader { name }, Answer::Line(input)) => {
+                let value = match name.as_str() {
+                    "Subject" => input.to_string(),
+                    _ => rmut_core::alias::expand(input, &rmut_core::alias::load_default()),
+                };
+                self.set_draft_header(&name, &value);
+                None
+            }
+            (AskKind::Shell, Answer::Line(command)) => {
+                if !command.is_empty() {
+                    self.requests.push(Request::Shell(command.to_string()));
+                }
+                None
+            }
+            (AskKind::EditFcc, Answer::Line(input)) => {
+                if let Some(draft) = self.draft_mut() {
+                    draft.fcc = Some(input.trim().to_string());
+                }
+                None
+            }
+            (AskKind::AttachFile, Answer::Line(input)) => {
+                self.attach_file(input);
+                None
+            }
+            (AskKind::AttachField { k, is_type }, Answer::Line(input)) => {
+                self.set_attach_field(k, input, is_type);
+                None
+            }
+            (AskKind::Security, Answer::Key(key)) => {
+                if let Some(draft) = self.draft_mut() {
+                    draft.security = match key {
+                        Key::Char('e') => Security::Encrypt,
+                        Key::Char('s') => Security::Sign,
+                        Key::Char('b') => Security::Both,
+                        Key::Char('c') => Security::None,
+                        _ => draft.security,
+                    };
+                }
+                None
+            }
+            (AskKind::PostponeAsk, Answer::Key(key)) => {
+                match key {
+                    Key::Char('y') | Key::Enter => {
+                        if let Some(draft) = self.take_draft() {
+                            self.postpone_draft(draft);
+                        }
+                    }
+                    Key::Char('n') => {
+                        if let Some(draft) = self.take_draft() {
+                            let _ = std::fs::remove_file(&draft.path);
+                            self.note("message discarded");
+                        }
+                    }
+                    // Anything else goes back to the menu.
+                    _ => self.requests.push(Request::ShowDraft),
+                }
+                None
+            }
+            (AskKind::NoAttach, Answer::Key(key)) => match key {
+                // ask-no: Enter goes back to the menu, where `a`
+                // attaches the file that was forgotten.
+                Key::Char('y') => {
+                    self.confirm_attachment();
+                    self.send_draft()
+                }
+                _ => {
+                    self.note("not sent; a attaches a file");
+                    self.requests.push(Request::ShowDraft);
                     None
                 }
             },

@@ -16,8 +16,8 @@ use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote;
 use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
-    Answer, Ask, AskKind, Compose, ComposeKind, Held, Key, PatternOp, Request, Security, Session,
-    ThreadOp, Wants, default_from, draft_full, expand_tilde, pipe_to, wrap_order, write_draft,
+    Answer, Ask, AskKind, Compose, ComposeKind, Key, PatternOp, Request, Session, ThreadOp, Wants,
+    default_from, draft_full, expand_tilde, pipe_to, wrap_order, write_draft,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -104,20 +104,7 @@ pub enum LineKind {
     ChangeDir,
     /// The same, opened read-only (mutt's Esc c).
     ChangeDirReadOnly,
-    /// A shell command to run with the TUI stood down (mutt's !).
-    Shell,
     SavePart,
-    /// A file path to add as an `Attach:` line (send prompt `a`).
-    AttachFile,
-    /// Compose menu header edits (t/c/b/s), back to the menu after.
-    EditTo,
-    EditCc,
-    EditBcc,
-    EditSubject,
-    /// Compose menu attachment edits (d / ctrl+t) and the Fcc (f).
-    EditDesc,
-    EditType,
-    EditFcc,
 }
 
 impl LineKind {
@@ -132,7 +119,6 @@ impl LineKind {
                 | LineKind::ChangeDirReadOnly
                 | LineKind::BrowseDir
                 | LineKind::CreateDir
-                | LineKind::EditFcc
         )
     }
 
@@ -148,19 +134,15 @@ impl LineKind {
                 Wants::Other => "other",
             },
             LineKind::PagerSearch => "pattern",
-            LineKind::EditTo | LineKind::EditCc | LineKind::EditBcc => "address",
             LineKind::ChangeDir
             | LineKind::ChangeDirReadOnly
             | LineKind::BrowseDir
-            | LineKind::CreateDir
-            | LineKind::EditFcc => "mailbox",
-            LineKind::SavePart | LineKind::AttachFile => "file",
-            LineKind::PipePart | LineKind::Shell => "command",
+            | LineKind::CreateDir => "mailbox",
+            LineKind::SavePart => "file",
+            LineKind::PipePart => "command",
             LineKind::Notmuch => "notmuch",
             LineKind::EnterCommand => "command",
-            LineKind::EditSubject | LineKind::Query | LineKind::EditDesc | LineKind::EditType => {
-                "other"
-            }
+            LineKind::Query => "other",
         }
     }
 }
@@ -169,15 +151,9 @@ impl LineKind {
 pub enum KeyKind {
     /// A one-key question the session asked.
     Ask(AskKind),
-    Security,
     Recall,
     /// Confirm printing the selected attachment part.
     PrintPart,
-    /// Compose menu q, like mutt: postpone (yes) or discard (no)?
-    PostponeAsk,
-    /// $abort_noattach = ask: the body mentions an attachment and
-    /// none is attached. Send it anyway?
-    NoAttach,
 }
 
 pub enum Prompt {
@@ -301,13 +277,10 @@ pub struct App {
     view_size: (usize, usize),
     pub theme: Theme,
     pub keymap: Keymap,
-    compose: Option<Compose>,
     pending_editor: Option<Compose>,
     /// Message whose raw bytes go through $EDITOR next loop tick
     /// (mutt's edit function).
     pending_raw_edit: Option<PathBuf>,
-    /// Attach-line index waiting for a d / ctrl+t compose-menu edit.
-    attach_edit: Option<usize>,
     /// Address completion state at the To prompt (Tab cycles).
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
@@ -329,9 +302,6 @@ pub struct App {
     pending_shell: Option<String>,
     /// Ctrl+Z: stop, and pick the terminal back up on SIGCONT.
     pending_suspend: bool,
-    /// The attachment reminder has been answered for this draft: the
-    /// next send goes through without asking again.
-    attach_confirmed: bool,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     quit: bool,
@@ -477,10 +447,8 @@ impl App {
             view_size: (80, 24),
             theme,
             keymap,
-            compose: None,
             pending_editor: None,
             pending_raw_edit: None,
-            attach_edit: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
             history: HashMap::new(),
@@ -492,7 +460,6 @@ impl App {
             redraw: false,
             pending_shell: None,
             pending_suspend: false,
-            attach_confirmed: false,
             tag_next: false,
             quit: false,
         };
@@ -523,10 +490,7 @@ impl App {
             }
             None => {}
         }
-        let warnings = self.run_requests();
-        if !warnings.is_empty() {
-            self.error(warnings.join("; "));
-        }
+        self.run_requests_quietly();
     }
 
     /// What the session cannot do for itself. Hands back anything
@@ -538,6 +502,9 @@ impl App {
                 Request::Quit => self.quit = true,
                 Request::ConfigChanged => warnings.extend(self.recompile_ui()),
                 Request::Editor(compose) => self.pending_editor = Some(compose),
+                Request::Shell(command) => self.pending_shell = Some(command),
+                Request::Suspend => self.pending_suspend = true,
+                Request::ShowDraft => self.open_compose_menu(),
                 Request::Command(cmd) => {
                     let outcome = match &cmd {
                         command::Command::Push(seq) => self.push_command(seq),
@@ -553,6 +520,21 @@ impl App {
             }
         }
         warnings
+    }
+
+    /// Honour whatever the session asked for, saying nothing: for
+    /// the callers that have no report to fold warnings into.
+    fn run_requests_quietly(&mut self) {
+        let warnings = self.run_requests();
+        if !warnings.is_empty() {
+            self.error(warnings.join("; "));
+        }
+    }
+
+    /// One of the draft's headers, edited from the compose menu.
+    fn ask_header(&mut self, name: &str) {
+        let ask = self.session.ask_header(name);
+        self.open_ask(ask);
     }
 
     /// mutt asks before a new message when there are postponed
@@ -610,12 +592,10 @@ impl App {
                 terminal.clear()?;
             }
             self.session.sync_message_hooks();
-            // A send that failed on the way out hands its draft
-            // back: the compose menu opens on it again.
-            if let Some(draft) = self.session.tick_outbox() {
-                self.compose = Some(draft);
-                self.open_compose_menu();
-            }
+            self.session.tick_outbox();
+            // A send that failed hands its draft back, and the hooks
+            // may have asked for something too.
+            self.run_requests_quietly();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             // Macro-queued keys run first, without waiting for input.
             let key = match self.pending_keys.pop_front() {
@@ -759,7 +739,7 @@ impl App {
             KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc | KeyCode::Char('?') => {
                 self.mode = Mode::Index;
                 // Leaving the attachment review resumes the send flow.
-                if self.compose.is_some() {
+                if self.session.draft().is_some() {
                     self.open_compose_menu();
                 }
             }
@@ -788,7 +768,7 @@ impl App {
                     self.session.cancel_setup();
                     // Escaping a sub-prompt of the send flow (attach
                     // file) returns to the compose menu.
-                    if self.compose.is_some() {
+                    if self.session.draft().is_some() {
                         self.open_compose_menu();
                     }
                 }
@@ -918,33 +898,6 @@ impl App {
                 let next = self.session.answer(what, Answer::Key(key));
                 self.open_ask(next);
             }
-            KeyKind::Security => {
-                if let Some(c) = &mut self.compose {
-                    c.security = match code {
-                        KeyCode::Char('e') => Security::Encrypt,
-                        KeyCode::Char('s') => Security::Sign,
-                        KeyCode::Char('b') => Security::Both,
-                        KeyCode::Char('c') => Security::None,
-                        _ => c.security,
-                    };
-                }
-            }
-            KeyKind::PostponeAsk => match code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    self.mode = Mode::Index;
-                    if let Some(draft) = self.compose.take() {
-                        self.session.postpone_draft(draft);
-                    }
-                }
-                KeyCode::Char('n') => {
-                    self.mode = Mode::Index;
-                    if let Some(c) = self.compose.take() {
-                        let _ = std::fs::remove_file(&c.path);
-                        self.note("message discarded");
-                    }
-                }
-                _ => {} // back to the menu
-            },
             KeyKind::Recall => match code {
                 KeyCode::Char('r') => self.recall_postponed(),
                 KeyCode::Char('n') => {
@@ -958,18 +911,6 @@ impl App {
                     self.print_part();
                 }
             }
-            KeyKind::NoAttach => match code {
-                // ask-no: Enter goes back to the menu, where `a`
-                // attaches the file that was forgotten.
-                KeyCode::Char('y') => {
-                    self.attach_confirmed = true;
-                    self.send_draft();
-                }
-                _ => {
-                    self.note("not sent; a attaches a file");
-                    self.open_compose_menu();
-                }
-            },
         }
     }
 
@@ -990,9 +931,7 @@ impl App {
             LineKind::Ask {
                 wants: Wants::Address,
                 ..
-            } | LineKind::EditTo
-                | LineKind::EditCc
-                | LineKind::EditBcc
+            }
         );
         let is_mbox = matches!(
             kind,
@@ -1118,11 +1057,6 @@ impl App {
             }
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::ChangeDirReadOnly => self.open_mailbox_read_only(input),
-            LineKind::Shell => {
-                if !input.is_empty() {
-                    self.pending_shell = Some(input.to_string());
-                }
-            }
             LineKind::BrowseDir => self.browse_dir(input),
             LineKind::CreateDir => self.create_maildir(input),
             LineKind::SavePart => self.save_part(input),
@@ -1130,24 +1064,6 @@ impl App {
             LineKind::Query => self.run_query(input),
             LineKind::Notmuch => self.notmuch_search(input),
             LineKind::EnterCommand => self.run_command_line(input),
-            LineKind::AttachFile => self.attach_file_submitted(input),
-            LineKind::EditTo => {
-                self.set_draft_header("To", &alias::expand(input, &alias::load_default()))
-            }
-            LineKind::EditCc => {
-                self.set_draft_header("Cc", &alias::expand(input, &alias::load_default()))
-            }
-            LineKind::EditBcc => {
-                self.set_draft_header("Bcc", &alias::expand(input, &alias::load_default()))
-            }
-            LineKind::EditSubject => self.set_draft_header("Subject", input),
-            LineKind::EditDesc => self.set_attach_field(input, false),
-            LineKind::EditType => self.set_attach_field(input, true),
-            LineKind::EditFcc => {
-                if let Some(c) = &mut self.compose {
-                    c.fcc = Some(input.trim().to_string());
-                }
-            }
         }
     }
 
@@ -1396,14 +1312,14 @@ impl App {
                 }
             }
             IndexAction::Shell => {
-                self.prompt = Some(Prompt::line(
-                    "Shell command: ",
-                    String::new(),
-                    LineKind::Shell,
-                ));
+                let ask = self.session.ask_shell();
+                self.open_ask(Some(ask));
             }
             IndexAction::Redraw => self.redraw = true,
-            IndexAction::Suspend => self.pending_suspend = true,
+            IndexAction::Suspend => {
+                self.session.request_suspend();
+                self.run_requests_quietly();
+            }
             IndexAction::Folders => self.open_folder_browser(),
             IndexAction::Print => {
                 let ask = self.session.ask_print(apply_tagged);
@@ -1574,7 +1490,8 @@ impl App {
                 return;
             }
             PagerAction::Suspend => {
-                self.pending_suspend = true;
+                self.session.request_suspend();
+                self.run_requests_quietly();
                 return;
             }
             PagerAction::Undo => {
@@ -2289,7 +2206,7 @@ impl App {
         let _ = terminal.clear();
         match status {
             Ok(s) if s.success() => {
-                self.compose = Some(compose);
+                self.session.set_draft(compose);
                 self.open_compose_menu();
             }
             _ => {
@@ -2304,7 +2221,7 @@ impl App {
     /// Mutt's compose menu: entered after the editor, and again after
     /// every sub-prompt, until y sends, P/q postpones, or q discards.
     fn open_compose_menu(&mut self) {
-        if self.compose.is_some() {
+        if self.session.draft().is_some() {
             let sel = match self.mode {
                 Mode::Compose { sel } => sel,
                 _ => 0,
@@ -2313,67 +2230,10 @@ impl App {
         }
     }
 
-    /// The draft's header block, wherever it currently lives.
-    fn draft_head(&self) -> String {
-        let Some(c) = &self.compose else {
-            return String::new();
-        };
-        match &c.hidden_head {
-            Some(head) => head.clone(),
-            None => {
-                let text = std::fs::read_to_string(&c.path).unwrap_or_default();
-                match text.split_once("\n\n") {
-                    Some((head, _)) => head.to_string(),
-                    None => text.trim_end().to_string(),
-                }
-            }
-        }
-    }
-
-    /// Rewrite the draft's header block in place (hidden or in-file).
-    fn edit_draft_head(&mut self, f: impl Fn(&str) -> String) {
-        let Some(c) = &mut self.compose else {
-            return;
-        };
-        match &mut c.hidden_head {
-            Some(head) => *head = f(head),
-            None => {
-                if let Ok(text) = std::fs::read_to_string(&c.path) {
-                    let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
-                    let _ = std::fs::write(&c.path, format!("{}\n\n{body}", f(head)));
-                }
-            }
-        }
-    }
-
-    /// Replace (or add, or with an empty value drop) one header.
-    fn set_draft_header(&mut self, name: &str, value: &str) {
-        let value = value.trim().to_string();
-        let name = name.to_string();
-        self.edit_draft_head(|head| {
-            let mut lines: Vec<&str> = head
-                .lines()
-                .filter(|l| {
-                    !l.split_once(':')
-                        .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(&name))
-                })
-                .collect();
-            let added = format!("{name}: {value}");
-            if !value.is_empty() {
-                lines.push(&added);
-            }
-            lines.join("\n")
-        });
-    }
-
-    fn draft_header(&self, name: &str) -> String {
-        rmut_session::header_value(&self.draft_head(), name).unwrap_or_default()
-    }
-
     /// Header lines the compose menu shows; From falls back to the
     /// identity that send would use.
     pub fn compose_header_lines(&self) -> Vec<(&'static str, String)> {
-        let head = self.draft_head();
+        let head = self.session.draft_head();
         let get = |n: &str| rmut_session::header_value(&head, n).unwrap_or_default();
         let from = match rmut_session::header_value(&head, "From") {
             Some(f) => f,
@@ -2384,17 +2244,17 @@ impl App {
                 .unwrap_or_else(|| default_from(&maildir::hostname())),
         };
         let security = self
-            .compose
-            .as_ref()
+            .session
+            .draft()
             .map(|c| c.security.label())
             .filter(|l| !l.is_empty())
             .unwrap_or("none");
-        let fcc = match self.compose.as_ref().and_then(|c| c.fcc.clone()) {
+        let fcc = match self.session.draft().and_then(|c| c.fcc.clone()) {
             Some(fcc) if fcc.is_empty() => "(no copy)".into(),
             Some(fcc) => fcc,
             None if self.session.config.mail.copy == Some(false) => "(no copy)".into(),
             None => {
-                let default = self.session.default_fcc(self.compose.as_ref());
+                let default = self.session.default_fcc(self.session.draft());
                 if default.is_empty() {
                     "(nearby Sent maildir)".into()
                 } else {
@@ -2416,7 +2276,7 @@ impl App {
     /// Attachment-table entries: the body, the forwarded original,
     /// then every Attach: file, in detach order.
     pub fn compose_entries(&self) -> Vec<String> {
-        let Some(c) = &self.compose else {
+        let Some(c) = self.session.draft() else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -2466,57 +2326,65 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => *sel = sel.saturating_sub(1),
             KeyCode::Char('y') => {
                 self.mode = Mode::Index;
-                self.send_draft();
+                let ask = self.session.send_draft();
+                self.open_ask(ask);
             }
             KeyCode::Char('e') => {
                 self.mode = Mode::Index;
-                if let Some(c) = self.compose.take() {
+                if let Some(c) = self.session.take_draft() {
                     self.pending_editor = Some(c);
                 }
             }
             // Before plain t: ctrl+t edits the selected attachment's
             // content-type (mutt's edit-type).
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.prompt_attach_edit(true);
+                let sel = *sel;
+                let ask = self.session.ask_attach_field(sel, true);
+                self.open_ask(ask);
             }
-            KeyCode::Char('t') => self.edit_header_prompt("To"),
-            KeyCode::Char('c') => self.edit_header_prompt("Cc"),
-            KeyCode::Char('b') => self.edit_header_prompt("Bcc"),
-            KeyCode::Char('s') => self.edit_header_prompt("Subject"),
-            KeyCode::Char('d') => self.prompt_attach_edit(false),
+            KeyCode::Char('t') => self.ask_header("To"),
+            KeyCode::Char('c') => self.ask_header("Cc"),
+            KeyCode::Char('b') => self.ask_header("Bcc"),
+            KeyCode::Char('s') => self.ask_header("Subject"),
+            KeyCode::Char('d') => {
+                let sel = *sel;
+                let ask = self.session.ask_attach_field(sel, false);
+                self.open_ask(ask);
+            }
             KeyCode::Char('f') => {
-                let buf = match self.compose.as_ref().and_then(|c| c.fcc.clone()) {
-                    Some(fcc) => fcc,
-                    None => self.session.default_fcc(self.compose.as_ref()),
-                };
-                self.prompt = Some(Prompt::line("Fcc: ", buf, LineKind::EditFcc));
+                let ask = self.session.ask_fcc();
+                self.open_ask(ask);
             }
             KeyCode::Char('a') => {
-                self.prompt = Some(Prompt::line(
-                    "Attach file: ",
-                    String::new(),
-                    LineKind::AttachFile,
-                ));
+                let ask = self.session.ask_attach_file();
+                self.open_ask(ask);
             }
             KeyCode::Enter => self.view_compose_entry(),
-            KeyCode::Char('D') => self.detach_selected(),
+            KeyCode::Char('D') => {
+                let sel = *sel;
+                self.session.detach(sel);
+                // A row may have gone: keep the cursor on the table.
+                let len = self.compose_entries().len();
+                if let Mode::Compose { sel } = &mut self.mode {
+                    *sel = (*sel).min(len.saturating_sub(1));
+                }
+            }
             KeyCode::Char('p') => {
-                self.prompt = Some(Prompt::Key {
-                    label: "Security: (e)ncrypt (s)ign (b)oth (c)lear: ".into(),
-                    kind: KeyKind::Security,
-                });
+                let ask = self.session.ask_security();
+                self.open_ask(ask);
             }
             KeyCode::Char('P') => {
                 self.mode = Mode::Index;
-                if let Some(draft) = self.compose.take() {
+                if let Some(draft) = self.session.take_draft() {
                     self.session.postpone_draft(draft);
                 }
             }
             KeyCode::Char('q') => {
-                self.prompt = Some(Prompt::Key {
-                    label: "Postpone this message? (y/n): ".into(),
-                    kind: KeyKind::PostponeAsk,
-                });
+                // Leaving the menu; an answer that keeps the draft
+                // asks for it back.
+                self.mode = Mode::Index;
+                let ask = self.session.ask_postpone();
+                self.open_ask(ask);
             }
             _ => {}
         }
@@ -2529,7 +2397,7 @@ impl App {
         let Mode::Compose { sel } = self.mode else {
             return;
         };
-        let Some(c) = &self.compose else {
+        let Some(c) = self.session.draft() else {
             return;
         };
         let has_orig = c.attach.is_some();
@@ -2589,289 +2457,16 @@ impl App {
         self.mode = Mode::Help { lines, scroll: 0 };
     }
 
-    /// d / ctrl+t on the compose menu: prompt for the selected
-    /// attachment's description or content-type.
-    fn prompt_attach_edit(&mut self, is_type: bool) {
-        let Mode::Compose { sel } = self.mode else {
-            return;
-        };
-        let fixed = 1 + usize::from(self.compose.as_ref().is_some_and(|c| c.attach.is_some()));
-        if sel < fixed {
-            self.error("only Attach: files can be edited");
-            return;
-        }
-        let k = sel - fixed;
-        let attachment = self
-            .compose
-            .as_ref()
-            .and_then(|c| draft_full(c).ok())
-            .map(|full| compose::extract_attachments(&full).1)
-            .and_then(|mut atts| (k < atts.len()).then(|| atts.swap_remove(k)));
-        let Some(a) = attachment else { return };
-        self.attach_edit = Some(k);
-        if is_type {
-            let buf = a
-                .mime
-                .clone()
-                .unwrap_or_else(|| compose::content_type(&a.path).to_string());
-            self.prompt = Some(Prompt::line("Content-Type: ", buf, LineKind::EditType));
-        } else {
-            let buf = a.description.clone().unwrap_or_default();
-            self.prompt = Some(Prompt::line("Description: ", buf, LineKind::EditDesc));
-        }
-    }
-
-    /// The submitted d / ctrl+t edit: rewrite the k-th Attach: line
-    /// with the new description or content-type.
-    fn set_attach_field(&mut self, input: &str, is_type: bool) {
-        let Some(k) = self.attach_edit.take() else {
-            return;
-        };
-        let value = input.trim().to_string();
-        self.edit_draft_head(|head| {
-            let mut seen = 0usize;
-            head.lines()
-                .map(|l| {
-                    let is_attach = l
-                        .split_once(':')
-                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
-                    if is_attach {
-                        // Count like extract_attachments (empty-value
-                        // lines don't), so k matches the menu entry.
-                        let (_, mut atts) = compose::extract_attachments(l);
-                        if let Some(mut a) = atts.pop() {
-                            let idx = seen;
-                            seen += 1;
-                            if idx == k {
-                                let new = (!value.is_empty()).then(|| value.clone());
-                                if is_type {
-                                    a.mime = new;
-                                } else {
-                                    a.description = new;
-                                }
-                                return compose::attach_line(&a);
-                            }
-                        }
-                    }
-                    l.to_string()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-    }
-
-    fn edit_header_prompt(&mut self, name: &'static str) {
-        let kind = match name {
-            "To" => LineKind::EditTo,
-            "Cc" => LineKind::EditCc,
-            "Bcc" => LineKind::EditBcc,
-            _ => LineKind::EditSubject,
-        };
-        self.prompt = Some(Prompt::line(
-            format!("{name}: "),
-            self.draft_header(name),
-            kind,
-        ));
-    }
-
-    /// D in the compose menu: drop the selected Attach: line (the
-    /// body and a forwarded original cannot be detached).
-    fn detach_selected(&mut self) {
-        let Mode::Compose { sel } = self.mode else {
-            return;
-        };
-        let fixed = 1 + usize::from(self.compose.as_ref().is_some_and(|c| c.attach.is_some()));
-        if sel < fixed {
-            self.error("only Attach: files can be detached");
-            return;
-        }
-        let k = sel - fixed;
-        self.edit_draft_head(|head| {
-            let mut seen = 0usize;
-            head.lines()
-                .filter(|l| {
-                    let is_attach = l
-                        .split_once(':')
-                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
-                    if is_attach {
-                        seen += 1;
-                        seen - 1 != k
-                    } else {
-                        true
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-        let len = self.compose_entries().len();
-        if let Mode::Compose { sel } = &mut self.mode {
-            *sel = (*sel).min(len.saturating_sub(1));
-        }
-    }
-
-    /// Add an `Attach:` line to the draft's header block without a
-    /// trip through the editor (send prompt `a`).
-    fn attach_file_submitted(&mut self, input: &str) {
-        let input = input.trim();
-        if !input.is_empty() {
-            if !expand_tilde(input).is_file() {
-                self.error(format!("{input} is not a file"));
-            } else if let Some(c) = &mut self.compose {
-                // Quote paths with spaces the way extract_attachments
-                // reads them back.
-                let value = if input.contains(char::is_whitespace) && !input.starts_with('"') {
-                    format!("\"{input}\"")
-                } else {
-                    input.to_string()
-                };
-                let result = match &mut c.hidden_head {
-                    // Withheld headers: the Attach: line joins them.
-                    Some(head) => {
-                        *head = format!("{}\nAttach: {value}", head.trim_end());
-                        Ok(())
-                    }
-                    None => std::fs::read_to_string(&c.path).and_then(|text| {
-                        let updated = match text.split_once("\n\n") {
-                            Some((head, body)) => format!("{head}\nAttach: {value}\n\n{body}"),
-                            None => format!("{}\nAttach: {value}\n", text.trim_end()),
-                        };
-                        std::fs::write(&c.path, updated)
-                    }),
-                };
-                if let Err(err) = result {
-                    self.error(format!("cannot attach: {err}"));
-                }
-            }
-        }
-        self.open_compose_menu();
-    }
-
-    fn send_draft(&mut self) {
-        let Some(compose_state) = self.compose.take() else {
-            return;
-        };
-        let raw = match draft_full(&compose_state) {
-            Ok(r) => r,
-            Err(err) => {
-                self.error(format!("cannot read draft: {err}"));
-                return;
-            }
-        };
-        // neomutt's $abort_noattach: the body says "attached" and
-        // nothing is. Asked once per draft; an answered draft sends.
-        if !mem::take(&mut self.attach_confirmed)
-            && self.session.attachment_forgotten(&raw, &compose_state)
-        {
-            self.compose = Some(compose_state);
-            match self.session.config.mail.abort_noattach.as_deref() {
-                // neomutt's "yes" aborts outright: attach the file,
-                // or take the word out of the body.
-                Some("yes") => {
-                    self.error("no attachment: not sent (abort_noattach); a attaches one");
-                    self.open_compose_menu();
-                }
-                _ => {
-                    self.prompt = Some(Prompt::Key {
-                        label:
-                            "The body mentions an attachment and none is attached. Send? (y/n): "
-                                .into(),
-                        kind: KeyKind::NoAttach,
-                    });
-                }
-            }
-            return;
-        }
-        // mutt's fcc-hook, evaluated on the draft as it stands after
-        // the editor; an Fcc picked in the menu still wins.
-        let draft_path = self
-            .compose
-            .as_ref()
-            .map(|c| c.path.clone())
-            .unwrap_or_default();
-        let hook_fcc = self.session.fcc_hook_target(&raw, &draft_path);
-        let (raw, files) = compose::extract_attachments(&raw);
-        let host = maildir::hostname();
-        let from = self
-            .session
-            .current_identity(&[])
-            .from_line()
-            .unwrap_or_else(|| default_from(&host));
-        let final_text = match compose::finalize(
-            &raw,
-            &from,
-            &compose::make_message_id(&host),
-            &compose::rfc2822_now(),
-        ) {
-            Ok(t) => t,
-            Err(err) => {
-                self.error(format!("{err}; press e to edit"));
-                self.compose = Some(compose_state);
-                self.open_compose_menu();
-                return;
-            }
-        };
-        let original = match &compose_state.attach {
-            Some(path) => match std::fs::read(path) {
-                Ok(bytes) => Some(bytes),
-                Err(err) => {
-                    self.error(format!("cannot attach the original: {err}"));
-                    self.compose = Some(compose_state);
-                    self.open_compose_menu();
-                    return;
-                }
-            },
-            None => None,
-        };
-        let final_text = match self.session.secure_message(
-            compose_state.security,
-            final_text,
-            &files,
-            original.as_deref(),
-        ) {
-            Ok(t) => t,
-            Err(err) => {
-                self.error(format!("{err:#}; e edits, s changes security"));
-                self.compose = Some(compose_state);
-                self.open_compose_menu();
-                return;
-            }
-        };
-        // The menu's Fcc wins, then any fcc-hook; empty means keep no
-        // copy, and $copy = no makes that the default.
-        let held = Held {
-            text: final_text,
-            fcc: compose_state.fcc.clone().or(hook_fcc),
-            label: {
-                let head = raw.split_once("\n\n").map_or(raw.as_str(), |(h, _)| h);
-                rmut_session::header_value(head, "Subject")
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| rmut_session::header_value(head, "To"))
-                    .unwrap_or_else(|| "message".into())
-            },
-            state: compose_state,
-            due: Instant::now() + Duration::from_secs(self.session.config.mail.undo_send),
-        };
-        // $undo_send: the message waits, and z takes it back.
-        if self.session.config.mail.undo_send > 0 {
-            self.note(format!(
-                "sending {} in {}s (z cancels)",
-                held.label, self.session.config.mail.undo_send
-            ));
-            self.session.hold_send(held);
-            return;
-        }
-        self.session.deliver(held);
-    }
-
     /// Take the newest held message back to its compose menu, draft
     /// and all. Returns false when nothing was waiting.
     /// mutt has no undo; rmut's walks back the last step. A message
     /// still inside its $undo_send window is the most recent thing
     /// done, so it is what undo takes back first.
     fn undo_last(&mut self) {
-        if let Some(draft) = self.session.cancel_send() {
-            self.compose = Some(draft);
-            self.open_compose_menu();
+        // A message still inside its $undo_send window is the most
+        // recent thing done, so it is what undo takes back first.
+        if self.session.cancel_send() {
+            self.run_requests_quietly();
             return;
         }
         self.session.undo_last();
