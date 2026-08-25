@@ -1641,10 +1641,12 @@ impl App {
                 ));
             }
             KeyKind::Purge { quit } => match code {
-                // y expunges; n writes flag changes but keeps the
-                // messages marked deleted, like mutt.
-                KeyCode::Char('y') | KeyCode::Char('n') => {
-                    self.sync(code == KeyCode::Char('y'));
+                // ask-yes, like mutt's $delete: Enter takes the yes.
+                // n writes flag changes but keeps the messages marked
+                // deleted; anything else calls the whole thing off,
+                // including the quit that asked.
+                KeyCode::Char('y') | KeyCode::Char('n') | KeyCode::Enter => {
+                    self.sync(code != KeyCode::Char('n'));
                     if quit {
                         self.quit = true;
                     }
@@ -6232,10 +6234,23 @@ impl App {
     /// For an IMAP mailbox the changes go to the server first (UID
     /// STORE / EXPUNGE); the local pass then updates the cache to match.
     fn prompt_purge(&mut self, quit: bool) {
-        self.prompt = Some(Prompt::Key {
-            label: format!("Purge {} deleted message(s)? (y/n): ", self.deleted_count()),
-            kind: KeyKind::Purge { quit },
-        });
+        // mutt's $delete: yes purges without asking, no keeps the
+        // marks, and the ask default is the question below.
+        match self.config.mail.delete.as_deref() {
+            Some("yes") | Some("no") => {
+                let purge = self.config.mail.delete.as_deref() == Some("yes");
+                self.sync(purge);
+                if quit {
+                    self.quit = true;
+                }
+            }
+            _ => {
+                self.prompt = Some(Prompt::Key {
+                    label: format!("Purge {} deleted message(s)? (y/n): ", self.deleted_count()),
+                    kind: KeyKind::Purge { quit },
+                });
+            }
+        }
     }
 
     /// Copy every deleted message into the trash mailbox: UID COPY on

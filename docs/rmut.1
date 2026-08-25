@@ -696,6 +696,18 @@ under attachments, and inside a PGP layer alike. The paragraphs are
 your editor's doing: a line that continues has to end with a space,
 and rmut adds none of its own.
 .TP
+.B delete
+mutt's $delete quadoption: what
+.B $
+and quitting do with messages marked for deletion.
+.B ask
+(the default) asks, and like mutt's ask-yes the Enter takes the yes;
+.B yes
+purges without asking;
+.B no
+never purges, so the marks keep until you change your mind. mutt's
+ask-yes and ask-no both import as ask.
+.TP
 .B abort_noattach ", " attach_keyword
 neomutt's $abort_noattach and $abort_noattach_regex: when the body
 mentions an attachment and none is attached,

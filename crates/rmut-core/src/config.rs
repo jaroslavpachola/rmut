@@ -270,6 +270,11 @@ pub struct Mail {
     /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
     /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
     pub new_mail_command: Option<String>,
+    /// mutt's $delete (a quadoption): what `$` and quitting do with
+    /// messages marked for deletion. "ask" (the default) asks, with
+    /// Enter taking the yes; "yes" purges them without asking; "no"
+    /// never purges, so the marks stay for a later change of mind.
+    pub delete: Option<String>,
     /// neomutt's $abort_noattach: what to do when the body mentions
     /// an attachment and none is attached. "no" (the default) never
     /// checks, "ask" asks before sending, "yes" refuses the send.

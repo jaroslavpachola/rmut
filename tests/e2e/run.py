@@ -3347,6 +3347,57 @@ def scenario_control_chars(tmp):
     r.close()
 
 
+def scenario_purge_question(tmp):
+    """mutt's $delete is ask-yes: Enter takes the yes, and delete=yes
+    skips the question. Enter used to call the purge off silently."""
+    def mailbox(name, n=3):
+        md = make_maildir(tmp, name)
+        for i in range(1, n + 1):
+            with open(os.path.join(md, "cur", f"17517900{i:02d}.{i}.host:2,S"), "w") as f:
+                f.write(f"From: S{i} <s{i}@example.com>\nTo: jarda@example.com\n"
+                        f"Subject: purge {i}\nDate: Mon, 6 Jul 2026 1{i}:00:00 +0200\n"
+                        f"Message-ID: <pg{i}{name}@x>\n\nbody\n")
+        return md
+
+    def count(md):
+        return len(os.listdir(os.path.join(md, "cur")))
+
+    # Enter at the question purges, like mutt's ask-yes.
+    md = mailbox("md-purge")
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:3")
+    r.keys(b"d$")
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"\r")
+    wait_for(lambda: count(md) == 2, desc="purged on Enter")
+    r.keys(b"x")
+    r.close()
+
+    # n keeps the mark, as before.
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:2")
+    r.keys(b"d$")
+    r.expect("Purge 1 deleted message(s)?")
+    r.keys(b"n")
+    r.repaint()
+    r.expect("synced: 0 deleted")
+    assert count(md) == 2, count(md)
+    r.keys(b"x")
+    r.close()
+
+    # delete = "yes": no question at all.
+    md2 = mailbox("md-purge-yes")
+    cfg = os.path.join(tmp, "purge-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[mail]\ndelete = "yes"\n')
+    r = Rmut(md2, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:3")
+    r.keys(b"d$")
+    wait_for(lambda: count(md2) == 2, desc="purged without asking")
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3381,6 +3432,7 @@ SCENARIOS = [
     scenario_attach_reminder,
     scenario_getting_started,
     scenario_control_chars,
+    scenario_purge_question,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

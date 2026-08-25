@@ -109,7 +109,8 @@ read, `t` tag + `;` apply the next mark, save, copy, pipe, print or
 bounce to all tagged, `z` undo
 the last of those (or cancel a held send), `s` save
 (copy to a mailbox + mark deleted), `$` sync changes to disk (asks
-before purging deleted messages, like mutt), Space page down,
+before purging deleted messages, like mutt: Enter takes the yes, and
+`[mail] delete = "yes"` skips the question), Space page down,
 Ctrl+L repaint, `!` shell command, Ctrl+Z suspend (fg brings it
 back), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
@@ -677,6 +678,8 @@ metoo = false                # true: a group reply copies me too
 text_flowed = false          # true: send text/plain; format=flowed
 undo_send = 0                # seconds a sent message waits, so z can
                              # take it back (0 sends at once)
+delete = "ask"               # mutt's $delete: "yes" purges without
+                             # asking, "no" keeps the marks
 abort_noattach = "no"        # "ask"/"yes": a body that mentions an
                              # attachment with none attached is
                              # questioned before it goes

@@ -89,6 +89,8 @@ struct State {
     metoo: bool,
     /// `set text_flowed`: send text/plain; format=flowed.
     text_flowed: bool,
+    /// mutt's $delete quadoption, when it is not the ask default.
+    delete: Option<String>,
     /// neomutt's attachment reminder: $abort_noattach (as
     /// no/ask/yes) and $abort_noattach_regex.
     abort_noattach: Option<String>,
@@ -547,6 +549,15 @@ impl State {
             }
             "metoo" => {
                 self.metoo = is_yes(value);
+            }
+            "delete" => {
+                // A quadoption: ask-yes and ask-no are rmut's "ask",
+                // which is also its default, so only yes/no are worth
+                // carrying over.
+                match v.as_str() {
+                    "yes" | "no" => self.delete = Some(v),
+                    _ => {}
+                }
             }
             "abort_noattach" => {
                 // A quadoption: ask-yes and ask-no both become "ask".
@@ -1151,6 +1162,7 @@ impl State {
             || !self.my_hdr.is_empty()
             || self.metoo
             || self.text_flowed
+            || self.delete.is_some()
             || self.abort_noattach.is_some()
             || self.attach_keyword.is_some()
         {
@@ -1219,6 +1231,9 @@ impl State {
             }
             if self.text_flowed {
                 out += "text_flowed = true\n";
+            }
+            if let Some(v) = &self.delete {
+                out += &format!("delete = {}\n", quote(v));
             }
             if let Some(v) = &self.abort_noattach {
                 out += &format!("abort_noattach = {}\n", quote(v));
