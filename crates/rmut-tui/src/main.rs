@@ -7,14 +7,14 @@ mod ui;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
 use crate::app::App;
 
 const USAGE: &str =
     "usage: rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
        rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] [-e CMD]... -- ADDR...
-       rmut --import-muttrc [MUTTRC]   (-V version, -h help)
+       rmut --import-muttrc [-w] [MUTTRC]   (-V version, -h help)
 
 Reading:
 -R  open the mailbox read-only: nothing is written, not even read marks
@@ -42,7 +42,9 @@ The exit code says whether the message went out.
 
 --import-muttrc translates a muttrc (default ~/.muttrc or
 ~/.mutt/muttrc) into rmut TOML on stdout, for review and saving as
-the config; directives with no rmut equivalent become comments.";
+the config; directives with no rmut equivalent become comments.
+-w saves it straight to ~/.config/rmut/config.toml instead, creating
+the directory and refusing to overwrite what is already there.";
 
 fn main() -> ExitCode {
     match run() {
@@ -60,6 +62,8 @@ struct Cli {
     spec: Option<String>,
     read_only: bool,
     import: bool,
+    /// `-w` with --import-muttrc: save it instead of printing it.
+    write: bool,
     /// `-e`, in the order given.
     commands: Vec<String>,
     subject: Option<String>,
@@ -116,6 +120,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
                 std::process::exit(0);
             }
             "--import-muttrc" => cli.import = true,
+            "-w" | "--write" => cli.write = true,
             _ if arg.starts_with("-e") => cli.commands.push(value("-e")?),
             _ if arg.starts_with("-f") => cli.spec = Some(value("-f")?),
             _ if arg.starts_with("-s") => {
@@ -167,7 +172,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
 fn run() -> Result<ExitCode> {
     let cli = parse_args(std::env::args().skip(1))?;
     if cli.import {
-        return import_muttrc(cli.spec.as_deref());
+        return import_muttrc(cli.spec.as_deref(), cli.write);
     }
     let (mut config, config_warning) = rmut_core::config::load_default();
     // +x / =x in any configured mailbox becomes a real name once,
@@ -211,6 +216,10 @@ fn run() -> Result<ExitCode> {
     } else if cli.folders {
         app.open_folders();
     }
+    // ratatui::init() panics without one; say it plainly instead.
+    if unsafe { libc::isatty(0) } == 0 || unsafe { libc::isatty(1) } == 0 {
+        bail!("rmut needs a terminal (use -s ... to send from a script)");
+    }
     let terminal = ratatui::init();
     app::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = app.run(terminal);
@@ -248,7 +257,7 @@ fn send_batch(config: &mut rmut_core::config::Config, cli: &Cli) -> Result<ExitC
 }
 
 /// Translate a muttrc to rmut TOML on stdout (nothing is written).
-fn import_muttrc(path: Option<&str>) -> Result<ExitCode> {
+fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
     let path = match path {
         Some(p) => expand_tilde(p),
         None => {
@@ -260,7 +269,34 @@ fn import_muttrc(path: Option<&str>) -> Result<ExitCode> {
         }
     };
     let import = rmut_core::muttrc::import_file(&path)?;
-    print!("{}", import.toml);
+    if write {
+        let target = rmut_core::config::path()
+            .ok_or_else(|| anyhow::anyhow!("no $HOME, so no config path to write to"))?;
+        if target.exists() {
+            bail!(
+                "{} already exists: move it aside, or redirect the output instead",
+                target.display()
+            );
+        }
+        if let Some(dir) = target.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        std::fs::write(&target, &import.toml)
+            .with_context(|| format!("writing {}", target.display()))?;
+        eprintln!("rmut: wrote {}", target.display());
+    } else {
+        print!("{}", import.toml);
+        // Printed at a terminal, so nothing was captured: say where it
+        // was meant to go rather than leaving it scrolled off.
+        if unsafe { libc::isatty(1) } == 1 {
+            let target = rmut_core::config::path().unwrap_or_default();
+            eprintln!(
+                "rmut: nothing written. `rmut --import-muttrc -w` saves it to {}, \
+                 or redirect the output yourself.",
+                target.display()
+            );
+        }
+    }
     if !import.aliases.is_empty() {
         eprintln!(
             "rmut: {} alias line(s) found; see the comment block in the output",
@@ -279,22 +315,161 @@ fn expand_tilde(input: &str) -> PathBuf {
     PathBuf::from(input)
 }
 
+/// Where a mailbox may be found when none was given, in the order
+/// rmut tries them. Split out from the environment so it can be
+/// tested against a directory of its own.
+struct MailEnv {
+    home: Option<PathBuf>,
+    mail: Option<String>,
+    user: Option<String>,
+}
+
+impl MailEnv {
+    fn current() -> MailEnv {
+        MailEnv {
+            home: std::env::var("HOME").ok().map(PathBuf::from),
+            mail: std::env::var("MAIL").ok().filter(|m| !m.is_empty()),
+            user: std::env::var("USER").ok().filter(|u| !u.is_empty()),
+        }
+    }
+}
+
 fn default_mailbox(config: &rmut_core::config::Config) -> Result<String> {
+    find_default_mailbox(config, &MailEnv::current())
+}
+
+/// The mailbox rmut opens with nothing on the command line: the
+/// configured ones first, then where mutt looks. A maildir is one
+/// with `cur/`; a directory of maildirs answers with its inbox, since
+/// that is what "~/Mail" usually is; an mbox is any existing file,
+/// which is what $MAIL and /var/mail/$USER classically are.
+fn find_default_mailbox(config: &rmut_core::config::Config, env: &MailEnv) -> Result<String> {
+    let mut tried: Vec<String> = Vec::new();
+    let maildir = |path: PathBuf, tried: &mut Vec<String>| -> Option<String> {
+        if path.join("cur").is_dir() {
+            return Some(path.display().to_string());
+        }
+        // A directory of maildirs (mutt's $folder): take its inbox.
+        for name in ["inbox", "INBOX", "Inbox"] {
+            let inbox = path.join(name);
+            if inbox.join("cur").is_dir() {
+                return Some(inbox.display().to_string());
+            }
+        }
+        tried.push(path.display().to_string());
+        None
+    };
     for mailbox in &config.mail.mailboxes {
-        if mailbox.starts_with("imap:") || expand_tilde(mailbox).join("cur").is_dir() {
+        if mailbox.starts_with("imap:") {
             return Ok(mailbox.clone());
         }
-    }
-    if let Ok(mail) = std::env::var("MAIL")
-        && PathBuf::from(&mail).join("cur").is_dir()
-    {
-        return Ok(mail);
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(home).join("Maildir");
-        if p.join("cur").is_dir() {
-            return Ok(p.display().to_string());
+        if let Some(found) = maildir(expand_tilde(mailbox), &mut tried) {
+            return Ok(found);
         }
     }
-    bail!("no maildir given and no configured mailbox, $MAIL, or ~/Maildir found\n{USAGE}");
+    if let Some(folder) = &config.mail.folder {
+        if folder.starts_with("imap:") {
+            return Ok(folder.clone());
+        }
+        if let Some(found) = maildir(expand_tilde(folder), &mut tried) {
+            return Ok(found);
+        }
+    }
+    // $MAIL is classically an mbox file, and rmut reads those too.
+    if let Some(mail) = &env.mail {
+        let path = expand_tilde(mail);
+        if path.is_file() {
+            return Ok(mail.clone());
+        }
+        if let Some(found) = maildir(path, &mut tried) {
+            return Ok(found);
+        }
+    }
+    if let Some(home) = &env.home {
+        for name in ["Maildir", "Mail", "mail"] {
+            if let Some(found) = maildir(home.join(name), &mut tried) {
+                return Ok(found);
+            }
+        }
+    }
+    if let Some(user) = &env.user {
+        for dir in ["/var/mail", "/var/spool/mail"] {
+            let spool = PathBuf::from(dir).join(user);
+            if spool.is_file() {
+                return Ok(spool.display().to_string());
+            }
+            tried.push(spool.display().to_string());
+        }
+    }
+    bail!(
+        "no mailbox found. Give one (rmut ~/Mail/inbox), set [mail] mailboxes \
+         in ~/.config/rmut/config.toml, or point $MAIL at one.\n\
+         Looked in: {}\n\
+         A maildir is a directory with cur/, new/ and tmp/ in it:\n\
+         \tmkdir -p ~/Mail/inbox/{{cur,new,tmp}} && rmut ~/Mail/inbox\n{USAGE}",
+        tried.join(", ")
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn maildir(at: &std::path::Path) {
+        for sub in ["cur", "new", "tmp"] {
+            std::fs::create_dir_all(at.join(sub)).unwrap();
+        }
+    }
+
+    #[test]
+    fn default_mailbox_looks_where_mutt_looks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let env = |mail: Option<&str>| MailEnv {
+            home: Some(home.clone()),
+            mail: mail.map(String::from),
+            user: Some("nobody".into()),
+        };
+        let cfg = rmut_core::config::Config::default();
+
+        // Nothing at all: an error naming what was tried.
+        let err = find_default_mailbox(&cfg, &env(None))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no mailbox found"), "{err}");
+        assert!(err.contains("Maildir"), "{err}");
+
+        // ~/Mail is a directory of maildirs (mutt's $folder): its
+        // inbox is the answer.
+        maildir(&home.join("Mail/inbox"));
+        assert_eq!(
+            find_default_mailbox(&cfg, &env(None)).unwrap(),
+            home.join("Mail/inbox").display().to_string()
+        );
+
+        // ~/Maildir, being a maildir itself, comes first.
+        maildir(&home.join("Maildir"));
+        assert_eq!(
+            find_default_mailbox(&cfg, &env(None)).unwrap(),
+            home.join("Maildir").display().to_string()
+        );
+
+        // $MAIL wins over both, and may be an mbox file.
+        let spool = tmp.path().join("spool");
+        std::fs::write(&spool, "From x\n").unwrap();
+        let spool = spool.display().to_string();
+        assert_eq!(
+            find_default_mailbox(&cfg, &env(Some(&spool))).unwrap(),
+            spool
+        );
+
+        // A configured mailbox wins over everything, imap: included.
+        let mut cfg = rmut_core::config::Config::default();
+        cfg.mail.mailboxes = vec!["imap:work/INBOX".into()];
+        assert_eq!(
+            find_default_mailbox(&cfg, &env(Some(&spool))).unwrap(),
+            "imap:work/INBOX"
+        );
+    }
 }

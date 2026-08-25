@@ -935,6 +935,35 @@ from a muttrc.
       holding it. Batch sends never ask, having no terminal to answer
       at; e2e scenario_attach_reminder
 
+## R47: getting started (done, 1.47)
+
+Goal: two rough edges hit on a fresh machine, reported from real use.
+rmut could not find a mailbox that mutt would have found, and
+`--import-muttrc` printed a config to the terminal and wrote nothing,
+which reads as "it did not work".
+
+- [x] The startup search looks where mutt looks: configured
+      mailboxes, `[mail] folder`, `$MAIL` (a maildir or, as it
+      classically is, an mbox file), `~/Maildir`, `~/Mail`, `~/mail`,
+      then the `/var/mail/$USER` and `/var/spool/mail/$USER` spools.
+      A directory of maildirs answers with its inbox, since that is
+      what a mutt-style `~/Mail` usually is
+- [x] Finding nothing says what to do (give a path, set
+      `[mail] mailboxes`, point `$MAIL`), lists the places it tried,
+      and shows the mkdir that makes a maildir. `find_default_mailbox`
+      takes the environment as an argument, so a unit test can point
+      it at a directory of its own
+- [x] `--import-muttrc -w` writes the config instead of printing it,
+      creating `~/.config/rmut/` and refusing to overwrite what is
+      there. Printing at a terminal now says so too, since the output
+      scrolls past and nothing was saved
+- [x] Running without a terminal says so instead of panicking inside
+      ratatui's init
+- [x] Fixed on the way: the e2e `repaint()` helper raced the keys it
+      followed, so a resize could repaint the screen as it was before
+      they were read. Two scenarios were failing at random; it settles
+      first now. e2e scenario_getting_started
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the

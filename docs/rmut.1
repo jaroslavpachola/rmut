@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.46.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.47.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -37,12 +37,21 @@ It reads maildirs, mbox files and IMAP folders, sends through
 sendmail(1) or SMTP, threads messages, filters them with mutt-style
 patterns, and signs/encrypts with gpg(1).
 .PP
-Without an argument it opens the first mailbox from
+Without an argument it looks where mutt looks: the first mailbox from
 .B mail.mailboxes
 in the configuration, then
-.BR $MAIL ,
-then
-.IR ~/Maildir .
+.BR mail.folder ,
+.B $MAIL
+(a maildir or an mbox file),
+.IR ~/Maildir ", " ~/Mail ", " ~/mail ,
+and the
+.IR /var/mail/$USER " (or " /var/spool/mail/$USER ") spool."
+A directory holding maildirs answers with its
+.IR inbox ,
+which is what a mutt-style
+.I ~/Mail
+usually is. Finding nothing is an error naming the places it tried
+and how to make a maildir.
 .SH OPTIONS
 .TP
 .B \-R
@@ -1014,9 +1023,13 @@ reproduces the classic line:
 "\-\-\-rmut%r: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? (limit:%V)?".
 .SH MUTTRC IMPORT
 .B rmut \-\-import\-muttrc
-prints a translated configuration to stdout:
+prints a translated configuration to stdout, or with
+.B \-w
+writes it straight to the config file, creating the directory and
+refusing to overwrite one that is already there:
 .PP
 .nf
+  rmut \-\-import\-muttrc \-w
   rmut \-\-import\-muttrc > ~/.config/rmut/config.toml
 .fi
 .PP

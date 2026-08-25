@@ -93,7 +93,8 @@ class Rmut:
     def __init__(self, maildir, env=None, rows=30, cols=160, args=()):
         self.buf = ""
         self.rows, self.cols = rows, cols
-        cmd = [RMUT, *args, maildir]
+        # maildir=None: no positional, so rmut has to find one itself.
+        cmd = [RMUT, *args] + ([maildir] if maildir else [])
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.environ["TERM"] = "xterm-256color"
@@ -134,6 +135,9 @@ class Rmut:
         resize makes the whole screen paint again. The status itself
         survives: only a key press clears it, and a resize is not one.
         """
+        # Let the keys just sent land first: a resize that overtakes
+        # them repaints the screen as it was before they were read.
+        self.settle()
         self.cols = 159 if self.cols == 160 else 160
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
                     struct.pack("HHHH", self.rows, self.cols, 0, 0))
@@ -3260,6 +3264,59 @@ def scenario_attach_reminder(tmp):
     r.close()
 
 
+def scenario_getting_started(tmp):
+    """R47: with no mailbox on the command line rmut looks where mutt
+    looks, says what to do when it finds nothing, and --import-muttrc
+    -w saves the config instead of printing it."""
+    home = os.path.join(tmp, "start-home")
+    make_maildir(os.path.join(home, "Mail"), "inbox")
+    write_msgs(os.path.join(home, "Mail", "inbox"), ["jane"])
+    env = base_env(tmp, {"HOME": home, "MAIL": "", "USER": "nobody"})
+
+    # ~/Mail is mutt's $folder, and a directory of maildirs answers
+    # with its inbox.
+    r = Rmut(None, env)
+    r.expect("Msgs:1", "Lunch on Friday?")
+    r.keys(b"x")
+    r.close()
+
+    # Nothing anywhere: the failure says where it looked and what to
+    # do about it.
+    empty = os.path.join(tmp, "start-empty")
+    os.makedirs(empty, exist_ok=True)
+    r = Rmut(None, base_env(tmp, {"HOME": empty, "MAIL": "", "USER": "nobody"}))
+    r.expect("no mailbox found", "Looked in:", "mkdir -p")
+    r.close()
+
+    # An mbox spool named by $MAIL is a mailbox too, file and all.
+    spool = os.path.join(tmp, "start-spool")
+    with open(spool, "w") as f:
+        f.write("From jane@example.com Mon Jul  6 10:00:00 2026\n"
+                "From: Jane Doe <jane@example.com>\nTo: jarda@example.com\n"
+                "Subject: spooled mail\nDate: Mon, 6 Jul 2026 10:00:00 +0200\n\n"
+                "hello from the spool\n\n")
+    r = Rmut(None, base_env(tmp, {"HOME": empty, "MAIL": spool, "USER": "nobody"}))
+    r.expect("spooled mail")
+    r.keys(b"x")
+    r.close()
+
+    # --import-muttrc -w writes the config, creating the directory,
+    # and will not overwrite one that is already there.
+    muttrc = os.path.join(tmp, "start-muttrc")
+    with open(muttrc, "w") as f:
+        f.write('set realname = "Started Here"\nset folder = ~/Mail\n')
+    out = os.path.join(tmp, "start-config", "config.toml")
+    r = Rmut(None, base_env(tmp, {"RMUT_CONFIG": out}),
+             args=("--import-muttrc", "-w", muttrc))
+    r.expect("wrote " + out)
+    r.close()
+    assert 'name = "Started Here"' in open(out).read()
+    r = Rmut(None, base_env(tmp, {"RMUT_CONFIG": out}),
+             args=("--import-muttrc", "-w", muttrc))
+    r.expect("already exists")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3292,6 +3349,7 @@ SCENARIOS = [
     scenario_folder_shorthand,
     scenario_paper_cuts,
     scenario_attach_reminder,
+    scenario_getting_started,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.46**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.47**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -88,11 +88,18 @@ the man page; `man docs/rmut.1` previews the manual from a checkout.
 
 ```
 usage: rmut [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
-       rmut --import-muttrc [MUTTRC]
+       rmut --import-muttrc [-w] [MUTTRC]
 ```
 
-Without an argument, rmut opens the first configured mailbox, `$MAIL`,
-or `~/Maildir`.
+Without an argument rmut looks where mutt looks: the first configured
+mailbox, then `[mail] folder`, `$MAIL` (a maildir or an mbox file),
+`~/Maildir`, `~/Mail`, `~/mail`, and finally the `/var/mail/$USER`
+spool. A directory of maildirs answers with its `inbox`. When nothing
+turns up it says where it looked, and how to make one:
+
+```sh
+mkdir -p ~/Mail/inbox/{cur,new,tmp} && rmut ~/Mail/inbox
+```
 
 ## Keys
 
@@ -315,7 +322,7 @@ order moved.
 ```
 rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
 rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] -- ADDRESS...
-rmut --import-muttrc [MUTTRC]
+rmut --import-muttrc [-w] [MUTTRC]
 ```
 
 `-R` read-only, `-f` the mailbox to open, `-p` the postponed picker,
@@ -763,10 +770,16 @@ current keys.
 ### Coming from mutt
 
 ```sh
-rmut --import-muttrc > ~/.config/rmut/config.toml   # reads ~/.muttrc
+rmut --import-muttrc -w            # reads ~/.muttrc, writes the config
+rmut --import-muttrc               # or print it, to look first
 ```
 
-translates a muttrc (identity, folder/mailboxes, record/postponed,
+`-w` saves it to `~/.config/rmut/config.toml`, creating the directory
+and refusing to overwrite a config that is already there. Without it
+the translation goes to stdout for review, so redirect it yourself if
+that is what you want.
+
+The translation covers identity, folder/mailboxes, record/postponed,
 sendmail/editor/print_command/query_command/status_format, binds,
 status/header colors and `color index FG BG PATTERN` rules, PGP
 defaults, IMAP/SMTP URLs into an `[[accounts]]` skeleton, with
