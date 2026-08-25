@@ -72,6 +72,13 @@ MSGS = {
         "Message-ID: <msg4@example.com>\r\nIn-Reply-To: <msg1@example.com>\r\n"
         "References: <msg1@example.com>\r\n\r\nCount me in too!\r\nAlice\r\n",
     ),
+    "bob": (
+        "cur/1752038400.5.host:2,S",
+        "From: Bob <bob@example.com>\r\nTo: jarda@example.com\r\n"
+        "Subject: Re: Lunch on Friday?\r\nDate: Thu, 9 Jul 2026 09:00:00 +0200\r\n"
+        "Message-ID: <msg5@example.com>\r\nIn-Reply-To: <msg4@example.com>\r\n"
+        "References: <msg1@example.com> <msg4@example.com>\r\n\r\nSo am I.\r\nBob\r\n",
+    ),
 }
 
 
@@ -85,6 +92,7 @@ def write_msgs(maildir, names):
 class Rmut:
     def __init__(self, maildir, env=None, rows=30, cols=160, args=()):
         self.buf = ""
+        self.rows, self.cols = rows, cols
         cmd = [RMUT, *args, maildir]
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
@@ -116,6 +124,20 @@ class Rmut:
         raise AssertionError(
             f"timed out waiting for {needles!r}; tail: {squash(self.buf)[-400:]!r}"
         )
+
+    def repaint(self):
+        """Force a full redraw before reading the screen.
+
+        ratatui writes only the cells that changed, so a status line
+        sharing characters with the one it replaced arrives in the pty
+        stream with holes in it, and expect() cannot see it. A window
+        resize makes the whole screen paint again. The status itself
+        survives: only a key press clears it, and a resize is not one.
+        """
+        self.cols = 159 if self.cols == 160 else 160
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", self.rows, self.cols, 0, 0))
+        self.settle()
 
     def settle(self, wait=0.5):
         end = time.time() + wait
@@ -2933,7 +2955,7 @@ def scenario_tagged_and_pager(tmp):
     # A function that takes one message says so instead of quietly
     # doing one of the twelve.
     r.keys(b";e")
-    r.expect("takes one message, not the tagged set")
+    r.expect("edit does not take the tagged set")
 
     # Pipe gets them concatenated, in one run of the command.
     r.keys(b";|cat >> " + piped.encode() + b"\r")
@@ -2972,6 +2994,72 @@ def scenario_tagged_and_pager(tmp):
     r.close()
 
 
+def scenario_thread_ops(tmp):
+    """R42: Alt+d/u/t act on the whole thread, Ctrl+D/Ctrl+U on the
+    subthread under the cursor, and Alt+n/Alt+p step between threads.
+    All of it needs thread sort, as it does in mutt."""
+    md = make_maildir(tmp, "md-threads")
+    # ci, then Jane's thread (jane -> alice -> bob), then petr:
+    # 5 rows, 3 thread roots.
+    write_msgs(md, ["jane", "petr", "ci", "alice", "bob"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:5")
+
+    # Without thread sort they refuse, like mutt.
+    r.keys(b"\x1bd")
+    r.expect("thread operations need thread sort")
+
+    r.keys(b"ot")
+    r.expect("sorted by threads")
+
+    # Alt+n / Alt+p walk the roots: row 1 ci, row 2 jane, row 5 petr.
+    r.keys(b"=\x1bn")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 2/5")
+    r.keys(b"i\x1bn")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 5/5")
+    r.keys(b"i\x1bp\x1bp")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 1/5")
+    r.keys(b"i")
+
+    # Alt+d takes the thread the cursor sits in, all three of it, and
+    # one z brings it back.
+    r.keys(b"=j\x1bd")
+    r.expect("3 deleted")
+    r.keys(b"z")
+    r.repaint()
+    r.expect("undone: delete thread (3 message(s))")
+
+    # Ctrl+D takes the message under the cursor and its replies only.
+    r.keys(b"j\x04")
+    r.repaint()
+    r.expect("2 deleted")
+    r.keys(b"z")
+    r.repaint()
+    r.expect("undone: delete subthread (2 message(s))")
+
+    # Alt+t tags the thread, and follows the cursor's tag like mutt:
+    # a second press untags it.
+    r.keys(b"k\x1bt")
+    r.repaint()
+    r.expect("3 tagged")
+    r.keys(b"\x1bt")
+    r.repaint()
+    r.expect("3 untagged")
+
+    # Nothing reached disk: every mark was walked back.
+    r.keys(b"$")
+    r.repaint()
+    r.expect("synced: 0 deleted")
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3000,6 +3088,7 @@ SCENARIOS = [
     scenario_undo_send,
     scenario_search_direction,
     scenario_tagged_and_pager,
+    scenario_thread_ops,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.42**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.43**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -104,7 +104,10 @@ the last of those (or cancel a held send), `s` save
 (copy to a mailbox + mark deleted), `$` sync changes to disk (asks
 before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
-Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
+Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
+whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
+step between threads (all of these want thread sort), `l` limit,
+`/` search
 + `n` next (Alt+/ searches backwards, and `n` then keeps going that
 way), `c` open mailbox by path (Tab completes mailboxes,
 account folders and nearby maildirs; empty Tab opens the folder
@@ -425,6 +428,22 @@ PGP signature or encryption alike. The paragraphs themselves are your
 editor's doing, exactly as in mutt: a line that continues has to end
 with a space, and rmut adds none of its own.
 
+## Threads
+
+`o t` sorts by threads, and then the thread is a unit you can act on:
+Alt+d, Alt+u and Alt+t (mutt's `Esc d`, `Esc u`, `Esc t`) delete,
+undelete and tag the whole thread the cursor sits in, Ctrl+D and
+Ctrl+U do the same for the subthread (the message under the cursor
+and its replies), and Alt+n / Alt+p step to the next and previous
+thread. Alt+v folds one thread, Alt+V all of them.
+
+Each of these is one undo step, however many messages hang off it, so
+`z` brings a thread back whole. Deleting advances to the next
+undeleted message, mutt's `$resolve`, which makes clearing thread
+after thread one repeated key; undeleting and tagging stay put.
+Tagging follows the cursor, so a second Alt+t untags the thread.
+Without thread sort they refuse, as they do in mutt.
+
 ## Tagged operations
 
 `t` tags a message and `;` hands the tagged set to the next function:
@@ -434,8 +453,8 @@ into a single run of the command (mutt's `$pipe_split` unset), and
 `b` bounces them all to the same addresses, with the confirmation
 counting what it is about to do.
 
-A function that cannot take a set says so ("resend takes one message,
-not the tagged set") rather than quietly acting on the one under the
+A function that cannot take a set says so ("resend does not take the
+tagged set") rather than quietly acting on the one under the
 cursor. `T` and Ctrl+T tag and untag by pattern; `;t` clears the tags,
 the way it does in mutt.
 

@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.42.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.43.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -183,9 +183,9 @@ save or copy them all under one prompt and one undo step,
 pipe or print them concatenated into a single run of the command
 (mutt with $pipe_split unset), and
 .B b
-bounces them all to the same addresses. A function that takes one
-message, like resend or edit, says so rather than quietly acting on
-the message under the cursor
+bounces them all to the same addresses. A function outside that set,
+like resend, edit or the thread operations, says so rather than
+quietly acting on the message under the cursor
 .TP
 .B z
 cancel a message still held by
@@ -281,6 +281,24 @@ prints it via print
 .TP
 .B Alt+v Alt+V
 fold/unfold current thread; fold/unfold all threads
+.TP
+.B Alt+d Alt+u Alt+t
+delete, undelete or tag the whole thread the cursor sits in (mutt's
+Esc d / Esc u / Esc t). Tagging follows the cursor, so a second
+Alt+t untags the thread; deleting then advances to the next
+undeleted message (mutt's $resolve), while undeleting and tagging
+stay put. Each is one undo step, however many messages hang off it
+.TP
+.B Ctrl+D Ctrl+U
+the same, for the subthread: the message under the cursor and its
+replies
+.TP
+.B Alt+n Alt+p
+jump to the next / previous thread, wrapping around with a note.
+.PP
+All six need thread sort
+.RB ( "o t" ),
+and say so when it is not on, as mutt does
 .TP
 .B s C
 save (copy and mark deleted) / copy to a mailbox

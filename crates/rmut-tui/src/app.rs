@@ -1903,10 +1903,7 @@ impl App {
         // whose prompt was abandoned with Esc.
         self.tag_op = false;
         if apply_tagged && !takes_tagged(action) {
-            self.error_status(format!(
-                "{} takes one message, not the tagged set",
-                action.name()
-            ));
+            self.error_status(format!("{} does not take the tagged set", action.name()));
             return;
         }
         match action {
@@ -1918,6 +1915,13 @@ impl App {
                 }
             }
             IndexAction::Undo => self.undo_last(),
+            IndexAction::DeleteThread => self.thread_mark(false, ThreadOp::Delete),
+            IndexAction::UndeleteThread => self.thread_mark(false, ThreadOp::Undelete),
+            IndexAction::TagThread => self.thread_mark(false, ThreadOp::Tag),
+            IndexAction::DeleteSubthread => self.thread_mark(true, ThreadOp::Delete),
+            IndexAction::UndeleteSubthread => self.thread_mark(true, ThreadOp::Undelete),
+            IndexAction::NextThread => self.jump_thread(true),
+            IndexAction::PrevThread => self.jump_thread(false),
             IndexAction::TagPrefix => {
                 if self.msgs.iter().any(|m| m.env.tagged) {
                     self.tag_next = true;
@@ -5831,6 +5835,104 @@ impl App {
     /// Tab / Alt+Tab: jump to the next (previous) new-or-unread
     /// message, wrapping around with a note (mutt's
     /// next-new-then-unread).
+    /// The messages a thread operation applies to: the selected
+    /// message's whole thread, or (with `sub`) the selected message
+    /// and its replies. None when the index is not thread-sorted,
+    /// which is also when mutt refuses.
+    fn thread_targets(&mut self, sub: bool) -> Option<Vec<usize>> {
+        if self.sort != SortKey::Threads {
+            self.error_status("thread operations need thread sort (o t)");
+            return None;
+        }
+        let &mi = self.visible.get(self.sel)?;
+        if !sub {
+            let root = self.thread_root.get(mi).copied().unwrap_or(mi);
+            return Some(
+                (0..self.msgs.len())
+                    .filter(|&i| self.thread_root.get(i).copied().unwrap_or(i) == root)
+                    .collect(),
+            );
+        }
+        // Thread sort lays the messages out depth-first, so a
+        // message's replies are the run after it that stays deeper.
+        let depth = self.thread_depth.get(mi).copied().unwrap_or(0);
+        let mut out = vec![mi];
+        for i in (mi + 1)..self.msgs.len() {
+            if self.thread_depth.get(i).copied().unwrap_or(0) <= depth {
+                break;
+            }
+            out.push(i);
+        }
+        Some(out)
+    }
+
+    /// mutt's delete-thread / undelete-thread / tag-thread and their
+    /// subthread halves: one keystroke, one undo step, however many
+    /// messages hang off it.
+    fn thread_mark(&mut self, sub: bool, op: ThreadOp) {
+        if op != ThreadOp::Tag && self.deny_readonly() {
+            return;
+        }
+        let Some(&mi) = self.visible.get(self.sel) else {
+            return;
+        };
+        let Some(targets) = self.thread_targets(sub) else {
+            return;
+        };
+        let scope = if sub { "subthread" } else { "thread" };
+        let (what, verb) = match op {
+            ThreadOp::Delete => (format!("delete {scope}"), "deleted"),
+            ThreadOp::Undelete => (format!("undelete {scope}"), "undeleted"),
+            // mutt's tag-thread follows the message under the cursor:
+            // the whole thread takes the opposite of its tag.
+            ThreadOp::Tag if self.msgs[mi].env.tagged => (format!("untag {scope}"), "untagged"),
+            ThreadOp::Tag => (format!("tag {scope}"), "tagged"),
+        };
+        self.push_undo(&what, &targets);
+        let want_tag = !self.msgs[mi].env.tagged;
+        for &i in &targets {
+            match op {
+                ThreadOp::Delete => {
+                    self.msgs[i].env.file.flags.deleted = true;
+                    self.msgs[i].dirty = true;
+                }
+                ThreadOp::Undelete => {
+                    self.msgs[i].env.file.flags.deleted = false;
+                    self.msgs[i].dirty = true;
+                }
+                ThreadOp::Tag => self.msgs[i].env.tagged = want_tag,
+            }
+        }
+        self.status = Some(format!("{} {verb}", targets.len()));
+        // mutt's $resolve, which is what makes deleting thread after
+        // thread one repeated key; a rescue stays where it is.
+        if op == ThreadOp::Delete
+            && let Some(pos) = self.step_message(true, true)
+        {
+            self.sel = pos;
+        }
+    }
+
+    /// mutt's next-thread / previous-thread: the first message of the
+    /// thread either side of this one.
+    fn jump_thread(&mut self, forward: bool) {
+        if self.sort != SortKey::Threads {
+            self.error_status("thread operations need thread sort (o t)");
+            return;
+        }
+        for (vi, wrapped) in wrap_order(self.visible.len(), self.sel, forward) {
+            let mi = self.visible[vi];
+            if self.thread_depth.get(mi).copied().unwrap_or(0) == 0 {
+                if wrapped {
+                    self.status = Some("wrapped around".into());
+                }
+                self.select(vi);
+                return;
+            }
+        }
+        self.error_status("no other thread");
+    }
+
     fn jump_new(&mut self, forward: bool) {
         let n = self.visible.len();
         if n == 0 {
@@ -6072,6 +6174,13 @@ fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
     };
     // Thread sort has no reverse variant.
     Some((key, rev && key != SortKey::Threads))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThreadOp {
+    Delete,
+    Undelete,
+    Tag,
 }
 
 /// Which functions `;` (tag-prefix) can hand the tagged set to. The

@@ -797,20 +797,30 @@ Goal: `;` and the pager stop lying about what they did.
 - [x] Both go on R39's undo stack, one step per keystroke, like their
       index twins; e2e scenario_tagged_and_pager
 
-## R42: thread operations
+## R42: thread operations (done, 1.43, minus the postponed box)
 
 Goal: act on the thread, not the message. `thread_root` and
 `thread_depth` are already maintained and folding sits on Alt+v /
 Alt+V (mutt's `Esc v`), so half the map is drawn.
 
-- [ ] Alt+d / Alt+u delete and undelete the whole thread, Alt+t tags
+- [x] Alt+d / Alt+u delete and undelete the whole thread, Alt+t tags
       it (mutt's `Esc d` / `Esc u` / `Esc t`: a terminal sends
-      `Esc x` as Alt+x, so the keys match by construction)
-- [ ] Ctrl+D / Ctrl+U for the subthread, the selected message and its
-      descendants (mutt's delete-subthread / undelete-subthread)
-- [ ] Alt+n / Alt+p jump to the next / previous thread root
-- [ ] One undo step per thread operation, however many messages it
-      touched, which is what makes "delete this thread" safe to try
+      `Esc x` as Alt+x, so the keys match by construction). Tagging
+      follows the cursor's own tag, like mutt, so a second Alt+t
+      untags; deleting advances to the next undeleted message
+      ($resolve), which is what makes clearing thread after thread
+      one repeated key, while a rescue stays where it is
+- [x] Ctrl+D / Ctrl+U for the subthread, the selected message and its
+      descendants (mutt's delete-subthread / undelete-subthread).
+      Thread sort lays the messages out depth-first, so the replies
+      are the run after the message that stays deeper than it
+- [x] Alt+n / Alt+p jump to the next / previous thread root, over the
+      same `wrap_order` walk as every other motion
+- [x] One undo step per thread operation, however many messages it
+      touched, which is what makes "delete this thread" safe to try.
+      All of them refuse without thread sort, as mutt does;
+      e2e scenario_thread_ops, which also needed a reply-to-the-reply
+      fixture so a subthread is not the whole thread
 - [ ] Postponed from R45, only if the macros do not carry it: promote
       next/previous-marked to real motions with a key of their own,
       rather than `/~D` and Alt+/ driven from `[macros.index]`. What
