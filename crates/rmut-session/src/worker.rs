@@ -129,12 +129,15 @@ pub struct Imap {
     /// The job in flight, if any: what it is, for anyone drawing a
     /// status line.
     busy: Option<&'static str>,
+    /// A way to cut the socket short, for mutt's Ctrl+G.
+    cutoff: rmut_core::net::Cutoff,
 }
 
 impl Imap {
     /// Take an open connection onto a thread of its own.
     pub fn new(remote: Remote) -> Imap {
         let facts = Facts::of(&remote);
+        let cutoff = remote.cutoff();
         let (jobs, inbox) = channel::<Job>();
         let (outbox, answers) = channel::<Result<Done>>();
         let progress = Arc::new(Mutex::new(None));
@@ -149,6 +152,16 @@ impl Imap {
             thread: Some(thread),
             progress,
             busy: None,
+            cutoff,
+        }
+    }
+
+    /// mutt's Ctrl+G: cut the job in flight short. The socket goes
+    /// down, whatever was blocked on it fails, and the next job
+    /// reconnects. Does nothing when nothing is running.
+    pub fn abort(&self) {
+        if self.busy.is_some() {
+            self.cutoff.cut();
         }
     }
 

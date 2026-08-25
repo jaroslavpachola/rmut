@@ -343,6 +343,9 @@ pub struct Session {
     /// Whether the message line is showing a progress line, so it can
     /// be taken back down when the job it belongs to is done.
     progress_noted: bool,
+    /// Set by Ctrl+G: the answer that comes back is the abort, not
+    /// something to complain about.
+    aborted: bool,
     /// The compose flow in progress: what is being answered about
     /// the draft that has not been written yet.
     setup: Option<ComposeSetup>,
@@ -461,6 +464,7 @@ impl Session {
             config,
             pending: None,
             progress_noted: false,
+            aborted: false,
             setup: None,
             draft: None,
             attach_confirmed: false,
@@ -926,8 +930,12 @@ impl Session {
     /// time round its loop; it costs nothing when nothing is running.
     pub fn poll_network(&mut self) {
         if let Some(line) = self.imap.as_mut().and_then(Imap::take_progress) {
-            self.note(line);
-            self.progress_noted = true;
+            // After an abort the line is stale news, and picking it
+            // up would take the abort's own note off the screen.
+            if !self.aborted {
+                self.note(format!("{line} (Ctrl+G aborts)"));
+                self.progress_noted = true;
+            }
         }
         let Some(done) = self.imap.as_mut().and_then(Imap::collect) else {
             return;
@@ -947,6 +955,23 @@ impl Session {
         self.imap.as_ref().and_then(Imap::busy)
     }
 
+    /// mutt's Ctrl+G: give up on whatever the connection is doing.
+    /// The operation waiting for it says it was aborted; the next one
+    /// gets a fresh connection.
+    pub fn abort_network(&mut self) {
+        let Some(what) = self.busy() else {
+            return;
+        };
+        if let Some(imap) = &self.imap {
+            imap.abort();
+        }
+        self.note(format!("aborted: {what}"));
+        // This note replaces the progress line rather than following
+        // it, so it must not be swept away when the answer lands.
+        self.progress_noted = false;
+        self.aborted = true;
+    }
+
     /// Send a job off with the operation waiting for it. False when
     /// there is no connection to send it to, and the caller carries
     /// on by itself.
@@ -954,8 +979,14 @@ impl Session {
         let Some(imap) = &mut self.imap else {
             return false;
         };
+        let what = job.what();
         match imap.start(job) {
             Ok(()) => {
+                // Say what is happening before the connection has
+                // anything of its own to report, so a slow server
+                // never looks like a hung one.
+                self.note(format!("{what}... (Ctrl+G aborts)"));
+                self.progress_noted = true;
                 self.pending = Some(pending);
                 true
             }
@@ -980,6 +1011,11 @@ impl Session {
     }
 
     fn resume(&mut self, pending: Pending, done: Result<Done>) {
+        if mem::take(&mut self.aborted) && done.is_err() {
+            // The error is the abort the user asked for; the note
+            // about it is already on the message line.
+            return;
+        }
         match pending {
             Pending::CheckNew => {
                 if let Err(err) = done {

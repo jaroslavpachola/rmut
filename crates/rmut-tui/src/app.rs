@@ -659,6 +659,13 @@ impl App {
         // status bar and the message line.
         let page = height.saturating_sub(3).max(1);
         self.view_size = (width, page);
+        // mutt's Ctrl+G: whatever the connection is doing, stop. It
+        // comes before every menu, since the point of it is to get
+        // out of something that is taking too long.
+        if is_ctrl(&key) && key.code == KeyCode::Char('g') && self.session.busy().is_some() {
+            self.session.abort_network();
+            return;
+        }
         // Ctrl+L repaints from the menus that have no keymap of their
         // own; the index and pager route it through theirs, so it can
         // be rebound there.

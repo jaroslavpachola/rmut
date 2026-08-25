@@ -561,6 +561,7 @@ class FakeImap(threading.Thread):
         self.announce = False
         self.idle_push = False  # make the idling connection see EXISTS
         self.auth_payloads = []  # SASL responses from AUTHENTICATE
+        self.body_delay = 0  # seconds a full-body fetch dawdles
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -673,6 +674,8 @@ class FakeImap(threading.Thread):
                             body = content.split(b"\r\n\r\n", 1)[0] + b"\r\n\r\n"
                             attrs += " BODY[HEADER]"
                         elif "BODY.PEEK[]" in m.group(2).upper():
+                            if self.body_delay:
+                                time.sleep(self.body_delay)
                             body = content
                             attrs += " BODY[]"
                         if body is None:
@@ -3443,6 +3446,55 @@ def scenario_network_timeouts(tmp):
 
 
 
+def scenario_network_abort(tmp):
+    """R55: a slow server does not stop the screen. The connection runs
+    on a thread of its own, so the fetch says what it is doing while it
+    waits, Ctrl+G gives up on it (mutt's abort), and the next one gets
+    a fresh connection."""
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="slow one",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="s1", body="the slow body"))
+    imap.start()
+    cfg = os.path.join(tmp, "abort-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f"""
+[identity]
+email = "jarda@example.com"
+[mail]
+poll_seconds = 600
+[[accounts]]
+name = "slow"
+user = "jane"
+password = "x"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+    env = base_env(tmp, {
+        "RMUT_CONFIG": cfg,
+        "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+    })
+    r = Rmut("imap:slow", env)
+    r.expect("imap:slow/INBOX", "Msgs:1", "slow one")
+    # The body is not cached yet, and the server takes its time over
+    # it: the message line says so while the screen keeps drawing.
+    imap.body_delay = 4
+    r.keys(b"\r")
+    r.expect("fetching the message", "Ctrl+G aborts")
+    # mutt's Ctrl+G: give up. The key is read, which is the point.
+    r.keys(b"\x07")
+    r.expect("aborted: fetching the message")
+    # The connection recovers: a second try, with the server no longer
+    # dawdling, opens the message.
+    imap.body_delay = 0
+    r.keys(b"\r")
+    r.expect("the slow body")
+    r.keys(b"ix")
+    r.close()
+
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3492,6 +3544,7 @@ SCENARIOS = [
     scenario_import_muttrc,
     scenario_attachment_pager,
     scenario_network_timeouts,
+    scenario_network_abort,
 ]
 
 

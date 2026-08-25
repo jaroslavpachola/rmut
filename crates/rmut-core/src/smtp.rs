@@ -26,7 +26,12 @@ pub fn send(
     // STARTTLS (unless smtp_tls = false, for tests).
     let implicit_tls = account.smtp_tls && account.smtp_port == 465;
     let mut conn = Conn::new(
-        net::connect(host, account.smtp_port, implicit_tls)?,
+        net::connect(
+            host,
+            account.smtp_port,
+            implicit_tls,
+            &net::Cutoff::default(),
+        )?,
         format!("{host}:{}", account.smtp_port),
     );
     expect(&mut conn, 220).context("SMTP greeting")?;

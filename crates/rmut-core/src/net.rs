@@ -4,8 +4,8 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -52,6 +52,46 @@ fn timed_out(err: &std::io::Error) -> bool {
 pub(crate) enum Stream {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+/// A way to cut a connection short from another thread: shutting the
+/// socket down makes whatever is blocked on it fail at once, which is
+/// how mutt's Ctrl+G gets its abort.
+#[derive(Clone, Default)]
+pub struct Cutoff(Arc<CutoffState>);
+
+#[derive(Default)]
+struct CutoffState {
+    socket: Mutex<Option<TcpStream>>,
+    /// Set by `cut`, so the failure it causes is told apart from a
+    /// connection that died on its own and should be retried.
+    on_purpose: AtomicBool,
+}
+
+impl Cutoff {
+    fn hold(&self, tcp: &TcpStream) {
+        self.0.on_purpose.store(false, Ordering::Relaxed);
+        if let (Ok(mut slot), Ok(clone)) = (self.0.socket.lock(), tcp.try_clone()) {
+            *slot = Some(clone);
+        }
+    }
+
+    /// Cut it. Whatever the connection was doing fails at once; the
+    /// next job reconnects.
+    pub fn cut(&self) {
+        self.0.on_purpose.store(true, Ordering::Relaxed);
+        if let Ok(slot) = self.0.socket.lock()
+            && let Some(tcp) = slot.as_ref()
+        {
+            let _ = tcp.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Whether the last failure was this cut, and not the network
+    /// letting go. Reading it clears it: one cut, one abort.
+    pub fn was_cut(&self) -> bool {
+        self.0.on_purpose.swap(false, Ordering::Relaxed)
+    }
 }
 
 impl Stream {
@@ -110,10 +150,11 @@ pub(crate) fn is_timeout(err: &anyhow::Error) -> bool {
     })
 }
 
-pub(crate) fn connect(host: &str, port: u16, tls: bool) -> Result<Stream> {
+pub(crate) fn connect(host: &str, port: u16, tls: bool, cutoff: &Cutoff) -> Result<Stream> {
     let tcp = connect_tcp(host, port)?;
     tcp.set_read_timeout(Some(io_timeout()))?;
     tcp.set_write_timeout(Some(io_timeout()))?;
+    cutoff.hold(&tcp);
     if tls {
         wrap_tls(tcp, host)
     } else {

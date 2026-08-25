@@ -42,6 +42,9 @@ pub struct Remote {
     /// hands them to `backfill` for a background mirror.
     pub pending_backfill: Vec<u32>,
     progress: Progress,
+    /// A way to cut the socket from another thread, kept in step with
+    /// every reconnect: mutt's Ctrl+G, from whoever is driving.
+    cutoff: net::Cutoff,
 }
 
 /// How many newest headers a first open fetches synchronously; the
@@ -158,12 +161,12 @@ fn login(client: &mut Client, account: &Account, secret: &str) -> Result<()> {
 }
 
 /// A fresh, logged-in session.
-fn connect_client(account: &Account, secret: &str) -> Result<Client> {
+fn connect_client(account: &Account, secret: &str, cutoff: &net::Cutoff) -> Result<Client> {
     let host = account
         .imap_host
         .as_deref()
         .with_context(|| format!("account {} has no imap_host", account.name))?;
-    let mut client = Client::connect(host, account.imap_port, account.imap_tls)?;
+    let mut client = Client::connect_with(host, account.imap_port, account.imap_tls, cutoff)?;
     login(&mut client, account, secret)?;
     Ok(client)
 }
@@ -179,7 +182,8 @@ impl Remote {
         if let Some(host) = account.imap_host.as_deref() {
             progress(&format!("connecting to {host}..."));
         }
-        let client = connect_client(account, password)?;
+        let cutoff = net::Cutoff::default();
+        let client = connect_client(account, password, &cutoff)?;
         let mut remote = Remote {
             spec: String::new(),
             account: account.clone(),
@@ -191,6 +195,7 @@ impl Remote {
             last_uid: 0,
             pending_backfill: Vec::new(),
             progress,
+            cutoff,
         };
         remote.point_at(mailbox)?;
         Ok(remote)
@@ -199,6 +204,12 @@ impl Remote {
     /// Reuse this session for another folder of the same account: a
     /// SELECT on the live connection instead of a fresh connect+login
     /// round. On failure the caller falls back to a full open.
+    /// A handle on this connection's socket, for cutting whatever it
+    /// is doing short from another thread.
+    pub fn cutoff(&self) -> net::Cutoff {
+        self.cutoff.clone()
+    }
+
     /// Point the progress lines somewhere else (the worker thread
     /// writes them where the session can pick them up).
     pub fn set_progress(&mut self, progress: Progress) {
@@ -243,7 +254,7 @@ impl Remote {
     /// session, same mailbox. A changed UIDVALIDITY means the cache is
     /// stale, and that needs a real reopen, not a silent retry.
     fn reconnect(&mut self) -> Result<()> {
-        let mut client = connect_client(&self.account, &self.secret)?;
+        let mut client = connect_client(&self.account, &self.secret, &self.cutoff)?;
         let select = client.select(&self.mailbox)?;
         ensure!(
             select.uidvalidity == self.uidvalidity,
@@ -261,6 +272,9 @@ impl Remote {
         mut op: impl FnMut(&mut Client, &Path, &mut Progress) -> Result<T>,
     ) -> Result<T> {
         match op(&mut self.client, &self.cache, &mut self.progress) {
+            // A cut connection is somebody asking for this to stop,
+            // so it is not retried; the next job reconnects.
+            Err(err) if self.cutoff.was_cut() => Err(err.context("aborted")),
             Err(err) if net::is_connection_error(&err) => {
                 self.reconnect()
                     .with_context(|| format!("reconnect after: {err:#}"))?;
@@ -582,7 +596,7 @@ pub fn backfill(
     let (thread_stop, thread_done) = (Arc::clone(&stop), Arc::clone(&done));
     std::thread::spawn(move || {
         let run = || -> Result<()> {
-            let mut client = connect_client(&account, &password)?;
+            let mut client = connect_client(&account, &password, &net::Cutoff::default())?;
             client.select(&mailbox)?;
             for chunk in uids.chunks(100) {
                 if thread_stop.load(Ordering::Relaxed) {
@@ -642,7 +656,7 @@ fn idle_session(
     stop: &AtomicBool,
     changed: &AtomicBool,
 ) -> bool {
-    let Ok(mut client) = connect_client(account, secret) else {
+    let Ok(mut client) = connect_client(account, secret, &net::Cutoff::default()) else {
         return true; // maybe offline right now
     };
     match client.supports_idle() {

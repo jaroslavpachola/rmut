@@ -62,12 +62,18 @@ fn idle_waits(timeout: std::time::Duration) -> u32 {
 
 impl Client {
     pub fn connect(host: &str, port: u16, tls: bool) -> Result<Client> {
+        Client::connect_with(host, port, tls, &net::Cutoff::default())
+    }
+
+    /// The same, with a way to cut the connection short from another
+    /// thread (mutt's Ctrl+G).
+    pub fn connect_with(host: &str, port: u16, tls: bool, cutoff: &net::Cutoff) -> Result<Client> {
         // Port 993 is TLS from the first byte; on any other port the
         // session is upgraded with STARTTLS before LOGIN (unless
         // imap_tls = false, for tests).
         let implicit = tls && port == 993;
         let mut conn = Conn::new(
-            net::connect(host, port, implicit)?,
+            net::connect(host, port, implicit, cutoff)?,
             format!("{host}:{port}"),
         );
         let greeting = read_line(&mut conn)?;
