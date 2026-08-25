@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.40**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.41**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -104,7 +104,8 @@ the last of those (or cancel a held send), `s` save
 before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
 Alt+v/Alt+V fold thread/all (with thread sort), `l` limit, `/` search
-+ `n` next, `c` open mailbox by path (Tab completes mailboxes,
++ `n` next (Alt+/ searches backwards, and `n` then keeps going that
+way), `c` open mailbox by path (Tab completes mailboxes,
 account folders and nearby maildirs; empty Tab opens the folder
 browser), `y` folder browser (with
 new/unseen counts; folders holding new mail show bold), `G` check
@@ -460,6 +461,18 @@ The timer running out sends it, and so does leaving rmut: quitting is
 not cancelling. Batch sends (`-s` and friends) never hold, since
 there is no terminal to press `z` at.
 
+### Rescuing one message from a run of deletions
+
+Deleted messages stay in the index (they only go on `$`), so `j`/`k`
+land on them and `u` puts one back. When there are many, three things
+help: `U <pattern>` undeletes a whole set (`U ~f boss`), `l ~D` limits
+the view to the marked ones, and a pattern search hops between them:
+`/~D` then `n`, with Alt+/ to go the other way. The two macros above
+put that hop on `.` and `,`.
+
+In the pager, `j`/`k` step over deleted messages by design (mutt does
+the same); `J`/`K` step to any message, deleted ones included.
+
 ## Which part shows, and mailcap
 
 A `multipart/alternative` message carries the same text twice or more.
@@ -627,6 +640,8 @@ sync = "w"
 
 [macros.index]               # macro: key = "replayed key sequence",
 L = "l~f jane<enter>"        # literals + <enter>/<esc>/<ctrl+x>/...;
+"." = "/~D<enter>"           # hop to the next message marked deleted,
+"," = "<alt+/>~D<enter>"     # and back again
 [macros.pager]               # it feeds the input queue, so it can
                              # drive prompts; a macro shadows a
                              # binding on the same key (like mutt)

@@ -802,6 +802,14 @@ Alt+V (mutt's `Esc v`), so half the map is drawn.
 - [ ] Alt+n / Alt+p jump to the next / previous thread root
 - [ ] One undo step per thread operation, however many messages it
       touched, which is what makes "delete this thread" safe to try
+- [ ] Postponed from R45, only if the macros do not carry it: promote
+      next/previous-marked to real motions with a key of their own,
+      rather than `/~D` and Alt+/ driven from `[macros.index]`. What
+      a key would buy over the macro is not typing the pattern and
+      not clobbering `last_search`; what it costs is deciding what
+      "marked" means, and it should mean deleted only, not
+      `Msg::pending()`, or the motion lands on messages nobody wants
+      to revisit
 
 ## R43: the = and + folder shorthand
 
@@ -830,10 +838,31 @@ with an earlier round instead of waiting for its own.
 - [ ] `!` runs a shell command
 - [ ] `Esc c` opens a mailbox read-only (rmut has `-R`, which is the
       whole session or nothing)
-- [ ] `Esc /` searches the other way (mutt's search-opposite)
 - [ ] Not a one-liner, kept here for company: Ctrl+Z suspends (mutt's
       $suspend, on by default), which needs SIGTSTP with the terminal
       saved and restored around it
+
+## R45: search direction (done, 1.41)
+
+Goal: taken out of R44 early, because backwards was the missing half
+of stepping through the messages marked for deletion.
+
+- [x] `Alt+/` searches backwards (mutt's `Esc /`, search-reverse) and
+      `n` then repeats backwards too: the direction is remembered
+      with the pattern, so one key covers both ways
+- [x] `search_next` now walks `wrap_order`, the same helper
+      `jump_new` uses, instead of its own forward-only loop: one
+      tested walk under every motion
+- [x] No new motion key for "next marked message": `/~D` then `n`
+      already is one, and `[macros.index]` turns it into `.` and `,`
+      (`"." = "/~D<enter>"`, `"," = "<alt+/>~D<enter>"`). Documented
+      in the README and the man page, next to the rest of the answer
+      to "rescue one message out of a run of deletions": deleted
+      messages stay in the index so `j`/`k` reach them, `U PATTERN`
+      undeletes a set, `l ~D` limits to the marked ones
+- [x] e2e scenario_search_direction, with three of four messages
+      marked so forward and backward land on different ones and the
+      test can actually tell the directions apart
 
 ## Beyond mutt (frozen: only on explicit request)
 

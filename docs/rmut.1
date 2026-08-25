@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.40.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.41.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -213,7 +213,33 @@ original); edit as a new draft (resend); bounce to new recipients
 choose sort order
 .TP
 .B l /  n
-limit by pattern; search by pattern; repeat last search
+limit by pattern; search by pattern; repeat the last search the way
+it was going.
+.B Alt+/
+searches backwards (mutt's search-reverse), and
+.B n
+then repeats backwards too. Both wrap around with a note.
+.TP
+.B "l ~D" ", " "U " PATTERN
+picking one message out of a run marked for deletion: deleted
+messages stay in the index, so
+.B j
+and
+.B k
+land on them and
+.B u
+puts one back;
+.B "l ~D"
+limits the view to the marked ones, and
+.BI "U " PATTERN
+undeletes a whole set at once. A search hops between them
+.RB ( /~D
+then
+.BR n ,
+or Alt+/ the other way), which the macro example below binds to
+.B .
+and
+.BR , .
 .TP
 .B c y
 open a mailbox by path; browse nearby mailboxes. At the path prompt
@@ -763,7 +789,13 @@ home, end.
 \(em the key replays the sequence (literal characters plus key names
 in angle brackets: <enter>, <esc>, <ctrl+x>, ...). Macros feed the
 input queue, so they can drive prompts, and shadow a binding on the
-same key.
+same key. For instance
+.PP
+.nf
+  [macros.index]
+  "." = "/~D<enter>"         # next message marked for deletion
+  "," = "<alt+/>~D<enter>"   # and the previous one
+.fi
 .SS [[accounts]]
 .TP
 .B name, user

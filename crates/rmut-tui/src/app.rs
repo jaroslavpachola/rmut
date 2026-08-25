@@ -143,6 +143,9 @@ impl SortKey {
 pub enum LineKind {
     Limit,
     Search,
+    /// The same, the other way round (mutt's search-reverse): `n`
+    /// keeps going backwards afterwards.
+    SearchBack,
     /// The pager's text search (`/` inside a message).
     PagerSearch,
     /// Pattern-wide operations (D/U/T/ctrl+t): every match gets the op.
@@ -191,6 +194,7 @@ impl LineKind {
             LineKind::Limit
             | LineKind::Search
             | LineKind::PagerSearch
+            | LineKind::SearchBack
             | LineKind::DeletePattern
             | LineKind::UndeletePattern
             | LineKind::TagPattern
@@ -442,6 +446,9 @@ pub struct App {
     pub sort_rev: bool,
     pub limit: Option<(String, Vec<Pattern>)>,
     pub last_search: Option<Vec<Pattern>>,
+    /// Which way the last index search went, so `n` repeats in the
+    /// same direction (mutt's search / search-reverse pair).
+    search_rev: bool,
     /// The pager's text search, kept across messages so n/N carry
     /// over; the pager highlights its hits.
     pub(crate) pager_search: Option<pattern::Matcher>,
@@ -858,6 +865,7 @@ impl App {
             sort_rev: false,
             limit: None,
             last_search: None,
+            search_rev: false,
             pager_search: None,
             pager_search_text: String::new(),
             quote_re,
@@ -1789,7 +1797,8 @@ impl App {
                     self.status = Some("no messages match the limit".into());
                 }
             }
-            LineKind::Search => {
+            LineKind::Search | LineKind::SearchBack => {
+                self.search_rev = matches!(kind, LineKind::SearchBack);
                 if !input.is_empty() {
                     match pattern::parse(input) {
                         Ok(patterns) => {
@@ -2042,6 +2051,13 @@ impl App {
             }
             IndexAction::Search => {
                 self.prompt = Some(Prompt::line("Search: ", String::new(), LineKind::Search));
+            }
+            IndexAction::SearchReverse => {
+                self.prompt = Some(Prompt::line(
+                    "Reverse search: ",
+                    String::new(),
+                    LineKind::SearchBack,
+                ));
             }
             IndexAction::SearchNext => self.search_next(),
             IndexAction::NextNew => self.jump_new(true),
@@ -5635,13 +5651,11 @@ impl App {
         if self.visible.is_empty() {
             return;
         }
-        let n = self.visible.len();
         let positions = self.positions();
-        for step in 1..=n {
-            let vi = (self.sel + step) % n;
+        for (vi, wrapped) in wrap_order(self.visible.len(), self.sel, !self.search_rev) {
             let mi = self.visible[vi];
             if self.env_matches_at(&patterns, &self.msgs[mi].env, positions[mi]) {
-                if vi <= self.sel {
+                if wrapped {
                     self.status = Some("search wrapped".into());
                 }
                 self.sel = vi;

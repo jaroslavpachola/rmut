@@ -2839,6 +2839,64 @@ def scenario_undo_send(tmp):
     r.close()
 
 
+def scenario_search_direction(tmp):
+    """R45: Alt+/ searches backwards and n keeps going that way, which
+    is what makes a ./, macro pair step through the messages marked
+    for deletion in both directions and rescue one from the middle."""
+    md = make_maildir(tmp, "md-searchdir")
+    # Oldest first: 1 ci, 2 jane, 3 petr, 4 alice. Three of them get
+    # marked, so forward and backward from the same place land on
+    # different messages and the test can tell the two apart.
+    write_msgs(md, ["ci", "jane", "petr", "alice"])
+    cfg = os.path.join(tmp, "searchdir-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                '[macros.index]\n'
+                '"." = "/~D<enter>"\n'
+                '"," = "<alt+/>~D<enter>"\n')
+
+    def files():
+        return [os.path.join(md, sub, n)
+                for sub in ("cur", "new")
+                for n in os.listdir(os.path.join(md, sub))]
+
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:4")
+
+    r.keys(b"D~s CI\r")
+    r.expect("1 deleted")
+    r.keys(b"D~f petr\r")
+    r.keys(b"D~f alice\r")
+    r.settle()
+
+    # Sitting on the unmarked message at 2: . walks forward to the
+    # marked one at 3, and , from there walks backwards to 1, not
+    # forward to 4. The pager's "Message n/m" is what tells them
+    # apart, since either direction would find something.
+    r.keys(b"=j")
+    r.settle()
+    r.keys(b".")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 3/4")
+    r.keys(b"i,")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 1/4", "CI failed on main")
+    r.keys(b"i")
+
+    # Rescue that one from the middle of the run, and purge the rest.
+    r.keys(b"u")
+    r.settle()
+    r.keys(b"$y")
+    wait_for(lambda: len(files()) == 2, desc="the other two purged")
+    left = [open(f, encoding="utf-8", errors="replace").read() for f in files()]
+    assert not any("petr@example.com" in t or "alice@example.com" in t for t in left), left
+    assert any("CI failed on main" in t for t in left), left
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2865,6 +2923,7 @@ SCENARIOS = [
     scenario_mime_polish,
     scenario_undo,
     scenario_undo_send,
+    scenario_search_direction,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,
