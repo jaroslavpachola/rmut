@@ -1258,23 +1258,28 @@ of them, in compose.rs: "On {date}, {from} wrote:", the `"> "` in
       `--import-muttrc`; e2e scenario_reply_text, five session tests,
       and four in core for the specifiers
 
-## R57: the importer stops saying "no rmut equivalent" when there is one
+## R57: the importer stops saying "no rmut equivalent" when there is one (done, 1.57)
 
 Goal: the importer's promise is that nothing is dropped silently and
-nothing is claimed falsely. Two dozen lines break it in both
+nothing is claimed falsely. Two dozen lines broke it in both
 directions.
 
-- [ ] Map what rmut has and the importer forgot: `sidebar_visible`,
-      `sidebar_width`, `sidebar_format` (as far as the format
-      translates), `alias_file`
-- [ ] Say "satisfied" rather than "skipped" for what rmut does by
-      design: `imap_idle` (always on), `header_cache` and
+- [x] What rmut has and the importer forgot: `sidebar_visible`,
+      `sidebar_width`, and `alias_file`, which is a setting now
+      ([mail] alias_file, mutt's own): rmut reads and appends to the
+      file the config names, so an import of a muttrc that keeps its
+      own alias file neither copies nor rewrites it, and says where
+      the inline aliases belong instead
+- [x] A third bucket, "rmut does these its own way", for the ones
+      that are neither settings nor holes: `header_cache` and
       `message_cachedir` (rmut caches under ~/.cache/rmut),
-      `ssl_force_tls` and `ssl_starttls` (rmut always upgrades),
-      `crypt_use_gpgme`, `mailcap_path` (rmut reads MAILCAPS),
-      `implicit_autoview`
-- [ ] The report grows a third bucket if it needs one: satisfied,
-      skipped, and "rmut does this differently, here is how"
+      `imap_keepalive`, `crypt_use_gpgme` (gpg(1) directly),
+      `mailcap_path` ($MAILCAPS), `implicit_autoview` (an empty
+      [filters] command), `sidebar_format` and friends
+- [x] `imap_idle = yes` is satisfied rather than skipped; `= no` is
+      still skipped, since rmut cannot be told not to IDLE
+- [x] The same muttrc of 90 settings now leaves 41 lines unclaimed,
+      down from 60, and most of what is left is R58 to R60
 
 ## R58: reading habits
 

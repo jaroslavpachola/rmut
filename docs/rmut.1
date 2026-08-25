@@ -1113,7 +1113,11 @@ in mutt's own format, so an existing alias file works as it stands.
 With
 .B \-w
 they are written to ~/.config/rmut/aliases (or $RMUT_ALIASES); without
-it they are printed as a comment block naming that file.
+it they are printed as a comment block naming that file. A muttrc that
+sets
+.B alias_file
+keeps it: that path is imported as [mail] alias_file, rmut reads and
+appends to it, and the import writes no alias file of its own.
 .PP
 It understands identities, mailboxes, sendmail, editor, IMAP/SMTP
 accounts (including imap_authenticators/smtp_authenticators for
@@ -1160,8 +1164,10 @@ overrides).
 .TP
 .I ~/.config/rmut/aliases
 Mutt-style alias file, lines of "alias nick address..."
-.RB ( $RMUT_ALIASES
-overrides).
+.RB ( [mail] alias_file
+then
+.B $RMUT_ALIASES
+override).
 .TP
 .I ~/.mailcap
 Where an auto_view type with an empty [filters] command gets one

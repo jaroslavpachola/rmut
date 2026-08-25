@@ -94,7 +94,7 @@ impl Session {
         if nick.contains(char::is_whitespace) {
             return Err("the alias nick must be one word".into());
         }
-        match rmut_core::alias::append(nick, expansion) {
+        match rmut_core::alias::append_to(self.config.mail.alias_file.as_deref(), nick, expansion) {
             Ok(_) => Ok(Some(format!("added: alias {nick} {expansion}"))),
             Err(err) => Err(format!("cannot save the alias: {err:#}")),
         }

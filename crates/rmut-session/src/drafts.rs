@@ -157,7 +157,7 @@ impl Session {
     }
 
     fn setup_to_submitted(&mut self, input: &str) -> Option<Ask> {
-        let to = alias::expand(input, &alias::load_default());
+        let to = alias::expand(input, &alias::load(self.config.mail.alias_file.as_deref()));
         self.setup.as_mut()?.to = Some(to);
         let setup = self.setup.as_ref()?;
         let subject_prefill = match (&setup.kind, &setup.base) {
@@ -218,13 +218,13 @@ impl Session {
     }
 
     pub(crate) fn answer_cc(&mut self, input: &str) -> Option<Ask> {
-        let cc = alias::expand(input, &alias::load_default());
+        let cc = alias::expand(input, &alias::load(self.config.mail.alias_file.as_deref()));
         self.setup.as_mut()?.cc = Some(cc);
         self.ask_bcc_or_on()
     }
 
     pub(crate) fn answer_bcc(&mut self, input: &str) -> Option<Ask> {
-        let bcc = alias::expand(input, &alias::load_default());
+        let bcc = alias::expand(input, &alias::load(self.config.mail.alias_file.as_deref()));
         self.setup.as_mut()?.bcc = Some(bcc);
         self.ask_subject()
     }

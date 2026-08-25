@@ -13,8 +13,29 @@ pub fn default_path() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".config/rmut/aliases"))
 }
 
-pub fn load_default() -> HashMap<String, String> {
-    default_path()
+/// The alias file: what the config names (mutt's $alias_file), else
+/// $RMUT_ALIASES, else ~/.config/rmut/aliases. A leading `~` is the
+/// home directory, as it is everywhere else.
+pub fn path_for(configured: Option<&str>) -> Option<PathBuf> {
+    match configured.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(path) => Some(expand_home(path)),
+        None => default_path(),
+    }
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var("HOME") {
+            Ok(home) => PathBuf::from(home).join(rest),
+            Err(_) => PathBuf::from(path),
+        },
+        None => PathBuf::from(path),
+    }
+}
+
+/// The aliases in the file the config names, or the default one.
+pub fn load(configured: Option<&str>) -> HashMap<String, String> {
+    path_for(configured)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|t| parse(&t))
         .unwrap_or_default()
@@ -40,10 +61,11 @@ pub fn parse(text: &str) -> HashMap<String, String> {
 /// Append `alias nick expansion` to the alias file (create-alias),
 /// creating the file if needed. A repeated nick wins by coming later.
 /// Returns the path written.
-pub fn append(nick: &str, expansion: &str) -> anyhow::Result<PathBuf> {
+/// The same, into the file the config names.
+pub fn append_to(configured: Option<&str>, nick: &str, expansion: &str) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     use std::io::Write;
-    let path = default_path().context("no alias file path ($HOME unset)")?;
+    let path = path_for(configured).context("no alias file path ($HOME unset)")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

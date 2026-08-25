@@ -524,7 +524,10 @@ impl Session {
             (AskKind::EditHeader { name }, Answer::Line(input)) => {
                 let value = match name.as_str() {
                     "Subject" => input.to_string(),
-                    _ => rmut_core::alias::expand(input, &rmut_core::alias::load_default()),
+                    _ => rmut_core::alias::expand(
+                        input,
+                        &rmut_core::alias::load(self.config.mail.alias_file.as_deref()),
+                    ),
                 };
                 self.set_draft_header(&name, &value);
                 None
@@ -626,7 +629,10 @@ impl Session {
                 }
             },
             (AskKind::BounceTo { tagged }, Answer::Line(input)) => {
-                let to = rmut_core::alias::expand(input, &rmut_core::alias::load_default());
+                let to = rmut_core::alias::expand(
+                    input,
+                    &rmut_core::alias::load(self.config.mail.alias_file.as_deref()),
+                );
                 if to.trim().is_empty() {
                     self.note("no recipients, bounce cancelled");
                     return None;

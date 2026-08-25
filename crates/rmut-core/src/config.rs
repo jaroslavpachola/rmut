@@ -233,6 +233,10 @@ pub struct Mail {
     /// mutt's $fast_reply: replies skip the To and Subject prompts,
     /// forwards skip Subject (the ask-yes questions still run).
     pub fast_reply: bool,
+    /// mutt's $alias_file: where aliases are read from and where
+    /// create-alias appends. $RMUT_ALIASES, then
+    /// ~/.config/rmut/aliases, when unset.
+    pub alias_file: Option<String>,
     /// mutt's $attribution: the line a quoted reply opens with, over
     /// the message being replied to (%a address, %n name, %f the From
     /// header, %s subject, %i message-id, %d date, %{...} strftime).

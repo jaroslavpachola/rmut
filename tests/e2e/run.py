@@ -1936,6 +1936,10 @@ def scenario_import_muttrc(tmp):
             "bind index \\Cd delete-message\n"
             "set imap_pass = topsecret\n"
             "macro index x \"<limit>~N<enter>\"\n"
+            "set sidebar_visible = yes\n"
+            "set sidebar_width = 24\n"
+            "set imap_idle = yes\n"
+            "set header_cache = ~/.cache/mutt\n"
         )
     proc = subprocess.run(
         [RMUT, "--import-muttrc", muttrc],
@@ -1950,6 +1954,14 @@ def scenario_import_muttrc(tmp):
     assert "macro index x" in out  # surfaced as a comment
     assert "topsecret" not in out  # passwords never leak
     assert "(redacted)" in out
+    # R57: what rmut has is imported, and what it answers its own way
+    # says so rather than reading as a hole.
+    assert "[sidebar]" in out and "width = 24" in out, out
+    assert "rmut IDLEs whenever the server offers it" in out, out
+    assert "# rmut does these its own way:" in out, out
+    not_imported = out.split("# not imported:")[-1] if "# not imported:" in out else ""
+    assert "sidebar_visible" not in not_imported, out
+    assert "header_cache" not in not_imported, out
 
 
 def scenario_attachment_pager(tmp):

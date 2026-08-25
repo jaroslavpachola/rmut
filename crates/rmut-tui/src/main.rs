@@ -269,11 +269,16 @@ fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
         }
     };
     let import = rmut_core::muttrc::import_file(&path)?;
-    let alias_path = rmut_core::alias::default_path();
+    // A muttrc that names its own alias_file keeps it: rmut reads
+    // that file, so an import neither copies nor rewrites it.
+    let keeps_alias_file = import.alias_file.is_some();
+    let alias_path = rmut_core::alias::path_for(import.alias_file.as_deref());
     if write {
         let target = rmut_core::config::path()
             .ok_or_else(|| anyhow::anyhow!("no $HOME, so no config path to write to"))?;
-        let aliases = alias_path.clone().filter(|_| !import.aliases.is_empty());
+        let aliases = alias_path
+            .clone()
+            .filter(|_| !import.aliases.is_empty() && !keeps_alias_file);
         // Both targets are checked before either is written, so a
         // half-done import cannot happen.
         for t in [Some(&target), aliases.as_ref()].into_iter().flatten() {
@@ -320,6 +325,16 @@ fn import_muttrc(path: Option<&str>, write: bool) -> Result<ExitCode> {
                 target.display()
             );
         }
+    }
+    if write && keeps_alias_file && !import.aliases.is_empty() {
+        eprintln!(
+            "rmut: {} alias line(s) were in the muttrc itself; add them to {}",
+            import.aliases.len(),
+            alias_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
     }
     if !write && !import.aliases.is_empty() {
         eprintln!(

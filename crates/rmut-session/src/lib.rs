@@ -2092,7 +2092,7 @@ impl Session {
             self.error("the alias nick must be one word");
             return;
         }
-        match alias::append(nick, addr) {
+        match alias::append_to(self.config.mail.alias_file.as_deref(), nick, addr) {
             Ok(_) => self.note(format!("added: alias {nick} {addr}")),
             Err(err) => self.error(format!("cannot save the alias: {err:#}")),
         }

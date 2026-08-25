@@ -997,7 +997,7 @@ impl App {
         let candidates = if is_addr {
             alias::complete(
                 &word,
-                &alias::load_default(),
+                &alias::load(self.session.config.mail.alias_file.as_deref()),
                 self.session.config.mail.query_command.as_deref(),
             )
         } else {

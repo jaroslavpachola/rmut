@@ -16,6 +16,9 @@ use anyhow::{Context, Result};
 pub struct Import {
     pub toml: String,
     pub aliases: Vec<String>,
+    /// mutt's $alias_file, when the muttrc named one: rmut reads and
+    /// appends to it, so an import writes no alias file of its own.
+    pub alias_file: Option<String>,
 }
 
 pub fn import_file(path: &Path) -> Result<Import> {
@@ -32,6 +35,7 @@ pub fn import(text: &str, dir: &Path) -> Import {
     Import {
         toml: st.to_toml(),
         aliases: st.aliases.clone(),
+        alias_file: st.alias_file.clone(),
     }
 }
 
@@ -158,6 +162,12 @@ struct State {
     /// Directives that match what rmut always does, acknowledged in
     /// the output so the user knows they were seen, not dropped.
     satisfied: Vec<String>,
+    /// Directives rmut answers in its own way: nothing to set, but
+    /// worth saying how, since "not imported" would read as a hole.
+    differs: Vec<String>,
+    sidebar_visible: bool,
+    sidebar_width: Option<u16>,
+    alias_file: Option<String>,
 }
 
 fn parse_into(text: &str, dir: &Path, depth: usize, st: &mut State) {
@@ -567,6 +577,12 @@ impl State {
         self.satisfied.push(format!("{line}  ({why})"));
     }
 
+    /// Not a setting rmut has, and not a hole either: rmut does the
+    /// same thing another way, and the report says which.
+    fn differently(&mut self, line: &str, how: &str) {
+        self.differs.push(format!("{line}  ({how})"));
+    }
+
     fn set(&mut self, name: &str, value: &str, line: &str) {
         let v = value.to_string();
         match name {
@@ -737,6 +753,51 @@ impl State {
                     self.no_beep = true;
                 }
             }
+            "sidebar_visible" => {
+                if is_yes(value) {
+                    self.sidebar_visible = true;
+                } else {
+                    self.satisfy(line, "the sidebar is hidden until B shows it");
+                }
+            }
+            "sidebar_width" => match v.trim().parse::<u16>() {
+                Ok(n) => self.sidebar_width = Some(n),
+                Err(_) => self.skip(line, "not a number"),
+            },
+            "sidebar_format" => self.differently(
+                line,
+                "rmut's sidebar draws the mailbox and its new count, with no format string",
+            ),
+            "sidebar_short_path" | "sidebar_delim_chars" | "sidebar_folder_indent" => {
+                self.differently(line, "rmut's sidebar shows the mailbox as configured")
+            }
+            "alias_file" => self.alias_file = Some(v),
+            "imap_idle" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut IDLEs whenever the server offers it");
+                } else {
+                    self.skip(line, "rmut cannot be told not to IDLE");
+                }
+            }
+            "imap_keepalive" => self.differently(
+                line,
+                "rmut re-issues IDLE about every 25 minutes; [mail] poll_seconds is the fallback poll",
+            ),
+            "header_cache" | "message_cachedir" | "header_cache_backend" => self.differently(
+                line,
+                "rmut keeps its own header and body cache under ~/.cache/rmut",
+            ),
+            "crypt_use_gpgme" => {
+                self.differently(line, "rmut runs gpg(1) directly, not through GPGME")
+            }
+            "mailcap_path" => self.differently(
+                line,
+                "rmut reads the files $MAILCAPS names, or the usual mailcap places",
+            ),
+            "implicit_autoview" => self.differently(
+                line,
+                "an empty [filters] command takes the mailcap one, per type",
+            ),
             "attribution" => self.attribution = Some(v),
             "indent_string" => self.indent_string = Some(v),
             "forward_format" => self.forward_format = Some(v),
@@ -1201,6 +1262,7 @@ impl State {
             || self.forward_attach
             || self.forward_ask
             || self.fast_reply
+            || self.alias_file.is_some()
             || self.attribution.is_some()
             || self.indent_string.is_some()
             || self.forward_format.is_some()
@@ -1274,6 +1336,9 @@ impl State {
             }
             if self.fast_reply {
                 out += "fast_reply = true\n";
+            }
+            if let Some(v) = &self.alias_file {
+                out += &format!("alias_file = {}\n", quote(v));
             }
             if let Some(v) = &self.attribution {
                 out += &format!("attribution = {}\n", quote(v));
@@ -1431,6 +1496,15 @@ impl State {
                 out += &format!("bg = {}\n", quote(bg));
             }
         }
+        if self.sidebar_visible || self.sidebar_width.is_some() {
+            out += "\n[sidebar]\n";
+            if self.sidebar_visible {
+                out += "visible = true\n";
+            }
+            if let Some(width) = self.sidebar_width {
+                out += &format!("width = {width}\n");
+            }
+        }
         if let Some(secs) = self.connect_timeout {
             out += "\n[net]\n";
             out += &format!("connect_timeout = {secs}\n");
@@ -1486,6 +1560,12 @@ impl State {
         if !self.satisfied.is_empty() {
             out += "\n# satisfied by rmut's defaults (nothing to configure):\n";
             for s in &self.satisfied {
+                out += &format!("#   {s}\n");
+            }
+        }
+        if !self.differs.is_empty() {
+            out += "\n# rmut does these its own way:\n";
+            for s in &self.differs {
                 out += &format!("#   {s}\n");
             }
         }
@@ -2258,6 +2338,43 @@ mod tests {
         assert_eq!(cfg.pgp.sign_key.as_deref(), Some("0xDEADBEEF"));
         assert!(cfg.pgp.sign_by_default);
         assert!(!cfg.pgp.encrypt_by_default);
+    }
+
+    #[test]
+    fn what_rmut_has_is_imported_and_what_it_does_its_own_way_is_said() {
+        let (cfg, toml) = to_config(concat!(
+            "set sidebar_visible = yes\n",
+            "set sidebar_width = 24\n",
+            "set sidebar_format = \"%B%* %N\"\n",
+            "set alias_file = ~/.mutt/aliases\n",
+            "set imap_idle = yes\n",
+            "set header_cache = ~/.cache/mutt\n",
+            "set crypt_use_gpgme = yes\n",
+            "set implicit_autoview = yes\n",
+        ));
+        // The settings rmut has come across.
+        assert!(cfg.sidebar.visible, "{toml}");
+        assert_eq!(cfg.sidebar.width, 24);
+        assert_eq!(cfg.mail.alias_file.as_deref(), Some("~/.mutt/aliases"));
+        // The ones it satisfies say so, rather than reading as holes.
+        assert!(
+            toml.contains("rmut IDLEs whenever the server offers it"),
+            "{toml}"
+        );
+        assert!(toml.contains("# rmut does these its own way:"), "{toml}");
+        assert!(toml.contains("under ~/.cache/rmut"), "{toml}");
+        assert!(toml.contains("gpg(1) directly"), "{toml}");
+        assert!(toml.contains("no format string"), "{toml}");
+        // And none of them is claimed as not imported.
+        let not_imported = toml.split("# not imported:").nth(1).unwrap_or("");
+        for gone in [
+            "sidebar_visible",
+            "imap_idle",
+            "header_cache",
+            "crypt_use_gpgme",
+        ] {
+            assert!(!not_imported.contains(gone), "{gone} still skipped: {toml}");
+        }
     }
 
     #[test]

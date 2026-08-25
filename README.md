@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.56**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.57**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -264,8 +264,10 @@ always wins, and rmut prefills it whenever an identity applies. In
 the compose menu, `P` postpones the draft into a nearby Drafts maildir
 (or `.rmut-postponed`); the next `m` offers to recall it. Sent mail is
 copied to a nearby Sent maildir when one exists (local mailboxes).
-Aliases are read from `$RMUT_ALIASES` or `~/.config/rmut/aliases`, one
-mutt-style `alias nick address...` per line. At the To prompt (compose
+Aliases are read from `[mail] alias_file` (mutt's own setting),
+`$RMUT_ALIASES`, or `~/.config/rmut/aliases`, one mutt-style
+`alias nick address...` per line; `a` in the index appends to the same
+file. At the To prompt (compose
 and bounce), **Tab** completes the word under the cursor: alias nicks
 by prefix, plus hits from `query_command` when one is configured
 (mutt's protocol: `%s` is the search word, the first output line is a
