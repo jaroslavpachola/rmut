@@ -23,8 +23,8 @@ use rmut_core::remote::{Progress, Remote};
 
 /// What the session asks the connection to do.
 pub enum Job {
-    /// Complete a cached message whose file holds headers only.
-    FetchBody(PathBuf),
+    /// Complete the cached messages whose files hold headers only.
+    FetchBodies(Vec<PathBuf>),
     /// A `$` sync: flag changes first, then the purge.
     Sync {
         flags: Vec<(PathBuf, Flags)>,
@@ -58,7 +58,10 @@ impl Job {
     /// What to say while it runs, and in anything that goes wrong.
     pub fn what(&self) -> &'static str {
         match self {
-            Job::FetchBody(_) => "fetching the message",
+            Job::FetchBodies(paths) => match paths.len() {
+                1 => "fetching the message",
+                _ => "fetching the messages",
+            },
             Job::Sync { .. } => "syncing",
             Job::CopyToFolder { .. } => "copying to the trash",
             Job::Append { .. } => "saving to the server",
@@ -264,8 +267,10 @@ fn run(
 
 fn do_job(remote: &mut Remote, job: Job) -> Result<Done> {
     match job {
-        Job::FetchBody(path) => {
-            remote.fetch_body(&path)?;
+        Job::FetchBodies(paths) => {
+            for path in &paths {
+                remote.fetch_body(path)?;
+            }
             Ok(Done::Nothing)
         }
         Job::Sync { flags, deletes } => {

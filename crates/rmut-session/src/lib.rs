@@ -223,6 +223,33 @@ enum Pending {
     /// A `$` sync: the server has taken the flag changes and the
     /// purge, and the local half follows.
     Sync { purge: bool },
+    /// The bodies an operation needed are here: run it again, and
+    /// this time it finds everything it wants on disk.
+    Again(Again),
+}
+
+/// An operation that asked for message bodies before it could run.
+/// It carries what it was told, since the front end has moved on.
+#[derive(Clone)]
+enum Again {
+    /// Open the selected message.
+    View,
+    Copy {
+        input: String,
+        delete: bool,
+        tagged: bool,
+    },
+    Pipe {
+        command: String,
+        tagged: bool,
+    },
+    Print {
+        tagged: bool,
+    },
+    Bounce {
+        to: String,
+        tagged: bool,
+    },
 }
 
 /// One open mailbox and everything rmut knows about it.
@@ -965,7 +992,58 @@ impl Session {
                 Err(err) => self.error(format!("sync failed: {err:#}")),
                 Ok(_) => self.finish_sync(purge),
             },
+            Pending::Again(again) => match done {
+                Err(err) => self.error(format!("cannot fetch message: {err:#}")),
+                Ok(_) => self.run_again(again),
+            },
         }
+    }
+
+    /// The operation whose bodies have arrived, run again. Nothing is
+    /// partial now, so it goes straight through.
+    fn run_again(&mut self, again: Again) {
+        match again {
+            Again::View => self.open_message(),
+            Again::Copy {
+                input,
+                delete,
+                tagged,
+            } => self.copy_message(&input, delete, tagged),
+            Again::Pipe { command, tagged } => self.pipe_message(&command, tagged),
+            Again::Print { tagged } => self.print_current(tagged),
+            Again::Bounce { to, tagged } => self.bounce_current(&to, tagged),
+        }
+    }
+
+    /// The bodies these messages need, here before the operation runs.
+    ///
+    /// A cached IMAP message starts as headers only, so anything that
+    /// reads one has to ask the server first. True when everything is
+    /// on disk and the caller can carry on; false when the fetch went
+    /// off, and the operation will be run again when it lands.
+    fn have_bodies(&mut self, paths: &[PathBuf], again: Again) -> bool {
+        if self.imap.is_none() {
+            return true;
+        }
+        let missing: Vec<PathBuf> = paths
+            .iter()
+            .filter(|path| remote::is_partial(path))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return true;
+        }
+        self.settle();
+        !self.start(Job::FetchBodies(missing), Pending::Again(again))
+    }
+
+    /// The paths an operation is about, for the fetch that comes
+    /// before it.
+    fn target_paths(&self, tagged: bool) -> Vec<PathBuf> {
+        self.op_targets(tagged)
+            .into_iter()
+            .map(|i| self.msgs[i].env.file.path.clone())
+            .collect()
     }
 
     /// Whether the open IMAP folder's IDLE watcher has seen a change
@@ -1159,7 +1237,7 @@ impl Session {
         let path = self.msgs.get(i)?.env.file.path.clone();
         if remote::is_partial(&path)
             && let Some(imap) = &mut self.imap
-            && let Err(err) = imap.blocking(Job::FetchBody(path.clone()))
+            && let Err(err) = imap.blocking(Job::FetchBodies(vec![path.clone()]))
         {
             self.error(format!("cannot fetch message: {err:#}"));
             return None;
@@ -1824,6 +1902,18 @@ impl Session {
         if targets.is_empty() {
             return;
         }
+        // A copy reads the messages, so the bodies come first.
+        let paths = self.target_paths(tagged);
+        if !self.have_bodies(
+            &paths,
+            Again::Copy {
+                input: input.to_string(),
+                delete,
+                tagged,
+            },
+        ) {
+            return;
+        }
         // What the undo of this step has to take back: the copies just
         // delivered, and (for a save) the originals' deleted marks.
         let mut created: Vec<PathBuf> = Vec::new();
@@ -1939,6 +2029,16 @@ impl Session {
             self.error("no command given");
             return;
         }
+        let paths = self.target_paths(tagged);
+        if !self.have_bodies(
+            &paths,
+            Again::Pipe {
+                command: command.to_string(),
+                tagged,
+            },
+        ) {
+            return;
+        }
         let Some(bytes) = self.op_bytes(tagged) else {
             return;
         };
@@ -1958,6 +2058,16 @@ impl Session {
         let rcpts = compose::addresses(to);
         if rcpts.is_empty() {
             self.error(format!("cannot parse the addresses in {to:?}"));
+            return;
+        }
+        let paths = self.target_paths(tagged);
+        if !self.have_bodies(
+            &paths,
+            Again::Bounce {
+                to: to.to_string(),
+                tagged,
+            },
+        ) {
             return;
         }
         let targets = self.op_targets(tagged);
@@ -2006,6 +2116,22 @@ impl Session {
         }
     }
 
+    /// Open the selected message: the body if it is not here yet,
+    /// then the view, which the front end is asked to show.
+    pub fn open_message(&mut self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        if !self.have_bodies(std::slice::from_ref(&path), Again::View) {
+            return;
+        }
+        self.mark_read();
+        match self.load_view(&path) {
+            Ok(view) => self.requests.push(Request::ShowMessage(Box::new(view))),
+            Err(err) => self.error(format!("cannot open message: {err:#}")),
+        }
+    }
+
     /// Fetch (IMAP), parse, and PGP-process a message the way the
     /// pager shows it.
     pub fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
@@ -2013,7 +2139,7 @@ impl Session {
         if remote::is_partial(path)
             && let Some(imap) = &mut self.imap
         {
-            imap.blocking(Job::FetchBody(path.to_path_buf()))
+            imap.blocking(Job::FetchBodies(vec![path.to_path_buf()]))
                 .context("cannot fetch message")?;
             // The body is here now: %l can show its line count.
             if let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
@@ -2046,6 +2172,10 @@ impl Session {
     /// Pipe the message as displayed (brief headers, decoded body) to
     /// the configured print command, lpr by default.
     pub fn print_current(&mut self, tagged: bool) {
+        let paths = self.target_paths(tagged);
+        if !self.have_bodies(&paths, Again::Print { tagged }) {
+            return;
+        }
         let targets = self.op_targets(tagged);
         if targets.is_empty() {
             return;

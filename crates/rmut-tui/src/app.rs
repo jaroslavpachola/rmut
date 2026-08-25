@@ -504,6 +504,15 @@ impl App {
                 Request::Shell(command) => self.pending_shell = Some(command),
                 Request::Suspend => self.pending_suspend = true,
                 Request::MailboxesChanged => self.refresh_sidebar(),
+                Request::ShowMessage(view) => {
+                    self.mode = Mode::Pager(Pager {
+                        view: *view,
+                        scroll: 0,
+                        full_headers: false,
+                        hide_quoted: false,
+                        back: None,
+                    });
+                }
                 Request::ShowDraft => self.open_compose_menu(),
                 Request::Command(cmd) => {
                     let outcome = match &cmd {
@@ -2862,27 +2871,14 @@ impl App {
     }
 
     fn open_selected(&mut self) {
-        self.session.mark_read();
         // Opening a message ends the pager search, like mutt (whose
         // compiled search is per pager session); the text stays as
         // the next prompt's prefill.
         self.pager_search = None;
-        let Some(&i) = self.session.visible.get(self.session.sel) else {
-            return;
-        };
-        let path = self.session.msgs[i].env.file.path.clone();
-        match self.session.load_view(&path) {
-            Ok(view) => {
-                self.mode = Mode::Pager(Pager {
-                    view,
-                    scroll: 0,
-                    full_headers: false,
-                    hide_quoted: false,
-                    back: None,
-                });
-            }
-            Err(err) => self.error(format!("cannot open message: {err:#}")),
-        }
+        // The message may have to be fetched first, in which case the
+        // pager opens when it lands.
+        self.session.open_message();
+        self.run_requests_quietly();
     }
 }
 

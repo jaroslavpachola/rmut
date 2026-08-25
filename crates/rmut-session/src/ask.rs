@@ -202,6 +202,9 @@ pub enum Request {
     /// The mailbox counts moved: a front end showing them (a
     /// sidebar) wants to redraw.
     MailboxesChanged,
+    /// A message is ready to read: show it however messages are
+    /// shown (mutt puts it in the pager).
+    ShowMessage(Box<rmut_core::message::MessageView>),
     /// The draft is back in the front end's hands: put it on screen
     /// again, however drafts are shown.
     ShowDraft,
