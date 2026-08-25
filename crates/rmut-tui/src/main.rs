@@ -201,7 +201,7 @@ fn run() -> Result<ExitCode> {
     app.read_only = cli.read_only;
     app.read_only_session = cli.read_only;
     if let Some(warning) = config_warning {
-        app.status = Some(warning);
+        app.note(warning);
     }
     // mutt's folder-hook, for the mailbox rmut started on; -e below
     // still has the last word.

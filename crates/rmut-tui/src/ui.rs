@@ -691,17 +691,17 @@ fn draw_message_line(frame: &mut Frame, area: Rect, app: &App) {
             Prompt::Key { label, .. } => label.clone(),
         };
         // Completion hints and the like show behind the input.
-        if let Some(msg) = &app.status {
-            text += &format!("  [{msg}]");
+        if let Some(notice) = app.notice() {
+            text += &format!("  [{}]", notice.text());
         }
         frame.render_widget(Line::from(text), area);
         return;
     }
-    let Some(msg) = &app.status else {
+    let Some(notice) = app.notice() else {
         return;
     };
-    let line = Line::from(msg.clone());
-    let line = match app.status_error {
+    let line = Line::from(notice.text());
+    let line = match notice.is_error() {
         true => line.style(app.theme.error),
         false => line,
     };

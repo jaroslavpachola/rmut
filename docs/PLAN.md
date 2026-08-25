@@ -1047,20 +1047,25 @@ commits to a GUI; it makes one possible.
 Each round below is shippable on its own and must leave behaviour and
 the suite unchanged.
 
-## R50: notices instead of a status field
+## R50: notices instead of a status field (done, 1.50)
 
 Goal: the enabling step, and mechanical.
 
-- [ ] `enum Notice { Info(String), Error(String) }` emitted through a
-      sink the front end installs, replacing `self.status = Some(...)`
-      and `error_status` in the 46 methods that only touch the UI
-      that way
-- [ ] The TUI installs a sink that keeps the latest notice and draws
-      it on the message line, so what the user sees does not change
-- [ ] Typed variants where a test wants structure rather than prose
-      (`Synced { deleted, updated }` is the obvious first one); the
-      rest stay `Info(String)` until something needs otherwise
-- [ ] No crate moves in this round
+- [x] `notice::Notice` in rmut-core, emitted through a `NoticeSink`
+      the front end installs. Every `self.status = Some(...)` (52) and
+      every `error_status` call (110) now goes through `note`, `error`
+      or `notify`, so an operation says what happened instead of
+      writing into a screen field
+- [x] The TUI installs `MessageLine`, a sink keeping the last notice,
+      and draws its `text()` in its `is_error()` colour, so what the
+      user sees does not change. The bell stays with the front end,
+      since `set beep` can change mid-session
+- [x] `Synced { deleted, updated }` is the first typed variant, for
+      the one outcome a test would otherwise have to parse a sentence
+      for; the rest stay `Info`/`Error` until something needs
+      otherwise. `notice::Log` is the sink a test will install
+- [x] No crate moves. Behaviour and the suite are unchanged: 47/47
+      scenarios, no new one, because nothing new is visible
 
 ## R51: the session crate
 

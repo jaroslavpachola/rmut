@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.49**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.50**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -868,3 +868,11 @@ just lint    # clippy -D warnings + fmt --check
 just e2e     # pty-driven end-to-end tests
 just check   # test + lint + e2e
 ```
+
+Two crates: `rmut-core` is everything that is not a screen (maildir,
+mbox, IMAP, SMTP, compose, PGP, patterns, threading, the importer),
+and `rmut-tui` draws it. An operation reports what it did as a
+`notice::Notice` rather than writing into a status field, and the
+front end installs the sink that receives it: the terminal keeps the
+last notice for its message line, a test reads the values. See
+[docs/PLAN.md](docs/PLAN.md) for where that line is headed.
