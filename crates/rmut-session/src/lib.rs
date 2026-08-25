@@ -1402,10 +1402,18 @@ impl Session {
 
     fn resort(&mut self, keep: Option<PathBuf>) {
         if self.sort == SortKey::Threads {
-            let newest = self.config.index.sort_aux.as_deref() == Some("last-date-sent");
+            // mutt's $sort_aux: which end of a thread decides where
+            // it sits, and which way round the threads go.
+            let order = self
+                .config
+                .index
+                .sort_aux
+                .as_deref()
+                .map(thread::ThreadOrder::parse)
+                .unwrap_or_default();
             let items = {
                 let envs: Vec<&Envelope> = self.msgs.iter().map(|m| &m.env).collect();
-                thread::thread_by(&envs, newest)
+                thread::thread_by(&envs, order)
             };
             let mut old: Vec<Option<Msg>> = self.msgs.drain(..).map(Some).collect();
             let mut new_pos = vec![0usize; old.len()];

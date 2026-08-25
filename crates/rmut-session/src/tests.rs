@@ -961,3 +961,59 @@ fn save_name_offers_the_mailbox_named_after_the_sender() {
         _ => panic!("a line was asked for"),
     }
 }
+
+// ---- how the threads themselves are ordered
+
+/// An old thread with a new reply, and a standalone message in
+/// between: the two orders disagree about which comes first.
+fn aux_fixture(sort_aux: Option<&str>) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "old root", None);
+    write_message(dir.path(), 1, "lone", None);
+    write_message(
+        dir.path(),
+        2,
+        "Re: old root",
+        Some("In-Reply-To: <m0@example.com>\nReferences: <m0@example.com>"),
+    );
+    let mut config = Config::default();
+    config.index.sort_aux = sort_aux.map(str::to_string);
+    let (mut session, _) = Session::open(dir.path(), config).unwrap();
+    let log = Log::default();
+    session.install_notices(Box::new(log.clone()));
+    session.sort = SortKey::Threads;
+    session.apply_sort();
+    Fixture {
+        _dir: dir,
+        session,
+        log,
+    }
+}
+
+#[test]
+fn sort_aux_decides_which_thread_comes_first() {
+    // By the root's date: the old thread, then the lone message.
+    assert_eq!(
+        aux_fixture(None).subjects(),
+        ["old root", "Re: old root", "lone"]
+    );
+    // By the newest message in each: the lone one is older than the
+    // reply, so it goes first.
+    assert_eq!(
+        aux_fixture(Some("last-date-received")).subjects(),
+        ["lone", "old root", "Re: old root"]
+    );
+    // reverse- turns the threads round and leaves each one's own
+    // order alone.
+    assert_eq!(
+        aux_fixture(Some("reverse-date")).subjects(),
+        ["lone", "old root", "Re: old root"]
+    );
+    assert_eq!(
+        aux_fixture(Some("reverse-last-date-sent")).subjects(),
+        ["old root", "Re: old root", "lone"]
+    );
+}

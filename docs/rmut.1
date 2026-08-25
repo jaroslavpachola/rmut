@@ -809,7 +809,13 @@ Initial sort: date, from, subject, size or threads, with an optional
 "reverse\-" prefix.
 .TP
 .B sort_aux
-"last\-date\-sent" orders threads by their newest message.
+Which thread comes first, in mutt's spellings: a bare date orders each
+thread by its root,
+.B last\-
+by its newest message, and a
+.B reverse\-
+prefix turns the threads round while leaving each thread's own order
+alone ("reverse\-last\-date\-received" is the usual newest\-first).
 .TP
 .B date_format
 chrono strftime string for the date column (default "%b %e", like

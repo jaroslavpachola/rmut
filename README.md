@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.59**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.60**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -781,7 +781,9 @@ format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default
                                          # %s subject, and
                                          # %?X?then&else? conditionals
 sort = "threads"             # initial sort; reverse-date, size, ...
-sort_aux = "last-date-sent"  # threads ordered by their newest message
+sort_aux = "last-date-sent"  # which thread comes first: last- by its
+                             # newest message, reverse- newest thread
+                             # first (mutt's spellings)
 date_format = "%d.%m.%Y"     # strftime for the date column
 
 [pager]

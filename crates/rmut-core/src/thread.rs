@@ -112,12 +112,41 @@ fn emit(
 }
 
 pub fn thread(envs: &[&Envelope]) -> Vec<ThreadedItem> {
-    thread_by(envs, false)
+    thread_by(envs, ThreadOrder::default())
 }
 
 /// Like `thread`, ordering threads by their newest message when
 /// `newest` (mutt's sort_aux = last-date-sent).
-pub fn thread_by(envs: &[&Envelope], newest: bool) -> Vec<ThreadedItem> {
+/// How the threads themselves are ordered, from mutt's $sort_aux:
+/// by the root's date or by the newest message under it, oldest
+/// first or newest first.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ThreadOrder {
+    /// mutt's `last-`: order a thread by its newest message rather
+    /// than by its root.
+    pub newest: bool,
+    /// mutt's `reverse-`: the newest thread first.
+    pub reverse: bool,
+}
+
+impl ThreadOrder {
+    /// mutt's $sort_aux, as far as threads care: everything else is
+    /// a date order under another name.
+    pub fn parse(spec: &str) -> ThreadOrder {
+        let spec = spec.trim().to_lowercase();
+        let (reverse, rest) = match spec.strip_prefix("reverse-") {
+            Some(rest) => (true, rest.to_string()),
+            None => (false, spec),
+        };
+        ThreadOrder {
+            newest: rest.starts_with("last-"),
+            reverse,
+        }
+    }
+}
+
+pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
+    let newest = order.newest;
     let mut arena: Vec<Container> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
 
@@ -168,6 +197,11 @@ pub fn thread_by(envs: &[&Envelope], newest: bool) -> Vec<ThreadedItem> {
     }
     let envs_ref = envs;
     top.sort_by_key(|&t| subtree_date(&arena, envs_ref, t, newest));
+    if order.reverse {
+        // mutt's reverse-: the threads turn round, the messages
+        // inside one keep their order.
+        top.reverse();
+    }
 
     let mut out = Vec::new();
     for t in top {
@@ -246,13 +280,47 @@ mod tests {
         // Thread A: root at 10, reply at 100. Thread B: single at 50.
         let envs = [env("a", &[], 10), env("a2", &["a"], 100), env("b", &[], 50)];
         let refs: Vec<&Envelope> = envs.iter().collect();
-        let oldest: Vec<usize> = thread_by(&refs, false).iter().map(|t| t.index).collect();
-        assert_eq!(oldest, vec![0, 1, 2], "thread A first by its oldest");
-        let newest: Vec<usize> = thread_by(&refs, true).iter().map(|t| t.index).collect();
+        let order = |spec: &str| -> Vec<usize> {
+            thread_by(&refs, ThreadOrder::parse(spec))
+                .iter()
+                .map(|t| t.index)
+                .collect()
+        };
+        assert_eq!(order("date"), vec![0, 1, 2], "thread A first by its oldest");
         assert_eq!(
-            newest,
+            order("last-date-sent"),
             vec![2, 0, 1],
             "thread B first, A has the newest last"
+        );
+        // mutt's reverse-: the threads turn round, the messages
+        // inside one keep their order.
+        assert_eq!(order("reverse-date"), vec![2, 0, 1]);
+        assert_eq!(order("reverse-last-date-received"), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn sort_aux_spellings_parse_the_way_mutt_writes_them() {
+        assert_eq!(ThreadOrder::parse("date"), ThreadOrder::default());
+        assert_eq!(
+            ThreadOrder::parse("last-date-received"),
+            ThreadOrder {
+                newest: true,
+                reverse: false
+            }
+        );
+        assert_eq!(
+            ThreadOrder::parse("reverse-last-date-sent"),
+            ThreadOrder {
+                newest: true,
+                reverse: true
+            }
+        );
+        assert_eq!(
+            ThreadOrder::parse("REVERSE-DATE"),
+            ThreadOrder {
+                newest: false,
+                reverse: true
+            }
         );
     }
 

@@ -707,15 +707,24 @@ impl State {
                     _ => self.skip(line, "no matching rmut sort order"),
                 }
             }
-            "sort_aux" => match v.as_str() {
-                "last-date-sent" | "last-date-received" | "reverse-last-date-sent" => {
-                    self.sort_aux = Some("last-date-sent".into());
+            "sort_aux" => {
+                // rmut takes mutt's spellings as they are: `last-`
+                // orders a thread by its newest message, `reverse-`
+                // turns the threads round.
+                let spec = v.trim().to_lowercase();
+                let bare = spec.strip_prefix("reverse-").unwrap_or(&spec);
+                let bare = bare.strip_prefix("last-").unwrap_or(bare);
+                match bare {
+                    "date" | "date-sent" | "date-received" => {
+                        if spec == "date" {
+                            self.satisfy(line, "threads are ordered oldest-first by default");
+                        } else {
+                            self.sort_aux = Some(spec);
+                        }
+                    }
+                    _ => self.skip(line, "rmut orders threads by date"),
                 }
-                "date" | "date-sent" | "date-received" => {
-                    self.satisfy(line, "threads are ordered oldest-first by default");
-                }
-                _ => self.skip(line, "only date / last-date-sent map"),
-            },
+            }
             "date_format" => {
                 // A leading ! toggles the locale in mutt; the format
                 // string itself is what matters here.
@@ -763,6 +772,37 @@ impl State {
                     self.satisfy(line, "beeping on errors is rmut's default");
                 } else {
                     self.no_beep = true;
+                }
+            }
+            "strict_threads" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut threads by References only, never by subject");
+                } else {
+                    self.skip(line, "rmut cannot be told to thread by subject");
+                }
+            }
+            "duplicate_threads" => {
+                if is_yes(value) {
+                    self.differently(
+                        line,
+                        "rmut gives each copy of a Message-ID its own line; ~= finds them",
+                    );
+                } else {
+                    self.satisfy(line, "rmut keeps duplicate Message-IDs apart");
+                }
+            }
+            "hide_missing" | "hide_top_missing" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut never draws a message it does not have");
+                } else {
+                    self.skip(line, "rmut cannot draw messages it does not have");
+                }
+            }
+            "narrow_tree" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut's tree is two columns a level already");
+                } else {
+                    self.differently(line, "rmut's tree is two columns a level, wide or not");
                 }
             }
             "quit" => {

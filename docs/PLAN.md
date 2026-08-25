@@ -1328,15 +1328,30 @@ Goal: the questions mutt asks on the way out, and where mail lands.
 - [x] The muttrc of 90 is down to 31 unclaimed lines; three session
       tests and e2e scenario_leaving_habits
 
-## R60: threading knobs
+## R60: threading knobs (done, 1.60)
 
-Goal: the four that change what a thread is.
+Goal: the four that change what a thread is. Reading the code first
+turned three of them into the importer's business and left one real
+gap.
 
-- [ ] `strict_threads`: References/In-Reply-To only, no subject
-      grouping (rmut's JWZ pass groups by subject as mutt does)
-- [ ] `duplicate_threads`: whether same-Message-ID copies collapse
-- [ ] `hide_missing` / `narrow_tree`: how the tree draws around
-      messages that are not in the mailbox
+- [x] `strict_threads`: rmut threads by References and In-Reply-To
+      only and never by subject, so mutt's `yes` is satisfied and
+      `no` is refused. The plan said rmut groups by subject "as mutt
+      does", which was a guess and wrong, like R58's markers
+- [x] `duplicate_threads`: rmut gives each copy of a Message-ID its
+      own line, which is mutt's `no`. `yes` says so in the third
+      bucket rather than reading as a hole; `~=` is how you find them
+- [x] `hide_missing`: rmut never draws a message it does not have,
+      which is mutt's default; `narrow_tree`: rmut's tree is two
+      columns a level already
+- [x] The real gap was `sort_aux`, which only understood two
+      spellings. `thread::ThreadOrder` takes mutt's vocabulary now:
+      `last-` orders a thread by its newest message, `reverse-` turns
+      the threads round and leaves each thread's own order alone.
+      Two core tests, one session test over a fixture where the two
+      orders disagree
+- [x] The muttrc of 90 is down to 27 unclaimed lines, from 60 when
+      the pass started
 
 ## Beyond mutt (frozen: only on explicit request)
 
