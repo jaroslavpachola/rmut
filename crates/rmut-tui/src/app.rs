@@ -30,6 +30,10 @@ impl Msg {
     }
 }
 
+/// neomutt's $abort_noattach_regex default: the words that make a
+/// draft look like it should have carried a file.
+const DEFAULT_ATTACH_KEYWORD: &str = r"\b(attach|attached|attaching|attachment|attachments)\b";
+
 /// How many undo steps to keep, and how many message snapshots in
 /// total: a pattern delete over a huge mailbox is one step but very
 /// many marks, so both are bounded and the oldest steps go first.
@@ -269,6 +273,9 @@ pub enum KeyKind {
     IncludeReply,
     /// Compose menu q, like mutt: postpone (yes) or discard (no)?
     PostponeAsk,
+    /// $abort_noattach = ask: the body mentions an attachment and
+    /// none is attached. Send it anyway?
+    NoAttach,
 }
 
 pub enum Prompt {
@@ -478,6 +485,8 @@ pub struct App {
     pub(crate) pager_search_text: String,
     /// Compiled $quote_regexp classifying quoted body lines.
     pub(crate) quote_re: regex_lite::Regex,
+    /// Compiled $abort_noattach_regex, for the attachment reminder.
+    attach_re: regex_lite::Regex,
     /// ignore/unignore/hdr_order for the pager's brief header view.
     display: message::Display,
     /// Compiled [[color_body]] rules: regex + style, in config order.
@@ -580,6 +589,9 @@ pub struct App {
     pending_shell: Option<String>,
     /// Ctrl+Z: stop, and pick the terminal back up on SIGCONT.
     pending_suspend: bool,
+    /// The attachment reminder has been answered for this draft: the
+    /// next send goes through without asking again.
+    attach_confirmed: bool,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     /// mtimes of new/ and cur/ used for new-mail detection.
@@ -674,6 +686,8 @@ struct Derived {
     index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
     body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
     quote_re: regex_lite::Regex,
+    /// $abort_noattach_regex: what counts as mentioning an attachment.
+    attach_re: regex_lite::Regex,
     display: message::Display,
 }
 
@@ -733,6 +747,21 @@ impl Derived {
             }
             body_rules.push((re, style));
         }
+        let attach_re = {
+            let spec = config
+                .mail
+                .attach_keyword
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ATTACH_KEYWORD.to_string());
+            match regex_lite::Regex::new(&format!("(?i){spec}")) {
+                Ok(re) => re,
+                Err(err) => {
+                    warnings.push(format!("bad attach_keyword {spec:?}: {err}"));
+                    regex_lite::Regex::new(&format!("(?i){DEFAULT_ATTACH_KEYWORD}"))
+                        .expect("the default compiles")
+                }
+            }
+        };
         let quote_re = match &config.pager.quote_regexp {
             Some(spec) => match regex_lite::Regex::new(spec) {
                 Ok(re) => re,
@@ -811,6 +840,7 @@ impl Derived {
                 index_rules,
                 body_rules,
                 quote_re,
+                attach_re,
                 display: message::Display {
                     filters,
                     rules,
@@ -858,6 +888,7 @@ impl App {
             index_rules,
             body_rules,
             quote_re,
+            attach_re,
             display,
         } = derived;
         if skipped > 0 {
@@ -904,6 +935,7 @@ impl App {
             pager_search: None,
             pager_search_text: String::new(),
             quote_re,
+            attach_re,
             display,
             body_rules,
             tag_op: false,
@@ -952,6 +984,7 @@ impl App {
             redraw: false,
             pending_shell: None,
             pending_suspend: false,
+            attach_confirmed: false,
             tag_next: false,
             quit: false,
         };
@@ -1662,6 +1695,18 @@ impl App {
                 _ => {
                     self.compose_setup = None;
                     self.error_status("aborted (no subject)");
+                }
+            },
+            KeyKind::NoAttach => match code {
+                // ask-no: Enter goes back to the menu, where `a`
+                // attaches the file that was forgotten.
+                KeyCode::Char('y') => {
+                    self.attach_confirmed = true;
+                    self.send_draft();
+                }
+                _ => {
+                    self.status = Some("not sent; a attaches a file".into());
+                    self.open_compose_menu();
                 }
             },
             KeyKind::IncludeReply => {
@@ -4223,6 +4268,29 @@ impl App {
                 return;
             }
         };
+        // neomutt's $abort_noattach: the body says "attached" and
+        // nothing is. Asked once per draft; an answered draft sends.
+        if !mem::take(&mut self.attach_confirmed) && self.attachment_forgotten(&raw, &compose_state)
+        {
+            self.compose = Some(compose_state);
+            match self.config.mail.abort_noattach.as_deref() {
+                // neomutt's "yes" aborts outright: attach the file,
+                // or take the word out of the body.
+                Some("yes") => {
+                    self.error_status("no attachment: not sent (abort_noattach); a attaches one");
+                    self.open_compose_menu();
+                }
+                _ => {
+                    self.prompt = Some(Prompt::Key {
+                        label:
+                            "The body mentions an attachment and none is attached. Send? (y/n): "
+                                .into(),
+                        kind: KeyKind::NoAttach,
+                    });
+                }
+            }
+            return;
+        }
         // mutt's fcc-hook, evaluated on the draft as it stands after
         // the editor; an Fcc picked in the menu still wins.
         let hook_fcc = self.fcc_hook_target(&raw);
@@ -4430,6 +4498,32 @@ impl App {
                 self.open_compose_menu();
             }
         }
+    }
+
+    /// neomutt's attachment reminder: does the body mention one when
+    /// nothing is attached? Quoted lines and anything below a `-- `
+    /// signature do not count, so a reply to "see attached" and a
+    /// signature naming one are not false alarms.
+    fn attachment_forgotten(&self, raw: &str, compose: &Compose) -> bool {
+        if self.config.mail.abort_noattach.as_deref().unwrap_or("no") == "no" {
+            return false;
+        }
+        if compose.attach.is_some() || !compose::extract_attachments(raw).1.is_empty() {
+            return false;
+        }
+        let body = raw.split_once("\n\n").map_or("", |(_, body)| body);
+        for line in body.lines() {
+            if line.trim_end() == "--" || line == "-- " {
+                break;
+            }
+            if self.quote_re.is_match(line) {
+                continue;
+            }
+            if self.attach_re.is_match(line) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Assemble the outgoing message from a finalized draft: `files`
@@ -4907,6 +5001,7 @@ impl App {
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
         self.quote_re = derived.quote_re;
+        self.attach_re = derived.attach_re;
         self.display = derived.display;
         warnings
     }

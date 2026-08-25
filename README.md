@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.45**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.46**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -485,6 +485,27 @@ tagged set") rather than quietly acting on the one under the
 cursor. `T` and Ctrl+T tag and untag by pattern; `;t` clears the tags,
 the way it does in mutt.
 
+## The attachment reminder
+
+Set `[mail] abort_noattach` and a draft whose body mentions an
+attachment when none is attached gets a question before it goes:
+
+```toml
+[mail]
+abort_noattach = "ask"       # "no" (default), "ask", or "yes" (refuse)
+attach_keyword = '\b(attach|attached|attachment)\b'   # the default
+```
+
+Answering `n` puts you back in the compose menu, where `a` attaches
+the file you meant. Quoted lines and anything below a `-- ` signature
+do not count, so a reply to someone else's "see attached" and a
+signature advertising an attachment opener are not false alarms.
+
+neomutt's `abort_noattach` and `abort_noattach_regex` import
+(`ask-yes` and `ask-no` both become `ask`), and mutt's `\<` / `\>`
+word edges are translated to `\b` on the way in. Batch sends do not
+ask: there is no terminal to answer at.
+
 ## Undo
 
 `z` walks back the last change to your messages: a delete or
@@ -649,6 +670,9 @@ metoo = false                # true: a group reply copies me too
 text_flowed = false          # true: send text/plain; format=flowed
 undo_send = 0                # seconds a sent message waits, so z can
                              # take it back (0 sends at once)
+abort_noattach = "no"        # "ask"/"yes": a body that mentions an
+                             # attachment with none attached is
+                             # questioned before it goes
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default

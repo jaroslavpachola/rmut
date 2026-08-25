@@ -908,6 +908,33 @@ of stepping through the messages marked for deletion.
       marked so forward and backward land on different ones and the
       test can actually tell the directions apart
 
+## R46: the attachment reminder (done, 1.46)
+
+Goal: the third "Beyond mutt" item, asked for by name. A draft that
+talks about an attachment and carries none gets questioned before it
+goes. neomutt has this one, so it takes neomutt's names and imports
+from a muttrc.
+
+- [x] `[mail] abort_noattach`: "no" (default) never looks, "ask"
+      questions the send, "yes" refuses it. neomutt's quadoption
+      ask-yes and ask-no both mean "ask" here, since rmut's y/n
+      prompts have one shape. Answering no returns to the compose
+      menu, where `a` attaches the file that was forgotten; the
+      answer is remembered for that draft, so a second y sends
+- [x] `[mail] attach_keyword` ($abort_noattach_regex), compiled with
+      the other Derived regexes and warning like them when it does
+      not compile. mutt's `\<` / `\>` word edges are translated to
+      `\b` on import, so the common imported value works instead of
+      warning at every start
+- [x] Quoted lines (the same $quote_regexp the pager uses) and
+      anything below a `-- ` signature do not count: a reply to
+      someone else's "see attached" and a signature advertising an
+      attachment opener are the two false alarms worth ruling out
+- [x] The check sits at the top of `send_draft`, before anything is
+      finalized, so it also covers a draft going out with $undo_send
+      holding it. Batch sends never ask, having no terminal to answer
+      at; e2e scenario_attach_reminder
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
@@ -920,8 +947,8 @@ value-per-effort:
 - Undo send: shipped as R40 above (asked for by name, 2026-08)
 - text/calendar: render meeting invites (when/where/who) in the
   pager instead of a base64 blob; maybe accept/decline replies
-- Attachment reminder: body mentions an attachment but none attached,
-  so ask at the send prompt
+- Attachment reminder: shipped as R46 above (asked for by name,
+  2026-08)
 - Clickable/yankable URLs: OSC 8 hyperlinks in the body, OSC 52
   clipboard yank via a URL picker key
 - Inline image preview: kitty/sixel graphics for image parts in the

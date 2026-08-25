@@ -270,6 +270,15 @@ pub struct Mail {
     /// new_mail_command): `%f` = the mailbox, `%n` = how many, e.g.
     /// "notify-send 'rmut: %n new in %f'". Fire-and-forget.
     pub new_mail_command: Option<String>,
+    /// neomutt's $abort_noattach: what to do when the body mentions
+    /// an attachment and none is attached. "no" (the default) never
+    /// checks, "ask" asks before sending, "yes" refuses the send.
+    /// neomutt's ask-yes / ask-no both import as "ask".
+    pub abort_noattach: Option<String>,
+    /// neomutt's $abort_noattach_regex: what counts as mentioning one.
+    /// Case-insensitive; the default is
+    /// `\b(attach|attached|attaching|attachment|attachments)\b`.
+    pub attach_keyword: Option<String>,
     /// Seconds a sent message waits before it actually goes out, so
     /// `z` can take it back (rmut's own; mutt sends at once). 0 is
     /// off. A held message is sent when the timer runs out or when

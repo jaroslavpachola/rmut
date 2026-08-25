@@ -89,6 +89,10 @@ struct State {
     metoo: bool,
     /// `set text_flowed`: send text/plain; format=flowed.
     text_flowed: bool,
+    /// neomutt's attachment reminder: $abort_noattach (as
+    /// no/ask/yes) and $abort_noattach_regex.
+    abort_noattach: Option<String>,
+    attach_keyword: Option<String>,
     /// `set noreflow_text`: leave a flowed part's line breaks alone.
     no_reflow_text: bool,
     /// `alternative_order`: preferred types in a multipart/alternative.
@@ -467,6 +471,16 @@ fn hook_glob(pattern: &str) -> Option<String> {
 /// is a plain address means "from them, unless I sent it, in which
 /// case addressed to them". Patterns that already name an operator
 /// (or are the catch-all) are left alone.
+/// mutt's regexes spell a word edge \\< and \\>; rmut's engine
+/// spells it \\b. A quoted muttrc value keeps its doubled
+/// backslashes, so both forms are translated.
+fn word_boundaries(re: &str) -> String {
+    re.replace(r"\\<", r"\b")
+        .replace(r"\\>", r"\b")
+        .replace(r"\<", r"\b")
+        .replace(r"\>", r"\b")
+}
+
 fn default_hook_pattern(pattern: &str) -> String {
     let p = pattern.trim();
     if p == "." || p == ".*" {
@@ -534,6 +548,18 @@ impl State {
             "metoo" => {
                 self.metoo = is_yes(value);
             }
+            "abort_noattach" => {
+                // A quadoption: ask-yes and ask-no both become "ask".
+                self.abort_noattach = Some(
+                    match v.as_str() {
+                        "yes" => "yes",
+                        "no" => "no",
+                        _ => "ask",
+                    }
+                    .to_string(),
+                );
+            }
+            "abort_noattach_regex" => self.attach_keyword = Some(word_boundaries(&v)),
             "text_flowed" => {
                 self.text_flowed = is_yes(value);
             }
@@ -1121,6 +1147,8 @@ impl State {
             || !self.my_hdr.is_empty()
             || self.metoo
             || self.text_flowed
+            || self.abort_noattach.is_some()
+            || self.attach_keyword.is_some()
         {
             out += "\n[mail]\n";
             if let Some(f) = &folder_setting {
@@ -1187,6 +1215,12 @@ impl State {
             }
             if self.text_flowed {
                 out += "text_flowed = true\n";
+            }
+            if let Some(v) = &self.abort_noattach {
+                out += &format!("abort_noattach = {}\n", quote(v));
+            }
+            if let Some(v) = &self.attach_keyword {
+                out += &format!("attach_keyword = {}\n", quote(v));
             }
             if let Some(c) = &self.new_mail_command {
                 out += &format!("new_mail_command = {}\n", quote(c));
@@ -1710,6 +1744,23 @@ mod tests {
         let (cfg, _) = to_config("set notext_flowed\nset reflow_text\n");
         assert!(!cfg.mail.text_flowed);
         assert_eq!(cfg.pager.reflow_text, None);
+    }
+
+    #[test]
+    fn attachment_reminder_imports() {
+        let (cfg, toml) = to_config(concat!(
+            "set abort_noattach = ask-yes\n",
+            "set abort_noattach_regex = \"\\\\<(attach|pripojen)\"\n",
+        ));
+        // ask-yes and ask-no are the same question to rmut.
+        assert_eq!(cfg.mail.abort_noattach.as_deref(), Some("ask"));
+        assert_eq!(
+            cfg.mail.attach_keyword.as_deref(),
+            Some("\\b(attach|pripojen)")
+        );
+        assert!(toml.contains("abort_noattach"), "{toml}");
+        let (cfg, _) = to_config("set abort_noattach = yes\n");
+        assert_eq!(cfg.mail.abort_noattach.as_deref(), Some("yes"));
     }
 
     #[test]

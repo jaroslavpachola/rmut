@@ -3178,6 +3178,88 @@ def scenario_paper_cuts(tmp):
     r.close()
 
 
+def scenario_attach_reminder(tmp):
+    """Beyond mutt (neomutt's $abort_noattach): a body that mentions
+    an attachment with none attached is asked about, unless the
+    mention is in quoted text or a signature."""
+    md = make_maildir(tmp, "md-attach")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-attach.eml")
+    sendmail = os.path.join(tmp, "sendmail-attach.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    # The body comes from a file the editor appends, so each draft can
+    # say something different.
+    body = os.path.join(tmp, "attach-body.txt")
+    editor = os.path.join(tmp, "attach-editor.sh")
+    with open(editor, "w") as f:
+        f.write(f'#!/bin/sh\ncat {body} >> "$1"\n')
+    os.chmod(editor, 0o755)
+    attachment = os.path.join(tmp, "the-file.txt")
+    with open(attachment, "w") as f:
+        f.write("the actual file\n")
+    cfg = os.path.join(tmp, "attach-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                'abort_noattach = "ask"\ncopy = false\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+
+    def compose(subject):
+        r.keys(b"m")
+        r.expect("To:")
+        r.keys(b"bob@example.org\r")
+        r.settle()
+        r.keys(subject.encode() + b"\r")
+        r.expect("y:Send")
+        r.keys(b"y")
+
+    # Mentioned, not attached: asked, and n goes back to the menu.
+    with open(body, "w") as f:
+        f.write("The report is attached.\n")
+    compose("one")
+    r.repaint()
+    r.expect("mentions an attachment and none is attached")
+    r.keys(b"n")
+    r.repaint()
+    r.expect("a attaches a file")
+    assert not os.path.exists(sent_file), "sent despite the reminder"
+
+    # Attach the file it was asking about, and it goes without a word.
+    r.keys(b"a" + attachment.encode() + b"\r")
+    r.settle()
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: one" in open(sent_file).read(),
+             desc="the message with its attachment")
+    # The file rides along base64-encoded, so look for its name.
+    assert 'filename="the-file.txt"' in open(sent_file).read()
+
+    # A mention only in quoted text or under the signature is not a
+    # forgotten attachment: this one sends straight out.
+    os.truncate(sent_file, 0)
+    with open(body, "w") as f:
+        f.write("> did you see the attachment?\nNo.\n-- \nsent with an attachment opener\n")
+    compose("two")
+    wait_for(lambda: "Subject: two" in open(sent_file).read(),
+             desc="the quoted mention sent without a question")
+
+    # And y at the question sends it as it is.
+    os.truncate(sent_file, 0)
+    with open(body, "w") as f:
+        f.write("Attached you will find nothing.\n")
+    compose("three")
+    r.repaint()
+    r.expect("Send? (y/n)")
+    r.keys(b"y")
+    wait_for(lambda: "Subject: three" in open(sent_file).read(),
+             desc="sent anyway on y")
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3209,6 +3291,7 @@ SCENARIOS = [
     scenario_thread_ops,
     scenario_folder_shorthand,
     scenario_paper_cuts,
+    scenario_attach_reminder,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

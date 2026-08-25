@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.45.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.46.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -686,6 +686,27 @@ and space-stuff it (RFC 3676, mutt's $text_flowed), in the plain case,
 under attachments, and inside a PGP layer alike. The paragraphs are
 your editor's doing: a line that continues has to end with a space,
 and rmut adds none of its own.
+.TP
+.B abort_noattach ", " attach_keyword
+neomutt's $abort_noattach and $abort_noattach_regex: when the body
+mentions an attachment and none is attached,
+.B ask
+questions the send and
+.B yes
+refuses it;
+.B no
+(the default) never looks. Answering no returns to the compose menu,
+where
+.B a
+attaches the file. Quoted lines and anything below a
+.B "-- "
+signature do not count, so a reply to someone else's "see attached"
+is not a false alarm. neomutt's ask-yes and ask-no both import as
+ask, and mutt's
+.BR \e< " / " \e>
+word edges are translated to
+.BR \eb .
+Batch sends never ask, having no terminal to answer at.
 .TP
 .B undo_send
 Seconds a sent message waits before anything leaves the machine, so
