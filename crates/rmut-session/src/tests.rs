@@ -355,6 +355,10 @@ fn wrap_order_visits_everything_once() {
 
 /// A thread: each message after the first answers the one before it.
 fn thread_fixture() -> Fixture {
+    thread_fixture_with(Config::default())
+}
+
+fn thread_fixture_with(config: Config) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     for sub in ["cur", "new", "tmp"] {
         fs::create_dir_all(dir.path().join(sub)).unwrap();
@@ -373,7 +377,7 @@ fn thread_fixture() -> Fixture {
         Some("In-Reply-To: <m1@example.com>\nReferences: <m0@example.com> <m1@example.com>"),
     );
     write_message(dir.path(), 3, "unrelated", None);
-    let (mut session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let (mut session, _) = Session::open(dir.path(), config).unwrap();
     let log = Log::default();
     session.install_notices(Box::new(log.clone()));
     session.sort = SortKey::Threads;
@@ -828,4 +832,52 @@ fn askcc_and_askbcc_ask_between_to_and_subject() {
     let text = crate::draft_full(&draft).unwrap();
     assert!(text.contains("Cc: cc@example.com"), "{text}");
     assert!(text.contains("Bcc: bcc@example.com"), "{text}");
+}
+
+// ---- reading habits
+
+#[test]
+fn collapse_unread_off_leaves_unread_threads_open() {
+    let mut config = Config::default();
+    config.index.collapse_unread = Some(false);
+    let mut f = thread_fixture_with(config);
+    // The thread's second message is unread, so folding everything
+    // leaves it open; the lone read message folds like any other.
+    let i = f
+        .session
+        .msgs
+        .iter()
+        .position(|m| m.env.subject == "Re: root")
+        .unwrap();
+    f.session.msgs[i].env.file.flags.seen = false;
+    for j in [0, 2, 3] {
+        f.session.msgs[j].env.file.flags.seen = true;
+    }
+    f.session.toggle_collapse(true);
+    assert_eq!(f.subjects().len(), 4, "the unread thread stayed open");
+}
+
+#[test]
+fn uncollapse_jump_lands_on_the_unread_one() {
+    let mut config = Config::default();
+    config.index.uncollapse_jump = true;
+    let mut f = thread_fixture_with(config);
+    for m in &mut f.session.msgs {
+        m.env.file.flags.seen = true;
+    }
+    let i = f
+        .session
+        .msgs
+        .iter()
+        .position(|m| m.env.subject == "Re: root again")
+        .unwrap();
+    f.session.msgs[i].env.file.flags.seen = false;
+    f.select("root");
+    f.session.toggle_collapse(false); // fold
+    f.session.toggle_collapse(false); // and open again
+    assert_eq!(
+        f.subjects()[f.session.sel],
+        "Re: root again",
+        "the cursor followed the unread message"
+    );
 }

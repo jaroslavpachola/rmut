@@ -528,7 +528,8 @@ pager_format, pager_index_lines, pager_context, quote_regexp, wrap,
 tilde, status_format, theme, beep, from, realname, reverse_name,
 edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
 attribution, indent_string, forward_format, include, askcc, askbcc,
-connect_timeout, net_timeout,
+connect_timeout, net_timeout, pager_stop, markers, smart_wrap,
+collapse_unread, uncollapse_jump,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -878,6 +879,28 @@ Seconds to wait for data on a live connection, default 30. Never off,
 and never under five: IMAP IDLE ticks on it to notice a stop request,
 and re-issues itself about every 25 minutes whatever it is set to.
 A timeout says which host and what it was doing.
+.SS [index] and [pager], the reading habits
+.TP
+.B pager_stop
+Space on the last page of a message stays there instead of opening the
+next one (mutt's $pager_stop, off by default).
+.TP
+.B markers
+The
+.B +
+at the start of a wrapped continuation line (mutt's $markers, on).
+.TP
+.B smart_wrap
+Wrapped lines break at a word boundary rather than at the column
+(mutt's $smart_wrap, on).
+.TP
+.B collapse_unread
+Off leaves a thread holding unread mail open when everything else
+folds (mutt's $collapse_unread, on).
+.TP
+.B uncollapse_jump
+Unfolding a thread puts the cursor on its first unread message
+(mutt's $uncollapse_jump, off).
 .SS [ui]
 .TP
 .B theme

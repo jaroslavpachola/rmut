@@ -3568,6 +3568,36 @@ def scenario_reply_text(tmp):
 
 
 
+def scenario_reading_habits(tmp):
+    """R58: mutt's reading options. $pager_stop keeps Space on the last
+    page instead of opening the next message, and $markers = false
+    takes the + off wrapped continuation lines."""
+    md = make_maildir(tmp, "md-habits")
+    write_msgs(md, ["jane", "petr"])
+    # A message with one long line, so there is something to wrap.
+    with open(os.path.join(md, "cur", "1751790900.4.host:2,S"), "w") as f:
+        f.write("From: long@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: a long one\r\nDate: Wed, 8 Jul 2026 12:00:00 +0200\r\n"
+                "Message-ID: <long1@example.com>\r\n\r\n"
+                + ("wrapped " * 40) + "\r\n")
+    cfg = os.path.join(tmp, "habits-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[pager]\npager_stop = true\nmarkers = false\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), cols=40)
+    r.expect("Msgs:3")
+    r.keys(b"*\r")  # the newest message: the long one
+    r.expect("a long one", "wrapped")
+    # markers = false: no + at the start of a continuation line.
+    assert "+wrapped" not in r.buf, r.buf[-400:]
+    # $pager_stop: Space on the last page stays put.
+    r.keys(b" " * 6)
+    r.settle()
+    r.expect("Message 3/3")
+    r.keys(b"ix")
+    r.close()
+
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3619,6 +3649,7 @@ SCENARIOS = [
     scenario_network_timeouts,
     scenario_network_abort,
     scenario_reply_text,
+    scenario_reading_habits,
 ]
 
 

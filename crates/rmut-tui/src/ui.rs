@@ -363,13 +363,35 @@ pub fn quote_depth(line: &str, re: &regex_lite::Regex) -> usize {
 /// coloring. The scroll math, the body search, and the drawing all
 /// share this; T (hide_quoted) drops quoted rows here, so every
 /// consumer agrees on what a line number means.
+/// What the config says about drawing a message: which lines count as
+/// quoted, whether a wrapped line is marked, and whether it breaks at
+/// a word.
+pub struct PagerStyle<'a> {
+    pub quote_re: &'a regex_lite::Regex,
+    /// mutt's $markers.
+    pub markers: bool,
+    /// mutt's $smart_wrap.
+    pub smart_wrap: bool,
+}
+
+impl<'a> PagerStyle<'a> {
+    pub fn of(config: &'a rmut_core::config::Config, quote_re: &'a regex_lite::Regex) -> Self {
+        PagerStyle {
+            quote_re,
+            markers: config.pager.markers.unwrap_or(true),
+            smart_wrap: config.pager.smart_wrap.unwrap_or(true),
+        }
+    }
+}
+
 pub fn pager_rows(
     view: &MessageView,
     width: usize,
     full_headers: bool,
-    quote_re: &regex_lite::Regex,
+    style: &PagerStyle,
     hide_quoted: bool,
 ) -> Vec<Row> {
+    let quote_re = style.quote_re;
     let headers = if full_headers { &view.all } else { &view.brief };
     let mut rows: Vec<Row> = headers
         .iter()
@@ -400,14 +422,14 @@ pub fn pager_rows(
         } else {
             RowKind::Text
         };
-        for (i, wrapped) in wrap_line(line, width.saturating_sub(1))
+        for (i, wrapped) in wrap_line_with(line, width.saturating_sub(1), style.smart_wrap)
             .into_iter()
             .enumerate()
         {
-            let text = if i > 0 {
-                format!("+{wrapped}")
-            } else {
-                wrapped
+            // mutt's $markers: a wrapped line says it is one.
+            let text = match i > 0 && style.markers {
+                true => format!("+{wrapped}"),
+                false => wrapped,
             };
             rows.push(Row { text, kind });
         }
@@ -420,10 +442,10 @@ pub fn pager_text_lines(
     view: &MessageView,
     width: usize,
     full_headers: bool,
-    quote_re: &regex_lite::Regex,
+    style: &PagerStyle,
     hide_quoted: bool,
 ) -> Vec<String> {
-    pager_rows(view, width, full_headers, quote_re, hide_quoted)
+    pager_rows(view, width, full_headers, style, hide_quoted)
         .into_iter()
         .map(|row| row.text)
         .collect()
@@ -434,15 +456,17 @@ pub fn pager_line_count(
     view: &MessageView,
     width: usize,
     full_headers: bool,
-    quote_re: &regex_lite::Regex,
+    style: &PagerStyle,
     hide_quoted: bool,
 ) -> usize {
-    pager_rows(view, width, full_headers, quote_re, hide_quoted).len()
+    pager_rows(view, width, full_headers, style, hide_quoted).len()
 }
 
 /// Word-wrap one body line to `width` columns (hard break when a single
 /// word is longer than the line). Tabs are expanded first.
-pub fn wrap_line(line: &str, width: usize) -> Vec<String> {
+/// The same, with mutt's $smart_wrap: without it a long line breaks
+/// at the column rather than at the last space before it.
+pub fn wrap_line_with(line: &str, width: usize, smart: bool) -> Vec<String> {
     let width = width.max(4);
     let expanded = line.replace('\t', "    ");
     let chars: Vec<char> = expanded.chars().collect();
@@ -457,10 +481,13 @@ pub fn wrap_line(line: &str, width: usize) -> Vec<String> {
             break;
         }
         let window_end = start + width;
-        let brk = (start + 1..window_end)
-            .rev()
-            .find(|&i| chars[i] == ' ')
-            .unwrap_or(window_end);
+        let brk = match smart {
+            true => (start + 1..window_end)
+                .rev()
+                .find(|&i| chars[i] == ' ')
+                .unwrap_or(window_end),
+            false => window_end,
+        };
         out.push(chars[start..brk].iter().collect());
         start = if chars.get(brk) == Some(&' ') {
             brk + 1
@@ -476,7 +503,7 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
         &pager.view,
         app.pager_wrap(area.width as usize),
         pager.full_headers,
-        &app.session.quote_re,
+        &PagerStyle::of(&app.session.config, &app.session.quote_re),
         pager.hide_quoted,
     );
     let mut visible: Vec<Line> = rows
@@ -804,7 +831,7 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
         &pager.view,
         app.pager_wrap(width),
         pager.full_headers,
-        &app.session.quote_re,
+        &PagerStyle::of(&app.session.config, &app.session.quote_re),
         pager.hide_quoted,
     )
     .max(1);
@@ -852,7 +879,7 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{RowKind, humanize_size, pager_rows, quote_depth, wrap_line};
+    use super::{PagerStyle, RowKind, humanize_size, pager_rows, quote_depth, wrap_line_with};
     use rmut_core::message::MessageView;
     use rmut_session::default_quote_re;
 
@@ -876,7 +903,12 @@ mod tests {
             body: "top\n> one\n> > two\n[-- marker --]\ntail".into(),
         };
         let re = default_quote_re();
-        let rows = pager_rows(&view, 80, false, &re, false);
+        let style = PagerStyle {
+            quote_re: &re,
+            markers: true,
+            smart_wrap: true,
+        };
+        let rows = pager_rows(&view, 80, false, &style, false);
         let kinds: Vec<RowKind> = rows.iter().map(|r| r.kind).collect();
         assert_eq!(
             kinds,
@@ -891,28 +923,45 @@ mod tests {
             ]
         );
         // T drops the quoted rows for every consumer at once.
-        let hidden = pager_rows(&view, 80, false, &re, true);
+        let hidden = pager_rows(&view, 80, false, &style, true);
         assert_eq!(hidden.len(), rows.len() - 2);
         assert!(hidden.iter().all(|r| !matches!(r.kind, RowKind::Quoted(_))));
     }
 
     #[test]
     fn wrap_short_line_untouched() {
-        assert_eq!(wrap_line("hello", 10), vec!["hello"]);
-        assert_eq!(wrap_line("", 10), vec![""]);
+        assert_eq!(wrap_line_with("hello", 10, true), vec!["hello"]);
+        assert_eq!(wrap_line_with("", 10, true), vec![""]);
     }
 
     #[test]
     fn wrap_breaks_at_word_boundary() {
         assert_eq!(
-            wrap_line("the quick brown fox", 10),
+            wrap_line_with("the quick brown fox", 10, true),
             vec!["the quick", "brown fox"]
         );
     }
 
     #[test]
+    fn without_smart_wrap_a_line_breaks_at_the_column() {
+        // mutt's $smart_wrap off: the break lands on the width, not
+        // on the last space before it.
+        assert_eq!(
+            wrap_line_with("alpha beta gamma", 10, false),
+            vec!["alpha beta", "gamma"]
+        );
+        assert_eq!(
+            wrap_line_with("alpha beta gamma", 10, true),
+            vec!["alpha", "beta gamma"]
+        );
+    }
+
+    #[test]
     fn wrap_hard_breaks_long_words() {
-        assert_eq!(wrap_line("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(
+            wrap_line_with("abcdefghij", 4, true),
+            vec!["abcd", "efgh", "ij"]
+        );
     }
 
     #[test]

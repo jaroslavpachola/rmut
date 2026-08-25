@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.57**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.58**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -353,7 +353,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `print_command`, `query_command`, `trash`, `record`, `postponed`,
 `new_mail_command`, `mail_check`, `undo_send`, `metoo`, `text_flowed`,
 `attribution`, `indent_string`, `forward_format`, `include`, `askcc`,
-`askbcc`, `connect_timeout`, `net_timeout`,
+`askbcc`, `connect_timeout`, `net_timeout`, `pager_stop`, `markers`,
+`smart_wrap`, `collapse_unread`, `uncollapse_jump`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown

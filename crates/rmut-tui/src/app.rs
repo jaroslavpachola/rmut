@@ -1616,7 +1616,7 @@ impl App {
             &pager.view,
             width,
             pager.full_headers,
-            &self.session.quote_re,
+            &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
         let max_scroll = lines.saturating_sub(page);
@@ -1626,6 +1626,10 @@ impl App {
         if action == PagerAction::PageDown && pager.scroll >= max_scroll {
             if let Some(menu) = pager.back.take() {
                 self.mode = *menu;
+                return;
+            }
+            // mutt's $pager_stop: stay on the last page instead.
+            if self.session.config.pager.pager_stop {
                 return;
             }
             // mutt falls through to next-undeleted here.
@@ -1664,7 +1668,7 @@ impl App {
                     &pager.view,
                     width,
                     pager.full_headers,
-                    &self.session.quote_re,
+                    &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
                     pager.hide_quoted,
                 );
                 pager.scroll = pager.scroll.min(lines.saturating_sub(page));
@@ -1674,7 +1678,7 @@ impl App {
                     &pager.view,
                     width,
                     pager.full_headers,
-                    &self.session.quote_re,
+                    &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
                     pager.hide_quoted,
                 );
                 let quoted = |i: usize| matches!(rows[i].kind, crate::ui::RowKind::Quoted(_));
@@ -1718,7 +1722,7 @@ impl App {
             &pager.view,
             width,
             pager.full_headers,
-            &self.session.quote_re,
+            &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
         match search_lines(&lines, &matcher, pager.scroll, forward) {

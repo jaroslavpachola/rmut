@@ -113,6 +113,13 @@ struct State {
     tilde: bool,
     status_format: Option<String>,
     no_beep: bool,
+    /// mutt's reading habits: $pager_stop, and the three that are on
+    /// by default, kept as Option so "yes" stays satisfied.
+    pager_stop: bool,
+    markers_off: bool,
+    smart_wrap_off: bool,
+    collapse_unread_off: bool,
+    uncollapse_jump: bool,
     /// mutt's $attribution, $indent_string and $forward_format, which
     /// rmut takes as they are: the specifiers are the same.
     attribution: Option<String>,
@@ -753,6 +760,41 @@ impl State {
                     self.no_beep = true;
                 }
             }
+            "pager_stop" => {
+                if is_yes(value) {
+                    self.pager_stop = true;
+                } else {
+                    self.satisfy(line, "paging past the end opens the next message, as in mutt");
+                }
+            }
+            "markers" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut marks wrapped lines with + already");
+                } else {
+                    self.markers_off = true;
+                }
+            }
+            "smart_wrap" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut wraps at word boundaries already");
+                } else {
+                    self.smart_wrap_off = true;
+                }
+            }
+            "collapse_unread" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut folds every thread, as mutt does by default");
+                } else {
+                    self.collapse_unread_off = true;
+                }
+            }
+            "uncollapse_jump" => {
+                if is_yes(value) {
+                    self.uncollapse_jump = true;
+                } else {
+                    self.satisfy(line, "unfolding keeps the cursor where it was, as in mutt");
+                }
+            }
             "sidebar_visible" => {
                 if is_yes(value) {
                     self.sidebar_visible = true;
@@ -1390,6 +1432,8 @@ impl State {
             || self.sort.is_some()
             || self.sort_aux.is_some()
             || self.date_format.is_some()
+            || self.collapse_unread_off
+            || self.uncollapse_jump
         {
             out += "\n[index]\n";
             if let Some(f) = &self.index_format {
@@ -1405,6 +1449,12 @@ impl State {
             if let Some(df) = &self.date_format {
                 out += &format!("date_format = {}\n", quote(df));
             }
+            if self.collapse_unread_off {
+                out += "collapse_unread = false\n";
+            }
+            if self.uncollapse_jump {
+                out += "uncollapse_jump = true\n";
+            }
         }
         if self.pager_index_lines.is_some()
             || self.pager_context.is_some()
@@ -1416,6 +1466,9 @@ impl State {
             || !self.hdr_unignore.is_empty()
             || !self.hdr_order.is_empty()
             || self.no_reflow_text
+            || self.pager_stop
+            || self.markers_off
+            || self.smart_wrap_off
             || !self.alternative_order.is_empty()
         {
             out += "\n[pager]\n";
@@ -1450,6 +1503,15 @@ impl State {
             }
             if self.no_reflow_text {
                 out += "reflow_text = false\n";
+            }
+            if self.pager_stop {
+                out += "pager_stop = true\n";
+            }
+            if self.markers_off {
+                out += "markers = false\n";
+            }
+            if self.smart_wrap_off {
+                out += "smart_wrap = false\n";
             }
             if !self.alternative_order.is_empty() {
                 let items: Vec<String> = self.alternative_order.iter().map(|s| quote(s)).collect();

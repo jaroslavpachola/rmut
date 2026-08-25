@@ -327,6 +327,13 @@ pub struct Index {
     /// date_format), e.g. "%d.%m.%Y"; default "%b %e", like mutt's
     /// index date.
     pub date_format: Option<String>,
+    /// mutt's $collapse_unread (default true, as in mutt): a thread
+    /// holding unread mail folds like any other. False leaves those
+    /// threads open when everything else folds.
+    pub collapse_unread: Option<bool>,
+    /// mutt's $uncollapse_jump: unfolding a thread puts the cursor on
+    /// its first unread message.
+    pub uncollapse_jump: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -356,6 +363,15 @@ pub struct Pager {
     pub wrap: Option<i64>,
     /// mutt's $tilde: pad the rows below end-of-message with ~.
     pub tilde: bool,
+    /// mutt's $pager_stop: paging past the end of a message stays
+    /// put instead of opening the next one.
+    pub pager_stop: bool,
+    /// mutt's $markers (default true, as in mutt): the `+` at the
+    /// start of a wrapped continuation line.
+    pub markers: Option<bool>,
+    /// mutt's $smart_wrap (default true, as in mutt): wrapped lines
+    /// break at a word boundary rather than at the column.
+    pub smart_wrap: Option<bool>,
     /// mutt's $reflow_text (default true): a `format=flowed` part is
     /// put back into paragraphs and wrapped at the display width
     /// instead of keeping the sender's line breaks.

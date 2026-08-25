@@ -692,6 +692,27 @@ impl Session {
         self.msgs.iter().filter(|m| m.pending()).count()
     }
 
+    /// Whether the thread rooted at `root` holds anything unread.
+    fn thread_has_unread(&self, root: usize) -> bool {
+        self.thread_root
+            .iter()
+            .enumerate()
+            .filter(|&(_, &r)| r == root)
+            .any(|(i, _)| !self.msgs[i].env.file.flags.seen)
+    }
+
+    /// The first unread message of a thread, by path, for the cursor
+    /// to land on when it unfolds.
+    fn first_unread_in_thread(&self, root: usize) -> Option<PathBuf> {
+        self.thread_root
+            .iter()
+            .enumerate()
+            .filter(|&(_, &r)| r == root)
+            .map(|(i, _)| i)
+            .find(|&i| !self.msgs[i].env.file.flags.seen)
+            .map(|i| self.msgs[i].env.file.path.clone())
+    }
+
     /// (depth, hidden-count-if-collapsed-root) for the index display.
     pub fn thread_info(&self, mi: usize) -> (usize, Option<usize>) {
         if self.sort != SortKey::Threads {
@@ -1413,16 +1434,17 @@ impl Session {
             self.error("folding needs thread sort (o t)");
             return;
         }
-        let keep;
+        let mut keep;
         if all {
             keep = self.selected_path();
             if self.collapsed.is_empty() {
-                self.collapsed = self
-                    .msgs
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, _)| self.thread_depth.get(i) == Some(&0))
-                    .map(|(_, m)| m.env.file.path.clone())
+                // mutt's $collapse_unread: a thread holding unread
+                // mail can be left open when everything else folds.
+                let fold_unread = self.config.index.collapse_unread.unwrap_or(true);
+                self.collapsed = (0..self.msgs.len())
+                    .filter(|&i| self.thread_depth.get(i) == Some(&0))
+                    .filter(|&i| fold_unread || !self.thread_has_unread(i))
+                    .map(|i| self.msgs[i].env.file.path.clone())
                     .collect();
             } else {
                 self.collapsed.clear();
@@ -1433,10 +1455,15 @@ impl Session {
             };
             let root = self.thread_root.get(mi).copied().unwrap_or(mi);
             let path = self.msgs[root].env.file.path.clone();
-            if !self.collapsed.remove(&path) {
+            let unfolding = self.collapsed.remove(&path);
+            if !unfolding {
                 self.collapsed.insert(path.clone());
             }
             keep = Some(path);
+            // mutt's $uncollapse_jump: land on what has not been read.
+            if unfolding && self.config.index.uncollapse_jump {
+                keep = self.first_unread_in_thread(root).or(keep);
+            }
         }
         self.rebuild_visible(keep);
     }

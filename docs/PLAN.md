@@ -1281,19 +1281,27 @@ directions.
 - [x] The same muttrc of 90 settings now leaves 41 lines unclaimed,
       down from 60, and most of what is left is R58 to R60
 
-## R58: reading habits
+## R58: reading habits (done, 1.58)
 
 Goal: the pager and index options that change how it feels to read,
 all of them one flag and a branch.
 
-- [ ] `pager_stop`: Space at the end of a message stops rather than
-      going to the next one
-- [ ] `markers`: the `+` on wrapped continuation lines, on by default
-      in mutt and not drawn by rmut at all
-- [ ] `smart_wrap`: break at word boundaries (rmut already does this;
-      the flag is to turn it off)
-- [ ] `collapse_unread` / `uncollapse_jump`: whether a thread with
-      unread mail folds, and where the cursor lands when one unfolds
+- [x] `[pager] pager_stop`: Space on the last page stays there
+      instead of opening the next message
+- [x] `[pager] markers`: rmut already drew mutt's `+` on wrapped
+      continuation lines, so the setting is to turn it off. The plan
+      said "not drawn by rmut at all", which was a guess and wrong;
+      reading the code first is the whole point of these rounds
+- [x] `[pager] smart_wrap`: off breaks at the column rather than at
+      the last space before it
+- [x] `[index] collapse_unread`: off leaves threads holding unread
+      mail open when everything else folds. `[index]
+      uncollapse_jump`: unfolding lands the cursor on the first
+      unread message of the thread
+- [x] All four settable at runtime, carried over by the importer
+      (`yes` on the three that are already rmut's way reports as
+      satisfied), two session tests, one e2e scenario, one for the
+      wrap. The muttrc of 90 is down to 36 unclaimed lines
 
 ## R59: leaving and filing habits
 
