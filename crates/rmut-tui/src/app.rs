@@ -1150,8 +1150,9 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent, width: usize, height: usize) {
-        // Rows available for content: total minus help line and status line.
-        let page = height.saturating_sub(2).max(1);
+        // Rows available for content: total minus the help bar, the
+        // status bar and the message line.
+        let page = height.saturating_sub(3).max(1);
         self.view_size = (width, page);
         // Ctrl+L repaints from the menus that have no keymap of their
         // own; the index and pager route it through theirs, so it can

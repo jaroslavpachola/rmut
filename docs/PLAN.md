@@ -964,6 +964,32 @@ which reads as "it did not work".
       they were read. Two scenarios were failing at random; it settles
       first now. e2e scenario_getting_started
 
+## R48: the message line (done, 1.48)
+
+Goal: mutt's four regions, not three. rmut had the help bar, the
+content and one bottom line doing two jobs, which is why a note
+truncated the status bar to fit, R40's send countdown competed with
+ordinary notes, and `Tag-` had to be appended to the mailbox line
+instead of sitting under it. Reported from use, and right.
+
+- [x] The layout gains a message line under the status bar, always
+      there, empty when there is nothing to say. `draw_bottom_line`
+      splits into `draw_status_bar` (the format line, unconditional)
+      and `draw_message_line` (the prompt, or the note, or the error
+      in its colour). The status bar now always says which mailbox
+      you are in, whatever else is happening
+- [x] A page is three rows shorter than the window, not two
+- [x] Fixed on the way: the e2e suite scrapes the screen, and a
+      message on a line of its own is a worse case for ratatui's
+      cell-diff than one appended to a changing bar, so a dozen
+      scenarios started reading text with holes in it. `expect` now
+      forces a redraw (an ioctl toggling the width) when a needle has
+      not turned up after 0.2s, and again every 0.3s while it waits,
+      which fixes the whole class instead of scattering `repaint()`
+      calls. No redraw before that: one sent immediately would
+      overtake the keys just typed and repaint the screen as it was
+      before they were read
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the

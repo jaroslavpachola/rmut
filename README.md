@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.47**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.48**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -100,6 +100,14 @@ turns up it says where it looked, and how to make one:
 ```sh
 mkdir -p ~/Mail/inbox/{cur,new,tmp} && rmut ~/Mail/inbox
 ```
+
+## The screen
+
+Four regions, as in mutt: the help bar at the top, the mailbox or the
+message, the status bar, and the message line under it. The message
+line is where prompts, notes and errors go, so the status bar always
+says which mailbox you are in and what is in it, whatever else is
+happening.
 
 ## Keys
 
@@ -482,7 +490,7 @@ Without thread sort they refuse, as they do in mutt.
 ## Tagged operations
 
 `t` tags a message and `;` hands the tagged set to the next function
-(the bar shows `Tag-` while it waits, as mutt's message line does):
+(`Tag-` sits on the message line while it waits, as in mutt):
 `d`/`u`/`F`/`N`/`t` mark them all, `s`/`C` save or copy them all (one
 prompt, one undo step), `|` and `p` pipe or print them concatenated
 into a single run of the command (mutt's `$pipe_split` unset), and

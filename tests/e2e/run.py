@@ -114,7 +114,17 @@ class Rmut:
                 pass
 
     def expect(self, *needles, timeout=5.0, absent=()):
+        # ratatui writes only the cells that changed, so text that
+        # replaces text sharing its characters reaches the pty with
+        # holes in it. When a needle does not turn up quickly, force a
+        # full repaint and keep looking: what is on screen then lands
+        # in the buffer whole.
         deadline = time.time() + timeout
+        # No redraw up front: it would overtake the keys just sent and
+        # repaint the screen as it was before they were read. Once
+        # they have had a moment to land, redraw every so often while
+        # the needle is missing, an ioctl each.
+        next_redraw = time.time() + 0.2
         while time.time() < deadline:
             self._drain()
             text = squash(self.buf)
@@ -122,12 +132,21 @@ class Rmut:
                 for a in absent:
                     assert squash(a) not in text, f"unexpected {a!r} on screen"
                 return
+            if time.time() >= next_redraw:
+                self._force_redraw()
+                next_redraw = time.time() + 0.3
         raise AssertionError(
             f"timed out waiting for {needles!r}; tail: {squash(self.buf)[-400:]!r}"
         )
 
+    def _force_redraw(self):
+        """Toggle the window width so ratatui repaints every cell."""
+        self.cols = 159 if self.cols == 160 else 160
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", self.rows, self.cols, 0, 0))
+
     def repaint(self):
-        """Force a full redraw before reading the screen.
+        """Settle, then force a full redraw before reading the screen.
 
         ratatui writes only the cells that changed, so a status line
         sharing characters with the one it replaced arrives in the pty
@@ -138,9 +157,7 @@ class Rmut:
         # Let the keys just sent land first: a resize that overtakes
         # them repaints the screen as it was before they were read.
         self.settle()
-        self.cols = 159 if self.cols == 160 else 160
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                    struct.pack("HHHH", self.rows, self.cols, 0, 0))
+        self._force_redraw()
         self.settle()
 
     def settle(self, wait=0.5):
@@ -2947,7 +2964,7 @@ def scenario_tagged_and_pager(tmp):
     # way mutt's message line does.
     r.keys(b";")
     r.repaint()
-    r.expect("-- Tag-")
+    r.expect("Tag-")
     r.keys(b"s" + target.encode() + b"\r")
     r.expect("saved 2 to")
     wait_for(lambda: len(os.listdir(os.path.join(target, "cur"))) == 2,
@@ -3141,7 +3158,8 @@ def scenario_paper_cuts(tmp):
     touched = os.path.join(tmp, "shell-escape-ran")
 
     # A short window, so one page is a known number of rows: content
-    # is rows - 2, and PageDown moves the cursor by that much.
+    # is rows minus the help bar, the status bar and the message line,
+    # and PageDown moves the cursor by that much.
     r = Rmut(md, base_env(tmp), rows=10)
     r.expect("Msgs:10")
     r.keys(b"=")
@@ -3149,7 +3167,7 @@ def scenario_paper_cuts(tmp):
     r.keys(b" ")
     r.settle()
     r.keys(b"\r")
-    r.expect("Message 9/10")
+    r.expect("Message 8/10")
     r.keys(b"i")
 
     # Ctrl+L cannot be seen directly (a repaint of the same screen),

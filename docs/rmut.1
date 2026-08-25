@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.47.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.48.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -52,6 +52,15 @@ which is what a mutt-style
 .I ~/Mail
 usually is. Finding nothing is an error naming the places it tried
 and how to make a maildir.
+.SS The screen
+Four regions, as in mutt: the help bar at the top, the mailbox or the
+message, the status bar
+.RB ( "[ui] status_format" ,
+or the pager's
+.BR "[pager] format" ),
+and the message line under it. Prompts, notes and errors go on the
+message line, so the status bar keeps saying which mailbox you are in
+whatever else is happening.
 .SH OPTIONS
 .TP
 .B \-R
@@ -183,8 +192,7 @@ toggle read/unread
 .B t ;
 toggle the tag; apply the next function to the tagged messages, with
 .B Tag-
-on the status bar while it waits (mutt puts it on its message line,
-of which rmut has no separate one).
+on the message line while it waits, as in mutt.
 .B ;
 reaches
 .BR d ", " u ", " F ", " N ", " t ", " s ", " C ", " | ", " p " and " b :

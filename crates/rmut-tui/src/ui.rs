@@ -18,9 +18,14 @@ const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [help_area, content_area, status_area] = Layout::vertical([
+    // mutt's four regions: the help bar, the mailbox or message, the
+    // status bar, and the message line under it. The message line is
+    // always there, empty when there is nothing to say, so a note
+    // never crowds the status bar out and the content never jumps.
+    let [help_area, content_area, status_area, message_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
@@ -84,7 +89,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
         }
     }
-    draw_bottom_line(frame, status_area, app, content_area.height);
+    draw_status_bar(frame, status_area, app, content_area.height);
+    draw_message_line(frame, message_area, app);
 }
 
 /// Mutt's compose menu: header lines, then the attachment table with
@@ -643,27 +649,12 @@ fn draw_postponed(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-// ---- bottom line: prompt or status ----
+// ---- the two bottom lines: status bar, then the message line ----
 
-fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u16) {
-    if let Some(prompt) = &app.prompt {
-        let mut text = match prompt {
-            Prompt::Line {
-                label, buf, cursor, ..
-            } => {
-                // The marker sits at the cursor, not always at the end.
-                let i = crate::app::byte_at(buf, *cursor);
-                format!("{label}{}\u{2581}{}", &buf[..i], &buf[i..])
-            }
-            Prompt::Key { label, .. } => label.clone(),
-        };
-        // Completion hints and the like show behind the input.
-        if let Some(msg) = &app.status {
-            text += &format!("  [{msg}]");
-        }
-        frame.render_widget(Line::from(text), area);
-        return;
-    }
+/// mutt's status bar: what mailbox this is and what is in it. It says
+/// the same thing whatever else is going on, so a note or a prompt
+/// never costs you the mailbox you are looking at.
+fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16) {
     let text = match &app.mode {
         Mode::Pager(pager) => {
             let height = content_height.saturating_sub(app.config.pager.index_lines);
@@ -682,26 +673,39 @@ fn draw_bottom_line(frame: &mut Frame, area: Rect, app: &App, content_height: u1
         Mode::Help { .. } => "---rmut: help".to_string(),
         Mode::Index => index_status(app, area.width as usize, content_height as usize),
     };
-    // An error takes over the whole row in the error color, mutt's
-    // message line; notes append to the bar as before.
-    if app.status_error
-        && let Some(msg) = &app.status
-    {
-        frame.render_widget(Line::from(msg.clone()).style(app.theme.error), area);
+    frame.render_widget(Line::from(text).style(app.theme.bar_style()), area);
+}
+
+/// mutt's message line: the prompt you are answering, or the last
+/// thing rmut had to say, and empty when it has nothing.
+fn draw_message_line(frame: &mut Frame, area: Rect, app: &App) {
+    if let Some(prompt) = &app.prompt {
+        let mut text = match prompt {
+            Prompt::Line {
+                label, buf, cursor, ..
+            } => {
+                // The marker sits at the cursor, not always at the end.
+                let i = crate::app::byte_at(buf, *cursor);
+                format!("{label}{}\u{2581}{}", &buf[..i], &buf[i..])
+            }
+            Prompt::Key { label, .. } => label.clone(),
+        };
+        // Completion hints and the like show behind the input.
+        if let Some(msg) = &app.status {
+            text += &format!("  [{msg}]");
+        }
+        frame.render_widget(Line::from(text), area);
         return;
     }
-    let text = match &app.status {
-        Some(msg) => {
-            // Keep the message visible even when a %>-filled status
-            // line already spans the width: the base yields.
-            let msg = format!(" -- {msg}");
-            let avail = (area.width as usize).saturating_sub(msg.chars().count());
-            let base: String = text.chars().take(avail).collect();
-            format!("{base}{msg}")
-        }
-        None => text,
+    let Some(msg) = &app.status else {
+        return;
     };
-    frame.render_widget(Line::from(text).style(app.theme.bar_style()), area);
+    let line = Line::from(msg.clone());
+    let line = match app.status_error {
+        true => line.style(app.theme.error),
+        false => line,
+    };
+    frame.render_widget(line, area);
 }
 
 fn index_status(app: &App, width: usize, rows: usize) -> String {
