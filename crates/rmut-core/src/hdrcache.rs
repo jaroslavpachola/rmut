@@ -60,11 +60,15 @@ impl Entry {
     }
 
     fn to_envelope(&self, file: MailFile) -> Envelope {
+        // The display fields go through one_line on the way out as
+        // well as in: a cache written before rmut cleaned tabs out of
+        // headers would otherwise keep serving them, and no length
+        // changed to make it re-parse.
         Envelope {
             file,
-            from: self.from.clone(),
-            from_full: self.from_full.clone(),
-            subject: self.subject.clone(),
+            from: message::one_line(&self.from),
+            from_full: message::one_line(&self.from_full),
+            subject: message::one_line(&self.subject),
             date: self.date,
             msg_id: self.msg_id.clone(),
             references: self.references.clone(),
@@ -72,7 +76,7 @@ impl Entry {
             to: self.to.clone(),
             cc: self.cc.clone(),
             lines: self.lines,
-            list: self.list.clone(),
+            list: self.list.as_deref().map(message::one_line),
         }
     }
 }

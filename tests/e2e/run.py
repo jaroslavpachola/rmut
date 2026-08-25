@@ -3317,6 +3317,36 @@ def scenario_getting_started(tmp):
     r.close()
 
 
+def scenario_control_chars(tmp):
+    """A tab in a header used to be written to the terminal as it
+    stood: the terminal expanded it, pushing the rest of the index row
+    past the window edge and wrapping it onto a second line."""
+    md = make_maildir(tmp, "md-ctrl")
+    with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
+        f.write("From: Tabbed\tSender <t@example.com>\r\n"
+                "To: jarda@example.com\r\n"
+                "Subject: before\ttab after\r\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <ctrl1@example.com>\r\n\r\nbody\r\n")
+    env = base_env(tmp)
+    r = Rmut(md, env)
+    r.expect("before tab after")
+    assert "\t" not in r.buf, "a raw tab reached the terminal"
+    r.keys(b"\r")
+    r.expect("Subject: before tab after")
+    assert "\t" not in r.buf, "a raw tab reached the terminal from the pager"
+    r.keys(b"ix")
+    r.close()
+
+    # The header cache keeps the parsed subject, so a second run must
+    # not serve the tab back from it.
+    r = Rmut(md, env)
+    r.expect("before tab after")
+    assert "\t" not in r.buf, "a raw tab came back out of the header cache"
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3350,6 +3380,7 @@ SCENARIOS = [
     scenario_paper_cuts,
     scenario_attach_reminder,
     scenario_getting_started,
+    scenario_control_chars,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

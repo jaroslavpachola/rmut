@@ -37,11 +37,27 @@ pub struct Envelope {
     pub list: Option<String>,
 }
 
+/// Header text on its way to a one-line slot in the display. A tab
+/// or a stray control character would be written to the terminal as
+/// it stands: a tab jumps to the next tab stop, pushing the rest of
+/// an index row past the window edge and wrapping it onto a second
+/// line. Mail carries them often enough (a header the sender folded
+/// by hand, an RFC 2047 word that decoded to one), so every such
+/// field passes through here.
+pub fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| match c.is_control() {
+            true => ' ',
+            false => c,
+        })
+        .collect()
+}
+
 pub fn envelope(file: MailFile) -> Result<Envelope> {
     let raw = fs::read(&file.path).with_context(|| format!("reading {}", file.path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", file.path.display()))?;
     let headers = mail.get_headers();
-    let from_full = headers.get_first_value("From").unwrap_or_default();
+    let from_full = one_line(&headers.get_first_value("From").unwrap_or_default());
     let from = if from_full.trim().is_empty() {
         "(unknown)".into()
     } else {
@@ -49,6 +65,7 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     };
     let subject = headers
         .get_first_value("Subject")
+        .map(|s| one_line(&s))
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "(no subject)".into());
     let date = headers
@@ -77,7 +94,8 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     };
     let list = headers
         .get_first_value("List-Id")
-        .and_then(|v| list_name(&v));
+        .and_then(|v| list_name(&v))
+        .map(|n| one_line(&n));
     Ok(Envelope {
         file,
         from,
@@ -305,7 +323,7 @@ pub fn load_with(path: &Path, disp: &Display) -> Result<MessageView> {
     let all: Vec<(String, String)> = mail
         .headers
         .iter()
-        .map(|h| (h.get_key(), h.get_value()))
+        .map(|h| (h.get_key(), one_line(&h.get_value())))
         .collect();
     let brief = weed(&all, &disp.rules);
     let mut body = String::new();
@@ -721,6 +739,7 @@ fn part_filename(p: &ParsedMail) -> Option<String> {
         .get("filename")
         .cloned()
         .or_else(|| p.ctype.params.get("name").cloned())
+        .map(|n| one_line(&n))
 }
 
 fn leaf_at<'a, 'b>(mail: &'a ParsedMail<'b>, index: usize) -> Result<&'a ParsedMail<'b>> {
@@ -799,6 +818,43 @@ mod tests {
         "JVBERg==\r\n",
         "--b--\r\n",
     );
+
+    #[test]
+    fn control_characters_never_reach_a_one_line_field() {
+        // A tab is the one that bites: the terminal expands it, so the
+        // rest of an index row is pushed past the window edge and the
+        // row wraps onto a second line.
+        assert_eq!(one_line("before\ttab after"), "before tab after");
+        assert_eq!(one_line("two\u{7}bells\u{1b}"), "two bells ");
+        assert_eq!(one_line("nothing to do"), "nothing to do");
+
+        let raw = concat!(
+            "From: Tabbed\tSender <t@example.com>\r\n",
+            "Subject: before\ttab after\r\n",
+            "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n",
+            "\r\nbody\r\n",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cur-msg");
+        std::fs::write(&path, raw).unwrap();
+        let file = crate::maildir::MailFile {
+            path: path.clone(),
+            is_new: false,
+            flags: Default::default(),
+            size: raw.len() as u64,
+        };
+        let env = envelope(file).unwrap();
+        assert_eq!(env.subject, "before tab after");
+        assert_eq!(env.from, "Tabbed Sender");
+        assert!(!env.from_full.contains('\t'));
+        // The pager's header block is a set of one-line slots too.
+        let view = load(&path).unwrap();
+        assert!(
+            view.all.iter().all(|(_, v)| !v.contains('\t')),
+            "{:?}",
+            view.all
+        );
+    }
 
     #[test]
     fn short_from_prefers_display_name() {
