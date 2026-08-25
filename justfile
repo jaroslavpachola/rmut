@@ -19,7 +19,8 @@ e2e:
 
 check: test lint e2e
 
-# crates.io: core must land first, the tui depends on it
+# crates.io: in dependency order, core first, the tui last
 publish:
     cargo publish -p rmut-core
+    cargo publish -p rmut-session
     cargo publish -p rmut-tui

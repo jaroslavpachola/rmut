@@ -1067,19 +1067,34 @@ Goal: the enabling step, and mechanical.
 - [x] No crate moves. Behaviour and the suite are unchanged: 47/47
       scenarios, no new one, because nothing new is visible
 
-## R51: the session crate
+## R51: the session crate (done, 1.51)
 
 Goal: the model half moves out.
 
-- [ ] `rmut-session` holds the open mailbox (msgs, visible, sel,
+- [x] `rmut-session` holds the open mailbox (msgs, visible, sel,
       sort, limit, threads, collapsed), the operations (marks, tagged
       and thread ops, sync, save/copy/pipe/print/bounce), the undo
-      stack, the outbox, the hooks and the derived config
-- [ ] `rmut-tui` keeps `Mode`, prompts, the keymap, the theme and
-      `ui.rs`, and drives the session
-- [ ] One area at a time, each a commit that keeps the suite green:
-      sync and the mark operations first, compose last, being the
-      most entangled
+      stack, the outbox, the hooks and the derived config (the
+      matchers, the hook tables, `message::Display`, $quote_regexp,
+      $abort_noattach_regex). The theme, the key tables and the
+      colour rules stay derived in the TUI, being about a screen
+- [x] `rmut-tui` keeps `Mode`, prompts, the keymap, the theme and
+      `ui.rs`, and drives the session. app.rs went from 6716 lines to
+      4204; the session crate is 2843
+- [x] One area at a time, five commits, each with the suite green:
+      the state and the marks and sync, then the operations on
+      messages, then the hooks, then the mailbox switch, then compose
+- [x] Where an operation ended by putting something on the screen it
+      hands the front end a value instead: a failed send returns its
+      draft, a cancelled one the same, `check_new_mail` takes a
+      callback for the sidebar refresh, `op_targets` takes the tag
+      prefix's answer. Switching mailboxes stopped rebuilding the
+      whole app, which also stopped it dropping the prompt history
+      and any held send
+- [ ] Left for R52, because they end in a question rather than a
+      value: `send_draft` (the attachment reminder, the PGP and Fcc
+      questions), `run_command_line` and the message-hook sync it
+      drives, and the compose menu's own editing
 
 ## R52: asks, not prompts
 
@@ -1087,7 +1102,8 @@ Goal: the part that actually makes a second front end possible.
 
 - [ ] The session says what it needs ("a mailbox name", "purge 3
       deleted?") and the front end answers, instead of the session
-      opening a `Prompt`. A TUI answers on the message line; anything
+      opening a `Prompt`. R51 left `send_draft`, `run_command_line`
+      and the compose menu behind for exactly this. A TUI answers on the message line; anything
       else can answer however it likes
 - [ ] The same for the handoffs that currently suspend the TUI: the
       editor, `!`, and Ctrl+Z become requests the front end honours
