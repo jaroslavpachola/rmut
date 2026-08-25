@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.38.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.39.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -173,6 +173,16 @@ toggle read/unread
 .TP
 .B t ;
 toggle the tag; apply the next function to tagged messages
+.TP
+.B z
+undo the last delete, undelete, flag, read toggle, tag, pattern
+sweep, save or copy \(em one step per action, however many messages
+it touched. The step remembers the messages as they stood, so undoing
+puts their marks back, and a save's copy is removed again. Writing
+the mailbox
+.RB ( $ ", " q )
+ends what can be undone: the stack is dropped, since those changes
+are on disk. Undo is rmut's own; mutt has nothing like it
 .TP
 .B Tab Alt+Tab
 jump to the next / previous new-or-unread message, wrapping around

@@ -716,6 +716,31 @@ a lengthening argument list.
       renders any message, so an attachment inside encrypted mail is
       announced like any other
 
+## R39: undo (done, 1.39)
+
+Goal: a way back from the last change to the messages, the first
+"Beyond mutt" item and the one it ranked highest on value-per-effort.
+Asked for by name; the rest of that list stays frozen.
+
+- [x] `z` in the index walks back the last step: delete, undelete,
+      flag, read toggle, tag, a `D`/`U`/`T`/Ctrl+T pattern sweep, a
+      save or a copy, and `d` from the pager. One action is one step
+      however many messages it touched, so a pattern delete over the
+      whole mailbox comes back in one keystroke
+- [x] A step keeps a snapshot per message it touched (flags, is_new,
+      tagged, dirty) keyed by path, plus the files it created and
+      where the cursor was, also by path so a resort cannot move it.
+      Undoing restores the snapshot, removes a save's delivered copy,
+      and puts the cursor back. A copy that went to an IMAP folder
+      says so rather than pretending: APPEND is not taken back
+- [x] Writing the mailbox ends what can be undone: `sync` drops the
+      stack, since the marks are on disk and the paths the stack keyed
+      on have been renamed away. Bounded at 32 steps and 100k
+      snapshots, oldest out first, so a sweep over a huge mailbox
+      cannot pin memory
+- [x] No redo: the stack goes one way, which is what a "that was
+      wrong" key is for; e2e scenario_undo
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
@@ -724,8 +749,7 @@ one up on your own, not even as a paper cut or "while I'm in there";
 each starts only when explicitly asked for by name. Ranked by
 value-per-effort:
 
-- Undo: a stack over delete/flag/tag/move and limit-scoped bulk ops
-  (the deferred-sync dirty model makes this cheap; mutt has nothing)
+- Undo: shipped as R39 above (asked for by name, 2026-08)
 - Undo send: outgoing mail waits N seconds with a cancel key before
   sendmail/SMTP fires
 - text/calendar: render meeting invites (when/where/who) in the

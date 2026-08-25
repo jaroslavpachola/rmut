@@ -2699,6 +2699,86 @@ def scenario_mime_polish(tmp):
     r.close()
 
 
+def scenario_undo(tmp):
+    """Beyond mutt: z walks back the last delete/flag/tag/save, one
+    step per action however many messages it touched, until a sync
+    writes the changes and there is nothing left to walk back."""
+    md = make_maildir(tmp, "md-undo")
+    write_msgs(md, ["jane", "petr", "ci"])
+    target = os.path.join(tmp, "md-undo-archive")
+
+    def files():
+        return sorted(os.listdir(os.path.join(md, "cur"))
+                      + os.listdir(os.path.join(md, "new")))
+
+    start = files()
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:3")
+
+    # One delete, walked back.
+    r.keys(b"d")
+    r.expect("Del:1")
+    r.keys(b"z")
+    r.expect("undone: delete (1 message(s))")
+
+    # A pattern delete is one step, however many it marked.
+    r.keys(b"D~A\r")
+    r.expect("3 deleted")
+    r.keys(b"z")
+    r.expect("undone: deleted by pattern (3 message(s))")
+
+    # Tags too, and the flag mark.
+    r.keys(b"T~sCI\r")
+    r.expect("1 tagged")
+    r.keys(b"z")
+    r.expect("undone: tagged by pattern (1 message(s))")
+    r.keys(b"F")
+    r.settle()
+    r.keys(b"z")
+    r.expect("undone: flag (1 message(s))")
+
+    # A delete from the pager lands on the same stack (the oldest
+    # message is already seen, so opening it changes nothing else).
+    r.keys(b"=\r")
+    r.settle()
+    r.keys(b"d")
+    r.settle()
+    r.keys(b"iz")
+    r.settle()
+
+    # A save leaves a copy behind and marks the original deleted;
+    # undoing takes both back.
+    r.keys(b"s")
+    r.expect("Save to mailbox:")
+    r.keys(target.encode() + b"\r")
+    r.expect("original marked deleted")
+    wait_for(lambda: len(os.listdir(os.path.join(target, "cur"))) == 1,
+             desc="the saved copy")
+    # (No screen assertion here: the status that replaces "saved to
+    # ..." shares its characters, and ratatui redraws only changed
+    # cells, so the accumulated pty text is not a reliable witness.
+    # The copy going away, and the sync below, are.)
+    r.keys(b"z")
+    wait_for(lambda: os.listdir(os.path.join(target, "cur")) == [],
+             desc="the saved copy removed")
+
+    # Nothing is pending after all that, so the sync writes nothing:
+    # the maildir is byte for byte where it started, flag suffixes
+    # included. (A status assertion would be unreliable here, for the
+    # cell-diff reason above.)
+    r.keys(b"$")
+    r.settle()
+    assert files() == start, files()
+
+    # A written change is out of undo's reach.
+    r.keys(b"d$y")
+    wait_for(lambda: len(files()) == len(start) - 1, desc="the purge")
+    r.keys(b"z")
+    r.expect("nothing to undo")
+    r.keys(b"x")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -2723,6 +2803,7 @@ SCENARIOS = [
     scenario_hooks,
     scenario_format_flowed,
     scenario_mime_polish,
+    scenario_undo,
     scenario_pager_search,
     scenario_triage,
     scenario_odds,

@@ -30,6 +30,40 @@ impl Msg {
     }
 }
 
+/// How many undo steps to keep, and how many message snapshots in
+/// total: a pattern delete over a huge mailbox is one step but very
+/// many marks, so both are bounded and the oldest steps go first.
+const UNDO_MAX_STEPS: usize = 32;
+const UNDO_MAX_MARKS: usize = 100_000;
+
+/// One message's state before a step touched it. The path is the
+/// identity: it only changes when the mailbox is written, and a write
+/// drops the whole stack.
+#[derive(Clone)]
+struct MsgMark {
+    path: PathBuf,
+    flags: maildir::Flags,
+    is_new: bool,
+    tagged: bool,
+    dirty: bool,
+}
+
+/// One undoable step: what it was, the messages as they stood before
+/// it, and where the cursor was.
+struct UndoStep {
+    what: String,
+    marks: Vec<MsgMark>,
+    /// The message the cursor was on, by path: a resort or a limit
+    /// can move it, so the position alone would not find it again.
+    sel: Option<PathBuf>,
+    /// Files the step created (a save or copy's delivered message),
+    /// removed again when it is undone.
+    created: Vec<PathBuf>,
+    /// Something the undo cannot take back, said out loud when it
+    /// runs (a copy that went to an IMAP folder).
+    note: Option<String>,
+}
+
 pub struct Pager {
     pub view: message::MessageView,
     pub scroll: usize,
@@ -405,6 +439,9 @@ pub struct App {
     display: message::Display,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
+    /// Undo stack, oldest first: delete/flag/tag/read marks and the
+    /// copies a save made, back to the state before each step.
+    undo: Vec<UndoStep>,
     /// Width and content rows from the last key dispatch, for actions
     /// (prompt submissions) that arrive without a size at hand.
     view_size: (usize, usize),
@@ -805,6 +842,7 @@ impl App {
             quote_re,
             display,
             body_rules,
+            undo: Vec::new(),
             view_size: (80, 24),
             thread_depth: vec![0; count],
             thread_root: (0..count).collect(),
@@ -1822,11 +1860,13 @@ impl App {
     fn run_index_action(&mut self, action: IndexAction, apply_tagged: bool, page: usize) {
         match action {
             IndexAction::Tag => {
-                if let Some(m) = self.cur_mut() {
-                    m.env.tagged = !m.env.tagged;
+                if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("tag", &[i]);
+                    self.msgs[i].env.tagged = !self.msgs[i].env.tagged;
                     self.select(self.sel.saturating_add(1));
                 }
             }
+            IndexAction::Undo => self.undo_last(),
             IndexAction::TagPrefix => {
                 if self.msgs.iter().any(|m| m.env.tagged) {
                     self.tag_next = true;
@@ -1892,20 +1932,22 @@ impl App {
             IndexAction::Delete => {
                 if self.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged(|m| m.env.file.flags.deleted = true);
-                } else if let Some(m) = self.cur_mut() {
-                    m.env.file.flags.deleted = true;
-                    m.dirty = true;
+                    self.each_tagged("delete", |m| m.env.file.flags.deleted = true);
+                } else if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("delete", &[i]);
+                    self.msgs[i].env.file.flags.deleted = true;
+                    self.msgs[i].dirty = true;
                     self.select(self.sel.saturating_add(1));
                 }
             }
             IndexAction::Undelete => {
                 if self.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged(|m| m.env.file.flags.deleted = false);
-                } else if let Some(m) = self.cur_mut() {
-                    m.env.file.flags.deleted = false;
-                    m.dirty = true;
+                    self.each_tagged("undelete", |m| m.env.file.flags.deleted = false);
+                } else if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("undelete", &[i]);
+                    self.msgs[i].env.file.flags.deleted = false;
+                    self.msgs[i].dirty = true;
                     // mutt's $resolve (on by default): advance.
                     self.select(self.sel.saturating_add(1));
                 }
@@ -1913,24 +1955,30 @@ impl App {
             IndexAction::Flag => {
                 if self.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged(|m| m.env.file.flags.flagged = !m.env.file.flags.flagged);
-                } else if let Some(m) = self.cur_mut() {
-                    m.env.file.flags.flagged = !m.env.file.flags.flagged;
-                    m.dirty = true;
+                    self.each_tagged("flag", |m| {
+                        m.env.file.flags.flagged = !m.env.file.flags.flagged
+                    });
+                } else if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("flag", &[i]);
+                    let flags = &mut self.msgs[i].env.file.flags;
+                    flags.flagged = !flags.flagged;
+                    self.msgs[i].dirty = true;
                     self.select(self.sel.saturating_add(1));
                 }
             }
             IndexAction::ToggleNew => {
                 if self.deny_readonly() {
                 } else if apply_tagged {
-                    self.each_tagged(|m| {
+                    self.each_tagged("toggle read", |m| {
                         m.env.file.flags.seen = !m.env.file.flags.seen;
                         m.env.file.is_new = false;
                     });
-                } else if let Some(m) = self.cur_mut() {
-                    m.env.file.flags.seen = !m.env.file.flags.seen;
-                    m.env.file.is_new = false;
-                    m.dirty = true;
+                } else if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("toggle read", &[i]);
+                    let file = &mut self.msgs[i].env.file;
+                    file.flags.seen = !file.flags.seen;
+                    file.is_new = false;
+                    self.msgs[i].dirty = true;
                     self.select(self.sel.saturating_add(1));
                 }
             }
@@ -2132,9 +2180,10 @@ impl App {
                 if self.deny_readonly() {
                     return;
                 }
-                if let Some(m) = self.cur_mut() {
-                    m.env.file.flags.deleted = true;
-                    m.dirty = true;
+                if let Some(&i) = self.visible.get(self.sel) {
+                    self.push_undo("delete", &[i]);
+                    self.msgs[i].env.file.flags.deleted = true;
+                    self.msgs[i].dirty = true;
                 }
                 // mutt's $resolve: advance to the next undeleted.
                 match self.step_message(true, true) {
@@ -4729,14 +4778,109 @@ impl App {
     }
 
     /// Apply `f` to every tagged message, marking them dirty.
-    fn each_tagged(&mut self, f: impl Fn(&mut Msg)) {
-        let mut count = 0usize;
-        for m in self.msgs.iter_mut().filter(|m| m.env.tagged) {
+    fn each_tagged(&mut self, what: &str, f: impl Fn(&mut Msg)) {
+        let tagged: Vec<usize> = (0..self.msgs.len())
+            .filter(|&i| self.msgs[i].env.tagged)
+            .collect();
+        self.push_undo(what, &tagged);
+        for &i in &tagged {
+            let m = &mut self.msgs[i];
             f(m);
             m.dirty = true;
-            count += 1;
         }
-        self.status = Some(format!("applied to {count} tagged message(s)"));
+        self.status = Some(format!("applied to {} tagged message(s)", tagged.len()));
+    }
+
+    /// Remember `indices` as they stand, so `z` can put them back.
+    /// Steps with nothing in them are not worth a slot.
+    fn push_undo(&mut self, what: &str, indices: &[usize]) {
+        if indices.is_empty() {
+            return;
+        }
+        let marks = indices.iter().map(|&i| self.mark(i)).collect();
+        self.push_undo_step(UndoStep {
+            what: what.to_string(),
+            marks,
+            sel: self.selected_path(),
+            created: Vec::new(),
+            note: None,
+        });
+    }
+
+    fn push_undo_step(&mut self, step: UndoStep) {
+        self.undo.push(step);
+        // Oldest first out, on either bound.
+        while self.undo.len() > UNDO_MAX_STEPS
+            || (self.undo.len() > 1
+                && self.undo.iter().map(|s| s.marks.len()).sum::<usize>() > UNDO_MAX_MARKS)
+        {
+            self.undo.remove(0);
+        }
+    }
+
+    fn mark(&self, i: usize) -> MsgMark {
+        let m = &self.msgs[i];
+        MsgMark {
+            path: m.env.file.path.clone(),
+            flags: m.env.file.flags,
+            is_new: m.env.file.is_new,
+            tagged: m.env.tagged,
+            dirty: m.dirty,
+        }
+    }
+
+    /// Walk back the last step: the marks it saved go back onto the
+    /// messages that still carry those paths, and any file it created
+    /// is removed. Writing the mailbox drops the stack, so a step here
+    /// is always one that has not reached disk.
+    fn undo_last(&mut self) {
+        let Some(step) = self.undo.pop() else {
+            self.status = Some("nothing to undo".into());
+            return;
+        };
+        let mut restored = 0usize;
+        let by_path: HashMap<&Path, usize> = self
+            .msgs
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.env.file.path.as_path(), i))
+            .collect();
+        let mut wanted: Vec<(usize, MsgMark)> = Vec::new();
+        for mark in &step.marks {
+            if let Some(&i) = by_path.get(mark.path.as_path()) {
+                wanted.push((i, mark.clone()));
+            }
+        }
+        for (i, mark) in wanted {
+            let m = &mut self.msgs[i];
+            m.env.file.flags = mark.flags;
+            m.env.file.is_new = mark.is_new;
+            m.env.tagged = mark.tagged;
+            m.dirty = mark.dirty;
+            restored += 1;
+        }
+        let mut failed = Vec::new();
+        for path in &step.created {
+            if let Err(err) = std::fs::remove_file(path) {
+                failed.push(format!("{}: {err}", path.display()));
+            }
+        }
+        if let Some(vi) = step.sel.and_then(|p| {
+            self.visible
+                .iter()
+                .position(|&i| self.msgs[i].env.file.path == p)
+        }) {
+            self.sel = vi;
+        }
+        let mut note = format!("undone: {} ({restored} message(s))", step.what);
+        if let Some(extra) = &step.note {
+            note += &format!("; {extra}");
+        }
+        if !failed.is_empty() {
+            self.error_status(format!("{note}; could not remove {}", failed.join("; ")));
+        } else {
+            self.status = Some(note);
+        }
     }
 
     fn prompt_copy(&mut self, delete: bool) {
@@ -4799,11 +4943,18 @@ impl App {
         let Some(bytes) = self.full_message_bytes() else {
             return;
         };
+        // What the undo of this step has to take back: the copy just
+        // delivered, and (for a save) the original's deleted mark.
+        let mut created: Vec<PathBuf> = Vec::new();
+        let mut note = None;
         let target = match remote::parse_spec(input) {
             Some((account, folder)) => match &mut self.remote {
                 Some(remote) if remote.account.name == account => {
                     match remote.append_to(folder, flags, &bytes) {
-                        Ok(folder) => format!("imap:{account}/{folder}"),
+                        Ok(folder) => {
+                            note = Some(format!("the copy in imap:{account}/{folder} stays"));
+                            format!("imap:{account}/{folder}")
+                        }
                         Err(err) => {
                             self.error_status(format!("cannot save: {err:#}"));
                             return;
@@ -4819,7 +4970,10 @@ impl App {
                 let dir = expand_tilde(input);
                 let result = maildir::create(&dir)
                     .and_then(|()| maildir::deliver(&dir, &bytes, flags))
-                    .map(|_| dir.display().to_string());
+                    .map(|path| {
+                        created.push(path);
+                        dir.display().to_string()
+                    });
                 match result {
                     Ok(shown) => shown,
                     Err(err) => {
@@ -4829,11 +4983,20 @@ impl App {
                 }
             }
         };
+        let step = UndoStep {
+            what: match delete {
+                true => format!("save to {target}"),
+                false => format!("copy to {target}"),
+            },
+            marks: vec![self.mark(i)],
+            sel: self.selected_path(),
+            created,
+            note,
+        };
+        self.push_undo_step(step);
         if delete {
-            if let Some(m) = self.cur_mut() {
-                m.env.file.flags.deleted = true;
-                m.dirty = true;
-            }
+            self.msgs[i].env.file.flags.deleted = true;
+            self.msgs[i].dirty = true;
             self.status = Some(format!("saved to {target} (original marked deleted)"));
         } else {
             self.status = Some(format!("copied to {target}"));
@@ -5413,18 +5576,21 @@ impl App {
         };
         self.resolve_body_terms(&patterns);
         let positions = self.positions();
-        let mut count = 0;
+        let mut hits = Vec::new();
         for (i, pos) in positions.iter().enumerate() {
             let in_limit = match &self.limit {
                 Some((_, l)) => self.env_matches_at(l, &self.msgs[i].env, *pos),
                 None => true,
             };
             if in_limit && self.env_matches_at(&patterns, &self.msgs[i].env, *pos) {
-                f(&mut self.msgs[i]);
-                count += 1;
+                hits.push(i);
             }
         }
-        self.status = Some(format!("{count} {verb}"));
+        self.push_undo(&format!("{verb} by pattern"), &hits);
+        for &i in &hits {
+            f(&mut self.msgs[i]);
+        }
+        self.status = Some(format!("{} {verb}", hits.len()));
     }
 
     /// Write all pending changes to the maildir: T-flagged messages are
@@ -5572,6 +5738,9 @@ impl App {
             }
         });
         self.dir_mtimes = dir_mtimes(&self.dir);
+        // The marks are on disk now, and the paths the stack keyed on
+        // have been renamed away: there is nothing left to walk back.
+        self.undo.clear();
         self.resort(keep);
         self.status = Some(if errors.is_empty() {
             format!("synced: {removed} deleted, {saved} updated")

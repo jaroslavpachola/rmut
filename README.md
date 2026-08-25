@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.38**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.39**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -98,7 +98,8 @@ or `~/Maildir`.
 
 Index: `j`/`k` move, `Enter` view, `=`/`*` first/last, PgUp/PgDn or
 Ctrl+B/Ctrl+F page, `d`/`u` delete/undelete, `F` flag, `N` toggle
-read, `t` tag + `;` apply the next d/u/F/N to all tagged, `s` save
+read, `t` tag + `;` apply the next d/u/F/N to all tagged, `z` undo
+the last of those, `s` save
 (copy to a mailbox + mark deleted), `$` sync changes to disk (asks
 before purging deleted messages, like mutt), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
@@ -420,6 +421,24 @@ space-stuffs it, in the plain case, under attachments, and inside a
 PGP signature or encryption alike. The paragraphs themselves are your
 editor's doing, exactly as in mutt: a line that continues has to end
 with a space, and rmut adds none of its own.
+
+## Undo
+
+`z` walks back the last change to your messages: a delete or
+undelete, a flag or read toggle, a tag, a `D`/`U`/`T`/Ctrl+T pattern
+sweep, or a save or copy to another mailbox. One keystroke is one
+step however many messages it touched, so a pattern delete over three
+hundred messages comes back in one go, and a save's copy in the
+target mailbox is removed again along with the original's delete
+mark.
+
+A step remembers the messages as they stood before it, and puts that
+state back. Writing the mailbox ends what can be undone: `$` (and the
+write on quit) drops the stack, because those changes are on disk and
+the deleted ones are gone. Up to 32 steps are kept.
+
+This one is rmut's own; mutt has nothing like it. It is cheap here
+because rmut already defers every mark to the sync.
 
 ## Which part shows, and mailcap
 
