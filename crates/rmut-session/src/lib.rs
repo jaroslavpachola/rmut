@@ -22,6 +22,10 @@ use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote::{self, Remote};
 use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thread};
 
+mod ask;
+
+pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
+
 /// How many undo steps to keep, and how many message snapshots in
 /// total: a pattern delete over a huge mailbox is one step but very
 /// many marks, so both are bounded and the oldest steps go first.
@@ -289,6 +293,8 @@ pub struct Session {
     pub quote_re: regex_lite::Regex,
     /// Compiled $abort_noattach_regex, for the attachment reminder.
     attach_re: regex_lite::Regex,
+    /// What the session wants the front end to do, oldest first.
+    requests: Vec<Request>,
     /// Where outcomes go. Nothing is kept until a front end installs
     /// a sink, so a session used as a library is silent by default.
     notices: Box<dyn NoticeSink>,
@@ -387,6 +393,7 @@ impl Session {
             quote_re: default_quote_re(),
             attach_re: default_attach_re(),
             config,
+            requests: Vec::new(),
             notices: Box::new(Silence),
         };
         let mut hook_warnings = Vec::new();

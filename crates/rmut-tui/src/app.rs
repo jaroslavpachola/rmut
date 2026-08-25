@@ -16,8 +16,9 @@ use rmut_core::pattern::{self, Pattern};
 use rmut_core::remote;
 use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
-    Compose, ComposeBase, ComposeKind, ComposeSetup, Held, Security, Session, SortKey, ThreadOp,
-    default_from, draft_full, expand_tilde, parse_sort, pipe_to, wrap_order, write_draft,
+    Answer, Ask, AskKind, Compose, ComposeBase, ComposeKind, ComposeSetup, Held, Key, PatternOp,
+    Request, Security, Session, ThreadOp, Wants, default_from, draft_full, expand_tilde,
+    parse_sort, pipe_to, wrap_order, write_draft,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -79,20 +80,17 @@ pub enum Mode {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum LineKind {
-    Limit,
-    Search,
-    /// The same, the other way round (mutt's search-reverse): `n`
-    /// keeps going backwards afterwards.
-    SearchBack,
+    /// A question the session asked, carried back untouched when it
+    /// is answered. `wants` is its hint about what the answer is, for
+    /// the history bucket and Tab completion.
+    Ask {
+        what: AskKind,
+        wants: Wants,
+    },
     /// The pager's text search (`/` inside a message).
     PagerSearch,
-    /// Pattern-wide operations (D/U/T/ctrl+t): every match gets the op.
-    DeletePattern,
-    UndeletePattern,
-    TagPattern,
-    UntagPattern,
     /// Folder browser: directory to list, and maildir to create.
     BrowseDir,
     CreateDir,
@@ -110,16 +108,10 @@ pub enum LineKind {
     /// A shell command to run with the TUI stood down (mutt's !).
     Shell,
     SavePart,
-    SaveMsg,
-    CopyMsg,
-    Pipe,
-    BounceTo,
     ComposeTo,
     ComposeSubject,
     /// A file path to add as an `Attach:` line (send prompt `a`).
     AttachFile,
-    /// The nick for create-alias; the address waits in `alias_addr`.
-    AliasNick,
     /// Compose menu header edits (t/c/b/s), back to the menu after.
     EditTo,
     EditCc,
@@ -136,48 +128,43 @@ impl LineKind {
     /// The kinds whose answer names a mailbox, so `=x` / `+x` expand
     /// before anything reads it. Same list as the "mailbox" history
     /// bucket below.
-    fn takes_mailbox(self) -> bool {
+    fn takes_mailbox(&self) -> bool {
         matches!(
             self,
             LineKind::ChangeDir
                 | LineKind::ChangeDirReadOnly
-                | LineKind::SaveMsg
-                | LineKind::CopyMsg
                 | LineKind::BrowseDir
                 | LineKind::CreateDir
                 | LineKind::EditFcc
         )
     }
 
-    fn history_bucket(self) -> &'static str {
+    fn history_bucket(&self) -> &'static str {
         match self {
-            LineKind::Limit
-            | LineKind::Search
-            | LineKind::PagerSearch
-            | LineKind::SearchBack
-            | LineKind::DeletePattern
-            | LineKind::UndeletePattern
-            | LineKind::TagPattern
-            | LineKind::UntagPattern => "pattern",
-            LineKind::ComposeTo
-            | LineKind::BounceTo
-            | LineKind::EditTo
-            | LineKind::EditCc
-            | LineKind::EditBcc => "address",
+            // A session question says what its answer is; the buckets
+            // are the same ones the front end's own prompts use.
+            LineKind::Ask { wants, .. } => match wants {
+                Wants::Mailbox => "mailbox",
+                Wants::Pattern => "pattern",
+                Wants::Address => "address",
+                Wants::Command => "command",
+                Wants::Other => "other",
+            },
+            LineKind::PagerSearch => "pattern",
+            LineKind::ComposeTo | LineKind::EditTo | LineKind::EditCc | LineKind::EditBcc => {
+                "address"
+            }
             LineKind::ChangeDir
             | LineKind::ChangeDirReadOnly
-            | LineKind::SaveMsg
-            | LineKind::CopyMsg
             | LineKind::BrowseDir
             | LineKind::CreateDir
             | LineKind::EditFcc => "mailbox",
             LineKind::SavePart | LineKind::AttachFile => "file",
-            LineKind::Pipe | LineKind::PipePart | LineKind::Shell => "command",
+            LineKind::PipePart | LineKind::Shell => "command",
             LineKind::Notmuch => "notmuch",
             LineKind::EnterCommand => "command",
             LineKind::ComposeSubject
             | LineKind::EditSubject
-            | LineKind::AliasNick
             | LineKind::Query
             | LineKind::EditDesc
             | LineKind::EditType => "other",
@@ -185,20 +172,14 @@ impl LineKind {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum KeyKind {
-    Sort,
+    /// A one-key question the session asked.
+    Ask(AskKind),
     Security,
     Recall,
-    Print,
     /// Confirm printing the selected attachment part.
     PrintPart,
-    /// Confirm sending the message in `App::bounce_to`.
-    Bounce,
-    /// Confirm expunging deleted messages; `quit` leaves afterwards.
-    Purge {
-        quit: bool,
-    },
     /// mutt's $reply_to (ask-yes): reply to the Reply-To address?
     ReplyTo,
     /// mutt's $abort_nosubject (ask-yes): no subject, abort?
@@ -327,10 +308,6 @@ pub struct App {
     pub(crate) pager_search_text: String,
     /// Compiled [[color_body]] rules: regex + style, in config order.
     pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
-    /// Set while a `;`-prefixed operation is being asked about (the
-    /// mailbox, the command, the y/n): the answer applies to the
-    /// tagged set, not to the message under the cursor.
-    tag_op: bool,
     /// Trouble from the send at exit, printed once the terminal is
     /// back (nobody would see a status line by then).
     pub exit_notes: Vec<String>,
@@ -351,10 +328,6 @@ pub struct App {
     /// Message whose raw bytes go through $EDITOR next loop tick
     /// (mutt's edit function).
     pending_raw_edit: Option<PathBuf>,
-    /// Recipients waiting for the bounce confirmation.
-    bounce_to: Option<String>,
-    /// The sender address waiting for a create-alias nick.
-    alias_addr: Option<String>,
     /// Attach-line index waiting for a d / ctrl+t compose-menu edit.
     attach_edit: Option<usize>,
     /// Address completion state at the To prompt (Tab cycles).
@@ -522,7 +495,6 @@ impl App {
             pager_search: None,
             pager_search_text: String::new(),
             body_rules,
-            tag_op: false,
             exit_notes: Vec::new(),
             view_size: (80, 24),
             theme,
@@ -533,8 +505,6 @@ impl App {
             compose: None,
             pending_editor: None,
             pending_raw_edit: None,
-            bounce_to: None,
-            alias_addr: None,
             attach_edit: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
@@ -556,6 +526,38 @@ impl App {
             app.note(all.join("; "));
         }
         app
+    }
+
+    /// Put a session's question on the message line, and carry out
+    /// anything it asked the front end to do.
+    fn open_ask(&mut self, ask: Option<Ask>) {
+        match ask {
+            Some(Ask::Line {
+                label,
+                prefill,
+                wants,
+                what,
+            }) => {
+                self.prompt = Some(Prompt::line(label, prefill, LineKind::Ask { what, wants }));
+            }
+            Some(Ask::Key { label, what }) => {
+                self.prompt = Some(Prompt::Key {
+                    label,
+                    kind: KeyKind::Ask(what),
+                });
+            }
+            None => {}
+        }
+        self.run_requests();
+    }
+
+    /// What the session cannot do for itself.
+    fn run_requests(&mut self) {
+        while let Some(request) = self.session.take_request() {
+            match request {
+                Request::Quit => self.quit = true,
+            }
+        }
     }
 
     /// Something worth saying that is not a complaint.
@@ -767,7 +769,7 @@ impl App {
     fn handle_prompt_key(&mut self, key: KeyEvent) {
         match &mut self.prompt {
             Some(Prompt::Key { kind, .. }) => {
-                let kind = *kind;
+                let kind = kind.clone();
                 self.prompt = None;
                 self.run_key_prompt(kind, key.code);
             }
@@ -775,8 +777,6 @@ impl App {
                 KeyCode::Esc => {
                     self.prompt = None;
                     self.compose_setup = None;
-                    self.bounce_to = None;
-                    self.alias_addr = None;
                     // Escaping a sub-prompt of the send flow (attach
                     // file) returns to the compose menu.
                     if self.compose.is_some() {
@@ -900,41 +900,15 @@ impl App {
 
     fn run_key_prompt(&mut self, kind: KeyKind, code: KeyCode) {
         match kind {
-            KeyKind::Sort => {
-                let (sort, rev) = match code {
-                    KeyCode::Char('d') => (SortKey::Date, false),
-                    KeyCode::Char('D') => (SortKey::Date, true),
-                    KeyCode::Char('f') => (SortKey::From, false),
-                    KeyCode::Char('F') => (SortKey::From, true),
-                    KeyCode::Char('s') => (SortKey::Subject, false),
-                    KeyCode::Char('S') => (SortKey::Subject, true),
-                    KeyCode::Char('z') => (SortKey::Size, false),
-                    KeyCode::Char('Z') => (SortKey::Size, true),
-                    KeyCode::Char('t') | KeyCode::Char('T') => (SortKey::Threads, false),
-                    _ => return,
+            KeyKind::Ask(what) => {
+                let key = match code {
+                    KeyCode::Char(c) => Key::Char(c),
+                    KeyCode::Enter => Key::Enter,
+                    _ => Key::Other,
                 };
-                self.session.sort = sort;
-                self.session.sort_rev = rev;
-                self.session.apply_sort();
-                self.note(format!(
-                    "sorted by {}{}",
-                    sort.name(),
-                    if rev { " (reverse)" } else { "" }
-                ));
+                let next = self.session.answer(what, Answer::Key(key));
+                self.open_ask(next);
             }
-            KeyKind::Purge { quit } => match code {
-                // ask-yes, like mutt's $delete: Enter takes the yes.
-                // n writes flag changes but keeps the messages marked
-                // deleted; anything else calls the whole thing off,
-                // including the quit that asked.
-                KeyCode::Char('y') | KeyCode::Char('n') | KeyCode::Enter => {
-                    self.session.sync(code != KeyCode::Char('n'));
-                    if quit {
-                        self.quit = true;
-                    }
-                }
-                _ => {}
-            },
             KeyKind::Security => {
                 if let Some(c) = &mut self.compose {
                     c.security = match code {
@@ -1038,22 +1012,9 @@ impl App {
                     }
                 }
             }
-            KeyKind::Print => {
-                if code == KeyCode::Char('y') {
-                    self.session.print_current(self.tag_op);
-                }
-            }
             KeyKind::PrintPart => {
                 if code == KeyCode::Char('y') {
                     self.print_part();
-                }
-            }
-            KeyKind::Bounce => {
-                let to = self.bounce_to.take();
-                if code == KeyCode::Char('y')
-                    && let Some(to) = to
-                {
-                    self.session.bounce_current(&to, self.tag_op);
                 }
             }
         }
@@ -1066,20 +1027,28 @@ impl App {
     /// folder browser instead. Repeated Tab cycles the candidates.
     fn tab_complete(&mut self) {
         let (buf_now, kind) = match &self.prompt {
-            Some(Prompt::Line { buf, kind, .. }) => (buf.clone(), *kind),
+            Some(Prompt::Line { buf, kind, .. }) => (buf.clone(), kind.clone()),
             _ => return,
         };
+        // A session question says what its answer is; the front end's
+        // own prompts are classified here.
         let is_addr = matches!(
             kind,
-            LineKind::ComposeTo
-                | LineKind::BounceTo
+            LineKind::Ask {
+                wants: Wants::Address,
+                ..
+            } | LineKind::ComposeTo
                 | LineKind::EditTo
                 | LineKind::EditCc
                 | LineKind::EditBcc
         );
         let is_mbox = matches!(
             kind,
-            LineKind::ChangeDir | LineKind::SaveMsg | LineKind::CopyMsg | LineKind::BrowseDir
+            LineKind::Ask {
+                wants: Wants::Mailbox,
+                ..
+            } | LineKind::ChangeDir
+                | LineKind::BrowseDir
         );
         if !is_addr && !is_mbox {
             return;
@@ -1180,42 +1149,9 @@ impl App {
             false => input,
         };
         match kind {
-            LineKind::Limit => {
-                let keep = self.session.selected_path();
-                if input.is_empty() || input == "all" {
-                    self.session.limit = None;
-                } else {
-                    match pattern::parse(input) {
-                        Ok(patterns) => {
-                            self.session.resolve_body_terms(&patterns);
-                            self.session.limit = Some((input.to_string(), patterns));
-                        }
-                        Err(err) => {
-                            self.error(format!("bad pattern: {err}"));
-                            return;
-                        }
-                    }
-                }
-                self.session.rebuild_visible(keep);
-                if self.session.visible.is_empty() {
-                    self.note("no messages match the limit");
-                }
-            }
-            LineKind::Search | LineKind::SearchBack => {
-                self.session.search_rev = matches!(kind, LineKind::SearchBack);
-                if !input.is_empty() {
-                    match pattern::parse(input) {
-                        Ok(patterns) => {
-                            self.session.resolve_body_terms(&patterns);
-                            self.session.last_search = Some(patterns);
-                        }
-                        Err(err) => {
-                            self.error(format!("bad pattern: {err}"));
-                            return;
-                        }
-                    }
-                }
-                self.session.search_next();
+            LineKind::Ask { what, .. } => {
+                let next = self.session.answer(what, Answer::Line(input));
+                self.open_ask(next);
             }
             LineKind::PagerSearch => {
                 if !input.is_empty() {
@@ -1228,24 +1164,6 @@ impl App {
                     self.error("No search pattern.");
                 }
             }
-            LineKind::DeletePattern => self.session.apply_pattern(input, "deleted", |m| {
-                if !m.env.file.flags.deleted {
-                    m.env.file.flags.deleted = true;
-                    m.dirty = true;
-                }
-            }),
-            LineKind::UndeletePattern => self.session.apply_pattern(input, "undeleted", |m| {
-                if m.env.file.flags.deleted {
-                    m.env.file.flags.deleted = false;
-                    m.dirty = true;
-                }
-            }),
-            LineKind::TagPattern => self
-                .session
-                .apply_pattern(input, "tagged", |m| m.env.tagged = true),
-            LineKind::UntagPattern => self
-                .session
-                .apply_pattern(input, "untagged", |m| m.env.tagged = false),
             LineKind::ChangeDir => self.open_mailbox_spec(input),
             LineKind::ChangeDirReadOnly => self.open_mailbox_read_only(input),
             LineKind::Shell => {
@@ -1256,20 +1174,11 @@ impl App {
             LineKind::BrowseDir => self.browse_dir(input),
             LineKind::CreateDir => self.create_maildir(input),
             LineKind::SavePart => self.save_part(input),
-            LineKind::SaveMsg => self.session.copy_message(input, true, self.tag_op),
-            LineKind::CopyMsg => self.session.copy_message(input, false, self.tag_op),
-            LineKind::Pipe => self.session.pipe_message(input, self.tag_op),
             LineKind::PipePart => self.pipe_part(input),
             LineKind::Query => self.run_query(input),
             LineKind::Notmuch => self.notmuch_search(input),
             LineKind::EnterCommand => self.run_command_line(input),
-            LineKind::BounceTo => self.bounce_to_submitted(input),
             LineKind::AttachFile => self.attach_file_submitted(input),
-            LineKind::AliasNick => {
-                if let Some(addr) = self.alias_addr.take() {
-                    self.session.create_alias(input, &addr);
-                }
-            }
             LineKind::ComposeTo => self.setup_to_submitted(input),
             LineKind::ComposeSubject => self.subject_submitted(input),
             LineKind::EditTo => {
@@ -1312,7 +1221,6 @@ impl App {
     fn run_index_action(&mut self, action: IndexAction, apply_tagged: bool, page: usize) {
         // Any new action ends a previous `;` operation, including one
         // whose prompt was abandoned with Esc.
-        self.tag_op = false;
         if apply_tagged && !takes_tagged(action) {
             self.error(format!("{} does not take the tagged set", action.name()));
             return;
@@ -1351,20 +1259,25 @@ impl App {
                 }
             }
             IndexAction::Save | IndexAction::Copy => {
-                self.tag_op = apply_tagged;
-                self.prompt_copy(action == IndexAction::Save);
+                let ask = self
+                    .session
+                    .ask_copy(action == IndexAction::Save, apply_tagged);
+                self.open_ask(ask);
             }
             IndexAction::Pipe => {
-                self.tag_op = apply_tagged;
-                self.prompt_pipe();
+                let ask = self.session.ask_pipe(apply_tagged);
+                self.open_ask(ask);
             }
             IndexAction::Bounce => {
-                self.tag_op = apply_tagged;
-                self.prompt_bounce();
+                let ask = self.session.ask_bounce(apply_tagged);
+                self.open_ask(ask);
             }
             IndexAction::Resend => self.resend_current(),
             IndexAction::Edit => self.start_raw_edit(),
-            IndexAction::CreateAlias => self.prompt_create_alias(),
+            IndexAction::CreateAlias => {
+                let ask = self.session.ask_alias();
+                self.open_ask(ask);
+            }
             IndexAction::Query => {
                 if self.session.config.mail.query_command.is_none() {
                     self.error("no query_command configured");
@@ -1388,7 +1301,8 @@ impl App {
                 // pending deletions raise a question (the purge one).
                 self.session.mark_old_unread();
                 if self.session.deleted_count() > 0 {
-                    self.prompt_purge(true);
+                    let ask = self.session.ask_purge(true);
+                    self.open_ask(ask);
                 } else {
                     if self.session.pending_count() > 0 {
                         self.session.sync(true);
@@ -1463,7 +1377,8 @@ impl App {
             }
             IndexAction::Sync => {
                 if self.session.deleted_count() > 0 {
-                    self.prompt_purge(false);
+                    let ask = self.session.ask_purge(false);
+                    self.open_ask(ask);
                 } else {
                     self.session.sync(true);
                 }
@@ -1474,69 +1389,39 @@ impl App {
             IndexAction::ListReply => self.start_list_reply(),
             IndexAction::Forward => self.start_compose(ComposeKind::Forward),
             IndexAction::Sort => {
-                self.prompt = Some(Prompt::Key {
-                    label: "Sort: (d)ate (f)rom (s)ubject si(z)e (t)hreads, uppercase reverses: "
-                        .into(),
-                    kind: KeyKind::Sort,
-                });
+                let ask = self.session.ask_sort();
+                self.open_ask(Some(ask));
             }
             IndexAction::Limit => {
-                let buf = self
-                    .session
-                    .limit
-                    .as_ref()
-                    .map(|(s, _)| s.clone())
-                    .unwrap_or_default();
-                self.prompt = Some(Prompt::line(
-                    "Limit (~f/~s/~b/~t/~c/~d/flags, ! | (), empty=all): ",
-                    buf,
-                    LineKind::Limit,
-                ));
+                let ask = self.session.ask_limit();
+                self.open_ask(Some(ask));
             }
             IndexAction::Search => {
-                self.prompt = Some(Prompt::line("Search: ", String::new(), LineKind::Search));
+                let ask = self.session.ask_search(false);
+                self.open_ask(Some(ask));
             }
             IndexAction::SearchReverse => {
-                self.prompt = Some(Prompt::line(
-                    "Reverse search: ",
-                    String::new(),
-                    LineKind::SearchBack,
-                ));
+                let ask = self.session.ask_search(true);
+                self.open_ask(Some(ask));
             }
             IndexAction::SearchNext => self.session.search_next(),
             IndexAction::NextNew => self.session.jump_new(true),
             IndexAction::PrevNew => self.session.jump_new(false),
             IndexAction::DeletePattern => {
-                if !self.session.deny_readonly() {
-                    self.prompt = Some(Prompt::line(
-                        "Delete messages matching: ",
-                        String::new(),
-                        LineKind::DeletePattern,
-                    ));
-                }
+                let ask = self.session.ask_pattern(PatternOp::Delete);
+                self.open_ask(ask);
             }
             IndexAction::UndeletePattern => {
-                if !self.session.deny_readonly() {
-                    self.prompt = Some(Prompt::line(
-                        "Undelete messages matching: ",
-                        String::new(),
-                        LineKind::UndeletePattern,
-                    ));
-                }
+                let ask = self.session.ask_pattern(PatternOp::Undelete);
+                self.open_ask(ask);
             }
             IndexAction::TagPattern => {
-                self.prompt = Some(Prompt::line(
-                    "Tag messages matching: ",
-                    String::new(),
-                    LineKind::TagPattern,
-                ));
+                let ask = self.session.ask_pattern(PatternOp::Tag);
+                self.open_ask(ask);
             }
             IndexAction::UntagPattern => {
-                self.prompt = Some(Prompt::line(
-                    "Untag messages matching: ",
-                    String::new(),
-                    LineKind::UntagPattern,
-                ));
+                let ask = self.session.ask_pattern(PatternOp::Untag);
+                self.open_ask(ask);
             }
             IndexAction::Attachments => self.open_attachments(),
             IndexAction::ChangeMailbox => {
@@ -1568,8 +1453,8 @@ impl App {
             IndexAction::Suspend => self.pending_suspend = true,
             IndexAction::Folders => self.open_folder_browser(),
             IndexAction::Print => {
-                self.tag_op = apply_tagged;
-                self.confirm_print();
+                let ask = self.session.ask_print(apply_tagged);
+                self.open_ask(ask);
             }
             IndexAction::SidebarToggle => {
                 self.sidebar_visible = !self.sidebar_visible;
@@ -1784,23 +1669,28 @@ impl App {
                 return;
             }
             PagerAction::Print => {
-                self.confirm_print();
+                let ask = self.session.ask_print(false);
+                self.open_ask(ask);
                 return;
             }
             PagerAction::Save => {
-                self.prompt_copy(true);
+                let ask = self.session.ask_copy(true, false);
+                self.open_ask(ask);
                 return;
             }
             PagerAction::Copy => {
-                self.prompt_copy(false);
+                let ask = self.session.ask_copy(false, false);
+                self.open_ask(ask);
                 return;
             }
             PagerAction::Pipe => {
-                self.prompt_pipe();
+                let ask = self.session.ask_pipe(false);
+                self.open_ask(ask);
                 return;
             }
             PagerAction::Bounce => {
-                self.prompt_bounce();
+                let ask = self.session.ask_bounce(false);
+                self.open_ask(ask);
                 return;
             }
             PagerAction::Resend => {
@@ -1813,7 +1703,8 @@ impl App {
                 return;
             }
             PagerAction::CreateAlias => {
-                self.prompt_create_alias();
+                let ask = self.session.ask_alias();
+                self.open_ask(ask);
                 return;
             }
             PagerAction::EnterCommand => {
@@ -2413,7 +2304,6 @@ impl App {
                 // new mailbox opens on its index, at the top.
                 self.mode = Mode::Index;
                 self.index_offset = 0;
-                self.tag_op = false;
                 self.tag_next = false;
                 self.complete = None;
                 if !warnings.is_empty() {
@@ -3789,87 +3679,6 @@ impl App {
         }
     }
 
-    fn prompt_copy(&mut self, delete: bool) {
-        if self.session.visible.get(self.session.sel).is_none() {
-            return;
-        }
-        // Save marks the original deleted; a plain copy is fine.
-        if delete && self.session.deny_readonly() {
-            return;
-        }
-        let buf = self.session.config.mail.save.clone().unwrap_or_default();
-        self.prompt = Some(Prompt::line(
-            if delete {
-                "Save to mailbox: "
-            } else {
-                "Copy to mailbox: "
-            },
-            buf,
-            if delete {
-                LineKind::SaveMsg
-            } else {
-                LineKind::CopyMsg
-            },
-        ));
-    }
-
-    /// Offer the selected message's sender for the alias file, with
-    /// the address's local part as the suggested nick.
-    fn prompt_create_alias(&mut self) {
-        let Some(&i) = self.session.visible.get(self.session.sel) else {
-            return;
-        };
-        let path = self.session.msgs[i].env.file.path.clone();
-        let Some(from) = message::first_header(&path, "From") else {
-            self.error("the message has no From header");
-            return;
-        };
-        let nick = compose::bare_address(&from)
-            .and_then(|a| a.split('@').next().map(|l| l.to_lowercase()))
-            .unwrap_or_default();
-        self.alias_addr = Some(from.trim().to_string());
-        self.prompt = Some(Prompt::line("Alias as (nick): ", nick, LineKind::AliasNick));
-    }
-
-    fn prompt_pipe(&mut self) {
-        if self.session.visible.get(self.session.sel).is_none() {
-            return;
-        }
-        self.prompt = Some(Prompt::line(
-            "Pipe to command: ",
-            String::new(),
-            LineKind::Pipe,
-        ));
-    }
-
-    fn prompt_bounce(&mut self) {
-        if self.session.visible.get(self.session.sel).is_none() {
-            return;
-        }
-        self.prompt = Some(Prompt::line(
-            "Bounce message to: ",
-            String::new(),
-            LineKind::BounceTo,
-        ));
-    }
-
-    fn bounce_to_submitted(&mut self, input: &str) {
-        let to = alias::expand(input, &alias::load_default());
-        if to.trim().is_empty() {
-            self.note("no recipients, bounce cancelled");
-            return;
-        }
-        self.bounce_to = Some(to.clone());
-        let n = self.session.op_targets(self.tag_op).len();
-        self.prompt = Some(Prompt::Key {
-            label: match n {
-                1 => format!("Bounce message to {to}? (y/n): "),
-                _ => format!("Bounce {n} messages to {to}? (y/n): "),
-            },
-            kind: KeyKind::Bounce,
-        });
-    }
-
     /// mutt's edit function (`e`): the selected message's raw bytes go
     /// through $EDITOR, and a changed result replaces the original:
     /// in place for maildirs, append + delete-mark on IMAP.
@@ -4054,47 +3863,6 @@ impl App {
                 });
             }
             Err(err) => self.error(format!("cannot open message: {err:#}")),
-        }
-    }
-
-    fn confirm_print(&mut self) {
-        if self.session.visible.get(self.session.sel).is_none() {
-            return;
-        }
-        let n = self.session.op_targets(self.tag_op).len();
-        self.prompt = Some(Prompt::Key {
-            label: match n {
-                1 => "Print message? (y/n): ".to_string(),
-                _ => format!("Print {n} messages? (y/n): "),
-            },
-            kind: KeyKind::Print,
-        });
-    }
-
-    /// Write all pending changes to the maildir: T-flagged messages are
-    /// removed, other dirty messages are renamed with their new flags.
-    /// For an IMAP mailbox the changes go to the server first (UID
-    /// STORE / EXPUNGE); the local pass then updates the cache to match.
-    fn prompt_purge(&mut self, quit: bool) {
-        // mutt's $delete: yes purges without asking, no keeps the
-        // marks, and the ask default is the question below.
-        match self.session.config.mail.delete.as_deref() {
-            Some("yes") | Some("no") => {
-                let purge = self.session.config.mail.delete.as_deref() == Some("yes");
-                self.session.sync(purge);
-                if quit {
-                    self.quit = true;
-                }
-            }
-            _ => {
-                self.prompt = Some(Prompt::Key {
-                    label: format!(
-                        "Purge {} deleted message(s)? (y/n): ",
-                        self.session.deleted_count()
-                    ),
-                    kind: KeyKind::Purge { quit },
-                });
-            }
         }
     }
 }
