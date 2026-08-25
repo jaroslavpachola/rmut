@@ -199,6 +199,12 @@ impl Remote {
     /// Reuse this session for another folder of the same account: a
     /// SELECT on the live connection instead of a fresh connect+login
     /// round. On failure the caller falls back to a full open.
+    /// Point the progress lines somewhere else (the worker thread
+    /// writes them where the session can pick them up).
+    pub fn set_progress(&mut self, progress: Progress) {
+        self.progress = progress;
+    }
+
     pub fn switch(&mut self, mailbox: &str) -> Result<()> {
         self.point_at(mailbox)
     }

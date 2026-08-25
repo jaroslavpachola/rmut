@@ -27,9 +27,11 @@ mod commands;
 mod drafts;
 #[cfg(test)]
 mod tests;
+mod worker;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
 pub use commands::CommandRun;
+pub use worker::{Done, Facts, Imap, Job};
 
 /// How many undo steps to keep, and how many message snapshots in
 /// total: a pattern delete over a huge mailbox is one step but very
@@ -220,11 +222,10 @@ pub struct Session {
     /// What this mailbox is called: the path for local maildirs, the
     /// `imap:account/folder` spec for remote ones.
     pub title: String,
-    /// Set when `dir` is the cache maildir of an IMAP folder. Public
-    /// while the operations that reach for it (opening another
-    /// folder, saving to one, listing them) still live in the front
-    /// end; they move here in their own step.
-    pub remote: Option<Remote>,
+    /// Set when `dir` is the cache maildir of an IMAP folder: the
+    /// connection, on a thread of its own, and the facts about the
+    /// folder that need no asking.
+    imap: Option<Imap>,
     /// Set when `dir` mirrors an mbox file; sync writes back into it.
     pub mbox: Option<mbox::Mbox>,
     pub msgs: Vec<Msg>,
@@ -380,7 +381,7 @@ impl Session {
         let mut session = Session {
             dir: dir.to_path_buf(),
             title: dir.display().to_string(),
-            remote: None,
+            imap: None,
             mbox: None,
             msgs,
             visible,
@@ -470,7 +471,7 @@ impl Session {
                 // IDLE on a second connection; NOOP polling stays as
                 // the fallback when the server doesn't support it.
                 session.idle = Some(remote::idle_watch(&account, &remote.mailbox, &password));
-                session.remote = Some(remote);
+                session.imap = Some(Imap::new(remote));
                 Ok((session, warnings))
             }
             None => {
@@ -564,34 +565,34 @@ impl Session {
         let reuse = match remote::parse_spec(spec) {
             Some((account, mailbox))
                 if self
-                    .remote
+                    .imap
                     .as_ref()
-                    .is_some_and(|r| r.account.name == account)
+                    .is_some_and(|imap| imap.facts.account.name == account)
                     && self
-                        .remote
+                        .imap
                         .as_mut()
-                        .is_some_and(|r| r.switch(mailbox).is_ok()) =>
+                        .is_some_and(|imap| imap.blocking(Job::Switch(mailbox.into())).is_ok()) =>
             {
-                self.remote.take()
+                self.imap.take()
             }
             _ => None,
         };
         let config = self.config.clone();
         let (mut next, warnings) = match &reuse {
-            Some(remote) => Session::open(&remote.cache.clone(), config)?,
+            Some(imap) => Session::open(&imap.facts.cache.clone(), config)?,
             None => Session::open_spec(spec, config, progress)?,
         };
-        if let Some(remote) = reuse {
-            next.title = remote.spec.clone();
+        if let Some(imap) = reuse {
+            next.title = imap.facts.spec.clone();
             // A second connection for IDLE, as the first open makes.
-            if let Ok(password) = account_password(&remote.account) {
+            if let Ok(password) = account_password(&imap.facts.account) {
                 next.idle = Some(remote::idle_watch(
-                    &remote.account,
-                    &remote.mailbox,
+                    &imap.facts.account,
+                    &imap.facts.mailbox,
                     &password,
                 ));
             }
-            next.remote = Some(remote);
+            next.imap = Some(imap);
         }
         // A -R session stays read-only whatever it opens; Alt+c sets
         // read_only for one mailbox and does not survive the switch.
@@ -763,9 +764,9 @@ impl Session {
     /// local; a server search is a literal match); a failed search
     /// just falls back to reading bodies locally.
     pub fn resolve_body_terms(&mut self, patterns: &[Pattern]) {
-        let Some(remote) = &mut self.remote else {
+        if self.imap.is_none() {
             return;
-        };
+        }
         for term in pattern::body_terms(patterns) {
             let simple = !term
                 .chars()
@@ -773,7 +774,8 @@ impl Session {
             if !simple || self.body_hits.contains_key(&term) {
                 continue;
             }
-            if let Ok(uids) = remote.search_body(&term) {
+            let Some(imap) = &mut self.imap else { return };
+            if let Ok(Done::Uids(uids)) = imap.blocking(Job::SearchBody(term.clone())) {
                 self.body_hits.insert(term, uids.into_iter().collect());
             }
         }
@@ -844,14 +846,14 @@ impl Session {
     /// showing those counts wants to redraw them.
     pub fn check_new_mail(&mut self, between: &mut dyn FnMut(&mut Session)) {
         let backfilling = self.backfill.as_ref().is_some_and(|b| !b.done());
-        if let Some(remote) = &mut self.remote {
-            // While the backfill streams headers in, skip the server
-            // check, since a full reconcile would refetch its tail
-            // synchronously; the rescan below integrates the files.
-            if backfilling {
-            } else if let Err(err) = remote.check_new() {
-                self.error(format!("imap: {err:#}"));
-            }
+        // While the backfill streams headers in, skip the server
+        // check, since a full reconcile would refetch its tail
+        // synchronously; the rescan below integrates the files.
+        if !backfilling
+            && let Some(imap) = &mut self.imap
+            && let Err(err) = imap.blocking(Job::CheckNew)
+        {
+            self.error(format!("imap: {err:#}"));
         }
         self.maybe_backfill();
         if let Some(mbox) = &mut self.mbox {
@@ -906,22 +908,23 @@ impl Session {
             return;
         }
         self.backfill = None;
-        let Some(remote) = &mut self.remote else {
+        let Some(imap) = &mut self.imap else {
             return;
         };
-        if remote.pending_backfill.is_empty() {
+        if imap.facts.pending_backfill.is_empty() {
             return;
         }
-        let uids = mem::take(&mut remote.pending_backfill);
-        let Ok(password) = account_password(&remote.account) else {
+        let uids = imap.take_backfill();
+        let facts = imap.facts.clone();
+        let Ok(password) = account_password(&facts.account) else {
             return;
         };
         let count = uids.len();
         self.backfill = Some(remote::backfill(
-            &remote.account,
-            &remote.mailbox,
+            &facts.account,
+            &facts.mailbox,
             &password,
-            remote.cache.clone(),
+            facts.cache,
             uids,
         ));
         self.note(format!(
@@ -1056,9 +1059,9 @@ impl Session {
     /// holds headers only.
     pub fn message_bytes(&mut self, i: usize) -> Option<Vec<u8>> {
         let path = self.msgs.get(i)?.env.file.path.clone();
-        if let Some(remote) = &mut self.remote
-            && remote::is_partial(&path)
-            && let Err(err) = remote.fetch_body(&path)
+        if remote::is_partial(&path)
+            && let Some(imap) = &mut self.imap
+            && let Err(err) = imap.blocking(Job::FetchBody(path.clone()))
         {
             self.error(format!("cannot fetch message: {err:#}"));
             return None;
@@ -1406,10 +1409,13 @@ impl Session {
             .filter(|m| m.env.file.flags.deleted)
             .map(|m| m.env.file.path.clone())
             .collect();
-        match (remote::parse_spec(trash), &mut self.remote) {
-            (Some((account, folder)), Some(remote)) if remote.account.name == account => {
-                remote.copy_to_folder(&deleted, folder)
-            }
+        match (remote::parse_spec(trash), &mut self.imap) {
+            (Some((account, folder)), Some(imap)) if imap.facts.account.name == account => imap
+                .blocking(Job::CopyToFolder {
+                    paths: deleted,
+                    mailbox: folder.to_string(),
+                })
+                .map(|_| ()),
             (Some(_), _) => anyhow::bail!("trash must be a folder of the open account"),
             (None, Some(_)) => {
                 anyhow::bail!("an IMAP mailbox needs an imap:account/folder trash")
@@ -1446,29 +1452,20 @@ impl Session {
             self.error(format!("trash failed: {err:#}; nothing purged"));
             return;
         }
-        if let Some(remote) = &mut self.remote {
+        if self.imap.is_some() {
             let mut deletes: Vec<PathBuf> = Vec::new();
-            let mut flag_pushes: Vec<(PathBuf, maildir::Flags)> = Vec::new();
+            let mut flags: Vec<(PathBuf, maildir::Flags)> = Vec::new();
             for m in &self.msgs {
                 if m.env.file.flags.deleted {
                     if purge {
                         deletes.push(m.env.file.path.clone());
                     }
                 } else if m.dirty {
-                    flag_pushes.push((m.env.file.path.clone(), m.env.file.flags));
+                    flags.push((m.env.file.path.clone(), m.env.file.flags));
                 }
             }
-            let result = flag_pushes
-                .iter()
-                .try_for_each(|(path, flags)| remote.push_flags(path, *flags))
-                .and_then(|()| {
-                    if deletes.is_empty() {
-                        Ok(())
-                    } else {
-                        remote.delete(&deletes)
-                    }
-                });
-            if let Err(err) = result {
+            let imap = self.imap.as_mut().expect("just checked");
+            if let Err(err) = imap.blocking(Job::Sync { flags, deletes }) {
                 // Nothing applied locally: everything stays pending.
                 self.error(format!("sync failed: {err:#}"));
                 return;
@@ -1567,15 +1564,16 @@ impl Session {
                 (m.clone(), count)
             })
             .collect();
-        match &mut self.remote {
-            Some(remote) => {
-                let account = remote.account.name.clone();
-                dirs.extend(
-                    remote
-                        .folders()?
-                        .into_iter()
-                        .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
-                );
+        match &mut self.imap {
+            Some(imap) => {
+                let account = imap.facts.account.name.clone();
+                if let Done::Folders(folders) = imap.blocking(Job::Folders)? {
+                    dirs.extend(
+                        folders
+                            .into_iter()
+                            .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
+                    );
+                }
             }
             None => dirs.extend(
                 maildir::discover(&self.dir)
@@ -1593,6 +1591,66 @@ impl Session {
             }
         });
         Ok(dirs)
+    }
+
+    /// How many unread messages a configured mailbox holds, for a
+    /// front end drawing a sidebar: a local maildir's new/ count, or
+    /// the account's own STATUS. Other accounts show 0 rather than
+    /// costing a connection.
+    pub fn unseen_count(&mut self, spec: &str) -> usize {
+        match remote::parse_spec(spec) {
+            Some((account, folder)) => match &mut self.imap {
+                Some(imap) if imap.facts.account.name == account => {
+                    match imap.blocking(Job::Unseen(folder.to_string())) {
+                        Ok(Done::Unseen(n)) => n,
+                        _ => 0,
+                    }
+                }
+                _ => 0,
+            },
+            None => maildir::new_count(&expand_tilde(spec)),
+        }
+    }
+
+    /// Put an edited message back: on IMAP the edited copy is
+    /// appended and the original marked deleted (mutt does the same,
+    /// since a message on a server cannot be rewritten in place),
+    /// locally the file is written over and the mailbox rescanned.
+    pub fn store_edited(&mut self, path: &Path, edited: &[u8]) {
+        match &mut self.imap {
+            Some(imap) => {
+                let Some(flags) = self
+                    .visible
+                    .get(self.sel)
+                    .map(|&i| self.msgs[i].env.file.flags)
+                else {
+                    return;
+                };
+                let mailbox = imap.facts.mailbox.clone();
+                if let Err(err) = imap.blocking(Job::Append {
+                    mailbox: Some(mailbox),
+                    flags,
+                    body: edited.to_vec(),
+                }) {
+                    self.error(format!("cannot store the edited copy: {err:#}"));
+                    return;
+                }
+                if let Some(m) = self.cur_mut() {
+                    m.env.file.flags.deleted = true;
+                    m.dirty = true;
+                }
+                self.check_new_mail(&mut |_| {});
+                self.note("edited copy appended; original marked deleted ($ purges)");
+            }
+            None => {
+                if let Err(err) = std::fs::write(path, edited) {
+                    self.error(format!("cannot write message: {err}"));
+                    return;
+                }
+                self.rescan();
+                self.note("message edited");
+            }
+        }
     }
 
     /// mutt's $mark_old (on by default): when leaving the mailbox,
@@ -1638,10 +1696,10 @@ impl Session {
         if std::env::var("RMUT_SENDMAIL").is_ok() || self.config.mail.sendmail.is_some() {
             return None;
         }
-        if let Some(remote) = &self.remote
-            && remote.account.smtp_host.is_some()
+        if let Some(imap) = &self.imap
+            && imap.facts.account.smtp_host.is_some()
         {
-            return Some(remote.account.clone());
+            return Some(imap.facts.account.clone());
         }
         self.config
             .accounts
@@ -1730,10 +1788,17 @@ impl Session {
         let flags = self.msgs[i].env.file.flags;
         let bytes = self.message_bytes(i).ok_or("cannot read the message")?;
         match remote::parse_spec(spec) {
-            Some((account, folder)) => match &mut self.remote {
-                Some(remote) if remote.account.name == account => remote
-                    .append_to(folder, flags, &bytes)
-                    .map(|folder| format!("imap:{account}/{folder}"))
+            Some((account, folder)) => match &mut self.imap {
+                Some(imap) if imap.facts.account.name == account => imap
+                    .blocking(Job::Append {
+                        mailbox: Some(folder.to_string()),
+                        flags,
+                        body: bytes,
+                    })
+                    .map(|done| match done {
+                        Done::Folder(folder) => format!("imap:{account}/{folder}"),
+                        _ => format!("imap:{account}/{folder}"),
+                    })
                     .map_err(|err| format!("{err:#}")),
                 _ => Err("can only save to a folder of the open account".into()),
             },
@@ -1841,10 +1906,11 @@ impl Session {
     /// pager shows it.
     pub fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
         // Cached IMAP messages start header-only; get the body now.
-        if let Some(remote) = &mut self.remote
-            && remote::is_partial(path)
+        if remote::is_partial(path)
+            && let Some(imap) = &mut self.imap
         {
-            remote.fetch_body(path).context("cannot fetch message")?;
+            imap.blocking(Job::FetchBody(path.to_path_buf()))
+                .context("cannot fetch message")?;
             // The body is here now: %l can show its line count.
             if let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
                 && let Ok(raw) = std::fs::read(path)
@@ -1918,8 +1984,11 @@ impl Session {
     /// The identity in effect for this mailbox (and, when known, the
     /// draft's recipients).
     pub fn current_identity(&self, rcpts: &[String]) -> rmut_core::config::Identity {
-        self.config
-            .identity_for(&self.title, rcpts, self.remote.as_ref().map(|r| &r.account))
+        self.config.identity_for(
+            &self.title,
+            rcpts,
+            self.imap.as_ref().map(|imap| &imap.facts.account),
+        )
     }
 
     /// Indices of the message-hooks the selected message matches.
@@ -2182,10 +2251,10 @@ impl Session {
         {
             return mailbox;
         }
-        match &self.remote {
-            Some(remote) => format!(
+        match &self.imap {
+            Some(imap) => format!(
                 "imap:{}/{}",
-                remote.account.name, remote.account.sent_folder
+                imap.facts.account.name, imap.facts.account.sent_folder
             ),
             None => self.config.mail.sent.clone().unwrap_or_default(),
         }
@@ -2301,11 +2370,19 @@ impl Session {
                         note += &format!(", Fcc to {fcc} failed");
                     }
                 } else {
-                    match &mut self.remote {
+                    match &mut self.imap {
                         // Fcc goes to the account's Sent folder on the
                         // server.
-                        Some(remote) => match remote.append_sent(final_text.as_bytes()) {
-                            Ok(folder) => note += &format!(", copy in {folder}"),
+                        Some(imap) => match imap.blocking(Job::Append {
+                            mailbox: None,
+                            flags: maildir::Flags {
+                                seen: true,
+                                ..Default::default()
+                            },
+                            body: final_text.clone().into_bytes(),
+                        }) {
+                            Ok(Done::Folder(folder)) => note += &format!(", copy in {folder}"),
+                            Ok(_) => note += ", copy in Sent",
                             Err(_) => note += ", Fcc to Sent failed",
                         },
                         None => {

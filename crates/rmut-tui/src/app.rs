@@ -13,7 +13,6 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use rmut_core::config::Config;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
-use rmut_core::remote;
 use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
     Answer, Ask, AskKind, Compose, ComposeKind, Key, PatternOp, Request, Session, ThreadOp, Wants,
@@ -699,13 +698,7 @@ impl App {
         let keep = self.sidebar.get(self.sidebar_sel).map(|e| e.0.clone());
         let mut entries: Vec<(String, usize)> = Vec::new();
         for spec in self.session.config.mail.mailboxes.clone() {
-            let count = match remote::parse_spec(&spec) {
-                Some((account, folder)) => match &mut self.session.remote {
-                    Some(remote) if remote.account.name == account => remote.unseen(folder),
-                    _ => 0, // other accounts: no connection just for a count
-                },
-                None => maildir::new_count(&expand_tilde(&spec)),
-            };
+            let count = self.session.unseen_count(&spec);
             entries.push((spec, count));
         }
         let (title, dir) = (self.session.title.clone(), self.session.dir.clone());
@@ -2821,35 +2814,8 @@ impl App {
             self.note("message unchanged");
             return;
         }
-        match &mut self.session.remote {
-            Some(remote) => {
-                // Like mutt on IMAP: the edited copy is appended and
-                // the original marked deleted, purged on the next $.
-                let flags = self.session.msgs[self.session.visible[self.session.sel]]
-                    .env
-                    .file
-                    .flags;
-                let mailbox = remote.mailbox.clone();
-                if let Err(err) = remote.append_to(&mailbox, flags, &edited) {
-                    self.error(format!("cannot store the edited copy: {err:#}"));
-                    return;
-                }
-                if let Some(m) = self.session.cur_mut() {
-                    m.env.file.flags.deleted = true;
-                    m.dirty = true;
-                }
-                self.check_new_mail();
-                self.note("edited copy appended; original marked deleted ($ purges)");
-            }
-            None => {
-                if let Err(err) = std::fs::write(&path, &edited) {
-                    self.error(format!("cannot write message: {err}"));
-                    return;
-                }
-                self.session.rescan();
-                self.note("message edited");
-            }
-        }
+        self.session.store_edited(&path, &edited);
+        self.refresh_sidebar();
     }
 
     /// Open a copy of the message as a new draft (mutt's resend): its
