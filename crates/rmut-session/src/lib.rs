@@ -156,6 +156,12 @@ pub struct ComposeSetup {
     pub kind: ComposeKind,
     pub base: Option<ComposeBase>,
     pub to: Option<String>,
+    /// mutt's $askcc / $askbcc, once answered.
+    pub cc: Option<String>,
+    pub bcc: Option<String>,
+    /// What the Subject prompt will offer, worked out when To was
+    /// answered and parked while the copies are asked about.
+    pub subject_prefill: Option<String>,
     /// Parked here while the include-original question is up.
     pub subject: Option<String>,
     /// mime_forward = "ask": the question's answer, once given.

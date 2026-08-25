@@ -233,6 +233,23 @@ pub struct Mail {
     /// mutt's $fast_reply: replies skip the To and Subject prompts,
     /// forwards skip Subject (the ask-yes questions still run).
     pub fast_reply: bool,
+    /// mutt's $attribution: the line a quoted reply opens with, over
+    /// the message being replied to (%a address, %n name, %f the From
+    /// header, %s subject, %i message-id, %d date, %{...} strftime).
+    pub attribution: Option<String>,
+    /// mutt's $indent_string: what each quoted line is prefixed with,
+    /// `"> "` by default.
+    pub indent_string: Option<String>,
+    /// mutt's $forward_format: the subject a forward carries, the
+    /// same format string over the message being forwarded.
+    pub forward_format: Option<String>,
+    /// mutt's $include: quote the original in a reply? "ask-yes" (the
+    /// default) and "ask-no" ask, "yes" and "no" decide it.
+    pub include: Option<String>,
+    /// mutt's $askcc / $askbcc: ask for those recipients when a draft
+    /// is started, prefilled with what a group reply worked out.
+    pub ask_cc: bool,
+    pub ask_bcc: bool,
     /// mutt's $autoedit (needs edit_headers): skip every initial
     /// prompt and question, straight into the editor; the compose
     /// menu follows as usual.

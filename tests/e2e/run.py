@@ -3495,6 +3495,67 @@ imap_tls = false
 
 
 
+def scenario_reply_text(tmp):
+    """R56: the three strings mutt users change. $attribution and
+    $indent_string shape a quoted reply, $forward_format the subject a
+    forward carries, $include decides the quote without asking, and
+    $askcc puts a Cc prompt between To and Subject."""
+    md = make_maildir(tmp, "md-reply-text")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-reply-text.eml")
+    sendmail = os.path.join(tmp, "sendmail-reply-text.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "reply-text-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "my answer\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "reply-text-config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+            f'attribution = "%n wrote (%{{%Y}}):"\n'
+            f'indent_string = "| "\n'
+            f'forward_format = "Fwd: %s"\n'
+            f'include = "yes"\n'
+            f'ask_cc = true\n'
+        )
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+
+    # Reply: To, then the Cc prompt $askcc adds, then Subject. No
+    # include question: $include said yes.
+    r.keys(b"r")
+    r.expect("To:")
+    r.keys(b"\r")
+    r.expect("Cc:")
+    r.keys(b"cc@example.com\r")
+    r.expect("Subject:")
+    r.keys(b"\r")
+    r.expect("y:Send", "Cc: cc@example.com")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="the reply sent")
+    text = open(sent_file).read()
+    assert "Jane Doe wrote (20" in text, text
+    assert "| Hi Jarda," in text, text
+    assert "Cc: cc@example.com" in text, text
+
+    # Forward: the subject comes from $forward_format.
+    r.expect("Msgs:1")
+    r.keys(b"f")
+    r.expect("To:")
+    r.keys(b"petr@example.com\r")
+    r.expect("Cc:")  # $askcc asks on every compose, as mutt does
+    r.keys(b"\r")
+    r.expect("Subject:", "Fwd: Lunch on Friday?")
+    r.keys(b"\x1b")  # Esc: the draft is not needed
+    r.keys(b"x")
+    r.close()
+
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3545,6 +3606,7 @@ SCENARIOS = [
     scenario_attachment_pager,
     scenario_network_timeouts,
     scenario_network_abort,
+    scenario_reply_text,
 ]
 
 

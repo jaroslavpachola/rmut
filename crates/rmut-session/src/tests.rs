@@ -737,3 +737,95 @@ fn the_config_decides_how_long_a_connection_waits() {
     f.session.run_command_line("set connect_timeout=0");
     assert_eq!(f.session.config.net.connect_timeout, 0);
 }
+
+// ---- the reply and forward text
+
+#[test]
+fn a_quoted_reply_uses_the_configured_attribution_and_indent() {
+    let mut config = reply_config();
+    config.mail.attribution = Some("%n wrote on %{%Y-%m-%d}:".into());
+    config.mail.indent_string = Some("| ".into());
+    config.mail.include = Some("yes".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    f.select("Lunch on Friday?");
+    let ask = f.session.start_compose(crate::ComposeKind::Reply);
+    let ask = f.answer_line(ask, "sender@example.com");
+    // $include = yes: no question, straight to the draft.
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Subject: ");
+    assert!(f.answer_line(ask, "Re: Lunch").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    assert!(text.contains("Sender 0 wrote on 2024-03-"), "{text}");
+    assert!(text.contains("| body of Lunch on Friday?"), "{text}");
+}
+
+#[test]
+fn include_no_leaves_the_original_out_without_asking() {
+    let mut config = reply_config();
+    config.mail.include = Some("no".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    f.select("Lunch on Friday?");
+    let ask = f.session.start_compose(crate::ComposeKind::Reply);
+    let ask = f.answer_line(ask, "sender@example.com");
+    assert!(f.answer_line(ask, "Re: Lunch").is_none(), "no question");
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    assert!(!text.contains("body of Lunch"), "{text}");
+}
+
+#[test]
+fn ask_no_makes_enter_mean_no() {
+    let mut config = reply_config();
+    config.mail.include = Some("ask-no".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    f.select("Lunch on Friday?");
+    let ask = f.session.start_compose(crate::ComposeKind::Reply);
+    let ask = f.answer_line(ask, "sender@example.com");
+    let ask = f.answer_line(ask, "Re: Lunch");
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Include message in reply? (y/n): "
+    );
+    let what = ask_kind(ask.unwrap());
+    f.session.answer(what, Answer::Key(Key::Enter));
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    assert!(!text.contains("body of Lunch"), "Enter took the no: {text}");
+}
+
+#[test]
+fn a_forward_takes_its_subject_from_the_format() {
+    let mut config = reply_config();
+    config.mail.forward_format = Some("Fwd: %s (%n)".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    f.select("Lunch on Friday?");
+    let ask = f.session.start_compose(crate::ComposeKind::Forward);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Subject: ");
+    match ask.unwrap() {
+        Ask::Line { prefill, .. } => {
+            assert_eq!(prefill, "Fwd: Lunch on Friday? (Sender 0)");
+        }
+        _ => panic!("a line was asked for"),
+    }
+}
+
+#[test]
+fn askcc_and_askbcc_ask_between_to_and_subject() {
+    let mut config = reply_config();
+    config.mail.ask_cc = true;
+    config.mail.ask_bcc = true;
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "to@example.com");
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Cc: ");
+    let ask = f.answer_line(ask, "cc@example.com");
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Bcc: ");
+    let ask = f.answer_line(ask, "bcc@example.com");
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Subject: ");
+    assert!(f.answer_line(ask, "hello").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    assert!(text.contains("Cc: cc@example.com"), "{text}");
+    assert!(text.contains("Bcc: bcc@example.com"), "{text}");
+}

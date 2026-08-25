@@ -482,7 +482,23 @@ Related [mail] switches: fast_reply skips the To/Subject prompts on
 replies (Subject on forwards); autoedit (with edit_headers) skips
 every prompt and question, straight into the editor;
 forward = "ask" asks "Forward as attachment?" per forward;
-copy = false keeps no sent copy by default.
+copy = false keeps no sent copy by default; askcc and askbcc add
+those prompts between To and Subject, as mutt's do.
+.PP
+The quoted reply and the forward subject are format strings over the
+message being answered:
+.B attribution
+(default "On %d, %n wrote:"),
+.B indent_string
+(default "> ") and
+.B forward_format
+(default "[%a: %s]"), with %a the author's address, %n their name, %f
+the From header as written, %s the subject, %i the message-id, %d the
+date and %{...} the date through strftime.
+.B include
+decides whether a reply quotes at all: yes, no, ask\-yes (the
+default) or ask\-no, the last two asking and taking their own answer
+on Enter.
 .SH ENTER\-COMMAND
 .B :
 opens a command prompt (the line editor, with its own history) and
@@ -511,6 +527,8 @@ Settable at runtime: index_format, date_format, sort, sort_aux,
 pager_format, pager_index_lines, pager_context, quote_regexp, wrap,
 tilde, status_format, theme, beep, from, realname, reverse_name,
 edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
+attribution, indent_string, forward_format, include, askcc, askbcc,
+connect_timeout, net_timeout,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,

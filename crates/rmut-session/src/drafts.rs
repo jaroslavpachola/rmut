@@ -62,15 +62,16 @@ impl Session {
                     ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply,
                     Some(b),
                 ) => compose::reply_subject(&b.subject),
-                (ComposeKind::Forward, Some(b)) => {
-                    compose::forward_subject(&b.from_addr, &b.subject)
-                }
+                (ComposeKind::Forward, Some(b)) => self.forward_subject(b),
                 _ => String::new(),
             };
             self.setup = Some(ComposeSetup {
                 kind,
                 base,
                 to: Some(to),
+                cc: None,
+                bcc: None,
+                subject_prefill: None,
                 subject: None,
                 fwd_attach: None,
             });
@@ -83,6 +84,9 @@ impl Session {
             kind,
             base,
             to: None,
+            cc: None,
+            bcc: None,
+            subject_prefill: None,
             subject: None,
             fwd_attach: None,
         });
@@ -154,25 +158,99 @@ impl Session {
 
     fn setup_to_submitted(&mut self, input: &str) -> Option<Ask> {
         let to = alias::expand(input, &alias::load_default());
-        let setup = self.setup.as_mut()?;
-        setup.to = Some(to);
+        self.setup.as_mut()?.to = Some(to);
+        let setup = self.setup.as_ref()?;
         let subject_prefill = match (&setup.kind, &setup.base) {
             (ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply, Some(b)) => {
                 compose::reply_subject(&b.subject)
             }
-            (ComposeKind::Forward, Some(b)) => compose::forward_subject(&b.from_addr, &b.subject),
+            (ComposeKind::Forward, Some(b)) => self.forward_subject(b),
             _ => String::new(),
         };
-        // $fast_reply also skips the Subject prompt on forwards.
-        if self.config.mail.fast_reply && !subject_prefill.is_empty() {
-            return self.subject_submitted(&subject_prefill);
+        // What the Subject prompt will offer, parked while the
+        // copies are asked about; $fast_reply skips the prompt when
+        // it gets there.
+        self.setup.as_mut()?.subject_prefill = Some(subject_prefill);
+        self.ask_cc_or_on()
+    }
+
+    /// mutt's $askcc: the copies, prefilled with whatever a group
+    /// reply worked out. Straight on when it is off.
+    fn ask_cc_or_on(&mut self) -> Option<Ask> {
+        if !self.config.mail.ask_cc {
+            return self.ask_bcc_or_on();
+        }
+        let prefill = self.group_cc().unwrap_or_default();
+        Some(Ask::Line {
+            label: "Cc: ".into(),
+            prefill,
+            wants: Wants::Address,
+            what: AskKind::ComposeCc,
+        })
+    }
+
+    /// mutt's $askbcc, which nothing prefills.
+    fn ask_bcc_or_on(&mut self) -> Option<Ask> {
+        if !self.config.mail.ask_bcc {
+            return self.ask_subject();
+        }
+        Some(Ask::Line {
+            label: "Bcc: ".into(),
+            prefill: String::new(),
+            wants: Wants::Address,
+            what: AskKind::ComposeBcc,
+        })
+    }
+
+    /// The Subject prompt, or straight past it when $fast_reply has
+    /// already filled it in.
+    fn ask_subject(&mut self) -> Option<Ask> {
+        let prefill = self.setup.as_mut()?.subject_prefill.take()?;
+        if self.config.mail.fast_reply && !prefill.is_empty() {
+            return self.subject_submitted(&prefill);
         }
         Some(Ask::Line {
             label: "Subject: ".into(),
-            prefill: subject_prefill,
+            prefill,
             wants: Wants::Other,
             what: AskKind::ComposeSubject,
         })
+    }
+
+    pub(crate) fn answer_cc(&mut self, input: &str) -> Option<Ask> {
+        let cc = alias::expand(input, &alias::load_default());
+        self.setup.as_mut()?.cc = Some(cc);
+        self.ask_bcc_or_on()
+    }
+
+    pub(crate) fn answer_bcc(&mut self, input: &str) -> Option<Ask> {
+        let bcc = alias::expand(input, &alias::load_default());
+        self.setup.as_mut()?.bcc = Some(bcc);
+        self.ask_subject()
+    }
+
+    /// mutt's group reply: everyone else on the original, minus who
+    /// is already in To and (unless $metoo) me. None when there is
+    /// nobody left, when this is not a group reply, or when the
+    /// sender named a Mail-Followup-To, which replaces To and leaves
+    /// the copies alone.
+    fn group_cc(&self) -> Option<String> {
+        let setup = self.setup.as_ref()?;
+        if setup.kind != ComposeKind::GroupReply {
+            return None;
+        }
+        let base = setup.base.as_ref()?;
+        if !base.followup_to.trim().is_empty() {
+            return None;
+        }
+        let joined = compose::group_recipients(
+            &base.orig_to,
+            &base.orig_cc,
+            setup.to.as_deref().unwrap_or_default(),
+            self.me(),
+            self.config.mail.metoo,
+        );
+        (!joined.is_empty()).then_some(joined)
     }
 
     /// After the Subject prompt: mutt's $abort_nosubject (ask-yes) on
@@ -200,13 +278,29 @@ impl Session {
                 .as_ref()
                 .is_some_and(|s| s.kind == ComposeKind::Forward && s.base.is_some());
         if is_reply {
-            if let Some(setup) = &mut self.setup {
-                setup.subject = Some(subject);
+            // mutt's $include: "yes" and "no" decide it, the two
+            // ask forms ask, and Enter takes the one they name.
+            match self.config.mail.include.as_deref().unwrap_or("ask-yes") {
+                "yes" => {
+                    self.finish_compose_setup(&subject, true);
+                    return None;
+                }
+                "no" => {
+                    self.finish_compose_setup(&subject, false);
+                    return None;
+                }
+                include => {
+                    if let Some(setup) = &mut self.setup {
+                        setup.subject = Some(subject);
+                    }
+                    return Some(Ask::Key {
+                        label: "Include message in reply? (y/n): ".into(),
+                        what: AskKind::IncludeReply {
+                            default_yes: include != "ask-no",
+                        },
+                    });
+                }
             }
-            return Some(Ask::Key {
-                label: "Include message in reply? (y/n): ".into(),
-                what: AskKind::IncludeReply,
-            });
         }
         if ask_fwd {
             // mime_forward = "ask": whole original vs inline quote.
@@ -234,6 +328,8 @@ impl Session {
     }
 
     fn finish_compose_draft(&mut self, setup: ComposeSetup, subject: &str, include: bool) {
+        let asked_cc = setup.cc.clone().filter(|cc| !cc.trim().is_empty());
+        let bcc = setup.bcc.clone().filter(|bcc| !bcc.trim().is_empty());
         let mut to = setup.to.unwrap_or_default();
         let mut cc = None;
         let mut in_reply_to = None;
@@ -245,8 +341,22 @@ impl Session {
                 ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply => {
                     if include {
                         let orig = message::body_text(&b.path).unwrap_or_default();
-                        body =
-                            compose::quote(&compose::attribution(&b.from_display, b.date), &orig);
+                        let quoted = self.quoted_of(b);
+                        let attribution = compose::attribution(
+                            self.config
+                                .mail
+                                .attribution
+                                .as_deref()
+                                .unwrap_or(compose::DEFAULT_ATTRIBUTION),
+                            &quoted,
+                        );
+                        let indent = self
+                            .config
+                            .mail
+                            .indent_string
+                            .as_deref()
+                            .unwrap_or(compose::DEFAULT_INDENT);
+                        body = compose::quote(&attribution, indent, &orig);
                     }
                     in_reply_to = b.msg_id.clone();
                     let mut refs = b.references.clone();
@@ -295,6 +405,9 @@ impl Session {
                 ComposeKind::New => {}
             }
         }
+        // An answered Cc ($askcc) is what the user said, over
+        // whatever the group reply worked out.
+        let cc = asked_cc.or(cc);
         let from = self.compose_from(setup.base.as_ref(), &to);
         let followup =
             self.followup_header(&to, cc.as_deref(), from.as_deref().unwrap_or_default());
@@ -309,14 +422,22 @@ impl Session {
             },
             &body,
         );
-        // DraftHeaders has no Mail-Followup-To slot; it goes ahead of
-        // the blank line, where edit_headers shows it like any other.
-        let text = match followup {
-            Some(value) => match text.split_once("\n\n") {
-                Some((head, rest)) => format!("{head}\nMail-Followup-To: {value}\n\n{rest}"),
+        // DraftHeaders has no Mail-Followup-To or Bcc slot; both go
+        // ahead of the blank line, where edit_headers shows them like
+        // any other header.
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(value) = followup {
+            extra.push(format!("Mail-Followup-To: {value}"));
+        }
+        if let Some(value) = bcc {
+            extra.push(format!("Bcc: {value}"));
+        }
+        let text = match extra.is_empty() {
+            true => text,
+            false => match text.split_once("\n\n") {
+                Some((head, rest)) => format!("{head}\n{}\n\n{rest}", extra.join("\n")),
                 None => text,
             },
-            None => text,
         };
         match self.stage_draft(&text) {
             Ok((path, hidden_head)) => {
@@ -373,6 +494,29 @@ impl Session {
             .as_mut()
             .and_then(|s| s.subject.take())
             .unwrap_or_default()
+    }
+
+    /// The message a reply or a forward is about, for the format
+    /// strings that describe it.
+    fn quoted_of<'a>(&self, base: &'a ComposeBase) -> compose::Quoted<'a> {
+        compose::Quoted {
+            from: &base.from_hdr,
+            subject: &base.subject,
+            message_id: base.msg_id.as_deref(),
+            date: base.date,
+        }
+    }
+
+    /// mutt's $forward_format over the message being forwarded.
+    fn forward_subject(&self, base: &ComposeBase) -> String {
+        compose::forward_subject(
+            self.config
+                .mail
+                .forward_format
+                .as_deref()
+                .unwrap_or(compose::DEFAULT_FORWARD_FORMAT),
+            &self.quoted_of(base),
+        )
     }
 
     /// Give up on the draft that was being set up.

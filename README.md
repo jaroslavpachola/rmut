@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.55**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.56**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -272,6 +272,23 @@ by prefix, plus hits from `query_command` when one is configured
 message, then `address<TAB>name` lines). Repeated Tab cycles through
 multiple matches.
 
+A reply quotes the original under mutt's `$attribution` line, one
+`$indent_string` per line, and a forward takes its subject from
+`$forward_format`. All three are format strings over the message being
+answered (`%a` address, `%n` name, `%f` the whole From header, `%s`
+subject, `%i` message-id, `%d` date, `%{...}` strftime), and the
+defaults are mutt's:
+
+```toml
+[mail]
+attribution = "On %d, %n wrote:"   # the quoted reply's opening line
+indent_string = "> "               # what each quoted line starts with
+forward_format = "[%a: %s]"        # the subject a forward carries
+include = "ask-yes"                # quote the original: yes/no/ask-*
+ask_cc = false                     # mutt's $askcc, between To and
+ask_bcc = false                    # Subject; $askbcc follows it
+```
+
 By default (like mutt) the editor gets only the message body;
 headers come from the prompts, and attachments are added with `a` at
 the compose menu. With `edit_headers = true` the draft's header block
@@ -333,6 +350,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `autoedit`, `copy`, `forward`/`mime_forward`, `sendmail`, `editor`,
 `print_command`, `query_command`, `trash`, `record`, `postponed`,
 `new_mail_command`, `mail_check`, `undo_send`, `metoo`, `text_flowed`,
+`attribution`, `indent_string`, `forward_format`, `include`, `askcc`,
+`askbcc`, `connect_timeout`, `net_timeout`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown

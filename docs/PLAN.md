@@ -1235,23 +1235,28 @@ Scoring stays a non-goal, and so do the rest of the Non-goals below.
 Each round is small, shippable on its own, and testable off the pty
 now that R53 gave us somewhere to test.
 
-## R56: the reply and forward text
+## R56: the reply and forward text (done, 1.56)
 
-Goal: the three strings every mutt user changes. rmut hardcodes all
+Goal: the three strings every mutt user changes. rmut hardcoded all
 of them, in compose.rs: "On {date}, {from} wrote:", the `"> "` in
 `quote`, and `"[{addr}: {subject}]"`.
 
-- [ ] `[mail] attribution`, with mutt's specifiers (%a address, %n
-      name, %s subject, %d date, %i message-id, %{strftime})
-- [ ] `[mail] indent_string`, the quote prefix, default `"> "`
-- [ ] `[mail] forward_format`, mutt's `[%a: %s]` by default
-- [ ] `[mail] include`: yes / no / ask-yes / ask-no. Today the
-      question is always asked, which is mutt's ask-yes; the other
-      three are the point of the setting
-- [ ] `[mail] ask_cc` / `ask_bcc`: mutt asks for them after To when
-      set, and they are asks, which R52 made cheap
-- [ ] `--import-muttrc` carries all six over; e2e for the three
-      strings, session tests for the specifier expansion
+- [x] `compose::render_quoted`, mutt's specifiers over the message
+      being answered: %a address, %n name (falling back to the
+      address, as mutt's does), %f the From header as written, %s
+      subject, %i message-id, %d date, %{...} strftime, and the
+      padding and conditionals the index format already had
+- [x] `[mail] attribution`, `indent_string` and `forward_format`,
+      defaulting to mutt's
+- [x] `[mail] include`: yes / no / ask-yes / ask-no. The question was
+      always asked, which is mutt's ask-yes; ask-no now takes the no
+      on Enter, and the other two decide without asking
+- [x] `[mail] ask_cc` / `ask_bcc`: asked between To and Subject on
+      every compose, as mutt's are, with the group reply's own Cc as
+      the prefill. R52's asks made it about forty lines
+- [x] All six settable at runtime and carried over by
+      `--import-muttrc`; e2e scenario_reply_text, five session tests,
+      and four in core for the specifiers
 
 ## R57: the importer stops saying "no rmut equivalent" when there is one
 

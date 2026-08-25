@@ -46,6 +46,96 @@ pub fn draft_text(h: &DraftHeaders, body: &str) -> String {
     out
 }
 
+/// mutt's $attribution: the line a quoted reply opens with.
+pub const DEFAULT_ATTRIBUTION: &str = "On %d, %n wrote:";
+
+/// mutt's $forward_format: the subject a forward carries.
+pub const DEFAULT_FORWARD_FORMAT: &str = "[%a: %s]";
+
+/// mutt's $indent_string: what a quoted line is prefixed with.
+pub const DEFAULT_INDENT: &str = "> ";
+
+/// The message an attribution or a forward subject is about, for the
+/// format strings that describe it.
+pub struct Quoted<'a> {
+    /// The From header as written, name and address together.
+    pub from: &'a str,
+    pub subject: &'a str,
+    pub message_id: Option<&'a str>,
+    /// When it was sent, seconds since the epoch.
+    pub date: i64,
+}
+
+impl Quoted<'_> {
+    /// The author's display name, or their address when the header
+    /// carries no name (as mutt's %n does).
+    fn name(&self) -> String {
+        let trimmed = self.from.trim();
+        let name = match trimmed.split_once('<') {
+            Some((name, _)) => name.trim().trim_matches('"').trim(),
+            None => "",
+        };
+        match name.is_empty() {
+            true => self.address(),
+            false => name.to_string(),
+        }
+    }
+
+    fn address(&self) -> String {
+        bare_address(self.from).unwrap_or_else(|| self.from.trim().to_string())
+    }
+}
+
+/// Expand one of mutt's message format strings: `%a` the author's
+/// address, `%n` their name, `%s` the subject, `%i` the message-id,
+/// `%d` the date, `%{...}` the date through strftime, `%%` a percent.
+/// Padding and conditionals work as they do in the index format.
+pub fn render_quoted(fmt: &str, m: &Quoted) -> String {
+    // `%{...}` first: the strftime span would confuse the specifier
+    // machinery, which reads one character.
+    let fmt = expand_strftime(fmt, m.date);
+    crate::format::render_with(&fmt, &|spec| match spec {
+        'a' => m.address(),
+        'n' => m.name(),
+        'f' => m.from.trim().to_string(),
+        's' => m.subject.trim().to_string(),
+        'i' => m
+            .message_id
+            .unwrap_or_default()
+            .trim_matches(['<', '>'])
+            .to_string(),
+        'd' => format_date(m.date),
+        '%' => "%".to_string(),
+        other => format!("%{other}"),
+    })
+}
+
+/// mutt's `%{strftime}`: the message's date, in the caller's words.
+fn expand_strftime(fmt: &str, date: i64) -> String {
+    let mut out = String::new();
+    let mut rest = fmt;
+    while let Some(at) = rest.find("%{") {
+        out.push_str(&rest[..at]);
+        let Some(end) = rest[at + 2..].find('}') else {
+            break;
+        };
+        let spec = &rest[at + 2..at + 2 + end];
+        out.push_str(&strftime(spec, date));
+        rest = &rest[at + 2 + end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strftime(spec: &str, epoch: i64) -> String {
+    match Local.timestamp_opt(epoch, 0) {
+        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+            dt.format(spec).to_string()
+        }
+        chrono::LocalResult::None => String::new(),
+    }
+}
+
 pub fn reply_subject(orig: &str) -> String {
     let t = orig.trim();
     if t.to_lowercase().starts_with("re:") {
@@ -55,10 +145,9 @@ pub fn reply_subject(orig: &str) -> String {
     }
 }
 
-/// mutt's default $forward_format, "[%a: %s]", the author's address
-/// and the original subject.
-pub fn forward_subject(from_addr: &str, orig: &str) -> String {
-    format!("[{from_addr}: {}]", orig.trim())
+/// mutt's $forward_format over the message being forwarded.
+pub fn forward_subject(fmt: &str, m: &Quoted) -> String {
+    render_quoted(fmt, m)
 }
 
 fn format_date(epoch: i64) -> String {
@@ -70,15 +159,17 @@ fn format_date(epoch: i64) -> String {
     }
 }
 
-pub fn attribution(from: &str, date_epoch: i64) -> String {
-    format!("On {}, {from} wrote:", format_date(date_epoch))
+/// mutt's $attribution over the message being replied to.
+pub fn attribution(fmt: &str, m: &Quoted) -> String {
+    render_quoted(fmt, m)
 }
 
-/// Quote a body mutt-style under an attribution line.
-pub fn quote(attribution: &str, body: &str) -> String {
+/// Quote a body mutt-style under an attribution line, each line
+/// prefixed with $indent_string.
+pub fn quote(attribution: &str, indent: &str, body: &str) -> String {
     let mut out = format!("{attribution}\n");
     for line in body.lines() {
-        out += &format!("> {line}\n");
+        out += &format!("{indent}{line}\n");
     }
     out
 }
@@ -842,22 +933,66 @@ mod tests {
         assert_eq!(apply_my_hdr(draft, &[]), draft);
     }
 
+    /// A message sent at a known moment, for the format strings.
+    fn quoted() -> Quoted<'static> {
+        Quoted {
+            from: "Jane Doe <jane@example.com>",
+            subject: "Lunch",
+            message_id: Some("<m1@example.com>"),
+            // 2024-03-11 10:00:00 UTC.
+            date: 1_710_151_200,
+        }
+    }
+
     #[test]
     fn subjects_do_not_stack_prefixes() {
         assert_eq!(reply_subject("Lunch"), "Re: Lunch");
         assert_eq!(reply_subject("RE: Lunch"), "RE: Lunch");
         assert_eq!(
-            forward_subject("jane@example.com", "Lunch"),
+            forward_subject(DEFAULT_FORWARD_FORMAT, &quoted()),
             "[jane@example.com: Lunch]"
         );
     }
 
     #[test]
-    fn quote_prefixes_every_line() {
+    fn quote_prefixes_every_line_with_the_indent_string() {
         assert_eq!(
-            quote("On X, Y wrote:", "a\nb"),
+            quote("On X, Y wrote:", DEFAULT_INDENT, "a\nb"),
             "On X, Y wrote:\n> a\n> b\n"
         );
+        assert_eq!(quote("head", "| ", "a"), "head\n| a\n");
+    }
+
+    #[test]
+    fn an_attribution_says_who_and_when() {
+        let m = quoted();
+        // The default names the author and the date it was sent.
+        let line = attribution(DEFAULT_ATTRIBUTION, &m);
+        assert!(line.starts_with("On "), "{line}");
+        assert!(line.ends_with(", Jane Doe wrote:"), "{line}");
+        // Every specifier mutt's does, and an unknown one stays put.
+        assert_eq!(render_quoted("%a", &m), "jane@example.com");
+        assert_eq!(render_quoted("%n", &m), "Jane Doe");
+        assert_eq!(render_quoted("%f", &m), "Jane Doe <jane@example.com>");
+        assert_eq!(render_quoted("%s", &m), "Lunch");
+        assert_eq!(render_quoted("%i", &m), "m1@example.com");
+        assert_eq!(render_quoted("100%%", &m), "100%");
+        assert_eq!(render_quoted("%q", &m), "%q");
+        // %{...} is the date in the caller's own words.
+        assert_eq!(render_quoted("%{%Y}", &m), "2024");
+        assert_eq!(render_quoted("[%{%Y}] %s", &m), "[2024] Lunch");
+    }
+
+    #[test]
+    fn a_name_falls_back_to_the_address() {
+        let m = Quoted {
+            from: "bare@example.com",
+            subject: "x",
+            message_id: None,
+            date: 0,
+        };
+        assert_eq!(render_quoted("%n", &m), "bare@example.com");
+        assert_eq!(render_quoted("%i", &m), "");
     }
 
     #[test]

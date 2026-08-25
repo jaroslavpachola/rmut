@@ -106,12 +106,18 @@ pub enum AskKind {
     ReplyTo,
     /// Who the draft goes to.
     ComposeTo,
+    /// mutt's $askcc / $askbcc: who else gets a copy.
+    ComposeCc,
+    ComposeBcc,
     /// What it is about.
     ComposeSubject,
     /// mutt's $abort_nosubject (ask-yes): no subject, abort?
     NoSubject,
-    /// mutt's $include (ask-yes): quote the original in the reply?
-    IncludeReply,
+    /// mutt's $include: quote the original in the reply? `default_yes`
+    /// is what Enter takes, from ask-yes or ask-no.
+    IncludeReply {
+        default_yes: bool,
+    },
     /// mime_forward = "ask": forward the original as an attachment?
     ForwardAttach,
     /// $abort_noattach = ask: the body mentions an attachment and
@@ -587,6 +593,8 @@ impl Session {
                 }
             },
             (AskKind::ComposeTo, Answer::Line(input)) => self.answer_to(input),
+            (AskKind::ComposeCc, Answer::Line(input)) => self.answer_cc(input),
+            (AskKind::ComposeBcc, Answer::Line(input)) => self.answer_bcc(input),
             (AskKind::ComposeSubject, Answer::Line(input)) => self.answer_subject(input),
             (AskKind::NoSubject, Answer::Key(key)) => match key {
                 // ask-yes: Enter aborts, like mutt.
@@ -597,9 +605,10 @@ impl Session {
                     None
                 }
             },
-            (AskKind::IncludeReply, Answer::Key(key)) => match key {
+            (AskKind::IncludeReply { default_yes }, Answer::Key(key)) => match key {
                 Key::Char('n') => self.answer_include(false),
-                Key::Char('y') | Key::Enter => self.answer_include(true),
+                Key::Char('y') => self.answer_include(true),
+                Key::Enter => self.answer_include(default_yes),
                 _ => {
                     self.cancel_setup();
                     self.note("reply cancelled");

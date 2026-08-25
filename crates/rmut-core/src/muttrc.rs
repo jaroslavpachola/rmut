@@ -109,6 +109,15 @@ struct State {
     tilde: bool,
     status_format: Option<String>,
     no_beep: bool,
+    /// mutt's $attribution, $indent_string and $forward_format, which
+    /// rmut takes as they are: the specifiers are the same.
+    attribution: Option<String>,
+    indent_string: Option<String>,
+    forward_format: Option<String>,
+    /// mutt's $include, $askcc and $askbcc.
+    include: Option<String>,
+    ask_cc: bool,
+    ask_bcc: bool,
     /// mutt's $connect_timeout, in seconds.
     connect_timeout: Option<u64>,
     keys_index: BTreeMap<&'static str, String>,
@@ -728,6 +737,19 @@ impl State {
                     self.no_beep = true;
                 }
             }
+            "attribution" => self.attribution = Some(v),
+            "indent_string" => self.indent_string = Some(v),
+            "forward_format" => self.forward_format = Some(v),
+            "include" => {
+                // mutt's quadoption: yes / no / ask-yes / ask-no.
+                let want = v.trim().to_lowercase();
+                match want.as_str() {
+                    "yes" | "no" | "ask-yes" | "ask-no" => self.include = Some(want),
+                    _ => self.skip(line, "include wants yes / no / ask-yes / ask-no"),
+                }
+            }
+            "askcc" => self.ask_cc = is_yes(value),
+            "askbcc" => self.ask_bcc = is_yes(value),
             "fast_reply" => {
                 if is_yes(&v) {
                     self.fast_reply = true;
@@ -1179,6 +1201,12 @@ impl State {
             || self.forward_attach
             || self.forward_ask
             || self.fast_reply
+            || self.attribution.is_some()
+            || self.indent_string.is_some()
+            || self.forward_format.is_some()
+            || self.include.is_some()
+            || self.ask_cc
+            || self.ask_bcc
             || self.autoedit
             || self.no_copy
             || self.new_mail_command.is_some()
@@ -1246,6 +1274,24 @@ impl State {
             }
             if self.fast_reply {
                 out += "fast_reply = true\n";
+            }
+            if let Some(v) = &self.attribution {
+                out += &format!("attribution = {}\n", quote(v));
+            }
+            if let Some(v) = &self.indent_string {
+                out += &format!("indent_string = {}\n", quote(v));
+            }
+            if let Some(v) = &self.forward_format {
+                out += &format!("forward_format = {}\n", quote(v));
+            }
+            if let Some(v) = &self.include {
+                out += &format!("include = {}\n", quote(v));
+            }
+            if self.ask_cc {
+                out += "ask_cc = true\n";
+            }
+            if self.ask_bcc {
+                out += "ask_bcc = true\n";
             }
             if self.autoedit {
                 out += "autoedit = true\n";
@@ -2212,6 +2258,37 @@ mod tests {
         assert_eq!(cfg.pgp.sign_key.as_deref(), Some("0xDEADBEEF"));
         assert!(cfg.pgp.sign_by_default);
         assert!(!cfg.pgp.encrypt_by_default);
+    }
+
+    #[test]
+    fn the_reply_and_forward_text_carries_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set attribution = \"On %d, %n wrote:\"\n",
+            "set indent_string = \"| \"\n",
+            "set forward_format = \"Fwd: %s\"\n",
+            "set include = no\n",
+            "set askcc = yes\n",
+            "set askbcc = yes\n",
+        ));
+        assert_eq!(
+            cfg.mail.attribution.as_deref(),
+            Some("On %d, %n wrote:"),
+            "{toml}"
+        );
+        assert_eq!(cfg.mail.indent_string.as_deref(), Some("| "));
+        assert_eq!(cfg.mail.forward_format.as_deref(), Some("Fwd: %s"));
+        assert_eq!(cfg.mail.include.as_deref(), Some("no"));
+        assert!(cfg.mail.ask_cc && cfg.mail.ask_bcc);
+        // A quadoption rmut cannot make sense of is reported, not
+        // guessed at.
+        let import = import("set include = maybe\n", Path::new("/nonexistent"));
+        assert!(
+            import
+                .toml
+                .contains("include wants yes / no / ask-yes / ask-no"),
+            "{}",
+            import.toml
+        );
     }
 
     #[test]
