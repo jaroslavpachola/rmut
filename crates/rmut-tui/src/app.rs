@@ -503,6 +503,7 @@ impl App {
                 Request::Editor(compose) => self.pending_editor = Some(compose),
                 Request::Shell(command) => self.pending_shell = Some(command),
                 Request::Suspend => self.pending_suspend = true,
+                Request::MailboxesChanged => self.refresh_sidebar(),
                 Request::ShowDraft => self.open_compose_menu(),
                 Request::Command(cmd) => {
                     let outcome = match &cmd {
@@ -591,6 +592,9 @@ impl App {
                 terminal.clear()?;
             }
             self.session.sync_message_hooks();
+            // Whatever the connection has finished carries on here,
+            // between frames, rather than in the middle of a key.
+            self.session.poll_network();
             self.session.tick_outbox();
             // A send that failed hands its draft back, and the hooks
             // may have asked for something too.
@@ -680,12 +684,12 @@ impl App {
 
     // ---- new-mail detection ----
 
-    /// The session's check, with the sidebar counts redrawn around it.
+    /// The session's check. The server half runs on the connection's
+    /// thread, so this returns at once and the sidebar is redrawn
+    /// when the counts have really moved.
     fn check_new_mail(&mut self) {
-        self.session.check_new_mail(&mut |session| {
-            let _ = session;
-        });
-        self.refresh_sidebar();
+        self.session.check_new_mail();
+        self.run_requests_quietly();
     }
 
     /// Rebuild the sidebar entries: the configured mailboxes with

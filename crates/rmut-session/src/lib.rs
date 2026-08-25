@@ -214,6 +214,17 @@ pub struct Held {
     pub due: Instant,
 }
 
+/// An operation that has asked the connection for something and is
+/// waiting to be carried on. The front end keeps drawing meanwhile,
+/// and calls [`Session::poll_network`] until the answer lands.
+enum Pending {
+    /// The poll tick's look at the server.
+    CheckNew,
+    /// A `$` sync: the server has taken the flag changes and the
+    /// purge, and the local half follows.
+    Sync { purge: bool },
+}
+
 /// One open mailbox and everything rmut knows about it.
 pub struct Session {
     /// The maildir on disk: the mailbox itself, or the cache mirror of
@@ -299,6 +310,12 @@ pub struct Session {
     pub quote_re: regex_lite::Regex,
     /// Compiled $abort_noattach_regex, for the attachment reminder.
     attach_re: regex_lite::Regex,
+    /// The operation waiting for the connection to come back, if
+    /// any: at most one, because there is one connection.
+    pending: Option<Pending>,
+    /// Whether the message line is showing a progress line, so it can
+    /// be taken back down when the job it belongs to is done.
+    progress_noted: bool,
     /// The compose flow in progress: what is being answered about
     /// the draft that has not been written yet.
     setup: Option<ComposeSetup>,
@@ -415,6 +432,8 @@ impl Session {
             quote_re: default_quote_re(),
             attach_re: default_attach_re(),
             config,
+            pending: None,
+            progress_noted: false,
             setup: None,
             draft: None,
             attach_confirmed: false,
@@ -838,23 +857,27 @@ impl Session {
             .spawn();
     }
 
-    /// Look for new mail: the server (or the mbox file) first, then
-    /// the other configured mailboxes, then this one's own maildir.
+    /// Look for new mail: the server first, then the mbox file, the
+    /// other configured mailboxes, and this one's own maildir.
     ///
-    /// `between` runs after the other mailboxes have been counted and
-    /// before this mailbox is rescanned, which is where a front end
-    /// showing those counts wants to redraw them.
-    pub fn check_new_mail(&mut self, between: &mut dyn FnMut(&mut Session)) {
+    /// The server's part goes off to the connection's thread and the
+    /// rest follows when it answers, so a poll tick never stops the
+    /// screen. Everything local happens straight away.
+    pub fn check_new_mail(&mut self) {
+        self.settle();
         let backfilling = self.backfill.as_ref().is_some_and(|b| !b.done());
         // While the backfill streams headers in, skip the server
         // check, since a full reconcile would refetch its tail
         // synchronously; the rescan below integrates the files.
-        if !backfilling
-            && let Some(imap) = &mut self.imap
-            && let Err(err) = imap.blocking(Job::CheckNew)
-        {
-            self.error(format!("imap: {err:#}"));
+        if !backfilling && self.start(Job::CheckNew, Pending::CheckNew) {
+            return;
         }
+        self.check_local_mail();
+    }
+
+    /// The half that needs no server: the mbox mirror, the other
+    /// mailboxes' counts, and this mailbox's own rescan.
+    fn check_local_mail(&mut self) {
         self.maybe_backfill();
         if let Some(mbox) = &mut self.mbox {
             // Re-mirror when the file changed; same rescan pickup.
@@ -863,11 +886,86 @@ impl Session {
             }
         }
         self.check_other_mailboxes();
-        between(self);
+        // The counts moved: whatever shows them wants redrawing.
+        self.requests.push(Request::MailboxesChanged);
         if dir_mtimes(&self.dir) == self.dir_mtimes {
             return;
         }
         self.rescan();
+    }
+
+    /// Collect whatever the connection has finished, and carry on the
+    /// operation that was waiting for it. A front end calls this every
+    /// time round its loop; it costs nothing when nothing is running.
+    pub fn poll_network(&mut self) {
+        if let Some(line) = self.imap.as_mut().and_then(Imap::take_progress) {
+            self.note(line);
+            self.progress_noted = true;
+        }
+        let Some(done) = self.imap.as_mut().and_then(Imap::collect) else {
+            return;
+        };
+        // The progress line has served its purpose; whatever the
+        // operation has to say goes in its place.
+        if mem::take(&mut self.progress_noted) {
+            self.clear_notice();
+        }
+        if let Some(pending) = self.pending.take() {
+            self.resume(pending, done);
+        }
+    }
+
+    /// What the connection is doing, for a front end that says so.
+    pub fn busy(&self) -> Option<&'static str> {
+        self.imap.as_ref().and_then(Imap::busy)
+    }
+
+    /// Send a job off with the operation waiting for it. False when
+    /// there is no connection to send it to, and the caller carries
+    /// on by itself.
+    fn start(&mut self, job: Job, pending: Pending) -> bool {
+        let Some(imap) = &mut self.imap else {
+            return false;
+        };
+        match imap.start(job) {
+            Ok(()) => {
+                self.pending = Some(pending);
+                true
+            }
+            Err(err) => {
+                self.error(format!("imap: {err:#}"));
+                false
+            }
+        }
+    }
+
+    /// Wait for whatever is in flight and carry it on, so the next
+    /// job starts with the connection to itself.
+    fn settle(&mut self) {
+        while let Some(pending) = self.pending.take() {
+            let Some(imap) = &mut self.imap else { break };
+            let done = imap.wait();
+            if mem::take(&mut self.progress_noted) {
+                self.clear_notice();
+            }
+            self.resume(pending, done);
+        }
+    }
+
+    fn resume(&mut self, pending: Pending, done: Result<Done>) {
+        match pending {
+            Pending::CheckNew => {
+                if let Err(err) = done {
+                    self.error(format!("imap: {err:#}"));
+                }
+                self.check_local_mail();
+            }
+            Pending::Sync { purge } => match done {
+                // Nothing applied locally: everything stays pending.
+                Err(err) => self.error(format!("sync failed: {err:#}")),
+                Ok(_) => self.finish_sync(purge),
+            },
+        }
     }
 
     /// Whether the open IMAP folder's IDLE watcher has seen a change
@@ -1464,13 +1562,19 @@ impl Session {
                     flags.push((m.env.file.path.clone(), m.env.file.flags));
                 }
             }
-            let imap = self.imap.as_mut().expect("just checked");
-            if let Err(err) = imap.blocking(Job::Sync { flags, deletes }) {
-                // Nothing applied locally: everything stays pending.
-                self.error(format!("sync failed: {err:#}"));
+            // The server takes it on its own thread; the local half
+            // waits for the answer, since nothing may be applied here
+            // until the server has it.
+            if self.start(Job::Sync { flags, deletes }, Pending::Sync { purge }) {
                 return;
             }
         }
+        self.finish_sync(purge);
+    }
+
+    /// The half of a sync that needs no server: the mbox write-back,
+    /// the maildir renames and removals, and what to say about it.
+    fn finish_sync(&mut self, purge: bool) {
         if let Some(mbox) = &mut self.mbox {
             // The wanted end state per message id; untouched messages
             // keep whatever the file already says.
@@ -1639,7 +1743,7 @@ impl Session {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
                 }
-                self.check_new_mail(&mut |_| {});
+                self.check_new_mail();
                 self.note("edited copy appended; original marked deleted ($ purges)");
             }
             None => {

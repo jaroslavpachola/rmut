@@ -200,6 +200,13 @@ impl Imap {
     /// collect its answer later stops calling this.
     pub fn blocking(&mut self, job: Job) -> Result<Done> {
         self.start(job)?;
+        self.wait()
+    }
+
+    /// Wait for the job in flight. The session uses this to settle
+    /// what it started before asking for something else: one
+    /// connection, one conversation.
+    pub fn wait(&mut self) -> Result<Done> {
         let done = match self.answers.recv() {
             Ok(done) => done,
             Err(RecvError) => Err(anyhow!("the connection is gone")),

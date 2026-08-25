@@ -199,6 +199,9 @@ pub enum Request {
     /// A command line the session does not handle, because it binds a
     /// key, queues one, or runs a function.
     Command(rmut_core::command::Command),
+    /// The mailbox counts moved: a front end showing them (a
+    /// sidebar) wants to redraw.
+    MailboxesChanged,
     /// The draft is back in the front end's hands: put it on screen
     /// again, however drafts are shown.
     ShowDraft,
