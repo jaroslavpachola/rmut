@@ -1121,18 +1121,33 @@ Goal: the part that actually makes a second front end possible.
       from 6716 when R50 started; the session crate is 4501 across
       four files
 
-## R53: tests where the logic is
+## R53: tests where the logic is (done, 1.53)
 
 Goal: collect the winnings.
 
-- [ ] The scenarios that are really about logic (undo, tagged
-      operations, thread operations, hooks, fcc, the attachment
-      reminder) become session tests asserting on values
-- [ ] The pty suite keeps what it is for: keys, drawing, the
+- [x] 35 session tests in `rmut-session/src/tests.rs`, over a
+      fixture that is a maildir in a tempdir and a session with a
+      `notice::Log` installed: undo (delete, pattern, tagged, a save's
+      copy, and out of reach after a sync), tagged operations, thread
+      and subthread ops with folding, limits and the pattern terms
+      that need a whole mailbox (~h, ~i, ~x, ~=, ~z, ~m with . and
+      $), sort, sync's numbers, the purge question and $delete,
+      save/copy, read-only refusals, folder- and message-hooks,
+      fcc-hooks, a command the session hands back, the compose flow
+      (with $fast_reply and $abort_nosubject), the attachment
+      reminder, and bounce. They run in 0.01s
+- [x] The pty suite keeps what it is for: keys, drawing, the
       importer, the batch CLI, and the end-to-end paths through
       sendmail, IMAP and gpg
-- [ ] Whatever the port cannot express stays where it is rather than
-      being contorted
+- [x] Two scenarios lost the assertions the session tests now make
+      better (the pattern terms, and half of undo's steps), keeping
+      their key paths. The other named ones stayed as they were:
+      thread ops is a keymap test (Alt+d, Ctrl+D, Alt+t, Alt+n/p) as
+      much as a logic one, and contorting it would lose that
+- [x] Recorded honestly: the pty suite went from about 75s to 72s,
+      because its cost is per-scenario startup and settling, not
+      assertions. The winnings are precision and 0.01s feedback on
+      the logic, not a faster suite
 
 ## R54: network timeouts
 

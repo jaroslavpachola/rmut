@@ -25,6 +25,8 @@ use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thr
 mod ask;
 mod commands;
 mod drafts;
+#[cfg(test)]
+mod tests;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
 pub use commands::CommandRun;
@@ -75,7 +77,7 @@ pub struct UndoStep {
     pub note: Option<String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
     Date,
     From,
@@ -3153,30 +3155,4 @@ pub fn write_draft(text: &str) -> Result<PathBuf> {
     ));
     std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    pub fn subject_key_strips_reply_prefixes() {
-        assert_eq!(subject_key("Re: Re: Lunch"), "lunch");
-        assert_eq!(subject_key("FWD: re: x"), "x");
-        assert_eq!(subject_key("Redo"), "redo");
-    }
-
-    #[test]
-    pub fn wrap_order_visits_everything_once() {
-        assert_eq!(
-            wrap_order(4, 1, true),
-            vec![(2, false), (3, false), (0, true), (1, true)]
-        );
-        assert_eq!(
-            wrap_order(4, 1, false),
-            vec![(0, false), (3, true), (2, true), (1, true)]
-        );
-        assert_eq!(wrap_order(0, 0, true), vec![]);
-        assert_eq!(wrap_order(1, 0, true), vec![(0, true)]);
-    }
 }

@@ -2058,19 +2058,19 @@ def scenario_enter_command(tmp):
 
 
 def scenario_patterns_v3(tmp):
-    """R31: ~h any header, ~i Message-ID, ~x References, ~m index
-    ranges (with . and $), ~z size ranges, and ~= duplicates, in the
-    limit prompt and in a pattern-op."""
+    """R31's pattern terms reach the index through the keys: the limit
+    prompt (`l`) and a pattern-op (`T`). Which messages each term
+    matches is asserted in the session tests, where it is a value
+    rather than a screen scrape (rmut-session/src/tests.rs)."""
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane", "ci"])
-    # A message carrying an unusual header, a References line, and a
-    # body big enough to sort above the others by size.
+    # A message carrying an unusual header, so the limit has something
+    # only ~h finds.
     with open(os.path.join(md, "cur", "1751790500.9.host:2,S"), "w") as f:
         f.write("From: bulk@example.com\r\nTo: jarda@example.com\r\n"
                 "Subject: newsletter\r\nDate: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
                 "Message-ID: <msg9@example.com>\r\n"
-                "References: <msg1@example.com>\r\n"
-                "X-Spam-Score: 9.5\r\n\r\n" + ("padding line\r\n" * 400))
+                "X-Spam-Score: 9.5\r\n\r\nbody\r\n")
     # A duplicate of jane's message: same Message-ID, different file.
     with open(os.path.join(md, "cur", "1751790600.10.host:2,S"), "w") as f:
         f.write("From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
@@ -2079,48 +2079,18 @@ def scenario_patterns_v3(tmp):
                 "Message-ID: <msg1@example.com>\r\n\r\nsecond copy\r\n")
     r = Rmut(md, base_env(tmp))
     r.expect("Msgs:4")
-    # ~h reads the whole header block from disk
+    # The limit prompt takes a pattern and the status bar shows it.
     r.keys(b"l~h x-spam\r")
     r.expect("Msgs:1/4", "limit:~h x-spam")
-    # ~i matches the Message-ID: jane's original and its duplicate
-    r.keys(b"l")
-    r.keys(b"\x15~i msg1@\r")
-    r.expect("Msgs:2/4")
-    # ~x matches References
-    r.keys(b"l")
-    r.keys(b"\x15~x msg1@\r")
-    r.expect("Msgs:1/4", "newsletter")
-    # ~= finds both copies of the repeated Message-ID
-    r.keys(b"l")
-    r.keys(b"\x15~=\r")
-    r.expect("Msgs:2/4", "limit:~=")
-    # ~z size ranges: only the padded newsletter is over 4K
-    r.keys(b"l")
-    r.keys(b"\x15~z >4K\r")
-    r.expect("Msgs:1/4", "newsletter")
-    r.keys(b"l")
-    r.keys(b"\x15~z <4K\r")
-    r.expect("Msgs:3/4")
-    # ~m ranges use the numbering on screen, with . and $
+    # Ctrl+U clears the prefill, and an empty limit is all of them.
     r.keys(b"l")
     r.keys(b"\x15\r")
     r.expect("Msgs:4")
-    r.keys(b"l~m 1-2\r")
-    r.expect("Msgs:2/4", "limit:~m 1-2")
-    r.keys(b"l")
-    r.keys(b"\x15\r")
-    r.keys(b"*")  # select the last message, so . and $ are both 4
-    r.keys(b"l~m .-$\r")
-    r.expect("Msgs:1/4", "limit:~m .-$")
-    r.keys(b"l")
-    r.keys(b"\x15\r")
-    # a pattern-op takes the same terms: tag every duplicate
+    # A pattern-op takes the same terms.
     r.keys(b"T~=\r")
     r.expect("2 tagged")
     r.keys(b"x")
     r.close()
-
-
 
 def scenario_batch_cli(tmp):
     """R33: sending without the TUI (-s/-c/-b/-a/-i, recipients after
@@ -2743,9 +2713,10 @@ def scenario_mime_polish(tmp):
 
 
 def scenario_undo(tmp):
-    """Beyond mutt: z walks back the last delete/flag/tag/save, one
-    step per action however many messages it touched, until a sync
-    writes the changes and there is nothing left to walk back."""
+    """Beyond mutt: `z` walks back the last step from the index, the
+    pager and after a save, and a sync puts the changes out of its
+    reach. What each step restores is asserted in the session tests;
+    this is about the key reaching it (rmut-session/src/tests.rs)."""
     md = make_maildir(tmp, "md-undo")
     write_msgs(md, ["jane", "petr", "ci"])
     target = os.path.join(tmp, "md-undo-archive")
@@ -2769,16 +2740,6 @@ def scenario_undo(tmp):
     r.expect("3 deleted")
     r.keys(b"z")
     r.expect("undone: deleted by pattern (3 message(s))")
-
-    # Tags too, and the flag mark.
-    r.keys(b"T~sCI\r")
-    r.expect("1 tagged")
-    r.keys(b"z")
-    r.expect("undone: tagged by pattern (1 message(s))")
-    r.keys(b"F")
-    r.settle()
-    r.keys(b"z")
-    r.expect("undone: flag (1 message(s))")
 
     # A delete from the pager lands on the same stack (the oldest
     # message is already seen, so opening it changes nothing else).
@@ -2820,7 +2781,6 @@ def scenario_undo(tmp):
     r.expect("nothing to undo")
     r.keys(b"x")
     r.close()
-
 
 def scenario_undo_send(tmp):
     """Beyond mutt: undo_send holds a sent message for a few seconds,

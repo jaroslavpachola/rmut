@@ -52,21 +52,42 @@ pub trait NoticeSink {
     fn clear(&mut self);
 }
 
-/// The sink a test wants: every notice, in order.
-#[derive(Debug, Default)]
-pub struct Log(pub Vec<Notice>);
+/// The sink a test wants: every notice, in order, behind a handle, so
+/// the test can read what was said while whatever it is driving holds
+/// a handle of its own.
+#[derive(Debug, Clone, Default)]
+pub struct Log(std::rc::Rc<std::cell::RefCell<Vec<Notice>>>);
+
+impl Log {
+    /// Everything said since the last `clear`, oldest first.
+    pub fn notices(&self) -> Vec<Notice> {
+        self.0.borrow().clone()
+    }
+
+    /// The prose of the last thing said, empty when nothing was.
+    pub fn last_text(&self) -> String {
+        self.0.borrow().last().map(Notice::text).unwrap_or_default()
+    }
+
+    /// Whether anything said matches; the usual test question.
+    pub fn said(&self, needle: &str) -> bool {
+        self.0.borrow().iter().any(|n| n.text().contains(needle))
+    }
+}
 
 impl NoticeSink for Log {
     fn notice(&mut self, notice: Notice) {
-        self.0.push(notice);
+        self.0.borrow_mut().push(notice);
     }
 
     fn latest(&self) -> Option<&Notice> {
-        self.0.last()
+        // A `RefCell` cannot hand out a plain reference; a caller
+        // that wants the last notice asks for its text.
+        None
     }
 
     fn clear(&mut self) {
-        self.0.clear();
+        self.0.borrow_mut().clear();
     }
 }
 
@@ -85,13 +106,15 @@ mod tests {
     }
 
     #[test]
-    fn a_log_keeps_the_order_and_the_latest() {
-        let mut log = Log::default();
-        log.notice(Notice::Info("first".into()));
-        log.notice(Notice::Error("second".into()));
-        assert_eq!(log.0.len(), 2);
-        assert!(log.latest().is_some_and(Notice::is_error));
-        log.clear();
-        assert_eq!(log.latest(), None);
+    fn a_log_keeps_the_order_and_a_handle_reads_it() {
+        let log = Log::default();
+        let mut handle = log.clone();
+        handle.notice(Notice::Info("first".into()));
+        handle.notice(Notice::Error("second".into()));
+        assert_eq!(log.notices().len(), 2);
+        assert_eq!(log.last_text(), "second");
+        assert!(log.said("fir"));
+        handle.clear();
+        assert_eq!(log.notices(), vec![]);
     }
 }

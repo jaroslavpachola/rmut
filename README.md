@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.52**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.53**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -868,6 +868,13 @@ just lint    # clippy -D warnings + fmt --check
 just e2e     # pty-driven end-to-end tests
 just check   # test + lint + e2e
 ```
+
+Tests sit where what they test does. `rmut-core` tests parsing and
+protocols, `rmut-session` tests the operations against a maildir in a
+tempdir and asserts on values (`crates/rmut-session/src/tests.rs`),
+and the pty suite in `tests/e2e` drives a real terminal for the keys,
+the drawing, and the paths that go all the way out through sendmail,
+IMAP and gpg.
 
 Three crates. `rmut-core` is the mail itself: maildir, mbox, IMAP,
 SMTP, compose, PGP, patterns, threading, the importer. `rmut-session`
