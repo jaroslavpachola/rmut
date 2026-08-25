@@ -23,8 +23,10 @@ use rmut_core::remote::{self, Remote};
 use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thread};
 
 mod ask;
+mod commands;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
+pub use commands::CommandRun;
 
 /// How many undo steps to keep, and how many message snapshots in
 /// total: a pattern delete over a huge mailbox is one step but very
@@ -293,6 +295,12 @@ pub struct Session {
     pub quote_re: regex_lite::Regex,
     /// Compiled $abort_noattach_regex, for the attachment reminder.
     attach_re: regex_lite::Regex,
+    /// The config as it was before the active message-hooks changed
+    /// it, so leaving the message puts every setting back.
+    hook_base: Option<Box<Config>>,
+    /// Which message-hooks are in force right now, by index; a change
+    /// here is what triggers restore-and-reapply.
+    active_message_hooks: Vec<usize>,
     /// What the session wants the front end to do, oldest first.
     requests: Vec<Request>,
     /// Where outcomes go. Nothing is kept until a front end installs
@@ -393,6 +401,8 @@ impl Session {
             quote_re: default_quote_re(),
             attach_re: default_attach_re(),
             config,
+            hook_base: None,
+            active_message_hooks: Vec::new(),
             requests: Vec::new(),
             notices: Box::new(Silence),
         };

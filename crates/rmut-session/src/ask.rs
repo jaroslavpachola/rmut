@@ -159,6 +159,12 @@ impl PatternOp {
 pub enum Request {
     /// Nothing is pending; the session is done being driven.
     Quit,
+    /// The config moved: whatever the front end derives from it (the
+    /// colours, the key tables) wants rebuilding.
+    ConfigChanged,
+    /// A command line the session does not handle, because it binds a
+    /// key, queues one, or runs a function.
+    Command(rmut_core::command::Command),
 }
 
 impl Session {

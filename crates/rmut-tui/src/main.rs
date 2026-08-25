@@ -205,7 +205,7 @@ fn run() -> Result<ExitCode> {
     }
     // mutt's folder-hook, for the mailbox rmut started on; -e below
     // still has the last word.
-    app.run_folder_hooks();
+    app.session.run_folder_hooks();
     for command in &cli.commands {
         app.run_startup_command(command);
     }

@@ -17,8 +17,8 @@ use rmut_core::remote;
 use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
     Answer, Ask, AskKind, Compose, ComposeBase, ComposeKind, ComposeSetup, Held, Key, PatternOp,
-    Request, Security, Session, ThreadOp, Wants, default_from, draft_full, expand_tilde,
-    parse_sort, pipe_to, wrap_order, write_draft,
+    Request, Security, Session, ThreadOp, Wants, default_from, draft_full, expand_tilde, pipe_to,
+    wrap_order, write_draft,
 };
 
 use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
@@ -316,12 +316,6 @@ pub struct App {
     view_size: (usize, usize),
     pub theme: Theme,
     pub keymap: Keymap,
-    /// The config as it was before the active message-hooks changed
-    /// it, so leaving the message puts every setting back.
-    hook_base: Option<Box<Config>>,
-    /// Which message-hooks are in force right now, by index; a change
-    /// here is what triggers restore-and-reapply.
-    active_message_hooks: Vec<usize>,
     compose_setup: Option<ComposeSetup>,
     compose: Option<Compose>,
     pending_editor: Option<Compose>,
@@ -499,8 +493,6 @@ impl App {
             view_size: (80, 24),
             theme,
             keymap,
-            hook_base: None,
-            active_message_hooks: Vec::new(),
             compose_setup: None,
             compose: None,
             pending_editor: None,
@@ -548,16 +540,35 @@ impl App {
             }
             None => {}
         }
-        self.run_requests();
+        let warnings = self.run_requests();
+        if !warnings.is_empty() {
+            self.error(warnings.join("; "));
+        }
     }
 
-    /// What the session cannot do for itself.
-    fn run_requests(&mut self) {
+    /// What the session cannot do for itself. Hands back anything
+    /// worth saying, for the caller to fold into its own report.
+    fn run_requests(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
         while let Some(request) = self.session.take_request() {
             match request {
                 Request::Quit => self.quit = true,
+                Request::ConfigChanged => warnings.extend(self.recompile_ui()),
+                Request::Command(cmd) => {
+                    let outcome = match &cmd {
+                        command::Command::Push(seq) => self.push_command(seq),
+                        command::Command::Exec(function) => self.exec_command(function),
+                        _ => self.bind_command(&cmd),
+                    };
+                    match outcome {
+                        Ok(Some(text)) => warnings.push(text),
+                        Ok(None) => {}
+                        Err(err) => self.error(err),
+                    }
+                }
             }
         }
+        warnings
     }
 
     /// Something worth saying that is not a complaint.
@@ -600,7 +611,7 @@ impl App {
             {
                 terminal.clear()?;
             }
-            self.sync_message_hooks();
+            self.session.sync_message_hooks();
             // A send that failed on the way out hands its draft
             // back: the compose menu opens on it again.
             if let Some(draft) = self.session.tick_outbox() {
@@ -2297,7 +2308,7 @@ impl App {
         self.session.mark_old_unread();
         // Message-hook settings belong to the message being left, not
         // to the config the new mailbox inherits.
-        self.clear_message_hooks();
+        self.session.clear_message_hooks();
         match self.session.switch_to(spec, Box::new(progress)) {
             Ok(warnings) => {
                 // Whatever menu asked for the switch is done with: the
@@ -2310,7 +2321,7 @@ impl App {
                     self.note(warnings.join("; "));
                 }
                 self.refresh_sidebar();
-                self.run_folder_hooks();
+                self.session.run_folder_hooks();
             }
             Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
         }
@@ -2541,9 +2552,11 @@ impl App {
         };
         // mutt's reply-hook: in force while this reply's draft is
         // built, so `set from`, edit_headers and my_hdr all see it.
-        let reply_hooks = self.apply_reply_hooks(setup.base.as_ref(), setup.kind);
+        let reply_hooks = self
+            .session
+            .apply_reply_hooks(setup.base.as_ref(), setup.kind);
         self.finish_compose_draft(setup, subject, include);
-        self.restore_after_reply_hooks(reply_hooks);
+        self.session.restore_after_reply_hooks(reply_hooks);
     }
 
     fn finish_compose_draft(&mut self, setup: ComposeSetup, subject: &str, include: bool) {
@@ -3328,52 +3341,13 @@ impl App {
     /// whatever the change touched so it shows without a restart. The
     /// first failing command reports and stops the line, like mutt.
     fn run_command_line(&mut self, line: &str) {
-        let commands = match command::parse(line) {
-            Ok(commands) => commands,
-            Err(err) => return self.error(err),
-        };
-        let sort_before = (
-            self.session.config.index.sort.clone(),
-            self.session.config.index.sort_aux.clone(),
-        );
+        // The sidebar's runtime toggle is the front end's, so only a
+        // config change moves it, not a recompile.
         let sidebar_before = self.session.config.sidebar.visible;
-        let mut reports = Vec::new();
-        for cmd in &commands {
-            let outcome = match cmd {
-                command::Command::Bind { .. } | command::Command::Macro { .. } => {
-                    self.bind_command(cmd)
-                }
-                command::Command::Alias { nick, expansion } => self.alias_command(nick, expansion),
-                command::Command::Push(seq) => self.push_command(seq),
-                command::Command::Exec(function) => self.exec_command(function),
-                config_command => command::apply(&mut self.session.config, config_command),
-            };
-            match outcome {
-                Ok(Some(text)) => reports.push(text),
-                Ok(None) => {}
-                Err(err) => return self.error(err),
-            }
-        }
-        if commands.is_empty() {
-            return;
-        }
-        // A `:set trash="=Trash"` names a mailbox too.
-        self.session.config.expand_folders();
-        reports.extend(self.recompile());
-        if sort_before
-            != (
-                self.session.config.index.sort.clone(),
-                self.session.config.index.sort_aux.clone(),
-            )
-        {
-            if let Some(spec) = self.session.config.index.sort.clone()
-                && let Some((sort, rev)) = parse_sort(&spec)
-            {
-                self.session.sort = sort;
-                self.session.sort_rev = rev;
-            }
-            self.session.apply_sort();
-        }
+        let run = self.session.run_command_line(line);
+        let mut reports = run.reports;
+        reports.extend(run.warnings);
+        reports.extend(self.run_requests());
         if self.session.config.sidebar.visible != sidebar_before {
             self.sidebar_visible = self.session.config.sidebar.visible;
         }
@@ -3384,133 +3358,15 @@ impl App {
 
     // ---- hooks (folder-hook, message-hook, reply-hook, fcc-hook) ----
 
-    /// mutt's folder-hook: every entry whose glob matches the mailbox
-    /// just opened runs its command line, in config order. Like mutt,
-    /// nothing is undone on the way out, so a catch-all entry is how
-    /// you put a setting back.
-    pub fn run_folder_hooks(&mut self) {
-        if self.session.config.folder_hooks.is_empty() {
-            return;
-        }
-        let title = self.session.title.clone();
-        let lines: Vec<String> = self
-            .session
-            .config
-            .folder_hooks
-            .iter()
-            .filter(|h| rmut_core::config::glob_match(&h.folder, &title))
-            .map(|h| h.command.clone())
-            .collect();
-        for line in lines {
-            self.run_hook("folder-hook", &line);
-        }
-    }
-
-    /// mutt's message-hook: the lines matching the selected message
-    /// are in force while it is selected, and the config goes back to
-    /// what it was as soon as the match set changes. Cheap when
-    /// nothing matches, so the draw loop can call it every frame.
-    fn sync_message_hooks(&mut self) {
-        if self.session.message_hooks.is_empty() && self.active_message_hooks.is_empty() {
-            return;
-        }
-        let matching = self.session.matching_message_hooks();
-        if matching == self.active_message_hooks {
-            return;
-        }
-        self.active_message_hooks = matching.clone();
-        // Back to the pre-hook config first: a hook that no longer
-        // matches must leave no trace.
-        if let Some(base) = self.hook_base.take() {
-            self.session.config = *base;
-            let warnings = self.recompile();
-            if !warnings.is_empty() {
-                self.error(warnings.join("; "));
-            }
-        }
-        if matching.is_empty() {
-            return;
-        }
-        self.hook_base = Some(Box::new(self.session.config.clone()));
-        for i in matching {
-            let Some(line) = self.session.message_hooks.get(i).map(|h| h.value.clone()) else {
-                continue;
-            };
-            self.run_hook("message-hook", &line);
-        }
-    }
-
-    /// Put back whatever the active message-hooks changed, and forget
-    /// them: for leaving the mailbox, where the config carries over.
-    fn clear_message_hooks(&mut self) {
-        self.active_message_hooks.clear();
-        if let Some(base) = self.hook_base.take() {
-            self.session.config = *base;
-            let warnings = self.recompile();
-            if !warnings.is_empty() {
-                self.error(warnings.join("; "));
-            }
-        }
-    }
-
-    /// mutt's reply-hook: the lines matching the message being replied
-    /// to, applied for as long as the reply's draft is being built.
-    /// Returns the config to put back, or None when nothing matched.
-    fn apply_reply_hooks(
-        &mut self,
-        base: Option<&ComposeBase>,
-        kind: ComposeKind,
-    ) -> Option<Box<Config>> {
-        if self.session.reply_hooks.is_empty()
-            || !matches!(
-                kind,
-                ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
-            )
-        {
-            return None;
-        }
-        let lines = self.session.reply_hook_lines(&base?.path);
-        if lines.is_empty() {
-            return None;
-        }
-        let saved = Box::new(self.session.config.clone());
-        for line in lines {
-            self.run_hook("reply-hook", &line);
-        }
-        Some(saved)
-    }
-
-    /// Undo `apply_reply_hooks`.
-    fn restore_after_reply_hooks(&mut self, saved: Option<Box<Config>>) {
-        let Some(saved) = saved else { return };
-        self.session.config = *saved;
-        let warnings = self.recompile();
-        if !warnings.is_empty() {
-            self.error(warnings.join("; "));
-        }
-    }
-
-    /// Run one hook's command line, naming the hook when it fails so
-    /// it is clear where a bad line came from.
-    fn run_hook(&mut self, what: &str, line: &str) {
-        self.clear_notice();
-        self.run_command_line(line);
-        if let Some(err) = self.notice().filter(|n| n.is_error()).map(|n| n.text()) {
-            self.error(format!("{what}: {err}"));
-        }
-    }
-
-    /// Recompile the config-derived state (theme, key tables, color
-    /// rules, quote regexp, header rules) and hand back any warnings.
-    fn recompile(&mut self) -> Vec<String> {
-        let (derived, mut warnings) = Derived::from_config(&self.session.config);
+    /// Rebuild what the front end derives from the config: the
+    /// theme, the key tables and the colour rules. The session
+    /// recompiles its own half and says so with a request.
+    fn recompile_ui(&mut self) -> Vec<String> {
+        let (derived, warnings) = Derived::from_config(&self.session.config);
         self.theme = derived.theme;
         self.keymap = derived.keymap;
         self.index_rules = derived.index_rules;
         self.body_rules = derived.body_rules;
-        // The session recompiles its own half: the hooks, the
-        // matchers, and what the pager reads a message through.
-        warnings.extend(self.session.recompile());
         warnings
     }
 
@@ -3568,18 +3424,6 @@ impl App {
             _ => {}
         }
         Ok(None)
-    }
-
-    /// `alias NICK ADDRESS`: appended to the alias file, like the `a`
-    /// key, so it outlives the session.
-    fn alias_command(&mut self, nick: &str, expansion: &str) -> Result<Option<String>, String> {
-        if nick.contains(char::is_whitespace) {
-            return Err("the alias nick must be one word".into());
-        }
-        match alias::append(nick, expansion) {
-            Ok(_) => Ok(Some(format!("added: alias {nick} {expansion}"))),
-            Err(err) => Err(format!("cannot save the alias: {err:#}")),
-        }
     }
 
     /// `push SEQUENCE`: keys into the input queue, the same path a
