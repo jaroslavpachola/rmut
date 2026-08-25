@@ -2044,7 +2044,10 @@ impl App {
             IndexAction::TagPrefix => {
                 if self.msgs.iter().any(|m| m.env.tagged) {
                     self.tag_next = true;
-                    self.status = Some("apply next function to tagged messages".into());
+                    // mutt writes "Tag-" on its message line and
+                    // waits; rmut's one bottom line appends it to the
+                    // status bar, which then stays readable.
+                    self.status = Some("Tag-".into());
                 } else {
                     self.status = Some("no tagged messages".into());
                 }

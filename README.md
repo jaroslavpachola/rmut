@@ -481,7 +481,8 @@ Without thread sort they refuse, as they do in mutt.
 
 ## Tagged operations
 
-`t` tags a message and `;` hands the tagged set to the next function:
+`t` tags a message and `;` hands the tagged set to the next function
+(the bar shows `Tag-` while it waits, as mutt's message line does):
 `d`/`u`/`F`/`N`/`t` mark them all, `s`/`C` save or copy them all (one
 prompt, one undo step), `|` and `p` pipe or print them concatenated
 into a single run of the command (mutt's `$pipe_split` unset), and

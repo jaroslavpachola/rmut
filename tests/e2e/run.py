@@ -2943,7 +2943,12 @@ def scenario_tagged_and_pager(tmp):
     # Tag the first two (t advances), then hand them to save.
     r.keys(b"=tt")
     r.settle()
-    r.keys(b";s" + target.encode() + b"\r")
+    # The bar says Tag- while the prefix waits for its function, the
+    # way mutt's message line does.
+    r.keys(b";")
+    r.repaint()
+    r.expect("-- Tag-")
+    r.keys(b"s" + target.encode() + b"\r")
     r.expect("saved 2 to")
     wait_for(lambda: len(os.listdir(os.path.join(target, "cur"))) == 2,
              desc="both copies delivered")
