@@ -347,10 +347,10 @@ Make it installable without a checkout.
 
 - [x] CI: GitHub Actions running `just check` (fmt, clippy -D,
       tests, e2e) on push/PR
-- [ ] Publish rmut-core + rmut-tui to crates.io
+- [ ] Publish rmut-core, rmut-session and rmut-tui to crates.io
       (`cargo install rmut-tui`): metadata ready and
-      `cargo package` verified; `just publish` after `cargo login`
-      (core first, the tui depends on it)
+      `cargo package` verified; `just publish` after `cargo login`,
+      in dependency order (core, session, tui)
 - [x] A man page (rmut.1, hand-rolled) covering keys, config,
       patterns, formats, and the muttrc importer; `--help` stays the
       short form
@@ -1091,10 +1091,11 @@ Goal: the model half moves out.
       prefix's answer. Switching mailboxes stopped rebuilding the
       whole app, which also stopped it dropping the prompt history
       and any held send
-- [ ] Left for R52, because they end in a question rather than a
+- [x] Left for R52, because they end in a question rather than a
       value: `send_draft` (the attachment reminder, the PGP and Fcc
       questions), `run_command_line` and the message-hook sync it
-      drives, and the compose menu's own editing
+      drives, and the compose menu's own editing. R52 took all of
+      them
 
 ## R52: asks, not prompts (done, 1.52)
 
