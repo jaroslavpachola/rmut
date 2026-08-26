@@ -3215,7 +3215,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.69")
+    r.expect("rmut 1.70")
     r.settle()
 
     # A refused pattern names itself.
@@ -3323,6 +3323,53 @@ def scenario_navigation(tmp):
     r.keys(b"99\r")
     r.expect("no message 99")
     r.keys(b"x")
+    r.close()
+
+
+def scenario_compose_menu(tmp):
+    """R71: recall = no goes straight to a new message, and F on the
+    compose menu overrides the From header."""
+    md = make_maildir(tmp, "md-cmenu")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "cmenu-sent.eml")
+    editor = os.path.join(tmp, "cmenu-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "the body\\n" >> "$1"\n')
+    sendmail = os.path.join(tmp, "cmenu-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(editor, 0o755)
+    os.chmod(sendmail, 0o755)
+    cfg = os.path.join(tmp, "cmenu-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\nrecall = "no"\n')
+    env = base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                         "RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    r.expect("Msgs:1")
+
+    # Compose and postpone, so a draft is waiting.
+    r.keys(b"mfirst@example.com\rfirst subject\rP")
+    r.expect("postponed to")
+    r.settle()
+
+    # recall = no: m goes straight to a new message (the To prompt),
+    # never the (n)ew/(r)ecall question.
+    r.keys(b"m")
+    r.expect("To:", absent=("recall postponed",))
+    # New recipient, subject, editor runs, compose menu appears.
+    r.keys(b"second@example.com\rsecond subject\r")
+    r.settle()
+    # F on the menu overrides From, then send.
+    r.keys(b"Fboss@example.com\r")
+    r.settle()
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file) and "second subject" in open(sent_file).read(),
+             desc="the message went out")
+    sent = open(sent_file).read()
+    assert "From: boss@example.com" in sent, sent
+    assert "Subject: second subject" in sent, sent
+    r.keys(b"q")
     r.close()
 
 
@@ -4054,6 +4101,7 @@ SCENARIOS = [
     scenario_decode_family,
     scenario_outgoing_envelope,
     scenario_navigation,
+    scenario_compose_menu,
 ]
 
 

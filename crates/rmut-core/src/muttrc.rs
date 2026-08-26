@@ -137,6 +137,8 @@ struct State {
     print_confirm: Option<String>,
     /// mutt's leaving and filing habits.
     quit: Option<String>,
+    postpone: Option<String>,
+    recall: Option<String>,
     confirmappend: bool,
     save_name: bool,
     force_name: bool,
@@ -903,6 +905,24 @@ impl State {
                     _ => self.skip(line, "quit wants yes / no / ask-yes / ask-no"),
                 }
             }
+            "postpone" => {
+                let want = v.trim().to_lowercase();
+                match want.as_str() {
+                    "ask-yes" => self.satisfy(line, "leaving a draft asks, as in mutt"),
+                    "yes" | "no" | "ask-no" => self.postpone = Some(want),
+                    _ => self.skip(line, "postpone wants yes / no / ask-yes / ask-no"),
+                }
+            }
+            "recall" => {
+                let want = v.trim().to_lowercase();
+                match want.as_str() {
+                    "ask-yes" | "ask-no" => {
+                        self.satisfy(line, "rmut offers new-or-recall when drafts wait")
+                    }
+                    "yes" | "no" => self.recall = Some(want),
+                    _ => self.skip(line, "recall wants yes / no / ask-yes / ask-no"),
+                }
+            }
             "confirmappend" => {
                 if is_yes(value) {
                     self.confirmappend = true;
@@ -1559,6 +1579,8 @@ impl State {
             || self.forward_ask
             || self.fast_reply
             || self.quit.is_some()
+            || self.postpone.is_some()
+            || self.recall.is_some()
             || self.confirmappend
             || self.save_name
             || self.force_name
@@ -1647,6 +1669,12 @@ impl State {
             }
             if self.fast_reply {
                 out += "fast_reply = true\n";
+            }
+            if let Some(v) = &self.postpone {
+                out += &format!("postpone = {}\n", quote(v));
+            }
+            if let Some(v) = &self.recall {
+                out += &format!("recall = {}\n", quote(v));
             }
             if let Some(v) = &self.quit {
                 out += &format!("quit = {}\n", quote(v));
@@ -2899,6 +2927,18 @@ mod tests {
         // mutt waits for the OS when it is zero or less.
         let (cfg, _) = to_config("set connect_timeout=-1\n");
         assert_eq!(cfg.net.connect_timeout, 0);
+    }
+
+    #[test]
+    fn postpone_and_recall_quadoptions_carry_over() {
+        let (cfg, toml) = to_config(concat!("set postpone = no\n", "set recall = yes\n",));
+        assert_eq!(cfg.mail.postpone.as_deref(), Some("no"), "{toml}");
+        assert_eq!(cfg.mail.recall.as_deref(), Some("yes"));
+        // The defaults (postpone ask-yes, recall ask) are satisfied,
+        // not carried.
+        let (cfg, _) = to_config(concat!("set postpone = ask-yes\n", "set recall = ask-no\n",));
+        assert_eq!(cfg.mail.postpone, None);
+        assert_eq!(cfg.mail.recall, None);
     }
 
     #[test]

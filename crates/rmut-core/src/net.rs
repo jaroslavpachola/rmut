@@ -395,16 +395,18 @@ mod tests {
     }
 
     #[test]
-    fn the_baseline_roots_are_always_there() {
+    fn the_trust_store_only_ever_adds() {
+        // One test, because the trust settings are process-wide and
+        // two tests would race them.
+        //
         // Even with the OS store off and no extra file, the Mozilla
-        // roots make a non-empty store; the trust settings only add.
+        // roots make a non-empty store; the settings only add.
         set_trust(false, None);
         let store = root_store().unwrap();
         assert!(store.len() > 50, "webpki roots present: {}", store.len());
-    }
 
-    #[test]
-    fn a_certificate_file_that_is_not_pem_is_an_error() {
+        // A certificate_file that holds no PEM is an error, not a
+        // silent empty store.
         let dir = std::env::temp_dir().join(format!("rmut-net-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("garbage.pem");
@@ -412,7 +414,8 @@ mod tests {
         set_trust(false, Some(path.clone()));
         let err = root_store().unwrap_err().to_string();
         assert!(err.contains("no certificates"), "{err}");
-        // Put the trust back so other tests in the process are clean.
+
+        // Put the trust back so nothing else in the process trips.
         set_trust(true, None);
         std::fs::remove_dir_all(&dir).ok();
     }

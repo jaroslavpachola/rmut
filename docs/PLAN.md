@@ -1698,22 +1698,38 @@ sensitive enough to want their own round.
       TLS if done wrong, so it wants a careful design and a real
       test, not a rider
 
-## R71: the compose menu and its quadoptions
+## R71: the compose quadoptions and the From/Reply-To keys (done, 1.70)
 
-Goal: the interactive compose-menu functions and the send/recall
-quadoptions, split out of R67.
+Goal: the two send/recall quadoptions and the compose-menu header
+keys, split out of R67. The heavier compose-menu functions (an
+attach-message picker, rename-attachment, toggle-unlink…) and the
+envelope odds stay for R75 below: they need a mailbox picker or new
+draft-assembly plumbing, not a rider.
 
-- [ ] `$postpone` (rmut always offers `p`) and `$recall` (always
-      offers the postponed picker at `m`): mutt's quadoptions, `no`
-      meaning "never ask"
-- [ ] Compose-menu keys: edit-from, edit-reply-to, `A`
-      attach-message from the open mailbox (only the forwarded
-      original attaches today), rename-attachment, toggle-unlink,
-      toggle-disposition, new-mime, move-up/down, write-fcc,
-      view-text/view-mailcap, ispell
-- [ ] Envelope odds: `$use_envelope_from` / `$envelope_from_address`,
-      `$dsn_notify` / `$dsn_return`, `$reply_self`, `$fcc_attach` /
-      `$fcc_clear`, `$forward_edit`, `$mime_forward_rest`
+- [x] `$postpone`: leaving a draft. `ask-yes` (the default) and
+      `ask-no` ask, with the matching Enter default; `yes` postpones
+      and `no` discards without asking. `ask_postpone` became `&mut`
+      and does the deciding when there is no question to put
+- [x] `$recall`: composing when postponed drafts wait. `no` never
+      offers (always a new message), `yes` recalls the newest
+      outright, the default puts the new/recall choice up. Read in
+      the TUI's `start_compose`; `ask-yes`/`ask-no` both mean "ask",
+      rmut's one prompt shape
+- [x] Compose-menu `F` and `r` edit the From and Reply-To through the
+      existing `ask_header`, which already writes any header onto the
+      staged draft
+- [x] Both quadoptions settable at `:`, imported (with the defaults
+      satisfied), a session test over the four `$postpone` answers,
+      an importer test, e2e scenario_compose_menu (recall = no goes
+      straight to a new message, `F` overrides From), and the parity
+      fixture grew both
+- [ ] Left for R75: `A` attach-message from the open mailbox (a
+      picker), rename-attachment, toggle-unlink, toggle-disposition,
+      new-mime, move-up/down, write-fcc, view-text/view-mailcap,
+      ispell; and the envelope odds `$use_envelope_from` /
+      `$envelope_from_address`, `$dsn_notify` / `$dsn_return`,
+      `$reply_self`, `$fcc_attach` / `$fcc_clear`, `$forward_edit`,
+      `$mime_forward_rest`
 
 ## R72: reply crypto and charset
 
@@ -1763,6 +1779,20 @@ Goal: the session-persistence and config-teardown pieces.
       `$sort_alias`
 - [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
       `unalias`, `reset`; `$shell`, `$tmpdir`
+
+## R75: the heavier compose-menu functions
+
+Goal: the compose-menu work R71 left, which needs a picker or new
+draft plumbing.
+
+- [ ] `A` attach-message: attach another message from the open
+      mailbox as message/rfc822 (a tagged-message picker); the rest
+      of the compose-menu functions: rename-attachment, toggle-unlink,
+      toggle-disposition, new-mime, move-up/down, write-fcc,
+      view-text/view-mailcap, ispell
+- [ ] Envelope odds: `$use_envelope_from` / `$envelope_from_address`,
+      `$dsn_notify` / `$dsn_return`, `$reply_self`, `$fcc_attach` /
+      `$fcc_clear`, `$forward_edit`, `$mime_forward_rest`
 
 ## Still open inside rounds marked done
 

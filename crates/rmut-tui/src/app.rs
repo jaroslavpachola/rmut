@@ -563,11 +563,32 @@ impl App {
     /// drafts, since recalling one is a menu rather than an answer.
     fn start_compose(&mut self, kind: ComposeKind) {
         if kind == ComposeKind::New && self.session.has_postponed() {
-            self.prompt = Some(Prompt::Key {
-                label: "(n)ew message or (r)ecall postponed? ".into(),
-                kind: KeyKind::Recall,
-            });
-            return;
+            // mutt's $recall: no never offers, yes recalls the newest
+            // outright, ask (the default) puts the choice up.
+            match self
+                .session
+                .config
+                .mail
+                .recall
+                .as_deref()
+                .unwrap_or("ask-yes")
+                .trim()
+                .to_lowercase()
+                .as_str()
+            {
+                "no" => {}
+                "yes" => {
+                    self.recall_postponed();
+                    return;
+                }
+                _ => {
+                    self.prompt = Some(Prompt::Key {
+                        label: "(n)ew message or (r)ecall postponed? ".into(),
+                        kind: KeyKind::Recall,
+                    });
+                    return;
+                }
+            }
         }
         let ask = self.session.start_compose(kind);
         self.open_ask(ask);
@@ -2527,6 +2548,8 @@ impl App {
             KeyCode::Char('c') => self.ask_header("Cc"),
             KeyCode::Char('b') => self.ask_header("Bcc"),
             KeyCode::Char('s') => self.ask_header("Subject"),
+            KeyCode::Char('F') => self.ask_header("From"),
+            KeyCode::Char('r') => self.ask_header("Reply-To"),
             KeyCode::Char('d') => {
                 let sel = *sel;
                 let ask = self.session.ask_attach_field(sel, false);

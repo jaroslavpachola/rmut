@@ -153,7 +153,9 @@ pub enum AskKind {
     /// mutt's compose menu `p`: sign, encrypt, both, or neither.
     Security,
     /// Leaving the compose menu: postpone the draft, or throw it away?
-    PostponeAsk,
+    PostponeAsk {
+        default_yes: bool,
+    },
     /// mutt's `!`: a shell command to run with the display stood down.
     Shell,
     /// mutt's $quit: leave the mailbox and the program?
@@ -587,12 +589,40 @@ impl Session {
         })
     }
 
-    pub fn ask_postpone(&self) -> Option<Ask> {
+    pub fn ask_postpone(&mut self) -> Option<Ask> {
         self.draft()?;
-        Some(Ask::Key {
-            label: "Postpone this message? (y/n): ".into(),
-            what: AskKind::PostponeAsk,
-        })
+        // mutt's $postpone: yes/no decide without asking, ask-yes /
+        // ask-no ask with the matching default.
+        match self
+            .config
+            .mail
+            .postpone
+            .as_deref()
+            .unwrap_or("ask-yes")
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
+            "yes" => {
+                if let Some(draft) = self.take_draft() {
+                    self.postpone_draft(draft);
+                }
+                None
+            }
+            "no" => {
+                if let Some(draft) = self.take_draft() {
+                    let _ = std::fs::remove_file(&draft.path);
+                    self.note("message discarded");
+                }
+                None
+            }
+            other => Some(Ask::Key {
+                label: "Postpone this message? (y/n): ".into(),
+                what: AskKind::PostponeAsk {
+                    default_yes: other != "ask-no",
+                },
+            }),
+        }
     }
 
     /// mutt's `!`: run something with the display out of the way.
@@ -756,21 +786,24 @@ impl Session {
                 }
                 None
             }
-            (AskKind::PostponeAsk, Answer::Key(key)) => {
-                match key {
-                    Key::Char('y') | Key::Enter => {
-                        if let Some(draft) = self.take_draft() {
-                            self.postpone_draft(draft);
-                        }
-                    }
-                    Key::Char('n') => {
-                        if let Some(draft) = self.take_draft() {
-                            let _ = std::fs::remove_file(&draft.path);
-                            self.note("message discarded");
-                        }
-                    }
+            (AskKind::PostponeAsk { default_yes }, Answer::Key(key)) => {
+                let postpone = match key {
+                    Key::Char('y') => true,
+                    Key::Char('n') => false,
+                    Key::Enter => default_yes,
                     // Anything else goes back to the menu.
-                    _ => self.requests.push(Request::ShowDraft),
+                    _ => {
+                        self.requests.push(Request::ShowDraft);
+                        return None;
+                    }
+                };
+                if let Some(draft) = self.take_draft() {
+                    if postpone {
+                        self.postpone_draft(draft);
+                    } else {
+                        let _ = std::fs::remove_file(&draft.path);
+                        self.note("message discarded");
+                    }
                 }
                 None
             }

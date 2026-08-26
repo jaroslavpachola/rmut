@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.69**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.70**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -363,13 +363,17 @@ the draft's From/To/Cc/Bcc/Subject/Fcc/Security above the attachment
 table (body, forwarded original, every `Attach:` file with size and
 type). `y` sends, `e` reopens the editor, Enter views the selected
 entry (text directly, other types via `[filters]`), `t`/`c`/`b`/`s`
-edit the headers, `a` attaches without a trip through the editor, `D` detaches
+edit the headers, `F`/`r` edit the From and Reply-To,
+`a` attaches without a trip through the editor, `D` detaches
 the selected file, `p` opens the security menu, `P` postpones, and
-`q` asks "Postpone this message?" (no discards). PGP signing and encryption wrap the whole multipart, attachments
+`q` asks "Postpone this message?" (no discards). `$postpone` sets that
+question (yes/no skip it, ask-yes/ask-no pick the default). PGP signing and encryption wrap the whole multipart, attachments
 included; this also works for forwards with `forward = "attach"`.
 
 With several postponed drafts, recalling (`m`, then `r`) opens a
-picker instead of silently taking the newest.
+picker instead of silently taking the newest. `$recall` controls the
+offer: `no` never asks (always a new message), `yes` recalls the
+newest outright, the default asks.
 
 ## Enter-command
 

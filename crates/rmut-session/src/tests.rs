@@ -1720,3 +1720,50 @@ fn sort_by_to_and_unsorted() {
     f.answer_key(ask, 'u');
     assert_eq!(f.session.sort, SortKey::Unsorted);
 }
+
+#[test]
+fn postpone_quadoption_decides_without_asking() {
+    // Stage a draft the way the compose flow does, then leave it.
+    let stage = |postpone: &str| -> Fixture {
+        let mut config = reply_config();
+        config.mail.postpone = Some(postpone.into());
+        let mut f = Fixture::with_config(&["one"], config);
+        let ask = f.session.start_compose(crate::ComposeKind::New);
+        let ask = f.answer_line(ask, "someone@example.com");
+        let _ = f.answer_line(ask, "a subject");
+        let draft = draft_from_requests(&mut f.session);
+        // Make the file look edited, or abort_unmodified drops it.
+        let text = fs::read_to_string(&draft.path).unwrap();
+        fs::write(&draft.path, format!("{text}a line of my own\n")).unwrap();
+        f.session.set_draft(draft);
+        assert!(f.session.draft().is_some());
+        f
+    };
+
+    // no: discard without a question.
+    let mut f = stage("no");
+    assert!(f.session.ask_postpone().is_none(), "no question");
+    assert_eq!(f.log.last_text(), "message discarded");
+    assert!(!f.session.has_postponed(), "nothing was filed");
+
+    // yes: postpone without a question.
+    let mut f = stage("yes");
+    assert!(f.session.ask_postpone().is_none());
+    assert!(f.session.has_postponed(), "the draft was filed");
+
+    // ask-no: a question whose Enter discards.
+    let mut f = stage("ask-no");
+    let ask = f.session.ask_postpone();
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Postpone this message? (y/n): "
+    );
+    assert!(f.answer_enter(ask).is_none());
+    assert!(!f.session.has_postponed(), "Enter discarded it");
+
+    // ask-yes (the default): Enter postpones.
+    let mut f = stage("ask-yes");
+    let ask = f.session.ask_postpone();
+    assert!(f.answer_enter(ask).is_none());
+    assert!(f.session.has_postponed(), "Enter filed it");
+}

@@ -254,6 +254,15 @@ pub struct Mail {
     /// mutt's $quit: "yes" (the default) leaves at once, "no"
     /// refuses, "ask-yes" and "ask-no" ask first.
     pub quit: Option<String>,
+    /// mutt's $postpone: leaving a draft. "ask-yes" (the default) and
+    /// "ask-no" ask whether to postpone (else discard); "yes"
+    /// postpones without asking, "no" discards without asking.
+    pub postpone: Option<String>,
+    /// mutt's $recall: composing when postponed drafts exist. "no"
+    /// never offers to recall (always a new message); "yes" recalls
+    /// the newest without asking; "ask-yes" / "ask-no" (the default
+    /// is to ask) offer the new/recall choice.
+    pub recall: Option<String>,
     /// mutt's $confirmappend: ask before adding messages to a mailbox
     /// that already exists. Off by default, where mutt asks: rmut has
     /// never asked, and a save is one keystroke either way.

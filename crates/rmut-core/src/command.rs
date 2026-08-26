@@ -302,6 +302,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "save_name" => Flag(&mut cfg.mail.save_name),
         "force_name" => Flag(&mut cfg.mail.force_name),
         "quit" => Text(&mut cfg.mail.quit),
+        "postpone" => Text(&mut cfg.mail.postpone),
+        "recall" => Text(&mut cfg.mail.recall),
         "askbcc" => Flag(&mut cfg.mail.ask_bcc),
         "attribution" => Text(&mut cfg.mail.attribution),
         "indent_string" => Text(&mut cfg.mail.indent_string),

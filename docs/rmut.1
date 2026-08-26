@@ -484,6 +484,8 @@ views the selected entry (text directly, other types through their
 [filters] command),
 .BR t / c / b / s
 edit To/Cc/Bcc/Subject (address prompts Tab-complete),
+.BR F / r
+edit the From and Reply-To,
 .B a
 attaches a file,
 .B D
@@ -502,8 +504,11 @@ opens the PGP menu (encrypt/sign/both/clear),
 .B P
 postpones, and
 .B q
-asks "Postpone this message?" \(em no discards. Recalling with
-several postponed drafts offers a picker.
+asks "Postpone this message?" \(em no discards. mutt's $postpone
+sets that question (yes / no skip it, ask\-yes / ask\-no choose the
+default), and $recall the new\-or\-recall offer when drafts wait
+(no never asks, yes recalls the newest, the default asks). Recalling
+with several postponed drafts offers a picker.
 .PP
 Related [mail] switches: fast_reply skips the To/Subject prompts on
 replies (Subject on forwards); autoedit (with edit_headers) skips
