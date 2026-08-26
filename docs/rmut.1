@@ -732,7 +732,16 @@ from the layer below.
 .TP
 .B mailboxes
 Mailboxes for the folder browser, new-mail watching and the sidebar;
-the first is the default mailbox.
+the first is the default mailbox. In the browser (\fBy\fR),
+.B C
+creates a folder (an imap:account/name spec makes a remote one),
+.B d
+deletes the selected mailbox (confirmed),
+.B r
+renames it, and
+.B s / u
+subscribe and unsubscribe: CREATE / DELETE / RENAME / SUBSCRIBE on
+the open IMAP account, or the filesystem for a local maildir.
 .TP
 .B sent, postponed
 Mailboxes receiving sent copies and postponed drafts.

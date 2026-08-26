@@ -1656,22 +1656,33 @@ commands, persistent history) split into R73/R74 below.
       decision, not an absence (smime_*, pop_*, mixmaster, autocrypt
       refuse under Non-goals)
 
-## R69: IMAP folder management
+## R69: IMAP folder management (done, 1.69)
 
 Goal: the folder mutation a "real" server setup wants, split out of
-R66 because it needs the worker plumbing and the test server grown.
+R66 because it needed the worker plumbing and the test server grown.
 
-- [ ] CREATE / DELETE / RENAME: `C` in the browser makes a remote
-      folder too, `d` deletes a mailbox (confirmed, `$confirmcreate`
-      for the other direction), `r` renames; SUBSCRIBE / UNSUBSCRIBE
-      / LSUB behind `s`/`u`/`T` toggle-subscribed, with
-      `$imap_list_subscribed` and `$imap_check_subscribed` meaning
-      what they mean; Tab toggle-mailboxes, `m` enter-mask with
-      `$mask`, and `$folder_format` for the listing
-- [ ] `$imap_passive`, `$imap_delim_chars`, NAMESPACE, and
-      `account-hook` (the hook family R36 left out), where mutt users
-      set imap_user/imap_pass per server
-- [ ] New Job variants and test-server scripts for each verb
+- [x] CREATE / DELETE / RENAME / SUBSCRIBE / UNSUBSCRIBE as client
+      methods on `imap::Client`, each a single tagged command whose
+      NO/BAD surfaces as an error (a folder_management unit test
+      scripts the five and a refused DELETE). A `Job::Manage(Manage)`
+      variant carries them to the worker thread; `remote::` wraps each
+      in the reconnect-once retry
+- [x] The browser (`y`): `C` creates a folder (an `imap:account/name`
+      spec makes a remote one, a plain path a local maildir), `d`
+      deletes the selected mailbox behind a y/n confirm, `r` renames
+      it, `s`/`u` subscribe and unsubscribe. `Session::{create,delete,
+      rename}_folder` and `set_subscribed` route by spec: the open
+      account's verb goes down the connection, a local path to the
+      filesystem, and a spec for another account is refused
+- [x] Deferred to a follow-up, none blocking: LSUB-backed
+      subscribed-only listing (`$imap_list_subscribed` /
+      `$imap_check_subscribed`), Tab toggle-mailboxes, enter-mask /
+      `$mask`, `$folder_format`, `$imap_passive`, `$imap_delim_chars`,
+      NAMESPACE, and `account-hook`. `$confirmcreate` too — rmut
+      creates without asking, as it has since R26
+- [x] Unit test at the protocol layer, the IMAP e2e scenario grown to
+      create/subscribe/unsubscribe/rename/delete against the fake
+      server and assert each verb reached it; 59/59 scenarios
 
 ## R70: the tunnel and the unknown cert
 

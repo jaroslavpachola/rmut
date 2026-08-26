@@ -434,6 +434,31 @@ impl Remote {
         })
     }
 
+    /// mutt's folder management, each a single command; the folder
+    /// name is taken as given (an `imap:account/folder` spec has had
+    /// its account stripped by the caller). RENAME's and DELETE's
+    /// effects are the server's business.
+    pub fn create_folder(&mut self, name: &str) -> Result<()> {
+        let name = clean_mailbox(name);
+        self.retry(move |client, _, _| client.create_mailbox(&name))
+    }
+
+    pub fn delete_folder(&mut self, name: &str) -> Result<()> {
+        let name = clean_mailbox(name);
+        self.retry(move |client, _, _| client.delete_mailbox(&name))
+    }
+
+    pub fn rename_folder(&mut self, from: &str, to: &str) -> Result<()> {
+        let from = clean_mailbox(from);
+        let to = clean_mailbox(to);
+        self.retry(move |client, _, _| client.rename_mailbox(&from, &to))
+    }
+
+    pub fn subscribe_folder(&mut self, name: &str, on: bool) -> Result<()> {
+        let name = clean_mailbox(name);
+        self.retry(move |client, _, _| client.subscribe_mailbox(&name, on))
+    }
+
     /// Selectable folders with their UNSEEN counts, for the folder
     /// browser. The open folder's count comes from the local cache
     /// (STATUS must not target the selected mailbox); a failing STATUS

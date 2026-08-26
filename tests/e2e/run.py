@@ -852,6 +852,36 @@ smtp_tls = false
     # Folder browser lists the account's folders.
     r.keys(b"y")
     r.expect("imap:test/Sent")
+
+    # R69: folder management. Create a remote folder (typed as a
+    # spec), subscribe to the selected one, rename it, delete it.
+    r.keys(b"Cimap:test/Archive\r")
+    r.expect("created imap:test/Archive")
+    wait_for(lambda: any('CREATE "Archive"' in c for c in imap.commands),
+             desc="CREATE reached the server")
+    r.settle()
+    # The selection sits on a folder; subscribe/unsubscribe it.
+    r.keys(b"s")
+    r.expect("subscribed to")
+    wait_for(lambda: any("SUBSCRIBE " in c for c in imap.commands),
+             desc="SUBSCRIBE reached the server")
+    r.settle()
+    r.keys(b"u")
+    r.expect("unsubscribed from")
+    r.settle()
+    # Rename the selected folder.
+    r.keys(b"rRenamed\r")
+    r.expect("renamed to Renamed")
+    wait_for(lambda: any("RENAME " in c for c in imap.commands),
+             desc="RENAME reached the server")
+    r.settle()
+    # Delete it, with the confirm.
+    r.keys(b"d")
+    r.expect("Delete mailbox")
+    r.keys(b"y")
+    r.expect("deleted imap:test")
+    wait_for(lambda: any("DELETE " in c for c in imap.commands),
+             desc="DELETE reached the server")
     r.keys(b"q")
     r.keys(b"q")
     r.close()
@@ -3185,7 +3215,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.68")
+    r.expect("rmut 1.69")
     r.settle()
 
     # A refused pattern names itself.

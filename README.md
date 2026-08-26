@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.68**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.69**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -196,7 +196,11 @@ groups: `!~D (~f jane | ~t jane) ~d <1m`.
 
 `rmut imap:work` (or `imap:work/Archive`) opens an account folder;
 `c` and the folder browser `y` take the same specs, and `y` lists the
-account's folders via LIST. Messages are mirrored into a cache maildir
+account's folders via LIST. In the browser, `C` creates a folder
+(type an `imap:account/name` spec for a remote one), `d` deletes the
+selected mailbox (confirmed), `r` renames it, and `s`/`u`
+subscribe/unsubscribe — CREATE / DELETE / RENAME / SUBSCRIBE on the
+open account, or the filesystem for a local maildir. Messages are mirrored into a cache maildir
 under `~/.cache/rmut/imap/` (headers up front, full bodies fetched on
 first view), so the index is fast and old mail reopens offline. `$`
 pushes your changes to the server (flags via UID STORE, deletes via

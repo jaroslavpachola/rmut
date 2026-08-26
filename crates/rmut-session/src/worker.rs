@@ -52,6 +52,18 @@ pub enum Job {
     SearchBody(String),
     /// Another folder of the same account, on this connection.
     Switch(String),
+    /// mutt's folder management on the open account.
+    Manage(Manage),
+}
+
+/// One folder-management action, its folder names already stripped of
+/// the `imap:account/` prefix.
+#[derive(Clone)]
+pub enum Manage {
+    Create(String),
+    Delete(String),
+    Rename(String, String),
+    Subscribe(String, bool),
 }
 
 impl Job {
@@ -67,6 +79,7 @@ impl Job {
             Job::Append { .. } => "saving to the server",
             Job::CheckNew => "checking for new mail",
             Job::Folders => "listing folders",
+            Job::Manage(_) => "managing folders",
             Job::Unseen(_) => "counting unread",
             Job::SearchBody(_) => "searching on the server",
             Job::Switch(_) => "opening the folder",
@@ -320,6 +333,15 @@ fn do_job(remote: &mut Remote, job: Job) -> Result<Done> {
         Job::Switch(mailbox) => {
             remote.switch(&mailbox)?;
             Ok(Done::Switched(Box::new(Facts::of(remote))))
+        }
+        Job::Manage(action) => {
+            match action {
+                Manage::Create(name) => remote.create_folder(&name)?,
+                Manage::Delete(name) => remote.delete_folder(&name)?,
+                Manage::Rename(from, to) => remote.rename_folder(&from, &to)?,
+                Manage::Subscribe(name, on) => remote.subscribe_folder(&name, on)?,
+            }
+            Ok(Done::Nothing)
         }
     }
 }

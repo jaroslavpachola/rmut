@@ -217,6 +217,31 @@ impl Client {
         self.command("EXPUNGE").map(drop)
     }
 
+    /// Folder management: CREATE, DELETE, RENAME, SUBSCRIBE,
+    /// UNSUBSCRIBE, each a single tagged command. The server's tagged
+    /// NO/BAD becomes an error through `finish`.
+    pub fn create_mailbox(&mut self, mailbox: &str) -> Result<()> {
+        let arg = mailbox_arg(mailbox)?;
+        self.command(&format!("CREATE {arg}")).map(drop)
+    }
+
+    pub fn delete_mailbox(&mut self, mailbox: &str) -> Result<()> {
+        let arg = mailbox_arg(mailbox)?;
+        self.command(&format!("DELETE {arg}")).map(drop)
+    }
+
+    pub fn rename_mailbox(&mut self, from: &str, to: &str) -> Result<()> {
+        let from = mailbox_arg(from)?;
+        let to = mailbox_arg(to)?;
+        self.command(&format!("RENAME {from} {to}")).map(drop)
+    }
+
+    pub fn subscribe_mailbox(&mut self, mailbox: &str, on: bool) -> Result<()> {
+        let arg = mailbox_arg(mailbox)?;
+        let verb = if on { "SUBSCRIBE" } else { "UNSUBSCRIBE" };
+        self.command(&format!("{verb} {arg}")).map(drop)
+    }
+
     /// Server-side copy into another folder ($trash before a purge).
     pub fn uid_copy(&mut self, set: &str, mailbox: &str) -> Result<()> {
         self.command(&format!("UID COPY {set} {}", mailbox_arg(mailbox)?))
@@ -720,6 +745,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(client.noop_changes().unwrap(), Changes::NewOnly);
+        client.logout();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn folder_management_commands() {
+        let (port, handle) = testserver::imap(vec![
+            testserver::Expect::new("CREATE \"Archive/2026\"", String::new()),
+            testserver::Expect::new("SUBSCRIBE \"Archive/2026\"", String::new()),
+            testserver::Expect::new("RENAME \"Archive/2026\" \"Archive/old\"", String::new()),
+            testserver::Expect::new("UNSUBSCRIBE \"Archive/old\"", String::new()),
+            testserver::Expect::fail("DELETE \"Archive/old\"", "NO [CANNOT] not allowed"),
+            testserver::Expect::new("LOGOUT", String::new()),
+        ]);
+        let mut client = Client::connect("127.0.0.1", port, false).unwrap();
+        client.create_mailbox("Archive/2026").unwrap();
+        client.subscribe_mailbox("Archive/2026", true).unwrap();
+        client
+            .rename_mailbox("Archive/2026", "Archive/old")
+            .unwrap();
+        client.subscribe_mailbox("Archive/old", false).unwrap();
+        // A server that refuses becomes an error, not a silent success.
+        assert!(client.delete_mailbox("Archive/old").is_err());
         client.logout();
         handle.join().unwrap();
     }

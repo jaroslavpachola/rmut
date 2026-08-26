@@ -31,7 +31,7 @@ mod worker;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
 pub use commands::CommandRun;
-pub use worker::{Done, Facts, Imap, Job};
+pub use worker::{Done, Facts, Imap, Job, Manage};
 
 /// How many undo steps to keep, and how many message snapshots in
 /// total: a pattern delete over a huge mailbox is one step but very
@@ -2234,6 +2234,102 @@ impl Session {
     /// a mailbox prompt: the configured mailboxes, the open account's
     /// folders (IMAP LIST), and maildirs discovered next to the open
     /// one.
+    /// mutt's folder management from the browser. A spec names an
+    /// `imap:account/folder` of the open account, or a local path; a
+    /// remote verb goes to the connection, a local one touches the
+    /// filesystem. Returns what to say on success.
+    pub fn create_folder(&mut self, spec: &str) -> Result<String, String> {
+        let id = self.manage(
+            spec,
+            |_account, folder| Manage::Create(folder),
+            |path| {
+                maildir::create(&path).map_err(|e| format!("{e:#}"))?;
+                Ok(path.display().to_string())
+            },
+        )?;
+        Ok(format!("created {id}"))
+    }
+
+    pub fn delete_folder(&mut self, spec: &str) -> Result<String, String> {
+        let id = self.manage(
+            spec,
+            |_account, folder| Manage::Delete(folder),
+            |path| {
+                // A maildir is a directory tree; removing it is what
+                // "delete this mailbox" means locally.
+                std::fs::remove_dir_all(&path).map_err(|e| format!("{e}"))?;
+                Ok(path.display().to_string())
+            },
+        )?;
+        Ok(format!("deleted {id}"))
+    }
+
+    pub fn set_subscribed(&mut self, spec: &str, on: bool) -> Result<String, String> {
+        let verb = if on {
+            "subscribed to"
+        } else {
+            "unsubscribed from"
+        };
+        self.manage(
+            spec,
+            move |_account, folder| Manage::Subscribe(folder, on),
+            |_path| Err("subscription is an IMAP notion".into()),
+        )
+        .map(|shown| format!("{verb} {shown}"))
+    }
+
+    /// Rename a mailbox to `new` (a bare folder name for an imap spec,
+    /// or a path for a local maildir).
+    pub fn rename_folder(&mut self, spec: &str, new: &str) -> Result<String, String> {
+        if new.trim().is_empty() {
+            return Err("no new name given".into());
+        }
+        match remote::parse_spec(spec) {
+            Some((account, from)) => {
+                let to = new.trim().to_string();
+                self.on_account(account, Manage::Rename(from.to_string(), to.clone()))?;
+                Ok(format!("renamed to {to}"))
+            }
+            None => {
+                let from = expand_tilde(spec);
+                let to = expand_tilde(new);
+                std::fs::rename(&from, &to).map_err(|e| format!("{e}"))?;
+                Ok(format!("renamed to {}", to.display()))
+            }
+        }
+    }
+
+    /// The shared routing: an imap spec's verb goes to the account,
+    /// a local path runs `local`. `make` builds the remote action
+    /// from the account and folder.
+    fn manage(
+        &mut self,
+        spec: &str,
+        make: impl FnOnce(&str, String) -> Manage,
+        local: impl FnOnce(std::path::PathBuf) -> Result<String, String>,
+    ) -> Result<String, String> {
+        match remote::parse_spec(spec) {
+            Some((account, folder)) => {
+                let action = make(account, folder.to_string());
+                self.on_account(account, action)?;
+                Ok(format!("imap:{account}/{folder}"))
+            }
+            None => local(expand_tilde(spec)),
+        }
+    }
+
+    /// Send a management action to the open IMAP account, refusing a
+    /// spec for a different or absent account.
+    fn on_account(&mut self, account: &str, action: Manage) -> Result<(), String> {
+        match &mut self.imap {
+            Some(imap) if imap.facts.account.name == account => imap
+                .blocking(Job::Manage(action))
+                .map(drop)
+                .map_err(|e| format!("{e:#}")),
+            Some(_) | None => Err("that mailbox is not on the open account".into()),
+        }
+    }
+
     pub fn folder_candidates(&mut self) -> Result<Vec<(String, usize)>> {
         // Local entries carry their new/ count; imap: specs of other
         // accounts show without one (no connection just for a count).

@@ -104,6 +104,10 @@ pub enum LineKind {
     /// The same, opened read-only (mutt's Esc c).
     ChangeDirReadOnly,
     SavePart,
+    /// Folder browser: the new name for the selected mailbox.
+    RenameMailbox {
+        from: String,
+    },
 }
 
 impl LineKind {
@@ -138,6 +142,7 @@ impl LineKind {
             | LineKind::BrowseDir
             | LineKind::CreateDir => "mailbox",
             LineKind::SavePart => "file",
+            LineKind::RenameMailbox { .. } => "mailbox",
             LineKind::PipePart => "command",
             LineKind::Notmuch => "notmuch",
             LineKind::EnterCommand => "command",
@@ -153,6 +158,10 @@ pub enum KeyKind {
     Recall,
     /// Confirm printing the selected attachment part.
     PrintPart,
+    /// Confirm deleting the selected mailbox.
+    DeleteMailbox {
+        spec: String,
+    },
 }
 
 pub enum Prompt {
@@ -949,6 +958,19 @@ impl App {
                 }
                 _ => {}
             },
+            KeyKind::DeleteMailbox { spec } => {
+                if matches!(code, KeyCode::Char('y')) {
+                    match self.session.delete_folder(&spec) {
+                        Ok(msg) => {
+                            self.note(msg);
+                            self.refresh_folders();
+                        }
+                        Err(err) => self.error(err),
+                    }
+                } else {
+                    self.note("");
+                }
+            }
             KeyKind::PrintPart => {
                 if code == KeyCode::Char('y') {
                     self.print_part();
@@ -1102,6 +1124,13 @@ impl App {
             LineKind::ChangeDirReadOnly => self.open_mailbox_read_only(input),
             LineKind::BrowseDir => self.browse_dir(input),
             LineKind::CreateDir => self.create_maildir(input),
+            LineKind::RenameMailbox { from } => match self.session.rename_folder(&from, input) {
+                Ok(msg) => {
+                    self.note(msg);
+                    self.refresh_folders();
+                }
+                Err(err) => self.error(err),
+            },
             LineKind::SavePart => self.save_part(input),
             LineKind::PipePart => self.pipe_part(input),
             LineKind::Query => self.run_query(input),
@@ -2052,11 +2081,30 @@ impl App {
             }
             KeyCode::Char('C') => {
                 self.prompt = Some(Prompt::line(
-                    "Create maildir: ",
+                    "Create mailbox: ",
                     String::new(),
                     LineKind::CreateDir,
                 ));
             }
+            KeyCode::Char('d') => {
+                if let Some(spec) = self.selected_folder() {
+                    self.prompt = Some(Prompt::Key {
+                        label: format!("Delete mailbox {spec}? (y/n): "),
+                        kind: KeyKind::DeleteMailbox { spec },
+                    });
+                }
+            }
+            KeyCode::Char('r') => {
+                if let Some(spec) = self.selected_folder() {
+                    self.prompt = Some(Prompt::line(
+                        "Rename to: ",
+                        String::new(),
+                        LineKind::RenameMailbox { from: spec },
+                    ));
+                }
+            }
+            KeyCode::Char('s') => self.subscribe_selected(true),
+            KeyCode::Char('u') => self.subscribe_selected(false),
             KeyCode::Enter => {
                 let (spec, root) = match &self.mode {
                     Mode::Folders { dirs, sel, root } => {
@@ -2122,8 +2170,57 @@ impl App {
 
     /// Create a maildir (cur/new/tmp) at `input`, relative to the
     /// browsed directory when the path isn't absolute.
+    /// The selected browser entry's spec (a local path or an
+    /// imap: spec), without a trailing directory slash.
+    fn selected_folder(&self) -> Option<String> {
+        match &self.mode {
+            Mode::Folders { dirs, sel, .. } => dirs
+                .get(*sel)
+                .map(|d| d.0.trim_end_matches('/').to_string())
+                .filter(|s| s != ".."),
+            _ => None,
+        }
+    }
+
+    /// Re-list the browser after a management op changed it.
+    fn refresh_folders(&mut self) {
+        let root = match &self.mode {
+            Mode::Folders { root, .. } => root.clone(),
+            _ => None,
+        };
+        match root {
+            Some(root) => self.browse_dir(&root.display().to_string()),
+            None => self.open_folder_browser(),
+        }
+    }
+
+    fn subscribe_selected(&mut self, on: bool) {
+        let Some(spec) = self.selected_folder() else {
+            return;
+        };
+        match self.session.set_subscribed(&spec, on) {
+            Ok(msg) => {
+                self.note(msg);
+                self.refresh_folders();
+            }
+            Err(err) => self.error(err),
+        }
+    }
+
     fn create_maildir(&mut self, input: &str) {
         if input.is_empty() {
+            return;
+        }
+        // An imap: spec (or a name under a browsed imap account) goes
+        // to the server; a plain path stays local.
+        if rmut_core::remote::parse_spec(input).is_some() {
+            match self.session.create_folder(input) {
+                Ok(msg) => {
+                    self.note(msg);
+                    self.refresh_folders();
+                }
+                Err(err) => self.error(err),
+            }
             return;
         }
         let root = match &self.mode {
