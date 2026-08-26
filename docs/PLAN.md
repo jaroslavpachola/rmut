@@ -1425,6 +1425,200 @@ code that says which of them rmut already had.
       crypto trio, two charset options, folder_format,
       imap_check_subscribed and notmuch's default URI
 
+## Parity, third pass (proposed, 2026-08)
+
+The second pass measured rmut against a muttrc of 95 settings; this
+one measured it against mutt 2.2.12 itself: the function tables of
+every menu, the pattern table, and all 418 `set` variables in the
+manual, diffed against rmut's keymaps, `pattern.rs`, the sort
+vocabulary and the IMAP and TLS code. What follows is what the plan
+never named: neither shipped, nor proposed, nor put under Non-goals.
+309 of the 418 variables are unknown to the importer, most of them
+noise (smime_*, pop_*, mixmaster, autocrypt); the rounds below are
+the daily-use residue, ranked by how soon a mutt hand trips over
+them. Each is small enough to ship on its own, and the parity fixture
+should grow the settings a round claims, so the ratchet keeps
+measuring. Daily-use findings still outrank all of them.
+
+## R63: thread surgery and reading a thread
+
+Goal: the index keys that act on the thread's *shape*, which rmut
+cannot touch at all.
+
+- [ ] `#` break-thread and `&` link-threads (mutt's OP_MAIN_BREAK_
+      THREAD / OP_MAIN_LINK_THREADS): detach the selected message
+      from its parent, or make the tagged messages children of the
+      selected one. mutt does it by editing References/In-Reply-To
+      in the message itself and rewriting it, which for maildir is a
+      new file and for IMAP an APPEND + delete; the plan should say
+      which, and put it on the undo stack
+- [ ] Ctrl+R read-thread and Esc r read-subthread, over the same
+      walk as Alt+d / Ctrl+D; `P` parent-message and root-message
+      as motions
+- [ ] Esc t tag-subthread, which R42 skipped
+- [ ] `~(PATTERN)`, `~<(PATTERN)` and `~>(PATTERN)`: thread patterns
+      (any message in the thread / an ancestor / a descendant
+      matches), the pattern-side half of the same feature; `~v`
+      (the message is a collapsed thread's head) and `~$`
+      (unreferenced) with them
+- [ ] `$sort_re` / `$reply_regexp`: `compose.rs:141` hardcodes
+      `re:`; mutt strips whatever the regex says (Aw:, Sv:, Re[2]:)
+      from the reply subject. rmut never groups by subject, so the
+      threading half of $sort_re does not apply and the importer
+      should say so
+
+## R64: flags, labels and the pattern table
+
+Goal: the rest of mutt's pattern table, and the two flag keys.
+
+- [ ] `w` set-flag / `W` clear-flag (mutt asks for one of N O r D
+      d F * ! and applies it), and `Esc l` show-limit, `V`
+      show-version
+- [ ] `~O` old, `~R` read, `~Q` replied, `~S` superseded, `~E`
+      expired, `~L` from-or-to, `~u` addressed to a subscribed list,
+      `~B` / `=B` whole-message search (the `=b` and `=h`
+      server-side forms are what R30 already does for `~b`; give them
+      their mutt spelling), `~X` attachment count with the
+      `attachments`/`unattachments` command it depends on
+- [ ] `~g` signed, `~G` encrypted, `~V` verified, `~k` has a PGP
+      key: the structure is known at parse time for `~g`/`~G`,
+      `~V` needs a verification result cached
+- [ ] X-Label: `~y` pattern, `%y` in index_format, `edit-label` to
+      set it (a rewrite of the message, so it shares R63's
+      machinery), and `label` as a sort key
+- [ ] `group`/`ungroup` and the `%f`/`%c`/`%C`/`%e`/`%L` group
+      forms in patterns and `alternates -group`
+- [ ] `~n` score and `~H` spam stay out with scoring (Non-goals);
+      the parser should refuse them by name rather than as a syntax
+      error
+
+## R65: decoded save, pipe and print
+
+Goal: mutt's decode family. rmut saves and copies raw, pipes raw,
+prints decoded, and none of it is a setting.
+
+- [ ] Esc s decode-save / Esc C decode-copy: the message as
+      displayed (brief headers, decoded body, attachments described)
+      into a mailbox; decrypt-save / decrypt-copy for PGP mail
+- [ ] `$pipe_decode`, `$pipe_sep`, `$pipe_split`, `$print_decode`,
+      `$print_split`, `$copy_decode_weed`/`$pipe_decode_weed`/
+      `$print_decode_weed`: the decode-and-weed knobs over pipe and
+      print, with R41's concatenated tagged run as the `split = no`
+      case it already is
+- [ ] `$display_filter`: the message piped through a command before
+      the pager shows it; `$prompt_after`
+- [ ] Attachment menu: `d`/`u` delete-entry and undelete-entry, so
+      a 20 MB attachment can be stripped from a received message and
+      the sync writes the message back without it (the same rewrite
+      as R63's re-threading); `T` view-text and `m` view-mailcap;
+      reply, forward and bounce from inside the menu;
+      `$attach_save_dir`, `$attach_format`
+
+## R66: IMAP folders and the trust store
+
+Goal: the two places a mutt user with a "real" server setup finds
+rmut cannot get in or cannot tidy up.
+
+- [ ] CREATE / DELETE / RENAME: `C` in the browser makes a remote
+      folder too, `d` deletes a mailbox (confirmed, `$confirmcreate`
+      for the other direction), `r` renames; SUBSCRIBE /
+      UNSUBSCRIBE / LSUB behind `s`/`u`/`T` toggle-subscribed, with
+      `$imap_list_subscribed` and `$imap_check_subscribed` (one of
+      the second pass's eight unclaimed lines) meaning what they
+      mean; Tab toggle-mailboxes between the mailboxes list and the
+      directory, `m` enter-mask with `$mask`, and `$folder_format`
+      (another of the eight) for the listing itself
+- [ ] `$imap_passive`, `$imap_delim_chars`, NAMESPACE, and
+      `account-hook` (the one hook family R36 left out), which is
+      where mutt users set imap_user/imap_pass per server
+- [ ] Trust: `net.rs` knows webpki's roots and nothing else. Add the
+      system store (`$ssl_usesystemcerts`, rustls-native-certs), a
+      `[net] certificate_file` of pinned certs, and the interactive
+      "accept this certificate once / always" that mutt asks on an
+      unknown cert, which is what a self-signed home server needs;
+      `$ssl_client_cert`
+- [ ] `$tunnel` / `$preconnect`: run a command and speak IMAP over
+      its stdin/stdout (ssh to the mail host), with
+      `$tunnel_is_secure` deciding whether STARTTLS is demanded on
+      top. The `Remote` thread of R55 is where the stream type is
+      decided, so this is a third transport beside plain and TLS,
+      not a new session path
+
+## R67: compose menu, round 3
+
+Goal: the compose functions and quadoptions still hardcoded.
+
+- [ ] `$postpone` (rmut always offers `p`; mutt's ask-yes/yes/no)
+      and `$recall` (rmut always offers the postponed picker at `m`;
+      mutt's quadoption, with `no` meaning "never ask")
+- [ ] Compose menu keys: edit-from and edit-reply-to (`F`? mutt has
+      `<esc>f` and `r`), `A` attach-message from the open mailbox
+      (only the forwarded original attaches today), `r`
+      rename-attachment, `u` toggle-unlink, Ctrl+D
+      toggle-disposition, `n` new-mime, move-up/move-down, `w`
+      write-fcc, `F` filter-entry, `T`/`m` view-text/view-mailcap,
+      `i` ispell with `$ispell`
+- [ ] Reply crypto: `$crypt_replyencrypt`, `$crypt_replysign`,
+      `$crypt_replysignencrypted`, `$crypt_opportunistic_encrypt`,
+      `$pgp_replyinline` / `$pgp_autoinline`, `$postpone_encrypt`;
+      the index's Ctrl+K extract-keys, Esc k mail-key and Esc P
+      check-traditional-pgp
+- [ ] Envelope: `$hostname` / `$use_domain` (the Message-ID host is
+      whatever `make_message_id` is handed), `$use_envelope_from` /
+      `$envelope_from_address`, `$dsn_notify` / `$dsn_return`,
+      `$user_agent`, `$sig_on_top`, `$reply_self`, `$fcc_attach`,
+      `$fcc_clear`, `$forward_edit`, `$forward_decrypt`,
+      `$mime_forward_rest`
+- [ ] `$send_charset` / `$charset`: rmut writes utf-8 and reads
+      what mailparse decodes; the two charset lines of the eight
+      unclaimed. Sending in another charset is worth refusing
+      explicitly, reading `$assumed_charset` for undeclared 8-bit
+      mail is worth doing
+
+## R68: the small keys and the session knobs
+
+Goal: one-liners, any of which can ride with an earlier round.
+
+- [ ] Keys: `@` display-address, `%` toggle-write, `\` search-toggle
+      in the pager, number-jump (`12<enter>`), H/M/L
+      current-top/middle/bottom and top-page/middle-page/bottom-page,
+      next-unread-mailbox, purge-message (delete past `$trash`),
+      mark-message hotkeys, mark-as-new, error-history, what-key,
+      list-action over List-Unsubscribe/List-Help
+- [ ] Sort keys: `to`, `mailbox-order` (unsorted, which an mbox user
+      expects), `label` with R64; `$sort_browser`, `$sort_alias`
+- [ ] `$history_file` / `$save_history` / `$history` (R23's history
+      dies with the session), `$simple_search` (the bare-word pattern
+      is hardcoded to subject|from), `$search_context`,
+      `$wrap_search`
+- [ ] Screen: `$status_on_top`, `$status_chars`, `$arrow_cursor`,
+      `$menu_scroll` / `$menu_context` / `$menu_move_off`, the `$help`
+      bar toggle, `$ts_enabled` / `$ts_status_format` /
+      `$ts_icon_format` (the terminal title, which the TUI never
+      sets), `$sleep_time`, `$read_inc` / `$write_inc` / `$net_inc`
+      progress on the message line
+- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
+      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
+      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
+      `$thread_received`, `$mail_check_recent`, `$check_new`
+- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
+      `unalias`, `reset`; `$shell`, `$tmpdir`
+- [ ] The importer classifies every one of the 418 into carried,
+      satisfied, its-own-way, refused-by-name, or hole, so a
+      "no rmut equivalent" line is a decision and not an absence;
+      smime_*, pop_*, mixmaster and autocrypt refuse under Non-goals
+
+## Still open inside rounds marked done
+
+Easy to lose under a (done, x.y) heading:
+
+- R22: publish to crates.io
+- R42: a real next/previous-marked motion, if the macros do not carry
+  it
+- R55: opening and switching a mailbox, the browser's LIST, a
+  server-side `~b` search and an APPEND still block the TUI
+- R59: `move` + `mbox` dropped on purpose; stays dropped unless asked
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
