@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.60**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.61**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -289,7 +289,26 @@ forward_format = "[%a: %s]"        # the subject a forward carries
 include = "ask-yes"                # quote the original: yes/no/ask-*
 ask_cc = false                     # mutt's $askcc, between To and
 ask_bcc = false                    # Subject; $askbcc follows it
+forward_quote = false              # true indents the forwarded text
 ```
+
+Every draft rmut starts can end with a signature (mutt's `$signature`
+and `$sig_dashes`), and the two questions mutt asks on the way in are
+settable (`$abort_nosubject`, `$abort_unmodified`):
+
+```toml
+[mail]
+signature = "~/.signature"    # a file, or a command when it ends in |
+sig_dashes = true             # the "-- " line above it (the default)
+abort_nosubject = "ask-yes"   # empty subject: yes/no/ask-yes/ask-no
+abort_unmodified = true       # a first edit that changed nothing is
+                              # not a message: the draft is dropped
+```
+
+The signature is read afresh for every draft, so `signature =
+"fortune |"` says something new each time; one that cannot be read is
+simply left off. A recalled postponed message keeps the signature it
+was postponed with rather than gaining a second one.
 
 By default (like mutt) the editor gets only the message body;
 headers come from the prompts, and attachments are added with `a` at
@@ -355,7 +374,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `attribution`, `indent_string`, `forward_format`, `include`, `askcc`,
 `askbcc`, `connect_timeout`, `net_timeout`, `pager_stop`, `markers`,
 `smart_wrap`, `collapse_unread`, `uncollapse_jump`, `quit`,
-`confirmappend`, `save_name`, `force_name`,
+`confirmappend`, `save_name`, `force_name`, `forward_quote`,
+`signature`, `sig_dashes`, `abort_nosubject`, `abort_unmodified`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -397,7 +417,8 @@ rmut -s "nightly build" -a build.log -- ops@example.com < report.txt
 
 The sent copy goes to a local `mail.sent` maildir; a remote Sent
 folder is left to the interactive send, since an IMAP APPEND needs the
-account opened.
+account opened. A configured `signature` ends a batch message too, as
+in mutt.
 
 ## Mailing lists
 
@@ -767,6 +788,15 @@ delete = "ask"               # mutt's $delete: "yes" purges without
 abort_noattach = "no"        # "ask"/"yes": a body that mentions an
                              # attachment with none attached is
                              # questioned before it goes
+signature = "~/.signature"   # ends every draft; a name ending in |
+                             # is a command whose output it is
+sig_dashes = true            # the "-- " line above the signature
+forward_quote = false        # true: the forwarded text comes in
+                             # quoted with indent_string
+abort_nosubject = "ask-yes"  # empty subject: "yes" aborts without
+                             # asking, "no" never asks
+abort_unmodified = true      # false: keep a draft the first editor
+                             # pass left untouched
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default

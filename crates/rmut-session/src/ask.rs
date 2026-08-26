@@ -111,8 +111,11 @@ pub enum AskKind {
     ComposeBcc,
     /// What it is about.
     ComposeSubject,
-    /// mutt's $abort_nosubject (ask-yes): no subject, abort?
-    NoSubject,
+    /// mutt's $abort_nosubject: no subject, abort? `default_yes` is
+    /// what Enter takes, from ask-yes (mutt's default) or ask-no.
+    NoSubject {
+        default_yes: bool,
+    },
     /// mutt's $include: quote the original in the reply? `default_yes`
     /// is what Enter takes, from ask-yes or ask-no.
     IncludeReply {
@@ -707,9 +710,15 @@ impl Session {
             (AskKind::ComposeCc, Answer::Line(input)) => self.answer_cc(input),
             (AskKind::ComposeBcc, Answer::Line(input)) => self.answer_bcc(input),
             (AskKind::ComposeSubject, Answer::Line(input)) => self.answer_subject(input),
-            (AskKind::NoSubject, Answer::Key(key)) => match key {
-                // ask-yes: Enter aborts, like mutt.
+            (AskKind::NoSubject { default_yes }, Answer::Key(key)) => match key {
                 Key::Char('n') => self.answer_subject_kept(),
+                Key::Char('y') => {
+                    self.cancel_setup();
+                    self.error("aborted (no subject)");
+                    None
+                }
+                // ask-yes: Enter aborts, like mutt; ask-no keeps it.
+                Key::Enter if !default_yes => self.answer_subject_kept(),
                 _ => {
                     self.cancel_setup();
                     self.error("aborted (no subject)");

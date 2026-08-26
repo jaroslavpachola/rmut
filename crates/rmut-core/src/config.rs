@@ -262,6 +262,26 @@ pub struct Mail {
     /// mutt's $include: quote the original in a reply? "ask-yes" (the
     /// default) and "ask-no" ask, "yes" and "no" decide it.
     pub include: Option<String>,
+    /// mutt's $forward_quote: the forwarded text inside the
+    /// "----- Forwarded message" markers is quoted with
+    /// $indent_string, the way a reply is.
+    pub forward_quote: bool,
+    /// mutt's $signature: a file whose contents end every new draft,
+    /// or, when the name ends in `|`, a command whose output does.
+    /// `~` is expanded. Unset (the default) appends nothing.
+    pub signature: Option<String>,
+    /// mutt's $sig_dashes: the signature is introduced by a line
+    /// holding "-- ". True unless set otherwise, as in mutt.
+    pub sig_dashes: Option<bool>,
+    /// mutt's $abort_nosubject: a draft with an empty subject.
+    /// "ask-yes" (the default) asks with Enter aborting, "ask-no"
+    /// asks with Enter sending it on, "yes" aborts without asking,
+    /// "no" never asks.
+    pub abort_nosubject: Option<String>,
+    /// mutt's $abort_unmodified: the first editor pass came back with
+    /// the body untouched, so the draft is dropped. True unless set
+    /// otherwise, as in mutt; only the first edit is checked.
+    pub abort_unmodified: Option<bool>,
     /// mutt's $askcc / $askbcc: ask for those recipients when a draft
     /// is started, prefilled with what a group reply worked out.
     pub ask_cc: bool,

@@ -41,6 +41,19 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         .identity_for("", &rcpts, None)
         .from_line()
         .unwrap_or_else(|| default_from(&host));
+    // mutt's $signature ends batch mail too: a script's message is
+    // still from a person, and the config is the same one.
+    let body = match config
+        .mail
+        .signature
+        .as_deref()
+        .and_then(compose::signature_text)
+    {
+        Some(sig) => {
+            compose::with_signature(&out.body, &sig, config.mail.sig_dashes.unwrap_or(true))
+        }
+        None => out.body.clone(),
+    };
     let mut text = compose::draft_text(
         &compose::DraftHeaders {
             from: Some(from),
@@ -50,7 +63,7 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
             in_reply_to: None,
             references: None,
         },
-        &out.body,
+        &body,
     );
     // mutt's my_hdr applies to batch mail too: the same merge the TUI
     // makes when it stages a draft.

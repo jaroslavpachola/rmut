@@ -1963,6 +1963,25 @@ def scenario_import_muttrc(tmp):
     assert "sidebar_visible" not in not_imported, out
     assert "header_cache" not in not_imported, out
 
+    # The parity fixture: the muttrc the roadmap measures itself
+    # against. What it still cannot carry is the list the next round
+    # works from, so the count is a ratchet and not a claim.
+    parity = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "muttrc-parity.rc")
+    proc = subprocess.run(
+        [RMUT, "--import-muttrc", parity],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    unclaimed = [l for l in out.split("# not imported:")[-1].splitlines()
+                 if l.startswith("#   set")]
+    assert len(unclaimed) == 14, "\n".join(unclaimed)
+    # R61's seven: settings now, or answered by what rmut already does.
+    for name in ("signature", "sig_dashes", "forward_quote", "reply_to",
+                 "abort_nosubject", "abort_unmodified", "honor_followup_to"):
+        assert not any(f"set {name} " in l for l in unclaimed), name
+
 
 def scenario_attachment_pager(tmp):
     """The pager renders the whole MIME tree (text attachments inline
@@ -3638,6 +3657,60 @@ def scenario_leaving_habits(tmp):
 
 
 
+def scenario_signature_and_send_questions(tmp):
+    """R61: mutt's $signature ends a draft, $forward_quote indents the
+    forwarded message, and $abort_unmodified drops an untouched one."""
+    md = make_maildir(tmp, "md-signature")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "signature-sent.eml")
+    quiet = os.path.join(tmp, "edit-nothing")
+    editor = os.path.join(tmp, "signature-editor.sh")
+    with open(editor, "w") as f:
+        # With the marker there the editor is a :q: the file comes
+        # back exactly as it was handed over.
+        f.write(f'#!/bin/sh\n[ -f {quiet} ] && exit 0\n'
+                f'printf "a word of my own\\n" >> "$1"\n')
+    sendmail = os.path.join(tmp, "signature-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(editor, 0o755)
+    os.chmod(sendmail, 0o755)
+    sig = os.path.join(tmp, "signature")
+    with open(sig, "w") as f:
+        f.write("Jarda\nexample.com\n")
+    cfg = os.path.join(tmp, "signature-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\nsignature = "{sig}"\nforward_quote = true\n'
+                'indent_string = "| "\n')
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                                "RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+
+    # A forward: recipient, the prefilled subject, editor, send.
+    r.keys(b"f")
+    r.expect("To:")
+    r.keys(b"someone@example.com\r\ry")
+    wait_for(lambda: os.path.exists(sent_file), desc="the forward went out")
+    r.expect("message sent")
+    sent = open(sent_file).read()
+    assert "| Are you free for lunch on Friday?" in sent, sent
+    assert "----- End forwarded message -----" in sent, sent
+    # The signature is under the forwarded text, where the editor
+    # found it and typed on past it.
+    assert "\n-- \nJarda\nexample.com\n" in sent, sent
+    assert sent.index("-- \nJarda") > sent.index("End forwarded message"), sent
+
+    # $abort_unmodified: an editor that changes nothing is not a
+    # message, and the draft never reaches the compose menu.
+    open(quiet, "w").close()
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"someone@example.com\rnothing to say\r")
+    r.expect("aborted unmodified message")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3691,6 +3764,7 @@ SCENARIOS = [
     scenario_reply_text,
     scenario_reading_habits,
     scenario_leaving_habits,
+    scenario_signature_and_send_questions,
 ]
 
 

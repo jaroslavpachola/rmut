@@ -1353,6 +1353,44 @@ gap.
 - [x] The muttrc of 90 is down to 27 unclaimed lines, from 60 when
       the pass started
 
+## R61: the signature and the questions around the editor (done, 1.61)
+
+Goal: what is left of the muttrc after R60, starting with the one
+setting in every dotfiles repo that rmut had no answer for at all.
+
+- [x] `[mail] signature`: a file whose contents end every draft rmut
+      starts, under the quoted original, or a command when the name
+      ends in `|` (mutt's rule). Read afresh per draft, so a generated
+      one can say something new; unreadable is no signature rather
+      than an error, since a draft is worth more than the ornament on
+      it. `sig_dashes` puts mutt's `-- ` line over it, on unless
+      turned off. Batch sends (-s and friends) sign off too
+- [x] `[mail] forward_quote`: the forwarded message comes in quoted
+      with indent_string. The markers around it stay flush: they are
+      rmut's words, not the original's
+- [x] `[mail] abort_nosubject`: the empty-subject question was
+      hardcoded to mutt's ask-yes; it takes all four quadoption
+      values now, and ask-no is the one that makes Enter keep the
+      draft
+- [x] `[mail] abort_unmodified`: an editor that hands the draft back
+      untouched is someone quitting it, so the draft is dropped, as
+      mutt does. Only the first pass counts, which is what makes a
+      re-edit from the compose menu safe. The session keeps what it
+      staged and compares on the way back, so the check is testable
+      off the pty like everything else
+- [x] Two the importer was calling holes: `reply_to = ask-yes` (rmut
+      asks whenever a Reply-To differs from From) and
+      `honor_followup_to = yes` (a group reply has honored
+      Mail-Followup-To since R34) are satisfied; the other values of
+      both are refused, since they are rmut answering for you
+- [x] All five settable at runtime, three core tests, five session
+      tests, e2e scenario_signature_and_send_questions
+- [x] The muttrc the parity passes are measured against lives in the
+      repo now (tests/e2e/muttrc-parity.rc, 95 settings), and
+      scenario_import_muttrc asserts how many lines it cannot carry:
+      14, down from 21 when this round started. The count is a
+      ratchet a round has to move, not a number in a plan file
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the

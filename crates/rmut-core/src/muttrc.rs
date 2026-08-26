@@ -94,6 +94,15 @@ struct State {
     my_hdr: Vec<String>,
     /// `set metoo`: keep my address in a group reply.
     metoo: bool,
+    /// `set forward_quote`: the forwarded text comes in quoted.
+    forward_quote: bool,
+    /// `set signature` and `set nosig_dashes`.
+    signature: Option<String>,
+    no_sig_dashes: bool,
+    /// mutt's $abort_nosubject and $abort_unmodified, when they are
+    /// not what rmut does anyway.
+    abort_nosubject: Option<String>,
+    no_abort_unmodified: bool,
     /// `set text_flowed`: send text/plain; format=flowed.
     text_flowed: bool,
     /// mutt's $delete quadoption, when it is not the ask default.
@@ -935,6 +944,52 @@ impl State {
                     _ => self.skip(line, "include wants yes / no / ask-yes / ask-no"),
                 }
             }
+            "forward_quote" => {
+                if is_yes(value) {
+                    self.forward_quote = true;
+                } else {
+                    self.satisfy(line, "a forward comes in unquoted, as in mutt");
+                }
+            }
+            "signature" => self.signature = Some(v),
+            "sig_dashes" => {
+                if !is_yes(value) {
+                    self.no_sig_dashes = true;
+                } else {
+                    self.satisfy(line, "the \"-- \" line is rmut's default too");
+                }
+            }
+            "abort_nosubject" => {
+                let want = v.trim().to_lowercase();
+                match want.as_str() {
+                    "ask-yes" => self.satisfy(line, "rmut asks, with Enter aborting"),
+                    "yes" | "no" | "ask-no" => self.abort_nosubject = Some(want),
+                    _ => self.skip(line, "abort_nosubject wants yes / no / ask-yes / ask-no"),
+                }
+            }
+            "abort_unmodified" => {
+                if is_yes(value) {
+                    self.satisfy(line, "an untouched first edit drops the draft already");
+                } else {
+                    self.no_abort_unmodified = true;
+                }
+            }
+            "reply_to" => {
+                // rmut asks whenever a Reply-To differs from From,
+                // which is mutt's ask-yes; the other three would be
+                // rmut answering it for you.
+                match v.trim().to_lowercase().as_str() {
+                    "ask-yes" => self.satisfy(line, "rmut asks before taking a Reply-To"),
+                    _ => self.skip(line, "rmut always asks about a Reply-To (mutt's ask-yes)"),
+                }
+            }
+            "honor_followup_to" => {
+                if is_yes(value) {
+                    self.satisfy(line, "a group reply honors Mail-Followup-To already");
+                } else {
+                    self.skip(line, "rmut always honors a sender's Mail-Followup-To");
+                }
+            }
             "askcc" => self.ask_cc = is_yes(value),
             "askbcc" => self.ask_bcc = is_yes(value),
             "fast_reply" => {
@@ -1408,6 +1463,11 @@ impl State {
             || !self.alternates.is_empty()
             || !self.my_hdr.is_empty()
             || self.metoo
+            || self.forward_quote
+            || self.signature.is_some()
+            || self.no_sig_dashes
+            || self.abort_nosubject.is_some()
+            || self.no_abort_unmodified
             || self.text_flowed
             || self.delete.is_some()
             || self.abort_noattach.is_some()
@@ -1508,6 +1568,21 @@ impl State {
             }
             if self.metoo {
                 out += "metoo = true\n";
+            }
+            if self.forward_quote {
+                out += "forward_quote = true\n";
+            }
+            if let Some(v) = &self.signature {
+                out += &format!("signature = {}\n", quote(v));
+            }
+            if self.no_sig_dashes {
+                out += "sig_dashes = false\n";
+            }
+            if let Some(v) = &self.abort_nosubject {
+                out += &format!("abort_nosubject = {}\n", quote(v));
+            }
+            if self.no_abort_unmodified {
+                out += "abort_unmodified = false\n";
             }
             if self.text_flowed {
                 out += "text_flowed = true\n";
@@ -2488,6 +2563,48 @@ mod tests {
             cfg.mail.new_mail_command.as_deref(),
             Some("notify-send 'rmut: %n new in %f'")
         );
+    }
+
+    #[test]
+    fn the_signature_and_the_send_questions_import() {
+        let (cfg, toml) = to_config(concat!(
+            "set signature = \"~/.signature\"\n",
+            "set nosig_dashes\n",
+            "set forward_quote\n",
+            "set abort_nosubject = no\n",
+            "set noabort_unmodified\n",
+        ));
+        assert_eq!(cfg.mail.signature.as_deref(), Some("~/.signature"));
+        assert_eq!(cfg.mail.sig_dashes, Some(false));
+        assert!(cfg.mail.forward_quote);
+        assert_eq!(cfg.mail.abort_nosubject.as_deref(), Some("no"));
+        assert_eq!(cfg.mail.abort_unmodified, Some(false));
+        assert!(toml.contains("signature = \"~/.signature\""), "{toml}");
+    }
+
+    #[test]
+    fn what_rmut_already_asks_is_satisfied_not_skipped() {
+        // The mutt defaults for these four are rmut's behaviour, so
+        // they belong in neither the config nor the skipped list.
+        let (cfg, toml) = to_config(concat!(
+            "set reply_to = ask-yes\n",
+            "set honor_followup_to = yes\n",
+            "set abort_nosubject = ask-yes\n",
+            "set abort_unmodified = yes\n",
+            "set sig_dashes = yes\n",
+            "set noforward_quote\n",
+        ));
+        assert_eq!(cfg.mail.abort_nosubject, None);
+        assert_eq!(cfg.mail.abort_unmodified, None);
+        assert_eq!(cfg.mail.sig_dashes, None);
+        assert!(!cfg.mail.forward_quote);
+        let unclaimed = toml.split("# not imported:").nth(1).unwrap_or_default();
+        assert!(unclaimed.trim().is_empty(), "{toml}");
+        assert!(toml.contains("# satisfied by rmut's defaults"), "{toml}");
+        // reply_to's other three are rmut answering it for you.
+        let (_, toml) = to_config("set reply_to = yes\n");
+        let unclaimed = toml.split("# not imported:").nth(1).unwrap_or_default();
+        assert!(unclaimed.contains("set reply_to = yes"), "{toml}");
     }
 
     #[test]

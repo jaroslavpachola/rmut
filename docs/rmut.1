@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.49.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.61.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -499,6 +499,25 @@ date and %{...} the date through strftime.
 decides whether a reply quotes at all: yes, no, ask\-yes (the
 default) or ask\-no, the last two asking and taking their own answer
 on Enter.
+.B forward_quote
+brings the forwarded message in quoted with indent_string too; the
+"----- Forwarded message" markers stay flush either way.
+.PP
+.B signature
+names a file whose contents end every draft rmut starts, or, when it
+ends in a pipe (|), a command whose output does; it is read afresh
+each time, and one that cannot be read is left off.
+.B sig_dashes
+(on by default, as in mutt) puts a line holding "\-\- " above it.
+.PP
+.B abort_nosubject
+is the empty-subject question: ask\-yes (the default) asks with Enter
+aborting, ask\-no asks with Enter keeping the draft, yes aborts
+without asking and no never asks.
+.B abort_unmodified
+(on by default, as in mutt) drops a draft whose first editor pass
+changed nothing, which is what quitting the editor looks like from
+here; a re\-edit from the compose menu is never dropped.
 .SH ENTER\-COMMAND
 .B :
 opens a command prompt (the line editor, with its own history) and
@@ -530,7 +549,8 @@ edit_headers, fast_reply, autoedit, copy, forward, mime_forward,
 attribution, indent_string, forward_format, include, askcc, askbcc,
 connect_timeout, net_timeout, pager_stop, markers, smart_wrap,
 collapse_unread, uncollapse_jump, quit, confirmappend, save_name,
-force_name,
+force_name, forward_quote, signature, sig_dashes, abort_nosubject,
+abort_unmodified,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -902,6 +922,30 @@ part, under
 .BR folder :
 save_name when it exists, force_name whether or not (mutt's
 $save_name and $force_name).
+.TP
+.B signature ", " sig_dashes
+mutt's $signature: a file whose contents end every draft rmut starts
+(a reply under the quoted original), or a command when the name ends
+in a pipe (|). It is read for each draft, so a generated one can say
+something new; unreadable is no signature at all. sig_dashes, on
+unless turned off, puts a line holding "\-\- " above it, which is also
+what the attachment reminder treats as the end of the message.
+.TP
+.B forward_quote
+mutt's $forward_quote: the forwarded message comes in quoted with
+indent_string, so a reply to the forward reads right. Off by default,
+as in mutt; the markers around it are never quoted.
+.TP
+.B abort_nosubject
+mutt's $abort_nosubject: what an empty Subject does. ask\-yes (the
+default) asks with Enter aborting, ask\-no asks with Enter keeping
+the draft, yes aborts without asking, no never asks.
+.TP
+.B abort_unmodified
+mutt's $abort_unmodified: the first editor pass came back with the
+draft untouched, so there is no message and it is dropped (on by
+default, as in mutt). Only the first pass counts: a re\-edit from the
+compose menu can change nothing without losing the draft.
 .SS [index] and [pager], the reading habits
 .TP
 .B pager_stop

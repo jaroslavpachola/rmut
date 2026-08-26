@@ -253,14 +253,55 @@ impl Session {
         (!joined.is_empty()).then_some(joined)
     }
 
-    /// After the Subject prompt: mutt's $abort_nosubject (ask-yes) on
-    /// an empty subject, then on replies mutt's $include (ask-yes).
+    /// mutt's $indent_string: what each quoted line starts with.
+    fn indent_string(&self) -> &str {
+        self.config
+            .mail
+            .indent_string
+            .as_deref()
+            .unwrap_or(compose::DEFAULT_INDENT)
+    }
+
+    /// mutt's $signature: the text this draft ends with, read (or run)
+    /// afresh for every draft, so a generated one can say something
+    /// new each time.
+    fn signature(&self) -> Option<String> {
+        compose::signature_text(self.config.mail.signature.as_deref()?)
+    }
+
+    /// mutt's $sig_dashes: on unless turned off, as in mutt.
+    fn sig_dashes(&self) -> bool {
+        self.config.mail.sig_dashes.unwrap_or(true)
+    }
+
+    /// After the Subject prompt: mutt's $abort_nosubject on an empty
+    /// subject, then on replies mutt's $include (ask-yes).
     fn subject_submitted(&mut self, input: &str) -> Option<Ask> {
         if input.trim().is_empty() {
-            return Some(Ask::Key {
-                label: "No subject, abort? (y/n): ".into(),
-                what: AskKind::NoSubject,
-            });
+            // mutt's quadoption: the ask forms differ only in what
+            // Enter takes, and the other two answer it themselves.
+            match self
+                .config
+                .mail
+                .abort_nosubject
+                .as_deref()
+                .unwrap_or("ask-yes")
+            {
+                "no" => return self.subject_ready(String::new()),
+                "yes" => {
+                    self.cancel_setup();
+                    self.error("aborted (no subject)");
+                    return None;
+                }
+                quad => {
+                    return Some(Ask::Key {
+                        label: "No subject, abort? (y/n): ".into(),
+                        what: AskKind::NoSubject {
+                            default_yes: quad != "ask-no",
+                        },
+                    });
+                }
+            }
         }
         self.subject_ready(input.to_string())
     }
@@ -350,13 +391,7 @@ impl Session {
                                 .unwrap_or(compose::DEFAULT_ATTRIBUTION),
                             &quoted,
                         );
-                        let indent = self
-                            .config
-                            .mail
-                            .indent_string
-                            .as_deref()
-                            .unwrap_or(compose::DEFAULT_INDENT);
-                        body = compose::quote(&attribution, indent, &orig);
+                        body = compose::quote(&attribution, self.indent_string(), &orig);
                     }
                     in_reply_to = b.msg_id.clone();
                     let mut refs = b.references.clone();
@@ -400,10 +435,19 @@ impl Session {
                 }
                 ComposeKind::Forward => {
                     let orig = message::body_text(&b.path).unwrap_or_default();
-                    body = compose::forward_body(&b.from_display, b.date, &b.subject, &orig);
+                    // mutt's $forward_quote: the original comes in
+                    // quoted, so a reply to the forward reads right.
+                    let indent = self.config.mail.forward_quote.then(|| self.indent_string());
+                    body =
+                        compose::forward_body(&b.from_display, b.date, &b.subject, &orig, indent);
                 }
                 ComposeKind::New => {}
             }
+        }
+        // mutt's $signature closes every draft it starts, quoted
+        // original or not.
+        if let Some(sig) = self.signature() {
+            body = compose::with_signature(&body, &sig, self.sig_dashes());
         }
         // An answered Cc ($askcc) is what the user said, over
         // whatever the group reply worked out.
@@ -441,6 +485,10 @@ impl Session {
         };
         match self.stage_draft(&text) {
             Ok((path, hidden_head)) => {
+                // What the editor is being handed, for mutt's
+                // $abort_unmodified when it hands it straight back.
+                let staged = std::fs::read_to_string(&path).unwrap_or_default();
+                self.staged = Some((path.clone(), staged));
                 let security = self.default_security();
                 self.requests.push(Request::Editor(Compose {
                     path,

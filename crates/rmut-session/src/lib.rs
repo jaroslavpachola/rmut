@@ -377,6 +377,10 @@ pub struct Session {
     /// shows it however it shows drafts; the session owns what it
     /// says.
     draft: Option<Compose>,
+    /// The draft file as it was staged, for mutt's $abort_unmodified:
+    /// if the first editor pass hands back exactly this, there is no
+    /// message to send. Cleared as soon as it has been compared.
+    staged: Option<(PathBuf, String)>,
     /// The attachment reminder has been answered for this draft: the
     /// next send goes through without asking again.
     attach_confirmed: bool,
@@ -493,6 +497,7 @@ impl Session {
             quit_default: true,
             setup: None,
             draft: None,
+            staged: None,
             attach_confirmed: false,
             hook_base: None,
             active_message_hooks: Vec::new(),
@@ -3146,7 +3151,22 @@ impl Session {
     }
 
     /// Put one back, after an editor has been over it.
+    /// The editor has come back: the draft is in hand. mutt's
+    /// $abort_unmodified drops it instead when the first pass changed
+    /// nothing, which is what an editor quit with :q looks like from
+    /// here. A re-edit from the compose menu is not a first pass and
+    /// is never dropped, so a deliberate second look costs nothing.
     pub fn set_draft(&mut self, draft: Compose) {
+        if let Some((path, staged)) = self.staged.take()
+            && self.config.mail.abort_unmodified.unwrap_or(true)
+            && path == draft.path
+            && std::fs::read_to_string(&draft.path).is_ok_and(|now| now == staged)
+        {
+            let _ = std::fs::remove_file(&draft.path);
+            self.draft = None;
+            self.error("aborted unmodified message");
+            return;
+        }
         self.draft = Some(draft);
     }
 

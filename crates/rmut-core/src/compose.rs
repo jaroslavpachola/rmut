@@ -174,12 +174,70 @@ pub fn quote(attribution: &str, indent: &str, body: &str) -> String {
     out
 }
 
-pub fn forward_body(from: &str, date_epoch: i64, subject: &str, body: &str) -> String {
+/// The forwarded original between mutt's markers. With mutt's
+/// $forward_quote the message itself is prefixed with $indent_string,
+/// the way a reply is quoted; the markers stay flush, since they are
+/// rmut's words and not the original's.
+pub fn forward_body(
+    from: &str,
+    date_epoch: i64,
+    subject: &str,
+    body: &str,
+    quote_with: Option<&str>,
+) -> String {
+    let body = body.trim_end();
+    let body = match quote_with {
+        Some(indent) => body
+            .lines()
+            .map(|l| format!("{indent}{l}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => body.to_string(),
+    };
     format!(
-        "----- Forwarded message from {from} -----\nDate: {}\nSubject: {subject}\n\n{}\n----- End forwarded message -----\n",
+        "----- Forwarded message from {from} -----\nDate: {}\nSubject: {subject}\n\n{body}\n----- End forwarded message -----\n",
         format_date(date_epoch),
-        body.trim_end(),
     )
+}
+
+/// mutt's $signature: the text a draft ends with. A name ending in
+/// `|` is a command whose standard output is the signature (mutt's
+/// rule); anything else is a file. A signature that cannot be read is
+/// no signature: a draft is worth more than the ornament on it.
+pub fn signature_text(setting: &str) -> Option<String> {
+    let setting = setting.trim();
+    if setting.is_empty() {
+        return None;
+    }
+    let text = match setting.strip_suffix('|') {
+        Some(command) => {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command.trim())
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+        None => std::fs::read_to_string(expand_home(setting)).ok()?,
+    };
+    let text = text.trim_end_matches('\n');
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The body with the signature under it, mutt's way: a blank line,
+/// then $sig_dashes' "-- " line when it is on, then the signature.
+pub fn with_signature(body: &str, signature: &str, dashes: bool) -> String {
+    let mut out = body.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push('\n');
+    if dashes {
+        out += "-- \n";
+    }
+    out += signature;
+    out.push('\n');
+    out
 }
 
 pub fn make_message_id(hostname: &str) -> String {
@@ -770,6 +828,46 @@ pub fn smtp_envelope(text: &str) -> Result<(Vec<String>, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forward_can_come_in_quoted() {
+        let plain = forward_body("Ann <ann@x>", 0, "hi", "one\ntwo\n", None);
+        assert!(plain.contains("\none\ntwo\n"), "{plain}");
+        let quoted = forward_body("Ann <ann@x>", 0, "hi", "one\ntwo\n", Some("> "));
+        assert!(quoted.contains("\n> one\n> two\n"), "{quoted}");
+        // The markers are rmut's words, so they stay flush.
+        assert!(quoted.starts_with("----- Forwarded message from Ann <ann@x> -----"));
+        assert!(quoted.ends_with("----- End forwarded message -----\n"));
+    }
+
+    #[test]
+    fn the_signature_sits_under_a_dashes_line() {
+        let body = with_signature("hello\n", "Ann\nx.example", true);
+        assert_eq!(body, "hello\n\n-- \nAnn\nx.example\n");
+        // nosig_dashes: the text alone, still a blank line down.
+        assert_eq!(with_signature("hello\n", "Ann", false), "hello\n\nAnn\n");
+        // An empty draft starts with the blank line all the same.
+        assert_eq!(with_signature("", "Ann", true), "\n-- \nAnn\n");
+    }
+
+    #[test]
+    fn a_signature_comes_from_a_file_or_a_command() {
+        let dir = std::env::temp_dir().join(format!("rmut-sig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("signature");
+        std::fs::write(&file, "Ann\n\n\n").unwrap();
+        // Trailing blank lines are the file's, not the signature's.
+        assert_eq!(
+            signature_text(file.to_str().unwrap()).as_deref(),
+            Some("Ann")
+        );
+        assert_eq!(signature_text("echo hello|").as_deref(), Some("hello"));
+        // Nothing readable is no signature, not an empty one.
+        assert_eq!(signature_text(dir.join("gone").to_str().unwrap()), None);
+        assert_eq!(signature_text("  "), None);
+        assert_eq!(signature_text("true|"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn list_post_addresses() {

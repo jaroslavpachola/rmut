@@ -118,6 +118,12 @@ impl Fixture {
         let what = ask_kind(ask.expect("a question was asked"));
         self.session.answer(what, Answer::Key(Key::Char(key)))
     }
+
+    /// Enter at a y/n question: whichever way the quadoption leans.
+    fn answer_enter(&mut self, ask: Option<Ask>) -> Option<Ask> {
+        let what = ask_kind(ask.expect("a question was asked"));
+        self.session.answer(what, Answer::Key(Key::Enter))
+    }
 }
 
 fn ask_kind(ask: Ask) -> AskKind {
@@ -576,6 +582,140 @@ fn an_empty_subject_raises_mutts_question_and_aborts_on_it() {
     assert!(f.answer_key(ask, 'y').is_none());
     assert_eq!(f.log.last_text(), "aborted (no subject)");
     assert!(f.session.take_request().is_none(), "no draft was written");
+}
+
+#[test]
+fn abort_nosubject_can_ask_the_other_way_or_not_at_all() {
+    // ask-no: the question still comes, but Enter keeps the draft.
+    let mut config = reply_config();
+    config.mail.abort_nosubject = Some("ask-no".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    let ask = f.answer_line(ask, "");
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "No subject, abort? (y/n): "
+    );
+    assert!(f.answer_enter(ask).is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    assert!(
+        text.lines().any(|l| l.trim() == "Subject:"),
+        "an empty subject: {text}"
+    );
+
+    // no: nothing is asked at all.
+    let mut config = reply_config();
+    config.mail.abort_nosubject = Some("no".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "").is_none(), "no question");
+    draft_from_requests(&mut f.session);
+
+    // yes: aborted without one.
+    let mut config = reply_config();
+    config.mail.abort_nosubject = Some("yes".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "").is_none());
+    assert_eq!(f.log.last_text(), "aborted (no subject)");
+    assert!(f.session.take_request().is_none(), "no draft was written");
+}
+
+#[test]
+fn a_signature_ends_every_draft_it_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let sig = dir.path().join("signature");
+    fs::write(&sig, "Ann\nx.example\n").unwrap();
+    let mut config = reply_config();
+    config.mail.signature = Some(sig.to_string_lossy().into_owned());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    f.select("Lunch on Friday?");
+    let ask = f.session.start_compose(crate::ComposeKind::Reply);
+    let ask = f.answer_line(ask, "sender@example.com");
+    let ask = f.answer_line(ask, "Re: Lunch");
+    f.answer_key(ask, 'y');
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    // Under the quoted original, not over it.
+    assert!(text.ends_with("\n-- \nAnn\nx.example\n"), "{text}");
+    assert!(
+        text.find("body of Lunch").unwrap() < text.find("-- \nAnn").unwrap(),
+        "{text}"
+    );
+}
+
+#[test]
+fn forward_quote_indents_the_forwarded_message() {
+    let mut config = reply_config();
+    config.mail.forward_quote = true;
+    config.mail.indent_string = Some("| ".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    f.select("Lunch on Friday?");
+    let ask = f.session.start_compose(crate::ComposeKind::Forward);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "[Fwd: Lunch]").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let text = crate::draft_full(&draft).unwrap();
+    assert!(text.contains("\n| body of Lunch on Friday?"), "{text}");
+    assert!(
+        text.contains("\n----- End forwarded message -----"),
+        "the markers stay flush: {text}"
+    );
+}
+
+#[test]
+fn an_untouched_first_edit_drops_the_draft() {
+    let mut f = Fixture::with_config(&["one"], reply_config());
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "hi").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let path = draft.path.clone();
+    // The editor came back with the file exactly as it was.
+    f.session.set_draft(draft);
+    assert!(f.session.draft().is_none(), "the draft is gone");
+    assert_eq!(f.log.last_text(), "aborted unmodified message");
+    assert!(!path.exists(), "and so is the file");
+
+    // A body typed into it is a message, and $abort_unmodified only
+    // looks at the first edit: the same file, handed back twice.
+    let mut f = Fixture::with_config(&["one"], reply_config());
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "hi").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let path = draft.path.clone();
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("{text}something to say\n")).unwrap();
+    f.session.set_draft(draft);
+    assert!(f.session.draft().is_some());
+    let again = crate::Compose {
+        path: path.clone(),
+        recall_source: None,
+        security: crate::Security::None,
+        attach: None,
+        hidden_head: None,
+        fcc: None,
+    };
+    f.session.set_draft(again);
+    assert!(f.session.draft().is_some(), "a re-edit is not the first");
+}
+
+#[test]
+fn abort_unmodified_off_keeps_the_untouched_draft() {
+    let mut config = reply_config();
+    config.mail.abort_unmodified = Some(false);
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "hi").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    f.session.set_draft(draft);
+    assert!(f.session.draft().is_some());
 }
 
 #[test]
