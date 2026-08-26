@@ -1843,15 +1843,23 @@ new encoding path.
       message), Esc k mail-key (mail your public key), Esc P
       check-traditional-pgp
 
-## R77: the rest of the small keys
+## R77: page motion (done, 1.74)
 
-Goal: the one-liner keys R73 left.
+Goal: the window-motion keys, the cleanest of R73's leftover keys.
 
-- [ ] `\` pager search-toggle, H/M/L current-top/middle/bottom,
-      top/middle/bottom-page, next-unread-mailbox, purge-message
-      (delete past `$trash`), mark-message hotkeys, mark-as-new,
-      error-history, what-key, list-action over List-Unsubscribe /
-      List-Help
+- [x] `H` top-page and `M` middle-page move the cursor to the top /
+      middle of the visible index page, from `index_offset` (the same
+      scroll offset `%P` reads) plus the page height. `bottom-page`
+      is an action with no default key, since `L` is list-reply, as
+      in mutt — the index overrides the generic `L` there
+- [x] Imported under their mutt names, e2e scenario_page_motion (over
+      a 20-message mailbox on a short screen: after jumping to the
+      last, `H` lands above the bottom and below the top, `M` between
+      `H` and the bottom)
+- [ ] Left for R80: `\` pager search-toggle, next-unread-mailbox,
+      purge-message (delete past `$trash`), mark-message hotkeys,
+      mark-as-new, error-history, what-key, list-action over
+      List-Unsubscribe / List-Help
 
 ## R78: the layout and mark knobs
 
@@ -1876,6 +1884,15 @@ Goal: the session-persistence and un* pieces R74 left.
       `$sort_alias`
 - [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
       `unalias`, `reset`; `$shell`, `$tmpdir`
+
+## R80: the last of the small keys
+
+Goal: the keys R77 left.
+
+- [ ] `\` pager search-toggle, next-unread-mailbox, purge-message
+      (delete past `$trash`, which needs a per-message purge flag),
+      mark-message hotkeys, mark-as-new, error-history, what-key,
+      list-action over List-Unsubscribe / List-Help
 
 ## Still open inside rounds marked done
 

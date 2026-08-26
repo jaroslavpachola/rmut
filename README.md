@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.73**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.74**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -125,7 +125,8 @@ back), `o` sort
 uppercase reverses),
 Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
-type a number then Enter to jump to that message, `@` show the
+type a number then Enter to jump to that message, `H`/`M` move to the
+top/middle of the page, `@` show the
 sender's full address, `%` toggle the mailbox read-only,
 step between threads, Ctrl+R/Alt+r mark a thread/subthread read, `P`
 jump to the parent, `#` break a thread, `&` link the tagged messages

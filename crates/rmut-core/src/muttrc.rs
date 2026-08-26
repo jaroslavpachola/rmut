@@ -2342,6 +2342,9 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "show-limit" => "show-limit",
         "display-address" => "display-address",
         "toggle-write" => "toggle-write",
+        "top-page" => "top-page",
+        "middle-page" => "middle-page",
+        "bottom-page" => "bottom-page",
         "help" => "help",
         _ => return None,
     })

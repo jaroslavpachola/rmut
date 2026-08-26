@@ -1255,6 +1255,13 @@ impl App {
             IndexAction::ShowVersion => self.note(concat!("rmut ", env!("CARGO_PKG_VERSION"))),
             IndexAction::ShowLimit => self.session.show_limit(),
             IndexAction::ToggleWrite => self.session.toggle_write(),
+            IndexAction::PageTop => self.session.select(self.index_offset),
+            IndexAction::PageMiddle => self
+                .session
+                .select(self.index_offset + page.saturating_sub(1) / 2),
+            IndexAction::PageBottom => self
+                .session
+                .select(self.index_offset + page.saturating_sub(1)),
             IndexAction::DisplayAddress => self.display_address(),
             IndexAction::ParentMessage => self.session.jump_parent(false),
             IndexAction::RootMessage => self.session.jump_parent(true),

@@ -3217,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.73")
+    r.expect("rmut 1.74")
     r.settle()
 
     # A refused pattern names itself.
@@ -3423,6 +3423,45 @@ def scenario_simple_search(tmp):
     r.keys(b"l\r")
     r.expect("Msgs:2")
     r.keys(b"x")
+    r.close()
+
+
+def scenario_page_motion(tmp):
+    """R77: H and M jump to the top and middle of the visible page."""
+    md = make_maildir(tmp, "md-page")
+    # Enough messages to fill more than a screen.
+    for i in range(20):
+        with open(os.path.join(md, "cur", f"17510000{i:02d}.1.host:2,S"), "w") as f:
+            f.write(f"From: a@x\r\nSubject: msg {i:02d}\r\n"
+                    f"Date: Mon, 10 Mar 2024 10:00:00 +0000\r\nMessage-ID: <m{i}@x>\r\n\r\nbody\r\n")
+    r = Rmut(md, base_env(tmp), rows=14)
+    r.expect("Msgs:20")
+
+    def opened_number():
+        # Drop the scrollback first, so we read this frame's number,
+        # not one left in the cumulative buffer. Sync on "/20" (a clean
+        # render; a stale cell-diff artifact reads "Message2020").
+        r.buf = ""
+        r.expect("/20")
+        return int(re.findall(r"Message(\d+)/20", squash(r.buf))[-1])
+
+    # Jump to the last message: the page scrolls to the bottom.
+    r.keys(b"*\r")
+    assert opened_number() == 20
+    r.keys(b"i")
+    r.settle()
+    # H moves to the top of that scrolled page -- off the bottom, but
+    # not all the way back to message 1.
+    r.keys(b"H\r")
+    top = opened_number()
+    assert 1 < top < 20, top
+    r.keys(b"i")
+    r.settle()
+    # M is the middle of the page: below the top, above the bottom.
+    r.keys(b"M\r")
+    mid = opened_number()
+    assert top < mid < 20, (top, mid)
+    r.keys(b"ix")
     r.close()
 
 
@@ -4157,6 +4196,7 @@ SCENARIOS = [
     scenario_compose_menu,
     scenario_title_and_write,
     scenario_simple_search,
+    scenario_page_motion,
 ]
 
 
