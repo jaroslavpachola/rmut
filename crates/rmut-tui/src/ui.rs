@@ -268,7 +268,13 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
             .format
             .as_deref()
             .unwrap_or(format::DEFAULT_FORMAT);
-        let mut subject = env.subject.clone();
+        // mutt's $hide_thread_subject: a reply repeating its parent's
+        // subject shows only the tree arrow.
+        let mut subject = if app.session.subject_hidden(mi) {
+            String::new()
+        } else {
+            env.subject.clone()
+        };
         // The hidden count rides on the subject unless the format
         // places it itself with %M.
         if let Some(n) = hidden

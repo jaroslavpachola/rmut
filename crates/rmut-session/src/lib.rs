@@ -1974,6 +1974,23 @@ impl Session {
         true
     }
 
+    /// mutt's $hide_thread_subject: true when this message is a thread
+    /// reply whose subject repeats its parent's, so the index blanks
+    /// it. Off by default, where mutt has it on, so rmut keeps its
+    /// look until asked.
+    pub fn subject_hidden(&self, mi: usize) -> bool {
+        if !self.config.index.hide_thread_subject.unwrap_or(false) {
+            return false;
+        }
+        let Some(parent) = self.thread_parent.get(mi).copied().flatten() else {
+            return false;
+        };
+        match (self.msgs.get(mi), self.msgs.get(parent)) {
+            (Some(m), Some(p)) => subject_key(&m.env.subject) == subject_key(&p.env.subject),
+            _ => false,
+        }
+    }
+
     /// mutt's toggle-write (%): flip the mailbox's writable state for
     /// the session. The -R session flag cannot be turned off this
     /// way, as mutt refuses too.

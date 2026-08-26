@@ -1961,15 +1961,38 @@ mark/thread options and the remaining layout knobs split into R84.
       `$menu_context` / `$menu_move_off`, the `$help` toggle,
       `$sleep_time`, `$read_inc` / `$write_inc` / `$net_inc`)
 
-## R84: the mark options and the rest of the layout
+## R84: $hide_thread_subject (done, 1.79)
 
-Goal: the mark/thread behaviour knobs and the smaller layout options
-R82 left.
+Goal: the thread-subject display option, the cleanest of R84's set.
+The rest of the mark/thread options and the smaller layout knobs
+split into R85.
+
+- [x] `$hide_thread_subject`: a thread reply whose subject repeats
+      its parent's (after stripping Re:/Fwd:) shows only the tree
+      arrow. `Session::subject_hidden` decides it from `thread_parent`
+      and `subject_key`, and `draw_index` blanks the subject when it
+      returns true. `[index]` bool, off by default here (mutt has it
+      on) so rmut's look is unchanged until asked
+- [x] Settable at `:`, imported, an importer test, a session test
+      (the root and a fresh-subject reply show, the repeating reply
+      hides), the parity fixture grew it
+- [ ] Left for R85: the mark/thread options that need more than a
+      display branch (`$delete_untag`, `$keep_flagged`, `$flag_safe`,
+      `$maildir_trash`, `$uncollapse_new`, `$hide_limited` /
+      `$hide_top_limited`, `$thread_received`, `$mail_check_recent`,
+      `$check_new`) and the smaller layout knobs (`$menu_scroll` /
+      `$menu_context` / `$menu_move_off`, the `$help` toggle,
+      `$sleep_time`, `$read_inc` / `$write_inc` / `$net_inc`)
+
+## R85: the harder mark options and the last layout knobs
+
+Goal: the mark/thread behaviour knobs that touch the delete/sync
+paths, and the smaller layout options R84 left.
 
 - [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
       `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
-      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
-      `$thread_received`, `$mail_check_recent`, `$check_new`
+      `$hide_limited` / `$hide_top_limited`, `$thread_received`,
+      `$mail_check_recent`, `$check_new`
 - [ ] Layout: `$menu_scroll` / `$menu_context` / `$menu_move_off`,
       the `$help` bar toggle, `$sleep_time`, `$read_inc` /
       `$write_inc` / `$net_inc`

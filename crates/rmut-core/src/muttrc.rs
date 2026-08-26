@@ -155,6 +155,7 @@ struct State {
     smart_wrap_off: bool,
     collapse_unread_off: bool,
     uncollapse_jump: bool,
+    hide_thread_subject: bool,
     /// mutt's $attribution, $indent_string and $forward_format, which
     /// rmut takes as they are: the specifiers are the same.
     attribution: Option<String>,
@@ -1035,6 +1036,13 @@ impl State {
                     self.satisfy(line, "unfolding keeps the cursor where it was, as in mutt");
                 }
             }
+            "hide_thread_subject" => {
+                if is_yes(value) {
+                    self.hide_thread_subject = true;
+                } else {
+                    self.satisfy(line, "rmut shows every subject in a thread by default");
+                }
+            }
             "sidebar_visible" => {
                 if is_yes(value) {
                     self.sidebar_visible = true;
@@ -1838,6 +1846,7 @@ impl State {
             || self.date_format.is_some()
             || self.collapse_unread_off
             || self.uncollapse_jump
+            || self.hide_thread_subject
         {
             out += "\n[index]\n";
             if let Some(f) = &self.index_format {
@@ -1858,6 +1867,9 @@ impl State {
             }
             if self.uncollapse_jump {
                 out += "uncollapse_jump = true\n";
+            }
+            if self.hide_thread_subject {
+                out += "hide_thread_subject = true\n";
             }
         }
         if self.pager_index_lines.is_some()
@@ -3052,6 +3064,12 @@ mod tests {
             Some("~f %s | ~s %s | ~b %s"),
             "{toml}"
         );
+    }
+
+    #[test]
+    fn hide_thread_subject_carries_over() {
+        let (cfg, toml) = to_config("set hide_thread_subject = yes\n");
+        assert_eq!(cfg.index.hide_thread_subject, Some(true), "{toml}");
     }
 
     #[test]

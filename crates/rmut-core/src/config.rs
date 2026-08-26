@@ -426,6 +426,11 @@ pub struct Index {
     /// mutt's $uncollapse_jump: unfolding a thread puts the cursor on
     /// its first unread message.
     pub uncollapse_jump: bool,
+    /// mutt's $hide_thread_subject: a thread reply whose subject
+    /// matches its parent's shows a blank subject (just the tree
+    /// arrow). Off by default here, where mutt has it on, so rmut's
+    /// look is unchanged unless asked.
+    pub hide_thread_subject: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

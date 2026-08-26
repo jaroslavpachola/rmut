@@ -1915,3 +1915,46 @@ fn wrap_search_can_be_turned_off() {
     assert_eq!(f.session.sel, 2, "stayed put");
     assert_eq!(f.log.last_text(), "not found");
 }
+
+#[test]
+fn hide_thread_subject_blanks_a_repeated_subject() {
+    // A thread: root "Plan", reply "Re: Plan" (same subject), reply
+    // "New idea" (different). hide_thread_subject blanks the first
+    // reply's subject but not the second's.
+    let mut f = Fixture::new(&[]);
+    let d = f._dir.path().to_path_buf();
+    write_message(&d, 0, "Plan", None);
+    write_message(&d, 1, "Re: Plan", Some("In-Reply-To: <m0@example.com>"));
+    write_message(
+        &d,
+        2,
+        "New idea",
+        Some("References: <m0@example.com> <m1@example.com>"),
+    );
+    touch_dirs(&d);
+    f.session.check_new_mail();
+    f.session.sort = SortKey::Threads;
+    f.session.apply_sort();
+
+    // Off (default): nothing hidden.
+    let hidden: Vec<bool> = (0..f.session.msgs.len())
+        .map(|mi| f.session.subject_hidden(mi))
+        .collect();
+    assert_eq!(hidden, [false, false, false]);
+
+    // On: the reply repeating "Plan" is hidden, the new-subject one is
+    // not, and the root never is.
+    f.session.config.index.hide_thread_subject = Some(true);
+    let hidden_of = |f: &Fixture, subject: &str| {
+        let mi = f
+            .session
+            .msgs
+            .iter()
+            .position(|m| m.env.subject == subject)
+            .unwrap();
+        f.session.subject_hidden(mi)
+    };
+    assert!(!hidden_of(&f, "Plan"), "the root shows");
+    assert!(hidden_of(&f, "Re: Plan"), "the repeated subject hides");
+    assert!(!hidden_of(&f, "New idea"), "a fresh subject shows");
+}
