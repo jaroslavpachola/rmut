@@ -1698,14 +1698,22 @@ def scenario_compose_round2(tmp):
     r.expect("y:Send")
     r.keys(b"a")
     r.keys(f"{tmp}/notes.txt\r".encode())
+    r.settle()
     r.keys(b"j")  # onto the attachment row
     r.keys(b"d")
+    r.settle()
     r.keys(b"quarterly data\r")
     r.expect("(quarterly data)")
+    r.settle()
     r.keys(b"\x14\x15")  # ctrl+t, clear the guessed type
+    r.settle()
     r.keys(b"application/x-custom\r")
+    r.expect("application/x-custom")
+    r.settle()
     r.keys(b"f\x15")  # Fcc, clear the default
+    r.settle()
     r.keys(f"{fcc}\r".encode())
+    r.settle()
     r.keys(b"y")
     wait_for(
         lambda: os.path.exists(sent_file)
