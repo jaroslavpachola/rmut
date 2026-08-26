@@ -30,6 +30,10 @@ struct Entry {
     cc: Vec<String>,
     lines: Option<usize>,
     list: Option<String>,
+    /// Absent in pre-1.64 caches; those entries have no label until
+    /// the file is re-parsed.
+    #[serde(default)]
+    label: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -56,6 +60,7 @@ impl Entry {
             cc: env.cc.clone(),
             lines: env.lines,
             list: env.list.clone(),
+            label: env.label.clone(),
         }
     }
 
@@ -77,6 +82,7 @@ impl Entry {
             cc: self.cc.clone(),
             lines: self.lines,
             list: self.list.as_deref().map(message::one_line),
+            label: self.label.as_deref().map(message::one_line),
         }
     }
 }

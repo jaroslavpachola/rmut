@@ -1123,6 +1123,12 @@ impl App {
             IndexAction::ReadThread => self.session.thread_mark(false, ThreadOp::Read),
             IndexAction::ReadSubthread => self.session.thread_mark(true, ThreadOp::Read),
             IndexAction::TagSubthread => self.session.thread_mark(true, ThreadOp::Tag),
+            IndexAction::EditLabel => {
+                let ask = self.session.ask_edit_label(apply_tagged);
+                self.open_ask(ask);
+            }
+            IndexAction::ShowVersion => self.note(concat!("rmut ", env!("CARGO_PKG_VERSION"))),
+            IndexAction::ShowLimit => self.session.show_limit(),
             IndexAction::ParentMessage => self.session.jump_parent(false),
             IndexAction::RootMessage => self.session.jump_parent(true),
             IndexAction::NextThread => self.session.jump_thread(true),
@@ -2900,7 +2906,17 @@ fn takes_tagged(action: IndexAction) -> bool {
     use IndexAction::*;
     matches!(
         action,
-        Delete | Undelete | Flag | ToggleNew | Tag | Save | Copy | Pipe | Print | Bounce
+        Delete
+            | Undelete
+            | Flag
+            | ToggleNew
+            | Tag
+            | Save
+            | Copy
+            | Pipe
+            | Print
+            | Bounce
+            | EditLabel
     )
 }
 

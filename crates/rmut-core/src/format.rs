@@ -1,7 +1,7 @@
 //! Mutt-like index format strings: `%[-][min][.max]X` where X is
 //! `C` number, `Z` status/flag/mark chars, `d` date, `F` from, `L`
 //! its list-aware variant ("To <list>" for List-Id mail), `c` size,
-//! `l` body lines, `s` subject, `%` a literal percent. `-`
+//! `l` body lines, `y` X-Label, `s` subject, `%` a literal percent. `-`
 //! left-aligns, `min` pads, `.max` truncates (all in characters).
 //! Mutt conditionals work too: `%?X?then&else?` renders `then` when
 //! field X is set and non-zero.
@@ -37,6 +37,8 @@ pub struct IndexFields<'a> {
     pub list: Option<&'a str>,
     /// Messages hidden under this collapsed thread root (`%M`).
     pub hidden: Option<usize>,
+    /// mutt's X-Label, for `%y`.
+    pub label: Option<&'a str>,
     pub subject: &'a str,
 }
 
@@ -56,6 +58,7 @@ fn value_of(spec: char, f: &IndexFields) -> String {
         'l' => f.lines.map(|n| n.to_string()).unwrap_or_default(),
         'M' => f.hidden.map(|n| n.to_string()).unwrap_or_default(),
         's' => f.subject.to_string(),
+        'y' => f.label.unwrap_or_default().to_string(),
         '%' => "%".to_string(),
         other => format!("%{other}"),
     }
@@ -186,6 +189,7 @@ mod tests {
             size: "1.2K",
             lines: None,
             list: None,
+            label: None,
             hidden: None,
             subject: "Lunch",
         }

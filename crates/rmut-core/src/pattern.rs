@@ -93,6 +93,20 @@ pub enum Pattern {
     MessageId(Matcher),
     /// `~x`: any References / In-Reply-To id.
     References(Matcher),
+    /// `~B`: any header or the body (the whole message text).
+    Whole(Matcher),
+    /// `~y`: the X-Label header.
+    Label(Matcher),
+    /// `~L`: an address in From, To or Cc.
+    FromOrTo(Matcher),
+    /// `~R`: read (seen).
+    Read,
+    /// `~O`: old — unread but not new this session.
+    Old,
+    /// `~Q`: replied to (the Answered flag).
+    Replied,
+    /// `~u`: addressed to a subscribed mailing list.
+    Subscribed,
     /// `~(P)`: some message in the same thread matches P.
     Thread(Box<Pattern>),
     /// `~<(P)`: the immediate parent matches P.
@@ -220,6 +234,8 @@ pub struct Scope<'a> {
     pub me: Me<'a>,
     /// Address patterns naming mailing lists, subscribed or not.
     pub lists: &'a [Matcher],
+    /// The subscribed subset, for `~u`.
+    pub subscribed: &'a [Matcher],
     pub position: Position,
     /// The message's place in its thread, for `~(`, `~<`, `~>`, `~v`
     /// and `~$`. None outside a threaded index, where `~(P)` means P
@@ -448,6 +464,9 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'h' => Pattern::Header(Matcher::new(&arg()?)),
                 'i' => Pattern::MessageId(Matcher::new(&arg()?)),
                 'x' => Pattern::References(Matcher::new(&arg()?)),
+                'B' => Pattern::Whole(Matcher::new(&arg()?)),
+                'y' => Pattern::Label(Matcher::new(&arg()?)),
+                'L' => Pattern::FromOrTo(Matcher::new(&arg()?)),
                 'd' => date_term(&arg()?, now)?,
                 'r' => match date_term(&arg()?, now)? {
                     Pattern::Date { min, max } => Pattern::Received { min, max },
@@ -465,8 +484,20 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'p' => Pattern::ToMe,
                 'P' => Pattern::FromMe,
                 'l' => Pattern::ToList,
+                'R' => Pattern::Read,
+                'O' => Pattern::Old,
+                'Q' => Pattern::Replied,
+                'u' => Pattern::Subscribed,
                 'v' => Pattern::Collapsed,
                 '$' => Pattern::Unreferenced,
+                // Recognised but not supported, named so the message
+                // says what it is rather than "unknown". ~S/~E have
+                // no in-memory state in rmut; the crypto and
+                // attachment-count terms wait for their own round;
+                // ~n/~H are mutt's scoring, a non-goal.
+                'S' | 'E' | 'g' | 'G' | 'V' | 'k' | 'X' | 'n' | 'H' => {
+                    return Err(format!("~{op} is not supported"));
+                }
                 other => return Err(format!("unknown pattern ~{other}")),
             })
         }
@@ -752,6 +783,7 @@ fn eval_peer(inner: &Pattern, view: ThreadView, i: usize, ctx: &Ctx) -> bool {
         scope: Scope {
             me: ctx.scope.me,
             lists: ctx.scope.lists,
+            subscribed: ctx.scope.subscribed,
             position: Position::default(),
             thread: None,
         },
@@ -792,6 +824,38 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
         }
         Pattern::MessageId(m) => env.msg_id.as_deref().is_some_and(|id| m.is_match(id)),
         Pattern::References(m) => env.references.iter().any(|id| m.is_match(id)),
+        Pattern::Whole(m) => {
+            if m.is_match(&env.from_full)
+                || m.is_match(&env.subject)
+                || env.to.iter().chain(&env.cc).any(|a| m.is_match(a))
+            {
+                return true;
+            }
+            let headers = ctx
+                .headers
+                .get_or_insert_with(|| message::header_text(&env.file.path).unwrap_or_default());
+            if m.is_match(headers) {
+                return true;
+            }
+            let body = ctx
+                .body
+                .get_or_insert_with(|| message::body_text(&env.file.path).unwrap_or_default());
+            m.is_match(body)
+        }
+        Pattern::Label(m) => env.label.as_deref().is_some_and(|l| m.is_match(l)),
+        Pattern::FromOrTo(m) => {
+            m.is_match(&env.from)
+                || m.is_match(&env.from_full)
+                || env.to.iter().chain(&env.cc).any(|a| m.is_match(a))
+        }
+        Pattern::Read => env.file.flags.seen,
+        Pattern::Old => !env.file.is_new && !env.file.flags.seen,
+        Pattern::Replied => env.file.flags.answered,
+        Pattern::Subscribed => env
+            .to
+            .iter()
+            .chain(&env.cc)
+            .any(|a| ctx.scope.subscribed.iter().any(|m| m.is_match(a))),
         Pattern::Date { min, max } => {
             min.is_none_or(|min| env.date >= min) && max.is_none_or(|max| env.date < max)
         }
@@ -884,6 +948,7 @@ mod tests {
             cc: vec![],
             lines: Some(0),
             list: None,
+            label: None,
         }
     }
 
@@ -1079,7 +1144,8 @@ mod tests {
 
     #[test]
     fn parse_reports_errors() {
-        assert!(parse("~Q").is_err());
+        assert!(parse("~S").is_err()); // recognised but unsupported
+        assert!(parse("~g").is_err());
         assert!(parse("~f").is_err());
         assert!(parse("~x").is_err()); // still needs an argument
         assert!(parse("(~N").is_err());

@@ -105,6 +105,11 @@ pub enum AskKind {
     AliasNick {
         addr: String,
     },
+    /// mutt's edit-label: the X-Label for the message or the tagged
+    /// set. Empty clears it.
+    EditLabel {
+        tagged: bool,
+    },
     /// mutt's $reply_to (ask-yes): reply to the Reply-To address?
     ReplyTo,
     /// Who the draft goes to.
@@ -399,9 +404,30 @@ impl Session {
         })
     }
 
+    /// mutt's edit-label: prefilled with the current label when one
+    /// message is under the cursor.
+    pub fn ask_edit_label(&self, tagged: bool) -> Option<Ask> {
+        let targets = self.op_targets(tagged);
+        if targets.is_empty() {
+            return None;
+        }
+        let prefill = if !tagged && targets.len() == 1 {
+            self.msgs[targets[0]].env.label.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        Some(Ask::Line {
+            label: "Label: ".into(),
+            prefill,
+            wants: Wants::Other,
+            what: AskKind::EditLabel { tagged },
+        })
+    }
+
     pub fn ask_sort(&self) -> Ask {
         Ask::Key {
-            label: "Sort: (d)ate (f)rom (s)ubject si(z)e (t)hreads, uppercase reverses: ".into(),
+            label: "Sort: (d)ate (f)rom (s)ubject si(z)e (t)hreads (y) label, uppercase reverses: "
+                .into(),
             what: AskKind::Sort,
         }
     }
@@ -648,6 +674,10 @@ impl Session {
                 self.create_alias(nick, &addr);
                 None
             }
+            (AskKind::EditLabel { tagged }, Answer::Line(input)) => {
+                self.edit_label(input, tagged);
+                None
+            }
             // ---- the compose flow: one question leads to the next
             (AskKind::ReplyTo, Answer::Key(key)) => match key {
                 Key::Char('y') | Key::Enter => self.answer_reply_to(true),
@@ -831,6 +861,8 @@ impl Session {
                     Key::Char('z') => (SortKey::Size, false),
                     Key::Char('Z') => (SortKey::Size, true),
                     Key::Char('t') | Key::Char('T') => (SortKey::Threads, false),
+                    Key::Char('y') => (SortKey::Label, false),
+                    Key::Char('Y') => (SortKey::Label, true),
                     _ => return None,
                 };
                 self.sort = sort;

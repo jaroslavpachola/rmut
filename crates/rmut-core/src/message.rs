@@ -35,6 +35,8 @@ pub struct Envelope {
     pub lines: Option<usize>,
     /// Mailing-list name from List-Id, for `%L` ("To <name>").
     pub list: Option<String>,
+    /// mutt's X-Label header, for `%y`, `~y`, and sort by label.
+    pub label: Option<String>,
 }
 
 /// Header text on its way to a one-line slot in the display. A tab
@@ -96,6 +98,10 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         .get_first_value("List-Id")
         .and_then(|v| list_name(&v))
         .map(|n| one_line(&n));
+    let label = headers
+        .get_first_value("X-Label")
+        .map(|v| one_line(&v))
+        .filter(|v| !v.trim().is_empty());
     Ok(Envelope {
         file,
         from,
@@ -109,6 +115,7 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         cc,
         lines,
         list,
+        label,
     })
 }
 
@@ -638,6 +645,49 @@ fn run_piped(command: &str, input: &[u8]) -> Result<String> {
     let _ = writer.join();
     anyhow::ensure!(out.status.success(), "{command} exited with {}", out.status);
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The message with one header replaced: every existing line for
+/// `name` (folded continuations included) is dropped, and, when
+/// `value` is Some and non-empty, one `name: value` line is written
+/// at the end of the header block. Used by edit-label; the line
+/// ending of the original is kept.
+pub fn with_header(raw: &[u8], name: &str, value: Option<&str>) -> Vec<u8> {
+    let (head, body) = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(at) => (&raw[..at + 2], &raw[at + 2..]),
+        None => match raw.windows(2).position(|w| w == b"\n\n") {
+            Some(at) => (&raw[..at + 1], &raw[at + 1..]),
+            None => (raw, &raw[raw.len()..]),
+        },
+    };
+    let crlf = head.windows(2).any(|w| w == b"\r\n");
+    let eol: &[u8] = if crlf { b"\r\n" } else { b"\n" };
+    let prefix = format!("{}:", name.to_ascii_lowercase());
+    let mut out = Vec::with_capacity(raw.len() + name.len() + 32);
+    let mut skipping = false;
+    for line in head.split_inclusive(|&b| b == b'\n') {
+        let folded = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+        if folded && skipping {
+            continue;
+        }
+        let lower: Vec<u8> = line
+            .iter()
+            .take(prefix.len())
+            .map(u8::to_ascii_lowercase)
+            .collect();
+        skipping = lower == prefix.as_bytes();
+        if !skipping {
+            out.extend_from_slice(line);
+        }
+    }
+    if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(eol);
+    }
+    out.extend_from_slice(body);
+    out
 }
 
 /// The message with its threading headers replaced: In-Reply-To and

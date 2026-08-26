@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.63**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.64**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -121,12 +121,14 @@ before purging deleted messages, like mutt: Enter takes the yes, and
 `[mail] delete = "yes"` skips the question), Space page down,
 Ctrl+L repaint, `!` shell command, Ctrl+Z suspend (fg brings it
 back), `o` sort
-(`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
+(`d`ate `f`rom `s`ubject si`z`e `t`hreads `y` label, uppercase
+reverses),
 Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
 step between threads, Ctrl+R/Alt+r mark a thread/subthread read, `P`
 jump to the parent, `#` break a thread, `&` link the tagged messages
-under the cursor (all of these want thread sort), `l` limit,
+under the cursor (all of these want thread sort), `Y` edit the
+X-Label, `V` show the version, Alt+l show the active limit, `l` limit,
 `/` search
 + `n` next (Alt+/ searches backwards, and `n` then keeps going that
 way), `c` open mailbox by path (Alt+c opens it read-only; Tab completes
@@ -167,8 +169,12 @@ header, `~i x` Message-ID, `~x x` References, `~d spec` date,
 `~r spec` received date, `~m spec` index range, `~z spec` size range,
 `~=` duplicate (same Message-ID twice), `~(P)`/`~<(P)`/`~>(P)` thread,
 parent or child matches P, `~v` folded thread head, `~$` unreferenced,
-`~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
-`~l` addressed to a known mailing list, `~p` addressed to me,
+`~y x` X-Label, `~L x` from-or-to, `~B x` whole message (headers and
+body),
+`~N` new, `~O` old, `~R` read, `~Q` replied, `~F` flagged, `~D` deleted,
+`~U` unread, `~T` tagged,
+`~l` addressed to a known mailing list, `~u` to a subscribed list,
+`~p` addressed to me,
 `~P` sent by me, `~A` every message; a bare word matches subject or
 from. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls

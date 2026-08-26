@@ -1496,3 +1496,115 @@ fn reply_regexp_strips_the_prefix_it_names() {
     f.session.recompile();
     assert_eq!(f.session.reply_subject("Re[2]: Dinner"), "Re: Dinner");
 }
+
+#[test]
+fn edit_label_writes_x_label_and_sorts_by_it() {
+    let mut f = Fixture::new(&["apple", "cherry", "banana"]);
+    // Label two of them; the third stays unlabelled.
+    f.select("cherry");
+    f.session.edit_label("zeta", false);
+    assert_eq!(f.log.last_text(), "labelled 1 message(s)");
+    f.select("apple");
+    f.session.edit_label("alpha", false);
+
+    // The header reached the file, and re-parsing sees it.
+    let text = fs::read_to_string(f.path_of("apple")).unwrap();
+    assert!(text.contains("X-Label: alpha"), "{text}");
+    assert_eq!(
+        f.session
+            .msgs
+            .iter()
+            .find(|m| m.env.subject == "apple")
+            .unwrap()
+            .env
+            .label
+            .as_deref(),
+        Some("alpha")
+    );
+
+    // sort=label: alpha, zeta, then the unlabelled one last.
+    f.session.sort = SortKey::Label;
+    f.session.apply_sort();
+    assert_eq!(f.subjects(), ["apple", "cherry", "banana"]);
+
+    // ~y finds a label, %y is available through the format.
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~y alpha");
+    assert_eq!(f.subjects(), ["apple"]);
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "");
+
+    // Clearing it: empty value drops the header.
+    f.select("apple");
+    f.session.edit_label("", false);
+    assert_eq!(f.log.last_text(), "label cleared on 1 message(s)");
+    let text = fs::read_to_string(f.path_of("apple")).unwrap();
+    assert!(!text.contains("X-Label"), "{text}");
+
+    // z puts the header back.
+    f.session.undo_last();
+    assert!(
+        fs::read_to_string(f.path_of("apple"))
+            .unwrap()
+            .contains("X-Label: alpha")
+    );
+}
+
+#[test]
+fn the_read_only_pattern_table() {
+    // A mailbox where read/replied/old and label/subscribed all
+    // differ, so each term picks out its own.
+    let mut f = Fixture::new(&[]);
+    let d = f._dir.path();
+    // read (cur, S): apple; unread old (cur, no S): pear;
+    // new (new/): plum; replied (cur, RS): quince.
+    fs::write(
+        d.join("cur").join("0000.rmut:2,S"),
+        "From: a@x\nTo: me@example.com\nSubject: apple\nDate: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <a@x>\n\nbody\n",
+    )
+    .unwrap();
+    fs::write(
+        d.join("cur").join("0001.rmut:2,"),
+        "From: a@x\nTo: me@example.com\nSubject: pear\nDate: Mon, 11 Mar 2024 10:00:00 +0000\nMessage-ID: <p@x>\n\nbody\n",
+    )
+    .unwrap();
+    fs::write(
+        d.join("new").join("plum.rmut"),
+        "From: a@x\nSubject: plum\nDate: Mon, 12 Mar 2024 10:00:00 +0000\nMessage-ID: <pl@x>\n\nbody\n",
+    )
+    .unwrap();
+    fs::write(
+        d.join("cur").join("0003.rmut:2,RS"),
+        "From: a@x\nCc: list@team.example.com\nSubject: quince\nDate: Mon, 13 Mar 2024 10:00:00 +0000\nMessage-ID: <q@x>\n\nbody\n",
+    )
+    .unwrap();
+    touch_dirs(f._dir.path());
+    f.session.check_new_mail();
+
+    let limit = |f: &mut Fixture, pat: &str| {
+        let ask = Some(f.session.ask_limit());
+        f.answer_line(ask, pat);
+        let mut s = f.subjects();
+        s.sort();
+        let ask = Some(f.session.ask_limit());
+        f.answer_line(ask, "");
+        s
+    };
+    assert_eq!(limit(&mut f, "~R"), ["apple", "quince"]);
+    assert_eq!(limit(&mut f, "~O"), ["pear"]);
+    assert_eq!(limit(&mut f, "~Q"), ["quince"]);
+    // ~B reads the whole message; the body of apple holds "body".
+    assert_eq!(limit(&mut f, "~B quince"), ["quince"]);
+    // ~L is from-or-to; a@x is the sender of all four.
+    assert_eq!(limit(&mut f, "~L a@x").len(), 4);
+
+    // ~u needs a subscribed list.
+    f.session.config.mail.subscribed = vec!["team\\.example\\.com".into()];
+    f.session.recompile();
+    assert_eq!(limit(&mut f, "~u"), ["quince"]);
+
+    // The refusals name themselves rather than reading as unknown.
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~g");
+    assert_eq!(f.log.last_text(), "bad pattern: ~g is not supported");
+}

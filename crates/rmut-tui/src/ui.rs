@@ -276,6 +276,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
                 size: &humanize_size(env.file.size),
                 lines: env.lines,
                 list: env.list.as_deref(),
+                label: env.label.as_deref(),
                 hidden,
                 subject: &subject,
             },

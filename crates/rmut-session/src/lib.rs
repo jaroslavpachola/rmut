@@ -89,6 +89,8 @@ pub enum SortKey {
     Subject,
     Size,
     Threads,
+    /// mutt's sort=label: by X-Label, unlabelled last.
+    Label,
 }
 
 impl SortKey {
@@ -99,6 +101,7 @@ impl SortKey {
             SortKey::Subject => "subject",
             SortKey::Size => "size",
             SortKey::Threads => "threads",
+            SortKey::Label => "label",
         }
     }
 }
@@ -817,6 +820,7 @@ impl Session {
         pattern::Scope {
             me: self.me(),
             lists: &self.lists,
+            subscribed: &self.subscribed,
             position,
             thread: None,
         }
@@ -1514,6 +1518,14 @@ impl Session {
                         subject_key(&a.env.subject).cmp(&subject_key(&b.env.subject))
                     }
                     SortKey::Size => a.env.file.size.cmp(&b.env.file.size),
+                    SortKey::Label => {
+                        // Unlabelled sorts last, as mutt has it.
+                        let key = |e: &Envelope| {
+                            let l = e.label.clone().unwrap_or_default().to_lowercase();
+                            (l.is_empty(), l)
+                        };
+                        key(&a.env).cmp(&key(&b.env))
+                    }
                     SortKey::Threads => unreachable!(),
                 };
                 if rev { ord.reverse() } else { ord }
@@ -1862,6 +1874,80 @@ impl Session {
             self.push_undo_step(step);
             self.resort(Some(keep));
             self.note(format!("{linked} linked"));
+        }
+    }
+
+    /// mutt's edit-label: write X-Label on every target, one undo
+    /// step, and re-sort (sort=label, %y and ~y all read it). Local
+    /// maildirs only, like the thread rewrites. An empty value clears
+    /// the header.
+    pub fn edit_label(&mut self, value: &str, tagged: bool) {
+        if !self.can_rewrite_here() {
+            return;
+        }
+        let targets = self.op_targets(tagged);
+        if targets.is_empty() {
+            return;
+        }
+        let value = value.trim();
+        let new = (!value.is_empty()).then(|| value.to_string());
+        let keep = self.selected_path();
+        let mut step = UndoStep {
+            what: "edit label".into(),
+            marks: targets.iter().map(|&i| self.mark(i)).collect(),
+            sel: keep.clone(),
+            created: Vec::new(),
+            note: None,
+            rewritten: Vec::new(),
+        };
+        let mut done = 0usize;
+        for &i in &targets {
+            let path = self.msgs[i].env.file.path.clone();
+            let old = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(err) => {
+                    self.error(format!("edit label: {err}"));
+                    continue;
+                }
+            };
+            let bytes = message::with_header(&old, "X-Label", new.as_deref());
+            if let Err(err) = std::fs::write(&path, &bytes) {
+                self.error(format!("edit label: {err}"));
+                continue;
+            }
+            step.rewritten.push((path, old));
+            let _ = self.reread(i, bytes.len() as u64);
+            done += 1;
+        }
+        if done > 0 {
+            self.push_undo_step(step);
+            self.resort(keep);
+            self.note(match new {
+                Some(_) => format!("labelled {done} message(s)"),
+                None => format!("label cleared on {done} message(s)"),
+            });
+        }
+    }
+
+    /// Like `can_rewrite`, but not tied to thread sort: edit-label
+    /// works in any order.
+    fn can_rewrite_here(&mut self) -> bool {
+        if self.deny_readonly() {
+            return false;
+        }
+        if self.imap.is_some() || self.mbox.is_some() {
+            self.error("editing a label is for local maildirs only");
+            return false;
+        }
+        true
+    }
+
+    /// mutt's show-limit: the active limit pattern, or that there is
+    /// none.
+    pub fn show_limit(&mut self) {
+        match &self.limit {
+            Some((raw, _)) => self.note(format!("limit: {raw}")),
+            None => self.note("no limit pattern (all messages shown)"),
         }
     }
 
@@ -3624,6 +3710,7 @@ pub fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
         "subject" => SortKey::Subject,
         "size" => SortKey::Size,
         "threads" => SortKey::Threads,
+        "label" => SortKey::Label,
         _ => return None,
     };
     // Thread sort has no reverse variant.

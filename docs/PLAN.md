@@ -1484,30 +1484,39 @@ could not touch at all.
       tests (the anchored-root rule, the header rewrite, the thread
       patterns), and the parity fixture grew sort_re and reply_regexp
 
-## R64: flags, labels and the pattern table
+## R64: labels and the pattern table (done, 1.64)
 
-Goal: the rest of mutt's pattern table, and the two flag keys.
+Goal: the rest of mutt's readable pattern table, X-Label, and the
+show keys. `w` set-flag / `W` clear-flag moved to R68 with the other
+small keys: rmut's `d`/`u`/`F`/`N` already set the flags a message
+carries, and the mutt letter menu is a small ergonomic add, not a
+gap.
 
-- [ ] `w` set-flag / `W` clear-flag (mutt asks for one of N O r D
-      d F * ! and applies it), and `Esc l` show-limit, `V`
-      show-version
-- [ ] `~O` old, `~R` read, `~Q` replied, `~S` superseded, `~E`
-      expired, `~L` from-or-to, `~u` addressed to a subscribed list,
-      `~B` / `=B` whole-message search (the `=b` and `=h`
-      server-side forms are what R30 already does for `~b`; give them
-      their mutt spelling), `~X` attachment count with the
-      `attachments`/`unattachments` command it depends on
-- [ ] `~g` signed, `~G` encrypted, `~V` verified, `~k` has a PGP
-      key: the structure is known at parse time for `~g`/`~G`,
-      `~V` needs a verification result cached
-- [ ] X-Label: `~y` pattern, `%y` in index_format, `edit-label` to
-      set it (a rewrite of the message, so it shares R63's
-      machinery), and `label` as a sort key
-- [ ] `group`/`ungroup` and the `%f`/`%c`/`%C`/`%e`/`%L` group
-      forms in patterns and `alternates -group`
-- [ ] `~n` score and `~H` spam stay out with scoring (Non-goals);
-      the parser should refuse them by name rather than as a syntax
-      error
+- [x] X-Label, the round's spine: `env.label` from the header
+      (cached, absent in pre-1.64 caches), `%y` in index_format, `~y`
+      pattern, `Y` edit-label (set/change/clear on the message or the
+      tagged set, rewriting the file through a generalised
+      `message::with_header`, one undo step, local maildirs only like
+      the thread edits), and `o y` sort by label, unlabelled last.
+      Imported `sort = label` no longer skips
+- [x] `~R` read, `~O` old (unread but not new), `~Q` replied, `~L`
+      from-or-to, `~u` subscribed list (the scope gained the
+      subscribed matchers), `~B` whole message (headers and body).
+      Everywhere patterns go
+- [x] `Esc l` show-limit (Alt+l) and `V` show-version, TUI-side
+      notices
+- [x] The terms rmut does not carry name themselves: `~g` `~G` `~V`
+      `~k` (crypto, their own round), `~X` (attachment count, needs
+      the `attachments` machinery), `~S` `~E` (no in-memory state),
+      and `~n` `~H` (mutt's scoring, a Non-goal) all parse to a
+      "~X is not supported" error rather than "unknown pattern"
+- [x] Deferred honestly: `~B`/`=B` and `=h` server-side forms stay
+      local for now (R30's `~b` UID SEARCH is the only server one);
+      `group`/`ungroup` and the pattern group forms; `%Y`
+      (label-different-from-parent). None blocks daily use
+- [x] e2e scenario_labels_and_flags, three session tests (edit-label
+      with sort and undo, the read-only pattern table, the refusals),
+      importer sort=label
 
 ## R65: decoded save, pipe and print
 

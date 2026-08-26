@@ -247,8 +247,8 @@ def scenario_sync_delete_flag_limit(tmp):
     r.expect("limit:~f jane|~f petr")
     r.keys(b"l\x15!~f jane\r")
     r.expect("limit:!~f jane")
-    r.keys(b"l\x15~Q\r")
-    r.expect("bad pattern: unknown pattern ~Q")
+    r.keys(b"l\x15~J\r")
+    r.expect("bad pattern: unknown pattern ~J")
     r.keys(b"l\x15\r")  # back to all
     r.keys(b"q")
     r.close()
@@ -3158,6 +3158,43 @@ def scenario_thread_surgery(tmp):
     r.close()
 
 
+def scenario_labels_and_flags(tmp):
+    """R64: Y sets an X-Label that ~y finds, %y shows and o y sorts by;
+    V shows the version; the pattern table gains ~R/~O/~Q and refuses
+    the crypto terms by name."""
+    md = make_maildir(tmp, "md-labels")
+    write_msgs(md, ["jane", "petr", "ci"])
+    cfg = os.path.join(tmp, "labels-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[index]\nformat = "%4C %Z %-6d %-10y %s"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:3")
+
+    # Y labels the message under the cursor; %y shows it in the index.
+    r.keys(b"=Ywork\r")
+    r.expect("labelled 1 message(s)", "work")
+    r.settle()
+
+    # ~y finds it.
+    r.keys(b"l~y work\r")
+    r.expect("Msgs:1")
+    r.settle()
+    r.keys(b"l\x15\r")  # ctrl+u clears the line, enter drops the limit
+    r.expect("Msgs:3")
+    r.settle()
+
+    # V shows the version.
+    r.keys(b"V")
+    r.expect("rmut 1.64")
+    r.settle()
+
+    # A refused pattern names itself.
+    r.keys(b"l\x15~G\r")
+    r.expect("~G is not supported")
+    r.keys(b"x")
+    r.close()
+
+
 def scenario_folder_shorthand(tmp):
     """R43: =x and +x name a mailbox under [mail] folder, whether
     typed at a prompt, replayed from a macro, or written in the
@@ -3882,6 +3919,7 @@ SCENARIOS = [
     scenario_signature_and_send_questions,
     scenario_small_habits,
     scenario_thread_surgery,
+    scenario_labels_and_flags,
 ]
 
 

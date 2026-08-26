@@ -723,7 +723,9 @@ impl State {
                         self.sort = Some(format!("{rev}date"));
                     }
                     "threads" => self.sort = Some("threads".into()),
-                    "subject" | "size" | "from" => self.sort = Some(format!("{rev}{name}")),
+                    "subject" | "size" | "from" | "label" => {
+                        self.sort = Some(format!("{rev}{name}"))
+                    }
                     _ => self.skip(line, "no matching rmut sort order"),
                 }
             }
@@ -2187,6 +2189,9 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "print-message" => "print",
         "edit" => "edit",
         "resend-message" => "resend",
+        "edit-label" => "edit-label",
+        "show-version" => "show-version",
+        "show-limit" => "show-limit",
         "help" => "help",
         _ => return None,
     })

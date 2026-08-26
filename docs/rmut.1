@@ -599,6 +599,9 @@ fall back to matching locally. The specifiers:
   ~x x  References ~d spec  date     ~r spec  received date
   ~m spec  index range        ~z spec  size range
   ~=  duplicate Message-ID    ~l  to a known mailing list
+  ~u  to a subscribed list    ~y x  X-Label
+  ~L x  from, to or cc        ~B x  headers and body
+  ~O old   ~R read   ~Q replied
   ~(P) some message in the thread matches P
   ~<(P) the parent matches P  ~>(P) a child matches P
   ~v  head of a folded thread ~$  no parent and no children
@@ -639,6 +642,25 @@ ORs,
 .B ()
 groups:
 .B !~D (~f jane | ~t jane) ~d <1m
+.SS Labels and flags
+.B Y
+(edit\-label) sets, changes or clears the X\-Label of the message
+under the cursor, or the tagged set with the tag prefix; an empty
+value clears it. It rewrites the message file in place (local
+maildirs only, like the thread edits) and is one undo step.
+.B ~y
+matches it,
+.B %y
+shows it, and
+.B "o y"
+sorts by it, unlabelled last.
+.B V
+prints the rmut version and
+.B Alt+l
+the active limit pattern.
+The pattern terms mutt lists but rmut does not carry (the crypto
+~g ~G ~V ~k, the attachment count ~X, ~S/~E, and mutt's scoring
+~n ~H) say so by name rather than reading as unknown.
 .SH CONFIGURATION
 TOML, read from
 .B $RMUT_CONFIG
@@ -1196,6 +1218,8 @@ list-aware from ("To <list>" for List-Id mail),
 size,
 .B %l
 body lines,
+.B %y
+the X\-Label,
 .B %M
 messages hidden under a collapsed thread,
 .B %s

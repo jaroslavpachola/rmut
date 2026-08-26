@@ -256,6 +256,7 @@ mod tests {
             cc: vec![],
             lines: Some(0),
             list: None,
+            label: None,
         }
     }
 
