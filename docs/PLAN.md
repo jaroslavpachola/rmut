@@ -1906,14 +1906,19 @@ split into R81 below.
       `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`, `unalias`,
       `reset`; `$shell`, `$tmpdir`
 
-## R80: the last of the small keys
+## R80: pager search-toggle (done, 1.80)
 
-Goal: the keys R77 left.
+Goal: `\` search-toggle, the cleanest of R80's leftover keys.
 
-- [ ] `\` pager search-toggle, next-unread-mailbox, purge-message
-      (delete past `$trash`, which needs a per-message purge flag),
-      mark-message hotkeys, mark-as-new, error-history, what-key,
-      list-action over List-Unsubscribe / List-Help
+- [x] `\` (search-toggle) in the pager hides and restores the
+      search-hit highlighting without forgetting the pattern: a
+      `pager_search_off` flag the highlight is gated on, cleared when
+      a fresh `/` search runs. Imported under its mutt name
+- [x] e2e (the pager search scenario grown to toggle the highlight
+      off and back on)
+- [ ] Left for R86: next-unread-mailbox, purge-message (a per-message
+      purge flag), mark-message hotkeys, mark-as-new, error-history,
+      what-key, list-action over List-Unsubscribe / List-Help
 
 ## R81: $wrap_search (done, 1.77)
 
@@ -1996,6 +2001,14 @@ paths, and the smaller layout options R84 left.
 - [ ] Layout: `$menu_scroll` / `$menu_context` / `$menu_move_off`,
       the `$help` bar toggle, `$sleep_time`, `$read_inc` /
       `$write_inc` / `$net_inc`
+
+## R86: the last keys
+
+Goal: the keys R80 left, each needing more than a binding.
+
+- [ ] next-unread-mailbox, purge-message (a per-message purge flag),
+      mark-message hotkeys, mark-as-new, error-history, what-key,
+      list-action over List-Unsubscribe / List-Help
 
 ## Still open inside rounds marked done
 

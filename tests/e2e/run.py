@@ -1347,6 +1347,13 @@ def scenario_pager_search(tmp):
     r.expect("zebra▁")  # the prompt, prefilled, cursor at the end
     r.keys(b"\x15absent\r")  # ctrl+u clears the prefill; new search runs
     r.expect("Not found.")
+    # R80: \\ toggles the search highlighting off and back on.
+    r.keys(b"/gamma\r")
+    r.expect("the target gamma")
+    r.keys(b"\\")
+    r.expect("search highlighting off")
+    r.keys(b"\\")
+    r.expect("search highlighting on")
     r.keys(b"q")
     r.keys(b"q")
     r.close()
@@ -3217,7 +3224,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.79")
+    r.expect("rmut 1.80")
     r.settle()
 
     # A refused pattern names itself.

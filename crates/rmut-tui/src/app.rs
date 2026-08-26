@@ -278,6 +278,9 @@ pub struct App {
     /// The pager's text search, kept across messages so n/N carry
     /// over; the pager highlights its hits.
     pub(crate) pager_search: Option<pattern::Matcher>,
+    /// mutt's search-toggle (`\`): hide the search highlighting
+    /// without forgetting the pattern.
+    pub(crate) pager_search_off: bool,
     /// Its raw text, prefilling the next Search for: prompt (mutt
     /// prefills from its searchbuf the same way).
     pub(crate) pager_search_text: String,
@@ -461,6 +464,7 @@ impl App {
             prompt: None,
             notices: notices.clone(),
             pager_search: None,
+            pager_search_off: false,
             pager_search_text: String::new(),
             body_rules,
             exit_notes: Vec::new(),
@@ -1217,6 +1221,7 @@ impl App {
             LineKind::PagerSearch => {
                 if !input.is_empty() {
                     self.pager_search = Some(pattern::Matcher::new(input));
+                    self.pager_search_off = false;
                     self.pager_search_text = input.to_string();
                 }
                 if self.pager_search.is_some() {
@@ -1727,6 +1732,18 @@ impl App {
                     LineKind::PagerSearch,
                 ));
                 return;
+            }
+            PagerAction::SearchToggle => {
+                if self.pager_search.is_none() {
+                    self.note("no search to toggle");
+                } else {
+                    self.pager_search_off = !self.pager_search_off;
+                    self.note(if self.pager_search_off {
+                        "search highlighting off"
+                    } else {
+                        "search highlighting on"
+                    });
+                }
             }
             PagerAction::SearchNext => {
                 self.pager_search_step(true);

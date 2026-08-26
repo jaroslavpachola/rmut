@@ -596,7 +596,9 @@ fn body_line(text: &str, base: Style, app: &App) -> Line<'static> {
             paint(&mut styles, m.start(), m.end(), *style);
         }
     }
-    if let Some(matcher) = &app.pager_search {
+    if !app.pager_search_off
+        && let Some(matcher) = &app.pager_search
+    {
         for (start, end) in matcher.find_ranges(text) {
             paint(&mut styles, start, end, app.theme.search);
         }

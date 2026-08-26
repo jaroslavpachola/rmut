@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.79**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.80**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -46,7 +46,7 @@ markers and $pager_stop, the ask-yes compose questions, e edits the
 raw message) plus the full **compose menu** after the editor, and a
 real **prompt line editor** (R23): cursor movement and mid-line
 editing (ctrl+a/e/u/k/w, arrows, Del) with per-kind history on
-Up/Down, and **pager body search** (R24): `/` searches the displayed
+Up/Down, and **pager body search** (R24, `\\` toggles hit highlighting): `/` searches the displayed
 text with `n`/`N` stepping through the hits, wrapping around, and
 **triage keys** (R25): Tab/Alt+Tab jump to the next/previous
 new-or-unread message, and `D`/`U`/`T`/Ctrl+T apply

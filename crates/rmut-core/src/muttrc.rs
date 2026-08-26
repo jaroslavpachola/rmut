@@ -2436,6 +2436,7 @@ pub fn pager_function(name: &str) -> Option<&'static str> {
         "search" => "search",
         "search-next" => "search-next",
         "search-opposite" => "search-prev",
+        "search-toggle" => "search-toggle",
         "view-attachments" => "attachments",
         "mail" => "compose",
         "reply" => "reply",

@@ -454,9 +454,11 @@ patterns; unlike the index /, which matches whole messages);
 .B n
 repeats forward,
 .B N
-backwards, both wrap around with a note. Moving to another message
-ends the search, like mutt: the next n re-prompts, prefilled with
-the last pattern
+backwards, both wrap around with a note.
+.B \e
+(search\-toggle) hides and restores the hit highlighting without
+forgetting the pattern. Moving to another message ends the search,
+like mutt: the next n re-prompts, prefilled with the last pattern
 .PP
 .BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
 .BR b ", " e " and " a
