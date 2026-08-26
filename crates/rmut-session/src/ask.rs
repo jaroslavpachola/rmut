@@ -651,7 +651,7 @@ impl Session {
             (AskKind::Search { back }, Answer::Line(input)) => {
                 self.search_rev = back;
                 if !input.is_empty() {
-                    match rmut_core::pattern::parse(input) {
+                    match self.compile_search(input) {
                         Ok(patterns) => {
                             self.resolve_body_terms(&patterns);
                             self.last_search = Some(patterns);
@@ -963,7 +963,7 @@ impl Session {
         if input.is_empty() || input == "all" {
             self.limit = None;
         } else {
-            match rmut_core::pattern::parse(input) {
+            match self.compile_search(input) {
                 Ok(patterns) => {
                     self.resolve_body_terms(&patterns);
                     self.limit = Some((input.to_string(), patterns));

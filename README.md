@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.72**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.73**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -179,8 +179,10 @@ body),
 `~U` unread, `~T` tagged,
 `~l` addressed to a known mailing list, `~u` to a subscribed list,
 `~p` addressed to me,
-`~P` sent by me, `~A` every message; a bare word matches subject or
-from. `x` is a
+`~P` sent by me, `~A` every message; a bare (single) word with no `~`
+expands through `[mail] simple_search` (mutt's, default `~f %s | ~s %s`,
+so subject or from) — set it to `~f %s | ~s %s | ~b %s` to search the
+body too. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
 back to plain substring). `~d` takes a day or range
 (`24/12/2026`, `1/6/2026-30/6/2026`, `24/12-`, `-1/1/2027`) or an

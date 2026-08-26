@@ -622,14 +622,18 @@ fall back to matching locally. The specifiers:
   ~(P) some message in the thread matches P
   ~<(P) the parent matches P  ~>(P) a child matches P
   ~v  head of a folded thread ~$  no parent and no children
-  word  subject or from
+  word  a bare word expands via simple_search (from/subject)
   ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
   ~p addressed to me         ~P sent by me
   ~A every message
 .fi
 .PP
 .I x
-is a case-insensitive regex; "quotes" keep spaces. Date specs:
+is a case-insensitive regex; "quotes" keep spaces. A bare single
+word with no ~ expands through
+.B "[mail] simple_search"
+(mutt's, default "~f %s | ~s %s"): set it to "~f %s | ~s %s | ~b %s"
+to search the body too. Date specs:
 .BR 24/12/2026 ,
 .BR 1/6/2026\-30/6/2026 ,
 .BR 24/12\- ,

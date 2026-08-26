@@ -156,6 +156,7 @@ struct State {
     attribution: Option<String>,
     indent_string: Option<String>,
     reply_regexp: Option<String>,
+    simple_search: Option<String>,
     forward_format: Option<String>,
     /// mutt's $include, $askcc and $askbcc.
     include: Option<String>,
@@ -1057,6 +1058,7 @@ impl State {
             "attribution" => self.attribution = Some(v),
             "indent_string" => self.indent_string = Some(v),
             "reply_regexp" => self.reply_regexp = Some(v),
+            "simple_search" => self.simple_search = Some(v),
             "sort_re" => {
                 if is_yes(value) {
                     self.satisfy(line, "rmut never threads by subject, so this is moot");
@@ -1608,6 +1610,7 @@ impl State {
             || self.attribution.is_some()
             || self.indent_string.is_some()
             || self.reply_regexp.is_some()
+            || self.simple_search.is_some()
             || self.forward_format.is_some()
             || self.include.is_some()
             || self.ask_cc
@@ -1719,6 +1722,9 @@ impl State {
             }
             if let Some(v) = &self.reply_regexp {
                 out += &format!("reply_regexp = {}\n", quote(v));
+            }
+            if let Some(v) = &self.simple_search {
+                out += &format!("simple_search = {}\n", quote(v));
             }
             if let Some(v) = &self.forward_format {
                 out += &format!("forward_format = {}\n", quote(v));
@@ -2975,6 +2981,16 @@ mod tests {
         // mutt waits for the OS when it is zero or less.
         let (cfg, _) = to_config("set connect_timeout=-1\n");
         assert_eq!(cfg.net.connect_timeout, 0);
+    }
+
+    #[test]
+    fn simple_search_carries_over() {
+        let (cfg, toml) = to_config("set simple_search = \"~f %s | ~s %s | ~b %s\"\n");
+        assert_eq!(
+            cfg.mail.simple_search.as_deref(),
+            Some("~f %s | ~s %s | ~b %s"),
+            "{toml}"
+        );
     }
 
     #[test]

@@ -3217,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.72")
+    r.expect("rmut 1.73")
     r.settle()
 
     # A refused pattern names itself.
@@ -3397,6 +3397,31 @@ def scenario_title_and_write(tmp):
     # % again makes it writable.
     r.keys(b"%")
     r.expect("marked writable")
+    r.keys(b"x")
+    r.close()
+
+
+def scenario_simple_search(tmp):
+    """R74: $simple_search expands a bare word; adding ~b %s makes a
+    bare search find the body too."""
+    md = make_maildir(tmp, "md-simple")
+    # "budget" is in one subject and one body.
+    with open(os.path.join(md, "cur", "1751000001.1.host:2,S"), "w") as f:
+        f.write("From: a@x\r\nSubject: the budget\r\nDate: Mon, 10 Mar 2024 10:00:00 +0000\r\n"
+                "Message-ID: <s1@x>\r\n\r\nhello\r\n")
+    with open(os.path.join(md, "cur", "1751000002.2.host:2,S"), "w") as f:
+        f.write("From: a@x\r\nSubject: lunch\r\nDate: Tue, 11 Mar 2024 10:00:00 +0000\r\n"
+                "Message-ID: <s2@x>\r\n\r\nthe budget is tight\r\n")
+    cfg = os.path.join(tmp, "simple-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[mail]\nsimple_search = "~f %s | ~s %s | ~b %s"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:2")
+    # A bare word, with the body in the template, finds both.
+    r.keys(b"lbudget\r")
+    r.expect("Msgs:2")
+    r.keys(b"l\r")
+    r.expect("Msgs:2")
     r.keys(b"x")
     r.close()
 
@@ -4131,6 +4156,7 @@ SCENARIOS = [
     scenario_navigation,
     scenario_compose_menu,
     scenario_title_and_write,
+    scenario_simple_search,
 ]
 
 

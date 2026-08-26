@@ -2045,11 +2045,33 @@ impl Session {
     /// Apply `f` to every message matching `input`, within the active
     /// limit (members of folded threads included; folding is display
     /// only), and report the count.
+    /// mutt's $simple_search: a bare one-word search (no `~`) expands
+    /// through the template before parsing; anything with a `~` or
+    /// more than one word is a pattern already and parses as typed.
+    /// The config parse sites (color rules) do not go through here.
+    pub fn compile_search(&self, input: &str) -> Result<Vec<Pattern>, String> {
+        pattern::parse(&self.expand_simple(input))
+    }
+
+    fn expand_simple(&self, input: &str) -> String {
+        let word = input.trim();
+        if word.contains('~') || word.split_whitespace().count() != 1 {
+            return input.to_string();
+        }
+        let template = self
+            .config
+            .mail
+            .simple_search
+            .as_deref()
+            .unwrap_or("~f %s | ~s %s");
+        template.replace("%s", word)
+    }
+
     pub fn apply_pattern(&mut self, input: &str, verb: &'static str, f: impl Fn(&mut Msg)) {
         if input.is_empty() {
             return;
         }
-        let patterns = match pattern::parse(input) {
+        let patterns = match self.compile_search(input) {
             Ok(p) => p,
             Err(err) => {
                 self.error(format!("bad pattern: {err}"));

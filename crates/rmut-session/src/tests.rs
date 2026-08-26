@@ -1847,3 +1847,45 @@ fn reply_crypto_defaults_from_the_original() {
         Security::None
     );
 }
+
+#[test]
+fn simple_search_expands_a_bare_word() {
+    // Three messages: the word "budget" appears in one subject, one
+    // body, and nowhere in the third.
+    let mut f = Fixture::new(&[]);
+    let d = f._dir.path().to_path_buf();
+    let write = |name: &str, subject: &str, body: &str| {
+        fs::write(
+            d.join("cur").join(format!("{name}:2,S")),
+            format!("From: s@x\nSubject: {subject}\nDate: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <{name}@x>\n\n{body}\n"),
+        )
+        .unwrap();
+    };
+    write("0001", "the budget", "hello");
+    write("0002", "lunch", "the budget is tight");
+    write("0003", "lunch", "nothing here");
+    touch_dirs(&d);
+    f.session.check_new_mail();
+
+    // Default template (~f %s | ~s %s): the word hits the subject
+    // only, so message two (body only) is not found.
+    let limit = |f: &mut Fixture, pat: &str| {
+        let ask = Some(f.session.ask_limit());
+        f.answer_line(ask, pat);
+        let mut subs = f.subjects();
+        subs.sort();
+        let ask = Some(f.session.ask_limit());
+        f.answer_line(ask, "");
+        subs
+    };
+    assert_eq!(limit(&mut f, "budget"), ["the budget"]);
+
+    // A template that adds the body finds message two as well.
+    f.session.config.mail.simple_search = Some("~f %s | ~s %s | ~b %s".into());
+    let mut hits = limit(&mut f, "budget");
+    hits.sort();
+    assert_eq!(hits, ["lunch", "the budget"]);
+
+    // A word with a ~ is a pattern already: ~s lunch, not expanded.
+    assert_eq!(limit(&mut f, "~s lunch"), ["lunch", "lunch"]);
+}

@@ -1793,20 +1793,29 @@ mark options split into R77 and R78 below.
       `$hide_limited`/`$hide_top_limited`, `$thread_received`,
       `$mail_check_recent`, `$check_new`
 
-## R74: history, simple_search, and the un* commands
+## R74: simple_search (done, 1.73)
 
-Goal: the session-persistence and config-teardown pieces.
+Goal: the bare-word search, the most-used of R74's original grab-bag.
+History persistence and the `un*` commands split into R79 below.
 
-- [ ] `$history_file` / `$save_history` / `$history`: R23's prompt
-      history dies with the session; persist it
-- [ ] `$simple_search`: the bare-word pattern is hardcoded to
-      subject|from. Make it the configurable template (`~f %s | ~s
-      %s`), expanded where a simple search (no `~`) reaches the
-      parse sites — limit, search, pattern-ops, but not color rules
-- [ ] `$search_context`, `$wrap_search`; `$sort_browser`,
-      `$sort_alias`
-- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
-      `unalias`, `reset`; `$shell`, `$tmpdir`
+- [x] `$simple_search`: `[mail] simple_search` is the template a bare
+      single word (no `~`) expands to, `%s` the word — default `~f %s
+      | ~s %s`, which is exactly what a bare word already did, so the
+      default changes nothing; `~f %s | ~s %s | ~b %s` adds the body.
+      `Session::compile_search` does the expansion and the three
+      interactive parse sites (search, limit, pattern-ops) route
+      through it; the config color rules parse raw, as they must.
+      Only a lone word with no `~` expands — a multi-word or
+      `~`-carrying input is a pattern already
+- [x] Settable at `:`, imported, a session test (the default finds
+      the subject only, a `~b` template finds the body, a `~`-input
+      is left alone), an importer test, e2e scenario_simple_search,
+      the parity fixture grew it
+- [ ] Left for R79: `$history_file` / `$save_history` / `$history`
+      (R23's prompt history dies with the session), `$search_context`,
+      `$wrap_search`, `$sort_browser`, `$sort_alias`, and the config
+      teardown commands `uncolor`, `mono`/`unmono`, `unhook`,
+      `unmailboxes`, `unalias`, `reset`; `$shell`, `$tmpdir`
 
 ## R75: the heavier compose-menu functions
 
@@ -1856,6 +1865,17 @@ Goal: the display-layout and mark options R73 left.
       `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
       `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
       `$thread_received`, `$mail_check_recent`, `$check_new`
+
+## R79: history and the config-teardown commands
+
+Goal: the session-persistence and un* pieces R74 left.
+
+- [ ] `$history_file` / `$save_history` / `$history`: R23's prompt
+      history dies with the session; persist it to a file
+- [ ] `$search_context`, `$wrap_search`; `$sort_browser`,
+      `$sort_alias`
+- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
+      `unalias`, `reset`; `$shell`, `$tmpdir`
 
 ## Still open inside rounds marked done
 

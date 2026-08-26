@@ -294,6 +294,11 @@ pub struct Mail {
     /// mutt's $forward_format: the subject a forward carries, the
     /// same format string over the message being forwarded.
     pub forward_format: Option<String>,
+    /// mutt's $simple_search: the template a bare-word search expands
+    /// to, `%s` the word. Default `~f %s | ~s %s` (from or subject),
+    /// which is what a bare word already did; set it to add `~b %s`
+    /// for the body, say. Only a single word with no `~` expands.
+    pub simple_search: Option<String>,
     /// mutt's $reply_regexp: what a reply's subject may already start
     /// with ("Re:" with an optional [n], by default). Replying takes
     /// it off and puts "Re: " on, so prefixes never pile up; a
