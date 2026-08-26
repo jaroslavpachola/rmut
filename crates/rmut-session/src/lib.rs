@@ -77,6 +77,9 @@ pub struct UndoStep {
     /// Something the undo cannot take back, said out loud when it
     /// runs (a copy that went to an IMAP folder).
     pub note: Option<String>,
+    /// Messages the step rewrote on disk (break-thread, link-threads),
+    /// with the bytes they held before, put back when it is undone.
+    pub rewritten: Vec<(PathBuf, Vec<u8>)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -105,6 +108,8 @@ pub enum ThreadOp {
     Delete,
     Undelete,
     Tag,
+    /// mutt's read-thread / read-subthread.
+    Read,
 }
 
 /// Whether a save target is a mailbox that already holds mail, for
@@ -300,6 +305,12 @@ pub struct Session {
     /// when not sorted by threads).
     pub thread_depth: Vec<usize>,
     pub thread_root: Vec<usize>,
+    /// The thread as a tree, from the depth-first layout: each
+    /// message's parent and children, and every root's members. For
+    /// the `~(`, `~<`, `~>` patterns, parent-message, and read-thread.
+    pub thread_parent: Vec<Option<usize>>,
+    pub thread_children: Vec<Vec<usize>>,
+    pub thread_members: Vec<Vec<usize>>,
     /// Paths of collapsed thread roots.
     pub collapsed: HashSet<PathBuf>,
     /// Undo stack, oldest first: delete/flag/tag/read marks and the
@@ -356,6 +367,8 @@ pub struct Session {
     /// Compiled $quote_regexp classifying quoted body lines: a pager
     /// colours by it, and the attachment reminder skips them.
     pub quote_re: regex_lite::Regex,
+    /// Compiled $reply_regexp, for the subject a reply carries.
+    pub reply_re: regex_lite::Regex,
     /// Compiled $abort_noattach_regex, for the attachment reminder.
     attach_re: regex_lite::Regex,
     /// The operation waiting for the connection to come back, if
@@ -468,6 +481,9 @@ impl Session {
             search_rev: false,
             thread_depth: vec![0; count],
             thread_root: (0..count).collect(),
+            thread_parent: vec![None; count],
+            thread_children: vec![Vec::new(); count],
+            thread_members: (0..count).map(|i| vec![i]).collect(),
             collapsed: HashSet::new(),
             undo: Vec::new(),
             lists: config.list_matchers(),
@@ -489,6 +505,7 @@ impl Session {
             display: display_from_config(&config),
             outbox: Vec::new(),
             quote_re: default_quote_re(),
+            reply_re: compose::default_reply_regexp(),
             attach_re: default_attach_re(),
             config,
             pending: None,
@@ -507,6 +524,7 @@ impl Session {
         session.apply_timeouts();
         let mut hook_warnings = Vec::new();
         session.quote_re = quote_re_from_config(&session.config, &mut hook_warnings);
+        session.reply_re = reply_re_from_config(&session.config, &mut hook_warnings);
         session.attach_re = attach_re_from_config(&session.config, &mut hook_warnings);
         session.compile_hooks_from_config(&mut hook_warnings);
         hook_warnings.append(&mut warnings);
@@ -583,6 +601,7 @@ impl Session {
         self.apply_timeouts();
         self.display = display_from_config(&self.config);
         self.quote_re = quote_re_from_config(&self.config, &mut warnings);
+        self.reply_re = reply_re_from_config(&self.config, &mut warnings);
         self.attach_re = attach_re_from_config(&self.config, &mut warnings);
         self.compile_hooks_from_config(&mut warnings);
         self.lists = self.config.list_matchers();
@@ -799,6 +818,28 @@ impl Session {
             me: self.me(),
             lists: &self.lists,
             position,
+            thread: None,
+        }
+    }
+
+    /// The scope with the message's place in its thread filled in, for
+    /// the thread terms. Only a threaded index has threads; elsewhere
+    /// `~(P)` reads as P and the rest are false, as documented.
+    pub fn scope_at(&self, position: pattern::Position, mi: usize) -> pattern::Scope<'_> {
+        let thread = (self.sort == SortKey::Threads && mi < self.msgs.len()).then(|| {
+            let root = self.thread_root.get(mi).copied().unwrap_or(mi);
+            pattern::ThreadView {
+                members: self.thread_members.get(root).map_or(&[][..], Vec::as_slice),
+                parent: self.thread_parent.get(mi).copied().flatten(),
+                children: self.thread_children.get(mi).map_or(&[][..], Vec::as_slice),
+                collapsed: self.thread_depth.get(mi) == Some(&0)
+                    && self.collapsed.contains(&self.msgs[mi].env.file.path),
+                envs: self,
+            }
+        });
+        pattern::Scope {
+            thread,
+            ..self.scope(position)
         }
     }
 
@@ -811,11 +852,17 @@ impl Session {
     /// (when `resolve_body_terms` filled the sets) instead of local
     /// body reads, and the message's place in the list carried along
     /// for `~m` and `~=`.
-    fn env_matches_at(&self, patterns: &[Pattern], env: &Envelope, pos: pattern::Position) -> bool {
+    fn env_matches_at(
+        &self,
+        patterns: &[Pattern],
+        env: &Envelope,
+        pos: pattern::Position,
+        mi: usize,
+    ) -> bool {
         pattern::matches_in(
             patterns,
             env,
-            self.scope(pos),
+            self.scope_at(pos, mi),
             Some(&|env: &Envelope, m: &pattern::Matcher| {
                 let set = self.body_hits.get(m.raw())?;
                 let uid = remote::uid_of(&env.file.path)?;
@@ -1248,6 +1295,7 @@ impl Session {
             sel: self.selected_path(),
             created: Vec::new(),
             note: None,
+            rewritten: Vec::new(),
         });
     }
 
@@ -1284,6 +1332,25 @@ impl Session {
             return;
         };
         let mut restored = 0usize;
+        let mut rewrite_failed = Vec::new();
+        let mut resort = false;
+        for (path, bytes) in &step.rewritten {
+            let at = self.msgs.iter().position(|m| &m.env.file.path == path);
+            let put_back = std::fs::write(path, bytes)
+                .map_err(|err| anyhow::anyhow!(err))
+                .and_then(|()| match at {
+                    Some(i) => self.reread(i, bytes.len() as u64),
+                    None => Ok(()),
+                });
+            match put_back {
+                Ok(()) => resort = true,
+                Err(err) => rewrite_failed.push(format!("{}: {err}", path.display())),
+            }
+        }
+        if resort {
+            let keep = step.sel.clone();
+            self.resort(keep);
+        }
         let by_path: HashMap<&Path, usize> = self
             .msgs
             .iter()
@@ -1304,7 +1371,7 @@ impl Session {
             m.dirty = mark.dirty;
             restored += 1;
         }
-        let mut failed = Vec::new();
+        let mut failed = rewrite_failed;
         for path in &step.created {
             if let Err(err) = std::fs::remove_file(path) {
                 failed.push(format!("{}: {err}", path.display()));
@@ -1373,7 +1440,7 @@ impl Session {
         let positions = self.positions();
         for (i, pos) in positions.iter().enumerate() {
             let limit_ok = match &self.limit {
-                Some((_, patterns)) => self.env_matches_at(patterns, &self.msgs[i].env, *pos),
+                Some((_, patterns)) => self.env_matches_at(patterns, &self.msgs[i].env, *pos, i),
                 None => true,
             };
             if !limit_ok {
@@ -1436,6 +1503,7 @@ impl Session {
             self.thread_depth = items.iter().map(|item| item.depth).collect();
             self.thread_root = items.iter().map(|item| new_pos[item.root]).collect();
             self.sort_rev = false;
+            self.index_threads();
         } else {
             let (sort, rev) = (self.sort, self.sort_rev);
             self.msgs.sort_by(|a, b| {
@@ -1452,8 +1520,34 @@ impl Session {
             });
             self.thread_depth = vec![0; self.msgs.len()];
             self.thread_root = (0..self.msgs.len()).collect();
+            self.index_threads();
         }
         self.rebuild_visible(keep);
+    }
+
+    /// Parent, children and members from the depth-first layout: a
+    /// message's parent is the last one before it a level up.
+    fn index_threads(&mut self) {
+        let n = self.msgs.len();
+        let mut parent = vec![None; n];
+        let mut children = vec![Vec::new(); n];
+        let mut members: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut last_at_depth: Vec<usize> = Vec::new();
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..n {
+            let depth = self.thread_depth.get(i).copied().unwrap_or(0);
+            last_at_depth.truncate(depth);
+            if let Some(&p) = last_at_depth.last() {
+                parent[i] = Some(p);
+                children[p].push(i);
+            }
+            last_at_depth.push(i);
+            let root = self.thread_root.get(i).copied().unwrap_or(i);
+            members[root].push(i);
+        }
+        self.thread_parent = parent;
+        self.thread_children = children;
+        self.thread_members = members;
     }
 
     pub fn toggle_collapse(&mut self, all: bool) {
@@ -1563,6 +1657,7 @@ impl Session {
         let (what, verb) = match op {
             ThreadOp::Delete => (format!("delete {scope}"), "deleted"),
             ThreadOp::Undelete => (format!("undelete {scope}"), "undeleted"),
+            ThreadOp::Read => (format!("read {scope}"), "marked read"),
             // mutt's tag-thread follows the message under the cursor:
             // the whole thread takes the opposite of its tag.
             ThreadOp::Tag if self.msgs[mi].env.tagged => (format!("untag {scope}"), "untagged"),
@@ -1581,6 +1676,14 @@ impl Session {
                     self.msgs[i].dirty = true;
                 }
                 ThreadOp::Tag => self.msgs[i].env.tagged = want_tag,
+                ThreadOp::Read => {
+                    let m = &mut self.msgs[i];
+                    if !m.env.file.flags.seen || m.env.file.is_new {
+                        m.env.file.flags.seen = true;
+                        m.env.file.is_new = false;
+                        m.dirty = true;
+                    }
+                }
             }
         }
         self.note(format!("{} {verb}", targets.len()));
@@ -1591,6 +1694,180 @@ impl Session {
         {
             self.sel = pos;
         }
+    }
+
+    /// mutt's parent-message / root-message. A parent folded away
+    /// under its root is reached as the root, which is what is on
+    /// screen.
+    pub fn jump_parent(&mut self, root: bool) {
+        if self.sort != SortKey::Threads {
+            self.error("thread operations need thread sort (o t)");
+            return;
+        }
+        let Some(&mi) = self.visible.get(self.sel) else {
+            return;
+        };
+        let target = if root {
+            self.thread_root.get(mi).copied().filter(|&r| r != mi)
+        } else {
+            self.thread_parent.get(mi).copied().flatten()
+        };
+        let Some(target) = target else {
+            self.error(if root {
+                "already the thread root"
+            } else {
+                "no parent message"
+            });
+            return;
+        };
+        let tr = self.thread_root.get(target).copied().unwrap_or(target);
+        let at = self
+            .visible
+            .iter()
+            .position(|&i| i == target)
+            .or_else(|| self.visible.iter().position(|&i| i == tr));
+        match at {
+            Some(vi) => self.select(vi),
+            None => self.error("the parent is not in the current limit"),
+        }
+    }
+
+    /// Whether the selected message can have its threading headers
+    /// rewritten: a threaded index, a mailbox that is written in
+    /// place. IMAP and mbox keep the real message elsewhere, so the
+    /// local copy is not the one to edit.
+    fn can_rewrite(&mut self) -> bool {
+        if self.deny_readonly() {
+            return false;
+        }
+        if self.sort != SortKey::Threads {
+            self.error("thread operations need thread sort (o t)");
+            return false;
+        }
+        if self.imap.is_some() || self.mbox.is_some() {
+            self.error("rewriting a message's threading is for local maildirs only");
+            return false;
+        }
+        true
+    }
+
+    /// Write the message back with these threading headers, and read
+    /// it again so the index sees the change. Returns the bytes it
+    /// held before, for the undo.
+    fn rewrite_thread(
+        &mut self,
+        i: usize,
+        in_reply_to: Option<&str>,
+        references: &[String],
+    ) -> Result<Vec<u8>> {
+        let path = self.msgs[i].env.file.path.clone();
+        let old = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let new = message::with_thread_headers(&old, in_reply_to, references);
+        std::fs::write(&path, &new).with_context(|| format!("writing {}", path.display()))?;
+        self.reread(i, new.len() as u64)?;
+        Ok(old)
+    }
+
+    /// Parse the message on disk again, keeping what is not in the
+    /// file (the tag).
+    fn reread(&mut self, i: usize, size: u64) -> Result<()> {
+        let mut file = self.msgs[i].env.file.clone();
+        file.size = size;
+        let tagged = self.msgs[i].env.tagged;
+        let mut env = message::envelope(file)?;
+        env.tagged = tagged;
+        self.msgs[i].env = env;
+        Ok(())
+    }
+
+    /// mutt's break-thread: the selected message forgets its
+    /// In-Reply-To and References, so the subthread under it becomes
+    /// a thread of its own. The message is rewritten on disk, as
+    /// mutt's mutt_break_thread has it rewritten on sync.
+    pub fn break_thread(&mut self) {
+        let Some(&mi) = self.visible.get(self.sel) else {
+            return;
+        };
+        if !self.can_rewrite() {
+            return;
+        }
+        if self.msgs[mi].env.references.is_empty() {
+            self.note("already a thread of its own");
+            return;
+        }
+        let path = self.msgs[mi].env.file.path.clone();
+        let mut step = UndoStep {
+            what: "break thread".into(),
+            marks: vec![self.mark(mi)],
+            sel: Some(path.clone()),
+            created: Vec::new(),
+            note: None,
+            rewritten: Vec::new(),
+        };
+        match self.rewrite_thread(mi, None, &[]) {
+            Ok(old) => {
+                step.rewritten.push((path.clone(), old));
+                self.push_undo_step(step);
+                self.resort(Some(path));
+                self.note("thread broken");
+            }
+            Err(err) => self.error(format!("break thread: {err:#}")),
+        }
+    }
+
+    /// mutt's link-threads: the tagged messages become replies to the
+    /// selected one. As in mutt's link_threads, each child's headers
+    /// are replaced by an In-Reply-To naming the parent, and the
+    /// child is untagged.
+    pub fn link_threads(&mut self) {
+        let Some(&mi) = self.visible.get(self.sel) else {
+            return;
+        };
+        if !self.can_rewrite() {
+            return;
+        }
+        let Some(parent_id) = self.msgs[mi].env.msg_id.clone() else {
+            self.error("no Message-ID to link to");
+            return;
+        };
+        let kids: Vec<usize> = (0..self.msgs.len())
+            .filter(|&i| i != mi && self.msgs[i].env.tagged)
+            .collect();
+        if kids.is_empty() {
+            self.error("first tag the message(s) to link");
+            return;
+        }
+        let keep = self.msgs[mi].env.file.path.clone();
+        let mut step = UndoStep {
+            what: "link threads".into(),
+            marks: kids.iter().map(|&i| self.mark(i)).collect(),
+            sel: Some(keep.clone()),
+            created: Vec::new(),
+            note: None,
+            rewritten: Vec::new(),
+        };
+        let mut linked = 0usize;
+        for &i in &kids {
+            let path = self.msgs[i].env.file.path.clone();
+            match self.rewrite_thread(i, Some(&parent_id), &[]) {
+                Ok(old) => {
+                    step.rewritten.push((path, old));
+                    self.msgs[i].env.tagged = false;
+                    linked += 1;
+                }
+                Err(err) => self.error(format!("link threads: {err:#}")),
+            }
+        }
+        if linked > 0 {
+            self.push_undo_step(step);
+            self.resort(Some(keep));
+            self.note(format!("{linked} linked"));
+        }
+    }
+
+    /// The subject a reply carries, under $reply_regexp.
+    pub fn reply_subject(&self, orig: &str) -> String {
+        compose::reply_subject(orig, &self.reply_re)
     }
 
     /// mutt's next-thread / previous-thread: the first message of the
@@ -1650,10 +1927,10 @@ impl Session {
         let mut hits = Vec::new();
         for (i, pos) in positions.iter().enumerate() {
             let in_limit = match &self.limit {
-                Some((_, l)) => self.env_matches_at(l, &self.msgs[i].env, *pos),
+                Some((_, l)) => self.env_matches_at(l, &self.msgs[i].env, *pos, i),
                 None => true,
             };
-            if in_limit && self.env_matches_at(&patterns, &self.msgs[i].env, *pos) {
+            if in_limit && self.env_matches_at(&patterns, &self.msgs[i].env, *pos, i) {
                 hits.push(i);
             }
         }
@@ -1675,7 +1952,7 @@ impl Session {
         let positions = self.positions();
         for (vi, wrapped) in wrap_order(self.visible.len(), self.sel, !self.search_rev) {
             let mi = self.visible[vi];
-            if self.env_matches_at(&patterns, &self.msgs[mi].env, positions[mi]) {
+            if self.env_matches_at(&patterns, &self.msgs[mi].env, positions[mi], mi) {
                 if wrapped {
                     self.note("search wrapped");
                 }
@@ -2079,6 +2356,7 @@ impl Session {
             sel: self.selected_path(),
             created,
             note,
+            rewritten: Vec::new(),
         });
         let n = copied.len();
         if delete {
@@ -3352,6 +3630,12 @@ pub fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
     Some((key, rev && key != SortKey::Threads))
 }
 
+impl pattern::EnvSource for Session {
+    fn envelope(&self, i: usize) -> Option<&Envelope> {
+        self.msgs.get(i).map(|m| &m.env)
+    }
+}
+
 fn dir_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
     let mtime = |p: PathBuf| p.metadata().and_then(|m| m.modified()).ok();
     (mtime(dir.join("new")), mtime(dir.join("cur")))
@@ -3509,6 +3793,21 @@ fn attach_re_from_config(config: &Config, warnings: &mut Vec<String>) -> regex_l
 
 fn default_attach_re() -> regex_lite::Regex {
     regex_lite::Regex::new(&format!("(?i){DEFAULT_ATTACH_KEYWORD}")).expect("the default compiles")
+}
+
+/// mutt's $reply_regexp, compiled; a bad one warns and the default
+/// stands in.
+fn reply_re_from_config(config: &Config, warnings: &mut Vec<String>) -> regex_lite::Regex {
+    match &config.mail.reply_regexp {
+        Some(spec) => match compose::reply_regexp(spec) {
+            Ok(re) => re,
+            Err(err) => {
+                warnings.push(format!("bad reply_regexp {spec:?}: {err}"));
+                compose::default_reply_regexp()
+            }
+        },
+        None => compose::default_reply_regexp(),
+    }
 }
 
 /// mutt's $quote_regexp, compiled; a bad one warns and the default

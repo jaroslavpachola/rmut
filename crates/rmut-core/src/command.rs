@@ -298,6 +298,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "attribution" => Text(&mut cfg.mail.attribution),
         "indent_string" => Text(&mut cfg.mail.indent_string),
         "forward_format" => Text(&mut cfg.mail.forward_format),
+        "reply_regexp" => Text(&mut cfg.mail.reply_regexp),
         "include" => Text(&mut cfg.mail.include),
         "forward_quote" => Flag(&mut cfg.mail.forward_quote),
         "signature" => Text(&mut cfg.mail.signature),

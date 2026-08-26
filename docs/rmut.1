@@ -317,10 +317,30 @@ replies
 .TP
 .B Alt+n Alt+p
 jump to the next / previous thread, wrapping around with a note.
+.TP
+.B Ctrl+R Alt+r
+mark the whole thread / the subthread read (mutt's Ctrl+R / Esc r);
+one undo step
+.TP
+.B P
+jump to the parent message (root\-message is an action too, unbound)
+.TP
+.B #
+break\-thread: take the In\-Reply\-To and References off the message
+under the cursor, so it and its replies become a thread of their own
+.TP
+.B &
+link\-threads: make the tagged messages replies to the one under the
+cursor, each given an In\-Reply\-To naming it and untagged, as
+mutt's link_threads does. Both rewrite the message file in place, are
+one undo step each (z writes the old headers back), and work on
+local maildirs only: on IMAP and mbox the real message lives
+elsewhere, so they refuse rather than edit a copy
 .PP
-All six need thread sort
+All of these need thread sort
 .RB ( "o t" ),
-and say so when it is not on, as mutt does
+and say so when it is not on, as mutt does. tag\-subthread is an
+action for bind, with no default key, as in mutt
 .TP
 .B s C
 save (copy and mark deleted) / copy to a mailbox
@@ -502,6 +522,11 @@ on Enter.
 .B forward_quote
 brings the forwarded message in quoted with indent_string too; the
 "----- Forwarded message" markers stay flush either way.
+.B reply_regexp
+(mutt's, default "^(re)(\\[[0-9]+\\])*:[ \\t]*") is what a subject may
+already start with: a reply takes that off and puts "Re: " on, so
+prefixes never pile up. Case\-insensitive unless the regex holds an
+uppercase letter, as mutt compiles it.
 .PP
 .B signature
 names a file whose contents end every draft rmut starts, or, when it
@@ -574,6 +599,9 @@ fall back to matching locally. The specifiers:
   ~x x  References ~d spec  date     ~r spec  received date
   ~m spec  index range        ~z spec  size range
   ~=  duplicate Message-ID    ~l  to a known mailing list
+  ~(P) some message in the thread matches P
+  ~<(P) the parent matches P  ~>(P) a child matches P
+  ~v  head of a folded thread ~$  no parent and no children
   word  subject or from
   ~N new   ~U unread   ~F flagged   ~D deleted   ~T tagged
   ~p addressed to me         ~P sent by me
@@ -601,6 +629,8 @@ for the last
 takes
 .BR >100K ", " <2M ", " 1K\-2M ,
 or a plain byte count; K, M and G are powers of 1024.
+The thread terms want thread sort; outside it ~(P) reads as P and
+the other four are false.
 Terms AND;
 .B !
 negates,

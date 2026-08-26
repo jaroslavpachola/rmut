@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.62**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.63**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -124,7 +124,9 @@ back), `o` sort
 (`d`ate `f`rom `s`ubject si`z`e `t`hreads, uppercase reverses),
 Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
-step between threads (all of these want thread sort), `l` limit,
+step between threads, Ctrl+R/Alt+r mark a thread/subthread read, `P`
+jump to the parent, `#` break a thread, `&` link the tagged messages
+under the cursor (all of these want thread sort), `l` limit,
 `/` search
 + `n` next (Alt+/ searches backwards, and `n` then keeps going that
 way), `c` open mailbox by path (Alt+c opens it read-only; Tab completes
@@ -163,7 +165,8 @@ Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
 `~t x` to, `~c x` cc, `~C x` to-or-cc, `~e x` sender, `~h x` any
 header, `~i x` Message-ID, `~x x` References, `~d spec` date,
 `~r spec` received date, `~m spec` index range, `~z spec` size range,
-`~=` duplicate (same Message-ID twice),
+`~=` duplicate (same Message-ID twice), `~(P)`/`~<(P)`/`~>(P)` thread,
+parent or child matches P, `~v` folded thread head, `~$` unreferenced,
 `~N` new, `~F` flagged, `~D` deleted, `~U` unread, `~T` tagged,
 `~l` addressed to a known mailing list, `~p` addressed to me,
 `~P` sent by me, `~A` every message; a bare word matches subject or
@@ -285,6 +288,8 @@ defaults are mutt's:
 [mail]
 attribution = "On %d, %n wrote:"   # the quoted reply's opening line
 indent_string = "> "               # what each quoted line starts with
+reply_regexp = "^(re)(\\[[0-9]+\\])*:[ \\t]*"  # what a reply subject
+                                   # may already start with
 forward_format = "[%a: %s]"        # the subject a forward carries
 include = "ask-yes"                # quote the original: yes/no/ask-*
 ask_cc = false                     # mutt's $askcc, between To and
@@ -583,6 +588,35 @@ undeleted message, mutt's `$resolve`, which makes clearing thread
 after thread one repeated key; undeleting and tagging stay put.
 Tagging follows the cursor, so a second Alt+t untags the thread.
 Without thread sort they refuse, as they do in mutt.
+
+Ctrl+R and Alt+r (mutt's `Ctrl+R`, `Esc r`) mark the thread or the
+subthread read, `P` jumps to the parent message (root-message is
+there too, unbound), and tag-subthread is an action for `:bind`.
+
+Two keys edit the threading itself, since misconfigured mailers
+leave replies dangling or bolt a new discussion onto an old one.
+`#` (break-thread) takes the In-Reply-To and References off the
+message under the cursor, so it and its replies become a thread of
+their own; `&` (link-threads) makes the tagged messages replies to
+the one under the cursor, as mutt does, by giving each an In-Reply-To
+naming it (and untagging it). Both rewrite the message file in place
+and are one undo step each: `z` writes the old headers back. They
+work on local maildirs; on IMAP and mbox the real message lives
+elsewhere, so they refuse rather than edit a copy.
+
+The patterns know threads too: `~(P)` matches every message in a
+thread where some message matches P (`~(~P)`: threads I took part
+in), `~<(P)` the messages whose parent matches P (`~<(~P)`: replies
+to my mail), `~>(P)` those with a child matching P, `~v` the head of
+a folded thread, and `~$` a message with no parent and no children.
+Outside thread sort `~(P)` reads as P and the rest are false.
+
+A reply's subject is "Re: " over the original with whatever
+`[mail] reply_regexp` matched at its start taken off (mutt's
+`$reply_regexp`, default `^(re)(\[[0-9]+\])*:[ \t]*`), so "RE: x" and
+"Re[2]: x" both answer as "Re: x"; a locale's prefixes go in as
+`^(re|aw|sv):[ \t]*`. It is case-insensitive unless it holds an
+uppercase letter, as mutt compiles it.
 
 ## Tagged operations
 

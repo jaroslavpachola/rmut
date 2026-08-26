@@ -93,6 +93,16 @@ pub enum Pattern {
     MessageId(Matcher),
     /// `~x`: any References / In-Reply-To id.
     References(Matcher),
+    /// `~(P)`: some message in the same thread matches P.
+    Thread(Box<Pattern>),
+    /// `~<(P)`: the immediate parent matches P.
+    Parent(Box<Pattern>),
+    /// `~>(P)`: an immediate child matches P.
+    Child(Box<Pattern>),
+    /// `~v`: the message heads a collapsed thread.
+    Collapsed,
+    /// `~$`: no parent and no children, in a threaded index.
+    Unreferenced,
     /// `~d`: epoch-second bounds, min inclusive, max exclusive.
     Date {
         min: Option<i64>,
@@ -211,6 +221,38 @@ pub struct Scope<'a> {
     /// Address patterns naming mailing lists, subscribed or not.
     pub lists: &'a [Matcher],
     pub position: Position,
+    /// The message's place in its thread, for `~(`, `~<`, `~>`, `~v`
+    /// and `~$`. None outside a threaded index, where `~(P)` means P
+    /// of the message itself and the rest are false.
+    pub thread: Option<ThreadView<'a>>,
+}
+
+/// One message's neighbours in the thread, by index into `envs`.
+#[derive(Clone, Copy)]
+pub struct ThreadView<'a> {
+    pub members: &'a [usize],
+    pub parent: Option<usize>,
+    pub children: &'a [usize],
+    pub collapsed: bool,
+    pub envs: &'a dyn EnvSource,
+}
+
+/// Where a thread term finds the other messages: a session's list,
+/// or a plain slice in a test.
+pub trait EnvSource {
+    fn envelope(&self, i: usize) -> Option<&Envelope>;
+}
+
+impl EnvSource for [Envelope] {
+    fn envelope(&self, i: usize) -> Option<&Envelope> {
+        self.get(i)
+    }
+}
+
+impl EnvSource for Vec<Envelope> {
+    fn envelope(&self, i: usize) -> Option<&Envelope> {
+        self.get(i)
+    }
 }
 
 impl<'a> Scope<'a> {
@@ -284,6 +326,11 @@ fn lex(input: &str) -> Vec<Tok> {
                 chars.next();
                 if let Some(op) = chars.next() {
                     out.push(Tok::Op(op));
+                    // `~(`: the paren is the operator's own; the
+                    // group it opens is parsed as a term of its own.
+                    if op == '(' {
+                        out.push(Tok::LParen);
+                    }
                 }
             }
             '"' | '\'' => {
@@ -369,6 +416,22 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 _ => Err("missing )".into()),
             }
         }
+        Some(Tok::Op(op @ ('(' | '<' | '>'))) => {
+            match toks.next() {
+                Some(Tok::LParen) => {}
+                _ => return Err(format!("~{op} needs a (pattern)")),
+            }
+            let inner = Box::new(parse_or(toks, now)?);
+            match toks.next() {
+                Some(Tok::RParen) => {}
+                _ => return Err("missing )".into()),
+            }
+            Ok(match op {
+                '(' => Pattern::Thread(inner),
+                '<' => Pattern::Parent(inner),
+                _ => Pattern::Child(inner),
+            })
+        }
         Some(Tok::Op(op)) => {
             let mut arg = || match toks.next() {
                 Some(Tok::Word(w)) => Ok(w),
@@ -402,6 +465,8 @@ fn parse_unary(toks: &mut Toks, now: i64) -> Result<Pattern, String> {
                 'p' => Pattern::ToMe,
                 'P' => Pattern::FromMe,
                 'l' => Pattern::ToList,
+                'v' => Pattern::Collapsed,
+                '$' => Pattern::Unreferenced,
                 other => return Err(format!("unknown pattern ~{other}")),
             })
         }
@@ -634,11 +699,11 @@ pub fn matches_via(
 
 /// The full entry point: `scope` answers the terms a lone message
 /// cannot (`~p`, `~l`, `~m`, `~=`).
-pub fn matches_in(
+pub fn matches_in<'a>(
     patterns: &[Pattern],
-    env: &Envelope,
-    scope: Scope,
-    oracle: Option<BodyOracle>,
+    env: &'a Envelope,
+    scope: Scope<'a>,
+    oracle: Option<BodyOracle<'a>>,
 ) -> bool {
     let mut ctx = Ctx {
         env,
@@ -660,13 +725,43 @@ pub fn body_terms(patterns: &[Pattern]) -> Vec<String> {
             Pattern::All(terms) | Pattern::Any(terms) => {
                 terms.iter().for_each(|t| walk(t, out));
             }
-            Pattern::Not(term) => walk(term, out),
+            Pattern::Not(term)
+            | Pattern::Thread(term)
+            | Pattern::Parent(term)
+            | Pattern::Child(term) => {
+                walk(term, out);
+            }
             Pattern::Body(m) if !out.contains(&m.raw) => out.push(m.raw.clone()),
             _ => {}
         }
     }
     patterns.iter().for_each(|p| walk(p, &mut out));
     out
+}
+
+/// A thread term's inner pattern over another message of the thread:
+/// the same me and lists, but no position and no thread of its own,
+/// so `~m`, `~=` and a nested thread term read as the lone-message
+/// case.
+fn eval_peer(inner: &Pattern, view: ThreadView, i: usize, ctx: &Ctx) -> bool {
+    let Some(env) = view.envs.envelope(i) else {
+        return false;
+    };
+    let mut peer = Ctx {
+        env,
+        scope: Scope {
+            me: ctx.scope.me,
+            lists: ctx.scope.lists,
+            position: Position::default(),
+            thread: None,
+        },
+        body: None,
+        sender: None,
+        headers: None,
+        received: None,
+        oracle: ctx.oracle,
+    };
+    eval(inner, &mut peer)
 }
 
 fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
@@ -724,6 +819,23 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
             min.is_none_or(|min| size >= min) && max.is_none_or(|max| size <= max)
         }
         Pattern::Duplicate => ctx.scope.position.duplicate,
+        Pattern::Thread(inner) => match ctx.scope.thread {
+            Some(t) => t.members.iter().any(|&i| eval_peer(inner, t, i, ctx)),
+            None => eval(inner, ctx),
+        },
+        Pattern::Parent(inner) => match ctx.scope.thread {
+            Some(t) => t.parent.is_some_and(|i| eval_peer(inner, t, i, ctx)),
+            None => false,
+        },
+        Pattern::Child(inner) => match ctx.scope.thread {
+            Some(t) => t.children.iter().any(|&i| eval_peer(inner, t, i, ctx)),
+            None => false,
+        },
+        Pattern::Collapsed => ctx.scope.thread.is_some_and(|t| t.collapsed),
+        Pattern::Unreferenced => ctx
+            .scope
+            .thread
+            .is_some_and(|t| t.parent.is_none() && t.children.is_empty()),
         Pattern::New => env.file.is_new,
         Pattern::Flagged => env.file.flags.flagged,
         Pattern::Deleted => env.file.flags.deleted,
@@ -900,6 +1012,69 @@ mod tests {
         };
         assert!(matches_in(&ok("~l"), &e, scope, None));
         assert!(scope.any_list(&["dev@lists.example.com".to_string()]));
+    }
+
+    #[test]
+    fn thread_terms_look_at_the_neighbours() {
+        // A thread of three: root (from jane), reply (from bob),
+        // reply to the reply (from jane again). Views are built the
+        // way a session builds them, over a slice.
+        let envs = vec![
+            env("jane@example.com", "root", false, Flags::default()),
+            env("bob@example.com", "reply", false, Flags::default()),
+            env("jane@example.com", "again", false, Flags::default()),
+        ];
+        let members = [0usize, 1, 2];
+        let children_of_root = [1usize];
+        let children_of_reply = [2usize];
+        let view = |i: usize| ThreadView {
+            members: &members,
+            parent: match i {
+                0 => None,
+                1 => Some(0),
+                _ => Some(1),
+            },
+            children: match i {
+                0 => &children_of_root[..],
+                1 => &children_of_reply[..],
+                _ => &[],
+            },
+            collapsed: i == 0,
+            envs: &envs,
+        };
+        let at = |pat: &str, i: usize| {
+            let scope = Scope {
+                thread: Some(view(i)),
+                ..Default::default()
+            };
+            matches_in(&ok(pat), &envs[i], scope, None)
+        };
+        // ~(P): anyone in the thread.
+        assert!(at("~(~f bob)", 0));
+        assert!(at("~(~f bob)", 2));
+        assert!(!at("~(~f alice)", 1));
+        // ~<(P): the parent; ~>(P): a child.
+        assert!(at("~<(~f jane)", 1));
+        assert!(!at("~<(~f jane)", 2));
+        assert!(!at("~<(~A)", 0));
+        assert!(at("~>(~f bob)", 0));
+        assert!(!at("~>(~f jane)", 0), "a grandchild is not a child");
+        // ~v and ~$, and the terms compose like any other.
+        assert!(at("~v", 0));
+        assert!(!at("~v", 1));
+        assert!(!at("~$", 0), "it has children");
+        assert!(at("!~$ ~(~s again)", 2));
+        // Without a thread view, ~(P) is P of the message and the
+        // rest are false.
+        let alone = |pat: &str, i: usize| matches_in(&ok(pat), &envs[i], Scope::default(), None);
+        assert!(alone("~(~f bob)", 1));
+        assert!(!alone("~(~f bob)", 0));
+        assert!(!alone("~<(~A)", 1));
+        assert!(!alone("~$", 0));
+        // Spelling: the paren belongs to the operator.
+        assert!(parse("~(").is_err());
+        assert!(parse("~<~f x").is_err());
+        assert!(parse("~(~f x").is_err());
     }
 
     #[test]

@@ -136,13 +136,36 @@ fn strftime(spec: &str, epoch: i64) -> String {
     }
 }
 
-pub fn reply_subject(orig: &str) -> String {
-    let t = orig.trim();
-    if t.to_lowercase().starts_with("re:") {
-        t.to_string()
+/// mutt's $reply_regexp default: "Re:" with an optional bracketed
+/// count, as Re[2]: has it.
+pub const REPLY_REGEXP: &str = r"^(re)(\[[0-9]+\])*:[ \t]*";
+
+/// Compile a $reply_regexp the way mutt does: case-insensitively
+/// unless the pattern itself has an uppercase letter (mutt's
+/// mutt_which_case).
+pub fn reply_regexp(spec: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
+    let smart = if spec.chars().any(char::is_uppercase) {
+        spec.to_string()
     } else {
-        format!("Re: {t}")
-    }
+        format!("(?i){spec}")
+    };
+    regex_lite::Regex::new(&smart)
+}
+
+pub fn default_reply_regexp() -> regex_lite::Regex {
+    reply_regexp(REPLY_REGEXP).expect("default reply_regexp compiles")
+}
+
+/// The subject of a reply, as mutt makes it: "Re: " over the original
+/// with whatever $reply_regexp matched at its start taken off, so an
+/// "RE: x" or "Re[2]: x" answers as "Re: x" rather than piling up.
+pub fn reply_subject(orig: &str, re: &regex_lite::Regex) -> String {
+    let t = orig.trim();
+    let rest = match re.find(t) {
+        Some(m) if m.start() == 0 => t[m.end()..].trim_start(),
+        _ => t,
+    };
+    format!("Re: {rest}")
 }
 
 /// mutt's $forward_format over the message being forwarded.
@@ -1048,8 +1071,16 @@ mod tests {
 
     #[test]
     fn subjects_do_not_stack_prefixes() {
-        assert_eq!(reply_subject("Lunch"), "Re: Lunch");
-        assert_eq!(reply_subject("RE: Lunch"), "RE: Lunch");
+        let re = default_reply_regexp();
+        assert_eq!(reply_subject("Lunch", &re), "Re: Lunch");
+        assert_eq!(reply_subject("RE: Lunch", &re), "Re: Lunch");
+        assert_eq!(reply_subject("Re[2]: Lunch", &re), "Re: Lunch");
+        // A locale's own prefixes, and mutt's smart case: an
+        // uppercase letter in the regex makes it exact.
+        let aw = reply_regexp("^(re|aw|sv):[ \t]*").unwrap();
+        assert_eq!(reply_subject("AW: Lunch", &aw), "Re: Lunch");
+        let exact = reply_regexp("^(Re):[ \t]*").unwrap();
+        assert_eq!(reply_subject("RE: Lunch", &exact), "Re: RE: Lunch");
         assert_eq!(
             forward_subject(DEFAULT_FORWARD_FORMAT, &quoted()),
             "[jane@example.com: Lunch]"

@@ -61,7 +61,7 @@ impl Session {
                 (
                     ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply,
                     Some(b),
-                ) => compose::reply_subject(&b.subject),
+                ) => self.reply_subject(&b.subject),
                 (ComposeKind::Forward, Some(b)) => self.forward_subject(b),
                 _ => String::new(),
             };
@@ -141,7 +141,7 @@ impl Session {
             let subject = setup
                 .base
                 .as_ref()
-                .map(|b| compose::reply_subject(&b.subject))
+                .map(|b| self.reply_subject(&b.subject))
                 .unwrap_or_default();
             if let Some(setup) = &mut self.setup {
                 setup.to = Some(to_prefill);
@@ -162,7 +162,7 @@ impl Session {
         let setup = self.setup.as_ref()?;
         let subject_prefill = match (&setup.kind, &setup.base) {
             (ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply, Some(b)) => {
-                compose::reply_subject(&b.subject)
+                self.reply_subject(&b.subject)
             }
             (ComposeKind::Forward, Some(b)) => self.forward_subject(b),
             _ => String::new(),

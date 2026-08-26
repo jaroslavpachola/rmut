@@ -1118,6 +1118,13 @@ impl App {
             IndexAction::TagThread => self.session.thread_mark(false, ThreadOp::Tag),
             IndexAction::DeleteSubthread => self.session.thread_mark(true, ThreadOp::Delete),
             IndexAction::UndeleteSubthread => self.session.thread_mark(true, ThreadOp::Undelete),
+            IndexAction::BreakThread => self.session.break_thread(),
+            IndexAction::LinkThreads => self.session.link_threads(),
+            IndexAction::ReadThread => self.session.thread_mark(false, ThreadOp::Read),
+            IndexAction::ReadSubthread => self.session.thread_mark(true, ThreadOp::Read),
+            IndexAction::TagSubthread => self.session.thread_mark(true, ThreadOp::Tag),
+            IndexAction::ParentMessage => self.session.jump_parent(false),
+            IndexAction::RootMessage => self.session.jump_parent(true),
             IndexAction::NextThread => self.session.jump_thread(true),
             IndexAction::PrevThread => self.session.jump_thread(false),
             IndexAction::TagPrefix => {

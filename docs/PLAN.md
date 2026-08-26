@@ -1440,32 +1440,49 @@ them. Each is small enough to ship on its own, and the parity fixture
 should grow the settings a round claims, so the ratchet keeps
 measuring. Daily-use findings still outrank all of them.
 
-## R63: thread surgery and reading a thread
+## R63: thread surgery and reading a thread (done, 1.63)
 
 Goal: the index keys that act on the thread's *shape*, which rmut
-cannot touch at all.
+could not touch at all.
 
-- [ ] `#` break-thread and `&` link-threads (mutt's OP_MAIN_BREAK_
-      THREAD / OP_MAIN_LINK_THREADS): detach the selected message
-      from its parent, or make the tagged messages children of the
-      selected one. mutt does it by editing References/In-Reply-To
-      in the message itself and rewriting it, which for maildir is a
-      new file and for IMAP an APPEND + delete; the plan should say
-      which, and put it on the undo stack
-- [ ] Ctrl+R read-thread and Esc r read-subthread, over the same
-      walk as Alt+d / Ctrl+D; `P` parent-message and root-message
-      as motions
-- [ ] Esc t tag-subthread, which R42 skipped
-- [ ] `~(PATTERN)`, `~<(PATTERN)` and `~>(PATTERN)`: thread patterns
-      (any message in the thread / an ancestor / a descendant
-      matches), the pattern-side half of the same feature; `~v`
-      (the message is a collapsed thread's head) and `~$`
-      (unreferenced) with them
-- [ ] `$sort_re` / `$reply_regexp`: `compose.rs:141` hardcodes
-      `re:`; mutt strips whatever the regex says (Aw:, Sv:, Re[2]:)
-      from the reply subject. rmut never groups by subject, so the
-      threading half of $sort_re does not apply and the importer
-      should say so
+- [x] `#` break-thread and `&` link-threads: `#` takes the
+      In-Reply-To and References off the message under the cursor, so
+      it and its replies become a thread of their own; `&` makes the
+      tagged messages replies to it, each given an In-Reply-To naming
+      it and untagged, as mutt's `mutt_break_thread` / `link_threads`
+      do. Both rewrite the message file in place through
+      `message::with_thread_headers` (the header block replaced, the
+      body and line endings kept), reparse it, and are one undo step
+      each, the old bytes kept in the step so `z` writes them back.
+      Local maildirs only: on IMAP and mbox the real message lives
+      elsewhere, so they refuse. Threading needed one fix to make a
+      break stick — a reply's References still names the broken
+      message's old ancestors, so `thread::link` now refuses to
+      reparent a message that carries no references of its own
+- [x] Ctrl+R read-thread and Alt+r read-subthread (mutt's `Esc r`),
+      a new `ThreadOp::Read` over the existing thread walk; `P`
+      parent-message and root-message (unbound) as motions, from the
+      thread tree `index_threads` now derives from the depth-first
+      layout
+- [x] Alt+t already tagged the thread; tag-subthread is an action
+      with no default key, as in mutt (`:bind` gives it one)
+- [x] `~(PATTERN)`, `~<(PATTERN)`, `~>(PATTERN)`, `~v` and `~$`:
+      the pattern engine takes a `ThreadView` of the message's
+      neighbours (members, parent, children, folded) through a new
+      `EnvSource`, so a thread term reads the other messages. Outside
+      thread sort `~(P)` is P of the message and the other four are
+      false, as mutt has it. Everywhere patterns go: limit, search,
+      pattern-ops, color_index
+- [x] `$reply_regexp`: `reply_subject` takes a compiled regex now,
+      strips whatever it matches at the subject's start (RE:, Re[2]:,
+      a locale's Aw:/Sv:) and puts one "Re: " on. Case-insensitive
+      unless the regex holds an uppercase letter, as mutt compiles
+      it; `[mail] reply_regexp`, imported and settable at `:`.
+      `$sort_re` is the subject-threading half, which rmut does not
+      do, so the importer satisfies `yes` and refuses the rest
+- [x] e2e scenario_thread_surgery, five session tests, three core
+      tests (the anchored-root rule, the header rewrite, the thread
+      patterns), and the parity fixture grew sort_re and reply_regexp
 
 ## R64: flags, labels and the pattern table
 

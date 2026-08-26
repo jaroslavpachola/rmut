@@ -640,6 +640,54 @@ fn run_piped(command: &str, input: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The message with its threading headers replaced: In-Reply-To and
+/// References (folded continuation lines included) are dropped, and
+/// the given ones written at the end of the header block, when there
+/// are any. This is what break-thread and link-threads write back;
+/// mutt does the same to the message itself (`mutt_break_thread`
+/// clears both, `link_threads` sets In-Reply-To to the parent's id).
+/// The line ending of the original is kept.
+pub fn with_thread_headers(
+    raw: &[u8],
+    in_reply_to: Option<&str>,
+    references: &[String],
+) -> Vec<u8> {
+    let (head, body) = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(at) => (&raw[..at + 2], &raw[at + 2..]),
+        None => match raw.windows(2).position(|w| w == b"\n\n") {
+            Some(at) => (&raw[..at + 1], &raw[at + 1..]),
+            None => (raw, &raw[raw.len()..]),
+        },
+    };
+    let crlf = head.windows(2).any(|w| w == b"\r\n");
+    let eol: &[u8] = if crlf { b"\r\n" } else { b"\n" };
+    let mut out = Vec::with_capacity(raw.len() + 128);
+    let mut skipping = false;
+    for line in head.split_inclusive(|&b| b == b'\n') {
+        let folded = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+        if folded && skipping {
+            continue;
+        }
+        let lower: Vec<u8> = line.iter().take(14).map(u8::to_ascii_lowercase).collect();
+        skipping = lower.starts_with(b"in-reply-to:") || lower.starts_with(b"references:");
+        if !skipping {
+            out.extend_from_slice(line);
+        }
+    }
+    if let Some(id) = in_reply_to {
+        out.extend_from_slice(b"In-Reply-To: ");
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(eol);
+    }
+    if !references.is_empty() {
+        out.extend_from_slice(b"References: ");
+        out.extend_from_slice(references.join(" ").as_bytes());
+        out.extend_from_slice(eol);
+    }
+    out.extend_from_slice(body);
+    out
+}
+
 /// Decoded value of the first `name` header, read from disk (used by
 /// the `~e` Sender pattern).
 pub fn first_header(path: &Path, name: &str) -> Option<String> {
@@ -1197,5 +1245,20 @@ mod tests {
         assert!(body.contains("From: jane@example.com"), "{body}");
         assert!(body.contains("Subject: inner"), "{body}");
         assert!(body.contains("inner body"), "{body}");
+    }
+
+    #[test]
+    fn thread_headers_are_replaced_whole() {
+        let raw = b"From: a@x\r\nReferences: <a@x>\r\n <b@x>\r\nSubject: s\r\nIn-Reply-To: <b@x>\r\n\r\nbody\r\n";
+        let out = with_thread_headers(raw, None, &[]);
+        assert_eq!(out, b"From: a@x\r\nSubject: s\r\n\r\nbody\r\n");
+        let out = with_thread_headers(&out, Some("<p@x>"), &["<r@x>".into(), "<p@x>".into()]);
+        assert_eq!(
+            out,
+            b"From: a@x\r\nSubject: s\r\nIn-Reply-To: <p@x>\r\nReferences: <r@x> <p@x>\r\n\r\nbody\r\n"
+        );
+        // LF mail stays LF, and a message with no body is fine.
+        let out = with_thread_headers(b"From: a@x\nSubject: s\n", Some("<p@x>"), &[]);
+        assert_eq!(out, b"From: a@x\nSubject: s\nIn-Reply-To: <p@x>\n");
     }
 }

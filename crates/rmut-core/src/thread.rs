@@ -55,10 +55,18 @@ fn is_ancestor(arena: &[Container], ancestor: usize, mut node: usize) -> bool {
     }
 }
 
-/// Link parent→child unless it would create a loop or the child is
-/// already placed.
-fn link(arena: &mut [Container], parent: usize, child: usize) {
-    if parent == child || arena[child].parent.is_some() || is_ancestor(arena, child, parent) {
+/// Link parent→child unless it would create a loop, the child is
+/// already placed, or the child is a message that carries no
+/// references of its own. That last one is what makes break-thread
+/// stick: a reply's References chain still names the broken message's
+/// old ancestors, and without it the chain would quietly put the
+/// message back under them.
+fn link(arena: &mut [Container], rooted: &[bool], parent: usize, child: usize) {
+    if parent == child
+        || arena[child].parent.is_some()
+        || rooted[child]
+        || is_ancestor(arena, child, parent)
+    {
         return;
     }
     arena[child].parent = Some(parent);
@@ -150,6 +158,10 @@ pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
     let mut arena: Vec<Container> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
 
+    // Every message gets its container first, so a message that
+    // explicitly carries no references is known as a root before any
+    // other message's chain can claim it.
+    let mut container_of = Vec::with_capacity(envs.len());
     for (i, env) in envs.iter().enumerate() {
         let id = env
             .msg_id
@@ -166,20 +178,29 @@ pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
             container = arena.len() - 1;
         }
         arena[container].message = Some(i);
+        container_of.push(container);
+    }
+    let mut rooted: Vec<bool> = arena
+        .iter()
+        .map(|c| c.message.is_some_and(|m| envs[m].references.is_empty()))
+        .collect();
 
+    for (i, env) in envs.iter().enumerate() {
+        let container = container_of[i];
         let mut prev: Option<usize> = None;
         for rid in &env.references {
             let r = get_or_create(&mut by_id, &mut arena, rid);
+            rooted.resize(arena.len(), false);
             if r == container {
                 continue;
             }
             if let Some(p) = prev {
-                link(&mut arena, p, r);
+                link(&mut arena, &rooted, p, r);
             }
             prev = Some(r);
         }
         if let Some(p) = prev {
-            link(&mut arena, p, container);
+            link(&mut arena, &rooted, p, container);
         }
     }
 
@@ -355,5 +376,25 @@ mod tests {
         let envs = [env("a", &["b"], 1), env("b", &["a"], 2)];
         let out = run(&envs);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn a_message_without_references_is_never_reparented_by_its_replies() {
+        // b answered a, and c answered b, so c's chain names a and b.
+        // break-thread then cleared b's own headers: b must stand as
+        // a root with c under it, and c's chain must not put it back
+        // under a (mutt's mutt_break_thread edits the one message).
+        let envs = [env("a", &[], 1), env("b", &[], 2), env("c", &["a", "b"], 3)];
+        assert_eq!(run(&envs), vec![(0, 0), (1, 0), (2, 1)]);
+        // A message with references of its own still hangs where its
+        // chain says, including through a missing ancestor.
+        let envs = [
+            env("a", &[], 1),
+            env("b", &["a"], 2),
+            env("c", &["a", "b"], 3),
+        ];
+        assert_eq!(run(&envs), vec![(0, 0), (1, 1), (2, 2)]);
+        let envs = [env("p", &[], 1), env("c", &["gone", "p"], 2)];
+        assert_eq!(run(&envs), vec![(0, 0), (1, 1)]);
     }
 }

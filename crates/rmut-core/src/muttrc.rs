@@ -148,6 +148,7 @@ struct State {
     /// rmut takes as they are: the specifiers are the same.
     attribution: Option<String>,
     indent_string: Option<String>,
+    reply_regexp: Option<String>,
     forward_format: Option<String>,
     /// mutt's $include, $askcc and $askbcc.
     include: Option<String>,
@@ -987,6 +988,14 @@ impl State {
             ),
             "attribution" => self.attribution = Some(v),
             "indent_string" => self.indent_string = Some(v),
+            "reply_regexp" => self.reply_regexp = Some(v),
+            "sort_re" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut never threads by subject, so this is moot");
+                } else {
+                    self.skip(line, "rmut cannot be told to thread by subject");
+                }
+            }
             "forward_format" => self.forward_format = Some(v),
             "include" => {
                 // mutt's quadoption: yes / no / ask-yes / ask-no.
@@ -1509,6 +1518,7 @@ impl State {
             || self.alias_file.is_some()
             || self.attribution.is_some()
             || self.indent_string.is_some()
+            || self.reply_regexp.is_some()
             || self.forward_format.is_some()
             || self.include.is_some()
             || self.ask_cc
@@ -1608,6 +1618,9 @@ impl State {
             }
             if let Some(v) = &self.indent_string {
                 out += &format!("indent_string = {}\n", quote(v));
+            }
+            if let Some(v) = &self.reply_regexp {
+                out += &format!("reply_regexp = {}\n", quote(v));
             }
             if let Some(v) = &self.forward_format {
                 out += &format!("forward_format = {}\n", quote(v));
@@ -2151,6 +2164,21 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "view-attachments" => "attachments",
         "collapse-thread" => "fold-thread",
         "collapse-all" => "fold-all",
+        // The thread functions, under mutt's own names.
+        "delete-thread" => "delete-thread",
+        "undelete-thread" => "undelete-thread",
+        "tag-thread" => "tag-thread",
+        "delete-subthread" => "delete-subthread",
+        "undelete-subthread" => "undelete-subthread",
+        "next-thread" => "next-thread",
+        "previous-thread" => "previous-thread",
+        "break-thread" => "break-thread",
+        "link-threads" => "link-threads",
+        "read-thread" => "read-thread",
+        "read-subthread" => "read-subthread",
+        "tag-subthread" => "tag-subthread",
+        "parent-message" => "parent-message",
+        "root-message" => "root-message",
         "imap-fetch-mail" | "fetch-mail" => "fetch-mail",
         "tag-entry" | "tag-message" => "tag",
         "tag-prefix" => "tag-prefix",

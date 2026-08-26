@@ -1303,3 +1303,196 @@ fn sort_aux_decides_which_thread_comes_first() {
         ["old root", "Re: old root", "lone"]
     );
 }
+
+/// A thread of three in `dir/cur`: root, a reply, and a reply to the
+/// reply, dated in that order.
+fn write_thread(dir: &Path) {
+    write_message(dir, 0, "root", None);
+    write_message(dir, 1, "reply", Some("In-Reply-To: <m0@example.com>"));
+    write_message(
+        dir,
+        2,
+        "again",
+        Some("References: <m0@example.com> <m1@example.com>"),
+    );
+}
+
+fn threaded() -> Fixture {
+    let mut f = Fixture::new(&[]);
+    write_thread(f._dir.path());
+    write_message(f._dir.path(), 3, "loner", None);
+    f.session.rescan();
+    f.session.sort = SortKey::Threads;
+    f.session.apply_sort();
+    f
+}
+
+fn depths(f: &Fixture) -> Vec<(String, usize)> {
+    f.session
+        .visible
+        .iter()
+        .map(|&i| {
+            (
+                f.session.msgs[i].env.subject.clone(),
+                f.session.thread_depth[i],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn break_thread_rewrites_the_message_and_undo_puts_it_back() {
+    let mut f = threaded();
+    assert_eq!(
+        depths(&f),
+        [("root", 0), ("reply", 1), ("again", 2), ("loner", 0)].map(|(s, d)| (s.to_string(), d))
+    );
+    let path = f.path_of("reply");
+    let before = fs::read(&path).unwrap();
+
+    // The reply and what hangs under it become a thread of their
+    // own; the file lost its In-Reply-To.
+    f.select("reply");
+    f.session.break_thread();
+    assert_eq!(f.log.last_text(), "thread broken");
+    assert_eq!(
+        depths(&f),
+        [("root", 0), ("reply", 0), ("again", 1), ("loner", 0)].map(|(s, d)| (s.to_string(), d))
+    );
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(!after.contains("In-Reply-To"), "{after}");
+    assert!(after.contains("body of reply"), "the body is untouched");
+    assert_eq!(f.subjects()[1], "reply", "the cursor's message stays");
+
+    // A root has nothing to break.
+    f.select("root");
+    f.session.break_thread();
+    assert_eq!(f.log.last_text(), "already a thread of its own");
+
+    // z writes the old bytes back and re-threads.
+    f.session.undo_last();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(depths(&f)[1], ("reply".to_string(), 1));
+    assert_eq!(depths(&f)[2], ("again".to_string(), 2));
+}
+
+#[test]
+fn link_threads_hangs_the_tagged_messages_under_the_cursor() {
+    let mut f = threaded();
+    // Needs something tagged, and a Message-ID to point at.
+    f.select("root");
+    f.session.link_threads();
+    assert_eq!(f.log.last_text(), "first tag the message(s) to link");
+
+    f.tag("loner");
+    f.session.link_threads();
+    assert_eq!(f.log.last_text(), "1 linked");
+    assert!(!f.is_tagged("loner"), "mutt untags what it linked");
+    let text = fs::read_to_string(f.path_of("loner")).unwrap();
+    assert!(text.contains("In-Reply-To: <m0@example.com>"), "{text}");
+    assert_eq!(
+        depths(&f),
+        [("root", 0), ("reply", 1), ("again", 2), ("loner", 1)].map(|(s, d)| (s.to_string(), d))
+    );
+    assert_eq!(
+        f.subjects()[f.session.sel],
+        "root",
+        "the cursor stays on the parent"
+    );
+
+    // One step back: the tag and the file.
+    f.session.undo_last();
+    assert!(f.is_tagged("loner"));
+    assert_eq!(depths(&f)[3], ("loner".to_string(), 0));
+
+    // Without thread sort, as in mutt, they refuse.
+    f.session.sort = SortKey::Date;
+    f.session.apply_sort();
+    f.session.link_threads();
+    assert_eq!(
+        f.log.last_text(),
+        "thread operations need thread sort (o t)"
+    );
+}
+
+#[test]
+fn read_thread_and_parent_message() {
+    let mut f = threaded();
+    for m in &mut f.session.msgs {
+        m.env.file.flags.seen = false;
+    }
+    // Ctrl+R on the reply: its whole thread, three messages.
+    f.select("reply");
+    f.session.thread_mark(false, crate::ThreadOp::Read);
+    assert_eq!(f.log.last_text(), "3 marked read");
+    let unread = |f: &Fixture| {
+        f.session
+            .msgs
+            .iter()
+            .filter(|m| !m.env.file.flags.seen)
+            .map(|m| m.env.subject.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unread(&f), ["loner"]);
+    f.session.undo_last();
+    assert_eq!(unread(&f).len(), 4);
+    // Esc r: the message and its replies only.
+    f.select("reply");
+    f.session.thread_mark(true, crate::ThreadOp::Read);
+    assert_eq!(unread(&f), ["root", "loner"]);
+
+    // P walks up, root-message goes straight to the top.
+    f.select("again");
+    f.session.jump_parent(false);
+    assert_eq!(f.subjects()[f.session.sel], "reply");
+    f.session.jump_parent(false);
+    assert_eq!(f.subjects()[f.session.sel], "root");
+    f.session.jump_parent(false);
+    assert_eq!(f.log.last_text(), "no parent message");
+    f.select("again");
+    f.session.jump_parent(true);
+    assert_eq!(f.subjects()[f.session.sel], "root");
+}
+
+#[test]
+fn thread_patterns_see_the_whole_thread() {
+    let mut f = threaded();
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~(~s again)");
+    assert_eq!(f.subjects(), ["root", "reply", "again"]);
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~<(~s root)");
+    assert_eq!(f.subjects(), ["reply"]);
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~>(~s again)");
+    assert_eq!(f.subjects(), ["reply"]);
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~$");
+    assert_eq!(f.subjects(), ["loner"]);
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "");
+    // ~v: a folded thread's head, a thread of one included.
+    f.session.toggle_collapse(true);
+    let ask = Some(f.session.ask_limit());
+    f.answer_line(ask, "~v");
+    assert_eq!(f.subjects(), ["root", "loner"]);
+}
+
+#[test]
+fn reply_regexp_strips_the_prefix_it_names() {
+    let mut config = reply_config();
+    config.mail.reply_regexp = Some(r"^(re|aw):[ \t]*".into());
+    let mut f = Fixture::with_config(&[], config);
+    write_message(f._dir.path(), 0, "AW: Lunch", None);
+    write_message(f._dir.path(), 1, "Re[2]: Dinner", None);
+    f.session.rescan();
+    assert_eq!(f.session.reply_subject("AW: Lunch"), "Re: Lunch");
+    // Not in this regex, so it stacks, as mutt's would.
+    assert_eq!(
+        f.session.reply_subject("Re[2]: Dinner"),
+        "Re: Re[2]: Dinner"
+    );
+    f.session.config.mail.reply_regexp = None;
+    f.session.recompile();
+    assert_eq!(f.session.reply_subject("Re[2]: Dinner"), "Re: Dinner");
+}

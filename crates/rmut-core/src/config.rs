@@ -272,6 +272,13 @@ pub struct Mail {
     /// mutt's $forward_format: the subject a forward carries, the
     /// same format string over the message being forwarded.
     pub forward_format: Option<String>,
+    /// mutt's $reply_regexp: what a reply's subject may already start
+    /// with ("Re:" with an optional [n], by default). Replying takes
+    /// it off and puts "Re: " on, so prefixes never pile up; a
+    /// locale's own prefixes go in as `^(re|aw|sv):[ \t]*`.
+    /// Case-insensitive unless the regex has an uppercase letter, as
+    /// mutt compiles it.
+    pub reply_regexp: Option<String>,
     /// mutt's $include: quote the original in a reply? "ask-yes" (the
     /// default) and "ask-no" ask, "yes" and "no" decide it.
     pub include: Option<String>,

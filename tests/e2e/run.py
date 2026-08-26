@@ -3083,6 +3083,81 @@ def scenario_thread_ops(tmp):
     r.close()
 
 
+def scenario_thread_surgery(tmp):
+    """R63: # breaks a thread at the cursor, & links the tagged
+    messages under it, Ctrl+R marks a thread read, P climbs to the
+    parent; the file is rewritten and z writes it back."""
+    md = make_maildir(tmp, "md-surgery")
+    # jane -> alice -> bob is one thread; petr and ci stand alone.
+    write_msgs(md, ["jane", "petr", "ci", "alice", "bob"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:5")
+    r.keys(b"ot")
+    r.expect("sorted by threads")
+
+    # P from bob (row 4) climbs to alice, then jane, then refuses.
+    r.keys(b"=jjj")
+    r.settle()
+    r.keys(b"P")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 3/5")
+    r.keys(b"iP")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("Message 2/5")
+    r.keys(b"iP")
+    r.expect("no parent message")
+
+    # Ctrl+R marks Jane's thread read; z takes it back.
+    r.keys(b"\x12")
+    r.expect("3 marked read")
+    r.keys(b"z")
+    r.expect("undone: read thread (3 message(s))")
+
+    # # on alice: alice and bob become a thread of their own, and the
+    # file no longer says In-Reply-To.
+    alice = os.path.join(md, "cur", MSGS["alice"][0].split("/")[-1])
+    r.keys(b"j#")
+    r.expect("thread broken")
+    r.settle()
+    with open(alice) as f:
+        text = f.read()
+    assert "In-Reply-To" not in text, text
+    assert "Count me in too" in text, text
+
+    # & hangs the tagged alice back under jane. Tag advances the
+    # cursor (mutt's tag-entry), so after breaking, alice sits at row
+    # 4: tag her, climb to jane at row 2, link.
+    r.keys(b"tkkk&")
+    r.expect("1 linked")
+    r.settle()
+    with open(alice) as f:
+        text = f.read()
+    assert "In-Reply-To: <msg1@example.com>" in text, text
+
+    # Back down the stack: the link, the tag the `t` key made, then
+    # the break, each its own step.
+    r.keys(b"z")
+    r.expect("undone: link threads (1 message(s))")
+    r.keys(b"z")
+    r.expect("undone: tag (1 message(s))")
+    r.keys(b"z")
+    r.expect("undone: break thread (1 message(s))")
+    with open(alice) as f:
+        text = f.read()
+    assert "In-Reply-To: <msg1@example.com>" in text, text
+    assert "References: <msg1@example.com>" in text, text
+
+    # The thread patterns: only Jane's thread has bob in it.
+    r.keys(b"l~(~f bob)\r")
+    r.expect("Msgs:3")
+    r.keys(b"l\r")
+    r.expect("Msgs:5")
+    r.keys(b"x")
+    r.close()
+
+
 def scenario_folder_shorthand(tmp):
     """R43: =x and +x name a mailbox under [mail] folder, whether
     typed at a prompt, replayed from a macro, or written in the
@@ -3806,6 +3881,7 @@ SCENARIOS = [
     scenario_leaving_habits,
     scenario_signature_and_send_questions,
     scenario_small_habits,
+    scenario_thread_surgery,
 ]
 
 
