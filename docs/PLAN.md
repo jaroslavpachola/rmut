@@ -1548,35 +1548,45 @@ printed decoded, and none of it was a setting.
 - [x] e2e scenario_decode_family, two session tests (decode-save's
       decoded copy and undo, pipe_split's per-message runs)
 
-## R66: IMAP folders and the trust store
+## R66: the trust store (done, 1.66)
 
-Goal: the two places a mutt user with a "real" server setup finds
-rmut cannot get in or cannot tidy up.
+Goal: let a mutt user with a private or self-signed server reach it,
+without weakening TLS for anyone else. The IMAP folder-management
+half (CREATE/DELETE/RENAME/SUBSCRIBE) and the `$tunnel` transport are
+their own rounds below (R69, R70): folder mutation needs the worker
+plumbing and the test server extended, and both want more care than a
+rider here.
 
-- [ ] CREATE / DELETE / RENAME: `C` in the browser makes a remote
-      folder too, `d` deletes a mailbox (confirmed, `$confirmcreate`
-      for the other direction), `r` renames; SUBSCRIBE /
-      UNSUBSCRIBE / LSUB behind `s`/`u`/`T` toggle-subscribed, with
-      `$imap_list_subscribed` and `$imap_check_subscribed` (one of
-      the second pass's eight unclaimed lines) meaning what they
-      mean; Tab toggle-mailboxes between the mailboxes list and the
-      directory, `m` enter-mask with `$mask`, and `$folder_format`
-      (another of the eight) for the listing itself
-- [ ] `$imap_passive`, `$imap_delim_chars`, NAMESPACE, and
-      `account-hook` (the one hook family R36 left out), which is
-      where mutt users set imap_user/imap_pass per server
-- [ ] Trust: `net.rs` knows webpki's roots and nothing else. Add the
-      system store (`$ssl_usesystemcerts`, rustls-native-certs), a
-      `[net] certificate_file` of pinned certs, and the interactive
-      "accept this certificate once / always" that mutt asks on an
-      unknown cert, which is what a self-signed home server needs;
-      `$ssl_client_cert`
-- [ ] `$tunnel` / `$preconnect`: run a command and speak IMAP over
-      its stdin/stdout (ssh to the mail host), with
-      `$tunnel_is_secure` deciding whether STARTTLS is demanded on
-      top. The `Remote` thread of R55 is where the stream type is
-      decided, so this is a third transport beside plain and TLS,
-      not a new session path
+- [x] `net.rs` knew only webpki's Mozilla roots. It now builds the
+      root store from those *always* (the baseline is never removed),
+      plus, opt-in, the OS trust store (`[net] system_cas`, mutt's
+      `$ssl_usesystemcerts`, on by default via rustls-native-certs)
+      and a PEM file of extra roots (`[net] certificate_file`, mutt's
+      `$certificate_file` / `$ssl_ca_certificates_file`) for a
+      private CA or a self-signed server's own cert. The settings can
+      only add anchors, never take the defaults away; a bad cert in a
+      bundle is skipped, an empty file is an error
+- [x] Installed process-wide by `net::set_trust`, beside the
+      timeouts, from the config at startup and on `:set` — the TLS
+      handshake runs on connection threads that carry an account but
+      not a config
+- [x] Importer: `certificate_file` and `ssl_ca_certificates_file`
+      carry over, `ssl_usesystemcerts = no` turns the OS store off,
+      `= yes` is satisfied. `ssl_verify_host` / `ssl_verify_dates`
+      are refused for `no` (rmut always verifies and has no
+      accept-once), and `tunnel` / `ssl_client_cert` are skipped
+      by name, pointing at R69/R70
+- [x] Two net unit tests (the baseline roots are always present with
+      the OS store off; a non-PEM certificate_file is an error) and
+      an importer test; the parity fixture grew certificate_file and
+      ssl_usesystemcerts. No e2e: a TLS server with a custom cert is
+      more than the pty harness should grow for this
+- [ ] Deferred to R69/R70: the interactive accept-once TOFU that mutt
+      offers on an unknown cert, `$ssl_client_cert`, `$tunnel` /
+      `$preconnect` / `$tunnel_is_secure` (a third transport beside
+      plain and TLS on the R55 `Remote` thread), and IMAP folder
+      management with `account-hook`, `$imap_passive`, NAMESPACE and
+      `$folder_format`
 
 ## R67: compose menu, round 3
 
@@ -1641,6 +1651,37 @@ Goal: one-liners, any of which can ride with an earlier round.
       satisfied, its-own-way, refused-by-name, or hole, so a
       "no rmut equivalent" line is a decision and not an absence;
       smime_*, pop_*, mixmaster and autocrypt refuse under Non-goals
+
+## R69: IMAP folder management
+
+Goal: the folder mutation a "real" server setup wants, split out of
+R66 because it needs the worker plumbing and the test server grown.
+
+- [ ] CREATE / DELETE / RENAME: `C` in the browser makes a remote
+      folder too, `d` deletes a mailbox (confirmed, `$confirmcreate`
+      for the other direction), `r` renames; SUBSCRIBE / UNSUBSCRIBE
+      / LSUB behind `s`/`u`/`T` toggle-subscribed, with
+      `$imap_list_subscribed` and `$imap_check_subscribed` meaning
+      what they mean; Tab toggle-mailboxes, `m` enter-mask with
+      `$mask`, and `$folder_format` for the listing
+- [ ] `$imap_passive`, `$imap_delim_chars`, NAMESPACE, and
+      `account-hook` (the hook family R36 left out), where mutt users
+      set imap_user/imap_pass per server
+- [ ] New Job variants and test-server scripts for each verb
+
+## R70: the tunnel and the unknown cert
+
+Goal: the two trust/transport pieces R66 deferred, both security-
+sensitive enough to want their own round.
+
+- [ ] `$tunnel` / `$preconnect`: run a command and speak IMAP over
+      its stdin/stdout (ssh to the mail host), `$tunnel_is_secure`
+      deciding whether STARTTLS is still demanded. A third transport
+      beside plain and TLS on the R55 `Remote` thread
+- [ ] The interactive accept-once / accept-always TOFU mutt offers on
+      an unknown certificate, and `$ssl_client_cert`. This weakens
+      TLS if done wrong, so it wants a careful design and a real
+      test, not a rider
 
 ## Still open inside rounds marked done
 

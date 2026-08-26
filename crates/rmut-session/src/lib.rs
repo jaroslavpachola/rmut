@@ -560,6 +560,10 @@ impl Session {
         // Before the first connection, not after: an unreachable
         // server is exactly what the config's patience is for.
         rmut_core::net::set_timeouts(config.net.connect_timeout, config.net.timeout);
+        rmut_core::net::set_trust(
+            config.net.system_cas,
+            config.net.certificate_file.as_deref().map(expand_tilde),
+        );
         match remote::parse_spec(spec) {
             Some((account_name, mailbox)) => {
                 let account = config
@@ -619,6 +623,14 @@ impl Session {
     /// an account but not a config.
     fn apply_timeouts(&self) {
         rmut_core::net::set_timeouts(self.config.net.connect_timeout, self.config.net.timeout);
+        rmut_core::net::set_trust(
+            self.config.net.system_cas,
+            self.config
+                .net
+                .certificate_file
+                .as_deref()
+                .map(expand_tilde),
+        );
     }
 
     /// The hook tables, compiled from the config; a bad pattern warns

@@ -977,6 +977,19 @@ Seconds to wait for data on a live connection, default 30. Never off,
 and never under five: IMAP IDLE ticks on it to notice a stop request,
 and re-issues itself about every 25 minutes whatever it is set to.
 A timeout says which host and what it was doing.
+.TP
+.B system_cas
+Trust the operating system's certificate store on top of the built\-in
+Mozilla roots (mutt's $ssl_usesystemcerts). On by default. The trust
+settings only ever add anchors to the Mozilla baseline; they cannot
+take the default roots away.
+.TP
+.B certificate_file
+A PEM file of extra roots to trust \(em a private CA, or a self\-signed
+server's own certificate (mutt's $certificate_file /
+$ssl_ca_certificates_file). Added to the roots, never replacing them;
+rmut has no interactive accept\-once, no client\-certificate auth and
+no $tunnel yet, so those import as skipped.
 .SS [mail], the leaving and filing habits
 .TP
 .B quit

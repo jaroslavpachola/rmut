@@ -3185,7 +3185,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.65")
+    r.expect("rmut 1.66")
     r.settle()
 
     # A refused pattern names itself.

@@ -4,6 +4,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -193,9 +194,67 @@ fn connect_tcp(host: &str, port: u16) -> Result<TcpStream> {
     Err(anyhow::Error::from(err).context(said))
 }
 
-pub(crate) fn wrap_tls(tcp: TcpStream, host: &str) -> Result<Stream> {
+/// Extra trust set beyond the built-in Mozilla roots: whether to add
+/// the OS trust store (mutt's $ssl_usesystemcerts) and a PEM file of
+/// extra roots (mutt's $certificate_file). Process-wide, because the
+/// TLS handshake happens on connection threads that carry an account
+/// but not a config, exactly like the timeouts.
+static TRUST: Mutex<Trust> = Mutex::new(Trust {
+    system: true,
+    extra_pem: None,
+});
+
+struct Trust {
+    system: bool,
+    extra_pem: Option<PathBuf>,
+}
+
+/// Install the trust settings from the config, once, before any
+/// connection. Only ever adds anchors to the Mozilla baseline; it
+/// cannot take the default roots away.
+pub fn set_trust(system: bool, certificate_file: Option<PathBuf>) {
+    let mut trust = TRUST.lock().unwrap();
+    trust.system = system;
+    trust.extra_pem = certificate_file;
+}
+
+/// The root store: the Mozilla roots always, then (opt-in) the OS
+/// trust store and a PEM file of extra roots. A cert that will not
+/// parse is skipped, not fatal: one bad line in a bundle should not
+/// drop every good root with it.
+fn root_store() -> Result<rustls::RootCertStore> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let trust = TRUST.lock().unwrap();
+    if trust.system {
+        // native-certs reads the OS store; per-cert parse errors are
+        // returned in `errors`, which we ignore, keeping the rest.
+        let loaded = rustls_native_certs::load_native_certs();
+        for cert in loaded.certs {
+            let _ = roots.add(cert);
+        }
+    }
+    if let Some(path) = &trust.extra_pem {
+        let pem = std::fs::read(path)
+            .with_context(|| format!("reading certificate_file {}", path.display()))?;
+        let (added, _) = roots.add_parsable_certificates(parse_pem_certs(&pem)?);
+        if added == 0 {
+            anyhow::bail!("no certificates in {}", path.display());
+        }
+    }
+    Ok(roots)
+}
+
+/// The DER certificates in a PEM blob (a `certificate_file`).
+fn parse_pem_certs(pem: &[u8]) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let mut cursor = std::io::Cursor::new(pem);
+    rustls_pemfile::certs(&mut cursor)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("parsing certificate_file PEM")
+}
+
+pub(crate) fn wrap_tls(tcp: TcpStream, host: &str) -> Result<Stream> {
+    let roots = root_store()?;
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
@@ -333,5 +392,28 @@ mod tests {
         assert_eq!(connect_timeout(), None);
         assert_eq!(io_timeout().as_secs(), 45);
         set_timeouts(10, 30);
+    }
+
+    #[test]
+    fn the_baseline_roots_are_always_there() {
+        // Even with the OS store off and no extra file, the Mozilla
+        // roots make a non-empty store; the trust settings only add.
+        set_trust(false, None);
+        let store = root_store().unwrap();
+        assert!(store.len() > 50, "webpki roots present: {}", store.len());
+    }
+
+    #[test]
+    fn a_certificate_file_that_is_not_pem_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("rmut-net-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("garbage.pem");
+        std::fs::write(&path, b"not a certificate\n").unwrap();
+        set_trust(false, Some(path.clone()));
+        let err = root_store().unwrap_err().to_string();
+        assert!(err.contains("no certificates"), "{err}");
+        // Put the trust back so other tests in the process are clean.
+        set_trust(true, None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

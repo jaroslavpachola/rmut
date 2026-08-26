@@ -462,6 +462,13 @@ pub struct Net {
     /// IMAP IDLE uses it as its heartbeat, and anything under five
     /// seconds is treated as five.
     pub timeout: u64,
+    /// mutt's $ssl_usesystemcerts: trust the OS certificate store on
+    /// top of the built-in Mozilla roots. On by default, as in mutt.
+    pub system_cas: bool,
+    /// mutt's $certificate_file: a PEM file of extra roots to trust
+    /// (a private CA, a self-signed server's own cert). Added to the
+    /// Mozilla roots, never replacing them.
+    pub certificate_file: Option<String>,
 }
 
 impl Default for Net {
@@ -469,6 +476,8 @@ impl Default for Net {
         Net {
             connect_timeout: 10,
             timeout: 30,
+            system_cas: true,
+            certificate_file: None,
         }
     }
 }

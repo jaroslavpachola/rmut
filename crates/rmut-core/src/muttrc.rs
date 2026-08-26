@@ -156,6 +156,10 @@ struct State {
     ask_bcc: bool,
     /// mutt's $connect_timeout, in seconds.
     connect_timeout: Option<u64>,
+    /// mutt's $certificate_file, a PEM of extra roots; and
+    /// $ssl_usesystemcerts = no, which turns the OS store off.
+    certificate_file: Option<String>,
+    no_system_cas: bool,
     keys_index: BTreeMap<&'static str, String>,
     keys_pager: BTreeMap<&'static str, String>,
     macros_index: BTreeMap<String, String>,
@@ -692,6 +696,25 @@ impl State {
             "smtp_url" => self.smtp_url = Some(v),
             "imap_pass" => self.imap_pass = Some(v),
             "smtp_pass" => self.smtp_pass = Some(v),
+            "certificate_file" | "ssl_ca_certificates_file" => self.certificate_file = Some(v),
+            "ssl_usesystemcerts" => {
+                if is_yes(&v) {
+                    self.satisfy(line, "rmut trusts the OS store by default");
+                } else {
+                    self.no_system_cas = true;
+                }
+            }
+            "ssl_verify_host" | "ssl_verify_dates" => {
+                // rmut always verifies; it has no interactive
+                // accept-once, so a `no` here cannot be honoured.
+                if is_yes(&v) {
+                    self.satisfy(line, "rmut always verifies the certificate");
+                } else {
+                    self.skip(line, "rmut cannot be told to skip verification");
+                }
+            }
+            "tunnel" => self.skip(line, "rmut has no $tunnel transport yet"),
+            "ssl_client_cert" => self.skip(line, "rmut has no client-certificate auth yet"),
             "ssl_starttls" | "ssl_force_tls" => {
                 if is_yes(&v) {
                     self.satisfy(line, "rmut always negotiates TLS/STARTTLS");
@@ -1824,9 +1847,17 @@ impl State {
                 out += &format!("width = {width}\n");
             }
         }
-        if let Some(secs) = self.connect_timeout {
+        if self.connect_timeout.is_some() || self.certificate_file.is_some() || self.no_system_cas {
             out += "\n[net]\n";
-            out += &format!("connect_timeout = {secs}\n");
+            if let Some(secs) = self.connect_timeout {
+                out += &format!("connect_timeout = {secs}\n");
+            }
+            if let Some(path) = &self.certificate_file {
+                out += &format!("certificate_file = {}\n", quote(path));
+            }
+            if self.no_system_cas {
+                out += "system_cas = false\n";
+            }
         }
         if self.status_format.is_some() || self.no_beep || self.beep_new || self.no_wait_key {
             out += "\n[ui]\n";
@@ -2833,6 +2864,31 @@ mod tests {
         // mutt waits for the OS when it is zero or less.
         let (cfg, _) = to_config("set connect_timeout=-1\n");
         assert_eq!(cfg.net.connect_timeout, 0);
+    }
+
+    #[test]
+    fn the_trust_settings_carry_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set certificate_file = ~/.mutt/certs.pem\n",
+            "set ssl_usesystemcerts = no\n",
+        ));
+        assert_eq!(
+            cfg.net.certificate_file.as_deref(),
+            Some("~/.mutt/certs.pem"),
+            "{toml}"
+        );
+        assert!(!cfg.net.system_cas, "{toml}");
+        // ssl_ca_certificates_file is the same slot, and yes is
+        // satisfied rather than carried.
+        let (cfg, _) = to_config(concat!(
+            "set ssl_ca_certificates_file = /etc/ssl/roots.pem\n",
+            "set ssl_usesystemcerts = yes\n",
+        ));
+        assert_eq!(
+            cfg.net.certificate_file.as_deref(),
+            Some("/etc/ssl/roots.pem")
+        );
+        assert!(cfg.net.system_cas);
     }
 
     #[test]

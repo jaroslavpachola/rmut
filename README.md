@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.65**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.66**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -223,6 +223,15 @@ bounds the connection and `[net] timeout` (30s) bounds waiting for data
 on a live one, and both say which host and what they were doing.
 Both take `:set connect_timeout=...` / `:set net_timeout=...` at
 runtime, and `--import-muttrc` brings mutt's `$connect_timeout` over.
+
+TLS trusts the built-in Mozilla roots and, by default, the operating
+system's certificate store on top (`[net] system_cas`, mutt's
+`$ssl_usesystemcerts`); `[net] certificate_file` names a PEM of extra
+roots for a private CA or a self-signed server. These only ever add
+trust anchors, never replace the defaults. Imported from mutt's
+`$certificate_file` / `$ssl_ca_certificates_file`; rmut has no
+interactive accept-once, client certificates or `$tunnel` yet, so
+those import as skipped.
 
 For Gmail/O365-style **OAuth2**, set `auth = "xoauth2"` (or
 `"oauthbearer"`, RFC 7628) and a `token_command` whose first output
@@ -885,6 +894,10 @@ connect_timeout = 10         # says so; 0 waits as long as the OS
 timeout = 30                 # does (about two minutes). timeout is
                              # data on a live connection, never off:
                              # IMAP IDLE ticks on it, minimum 5
+system_cas = true            # trust the OS cert store too (mutt's
+                             # $ssl_usesystemcerts); adds to the roots
+certificate_file = "~/.mutt/certs.pem"  # a PEM of extra roots to
+                             # trust (a private/self-signed CA)
 
 [ui]
 theme = "default"            # or "mono"
