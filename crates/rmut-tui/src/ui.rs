@@ -841,12 +841,28 @@ fn index_status_field(app: &App, spec: char, rows: usize) -> String {
             .map(|(s, _)| s.clone())
             .unwrap_or_default(),
         'r' => {
+            // mutt's $status_chars: [0] unchanged, [1] changed, [2]
+            // read-only. Unset keeps rmut's own marks.
+            let chars: Option<Vec<char>> = app
+                .session
+                .config
+                .ui
+                .status_chars
+                .as_deref()
+                .map(|s| s.chars().collect());
+            let pick = |i: usize, default: &str| -> String {
+                chars
+                    .as_ref()
+                    .and_then(|c| c.get(i))
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| default.to_string())
+            };
             if app.session.read_only {
-                "%".to_string() // mutt's readonly mark
+                pick(2, "%")
             } else if app.session.pending_count() > 0 {
-                "*".to_string()
+                pick(1, "*")
             } else {
-                String::new()
+                pick(0, "")
             }
         }
         'v' => env!("CARGO_PKG_VERSION").to_string(),

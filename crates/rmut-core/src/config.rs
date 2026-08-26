@@ -541,6 +541,10 @@ pub struct Ui {
     /// mutt's $arrow_cursor: mark the selected row with an arrow
     /// instead of reverse video. Off by default, as in mutt.
     pub arrow_cursor: Option<bool>,
+    /// mutt's $status_chars: the characters `%r` shows for the
+    /// mailbox state — [0] unchanged, [1] changed (needs sync), [2]
+    /// read-only. Unset keeps rmut's own (nothing / `*` / `%`).
+    pub status_chars: Option<String>,
     /// mutt's $save_history: entries kept per history bucket in the
     /// file. Defaults to 100 (rmut's in-memory cap).
     pub save_history: Option<usize>,
@@ -560,6 +564,7 @@ impl Default for Ui {
             save_history: None,
             status_on_top: None,
             arrow_cursor: None,
+            status_chars: None,
         }
     }
 }

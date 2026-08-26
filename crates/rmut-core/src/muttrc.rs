@@ -131,6 +131,7 @@ struct State {
     history_file: Option<String>,
     status_on_top: bool,
     arrow_cursor: bool,
+    status_chars: Option<String>,
     no_beep: bool,
     /// `set beep_new`: ring for an arrival as well.
     beep_new: bool,
@@ -714,6 +715,7 @@ impl State {
                 }
             }
             "status_format" => self.status_format = Some(v),
+            "status_chars" => self.status_chars = Some(v),
             "ts_status_format" | "ts_icon_format" => self.title_format = Some(v),
             "history_file" => self.history_file = Some(v),
             "status_on_top" => {
@@ -1986,6 +1988,7 @@ impl State {
             || self.history_file.is_some()
             || self.status_on_top
             || self.arrow_cursor
+            || self.status_chars.is_some()
             || self.set_title
             || self.no_beep
             || self.beep_new
@@ -2008,6 +2011,9 @@ impl State {
             }
             if self.arrow_cursor {
                 out += "arrow_cursor = true\n";
+            }
+            if let Some(v) = &self.status_chars {
+                out += &format!("status_chars = {}\n", quote(v));
             }
             if let Some(tf) = &self.title_format {
                 out += &format!("title_format = {}\n", quote(tf));
@@ -3046,6 +3052,12 @@ mod tests {
             Some("~f %s | ~s %s | ~b %s"),
             "{toml}"
         );
+    }
+
+    #[test]
+    fn status_chars_carries_over() {
+        let (cfg, toml) = to_config("set status_chars = \"-*%A\"\n");
+        assert_eq!(cfg.ui.status_chars.as_deref(), Some("-*%A"), "{toml}");
     }
 
     #[test]

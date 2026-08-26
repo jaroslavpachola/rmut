@@ -3217,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.77")
+    r.expect("rmut 1.78")
     r.settle()
 
     # A refused pattern names itself.
@@ -3514,6 +3514,27 @@ def scenario_layout(tmp):
     # status_on_top: the "---rmut:" bar and the index both drawn; the
     # bar appears above the second message row in the raw stream.
     r.expect("---rmut:")
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_status_chars(tmp):
+    """R82: $status_chars sets the %r mailbox-state marker."""
+    md = make_maildir(tmp, "md-schars")
+    write_msgs(md, ["jane"])
+    cfg = os.path.join(tmp, "schars-config.toml")
+    with open(cfg, "w") as f:
+        # Put %r somewhere visible, and give it distinctive chars.
+        f.write('[ui]\nstatus_chars = "=!%"\n'
+                'status_format = "--rmut[%r] %f Msgs:%m"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    # Unchanged: char[0] = "=".
+    r.expect("rmut[=]")
+    # Delete a message: pending change, char[1] = "!".
+    r.keys(b"d")
+    r.expect("rmut[!]")
+    r.keys(b"u")
     r.keys(b"q")
     r.close()
 
@@ -4252,6 +4273,7 @@ SCENARIOS = [
     scenario_page_motion,
     scenario_history_file,
     scenario_layout,
+    scenario_status_chars,
 ]
 
 

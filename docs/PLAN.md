@@ -1940,18 +1940,39 @@ Goal: what R81 left.
 - [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
       `unalias`, `reset`; `$shell`, `$tmpdir`
 
-## R82: the mark options and the rest of the layout
+## R82: $status_chars (done, 1.78)
+
+Goal: the configurable status marker, the cleanest of R82's set. The
+mark/thread options and the remaining layout knobs split into R84.
+
+- [x] `$status_chars`: `[ui] status_chars` sets the characters `%r`
+      shows for the mailbox state — [0] unchanged, [1] changed (needs
+      sync), [2] read-only. Unset keeps rmut's own (nothing / `*` /
+      `%`), so the default look is unchanged; a mutt `set status_chars`
+      carries over
+- [x] Settable at `:`, imported, an importer test, e2e
+      scenario_status_chars (the unchanged and changed markers), the
+      parity fixture grew it
+- [ ] Left for R84: the mark/thread options (`$delete_untag`,
+      `$keep_flagged`, `$flag_safe`, `$maildir_trash`,
+      `$uncollapse_new`, `$hide_thread_subject`, `$hide_limited` /
+      `$hide_top_limited`, `$thread_received`, `$mail_check_recent`,
+      `$check_new`) and the smaller layout knobs (`$menu_scroll` /
+      `$menu_context` / `$menu_move_off`, the `$help` toggle,
+      `$sleep_time`, `$read_inc` / `$write_inc` / `$net_inc`)
+
+## R84: the mark options and the rest of the layout
 
 Goal: the mark/thread behaviour knobs and the smaller layout options
-R78 left.
+R82 left.
 
-- [ ] Layout: `$status_chars`, `$menu_scroll` / `$menu_context` /
-      `$menu_move_off`, the `$help` bar toggle, `$sleep_time`,
-      `$read_inc` / `$write_inc` / `$net_inc`
 - [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
       `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
       `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
       `$thread_received`, `$mail_check_recent`, `$check_new`
+- [ ] Layout: `$menu_scroll` / `$menu_context` / `$menu_move_off`,
+      the `$help` bar toggle, `$sleep_time`, `$read_inc` /
+      `$write_inc` / `$net_inc`
 
 ## Still open inside rounds marked done
 

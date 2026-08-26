@@ -276,6 +276,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "pager_format" => Text(&mut cfg.pager.format),
         "quote_regexp" => Text(&mut cfg.pager.quote_regexp),
         "status_format" => Text(&mut cfg.ui.status_format),
+        "status_chars" => Text(&mut cfg.ui.status_chars),
         "ts_status_format" => Text(&mut cfg.ui.title_format),
         "ts_enabled" => FlagOpt(&mut cfg.ui.set_title),
         "history_file" => Text(&mut cfg.ui.history_file),
