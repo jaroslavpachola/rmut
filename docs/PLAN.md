@@ -1588,36 +1588,39 @@ rider here.
       management with `account-hook`, `$imap_passive`, NAMESPACE and
       `$folder_format`
 
-## R67: compose menu, round 3
+## R67: the outgoing envelope (done, 1.67)
 
-Goal: the compose functions and quadoptions still hardcoded.
+Goal: the three compose settings hardcoded since the start — the
+Message-ID host, the User-Agent header, and where the signature
+sits. The rest of the old broad R67 (compose-menu editing keys,
+reply-crypto, DSN, charset) split into R71 and R72 below: they are a
+different theme (interactive compose-menu and crypto), not envelope
+headers, and reply-crypto belongs with R64's deferred `~g`/`~G`.
 
-- [ ] `$postpone` (rmut always offers `p`; mutt's ask-yes/yes/no)
-      and `$recall` (rmut always offers the postponed picker at `m`;
-      mutt's quadoption, with `no` meaning "never ask")
-- [ ] Compose menu keys: edit-from and edit-reply-to (`F`? mutt has
-      `<esc>f` and `r`), `A` attach-message from the open mailbox
-      (only the forwarded original attaches today), `r`
-      rename-attachment, `u` toggle-unlink, Ctrl+D
-      toggle-disposition, `n` new-mime, move-up/move-down, `w`
-      write-fcc, `F` filter-entry, `T`/`m` view-text/view-mailcap,
-      `i` ispell with `$ispell`
-- [ ] Reply crypto: `$crypt_replyencrypt`, `$crypt_replysign`,
-      `$crypt_replysignencrypted`, `$crypt_opportunistic_encrypt`,
-      `$pgp_replyinline` / `$pgp_autoinline`, `$postpone_encrypt`;
-      the index's Ctrl+K extract-keys, Esc k mail-key and Esc P
-      check-traditional-pgp
-- [ ] Envelope: `$hostname` / `$use_domain` (the Message-ID host is
-      whatever `make_message_id` is handed), `$use_envelope_from` /
-      `$envelope_from_address`, `$dsn_notify` / `$dsn_return`,
-      `$user_agent`, `$sig_on_top`, `$reply_self`, `$fcc_attach`,
-      `$fcc_clear`, `$forward_edit`, `$forward_decrypt`,
-      `$mime_forward_rest`
-- [ ] `$send_charset` / `$charset`: rmut writes utf-8 and reads
-      what mailparse decodes; the two charset lines of the eight
-      unclaimed. Sending in another charset is worth refusing
-      explicitly, reading `$assumed_charset` for undeclared 8-bit
-      mail is worth doing
+- [x] `$hostname`: `[mail] hostname` overrides the host in a
+      generated Message-ID, both the interactive send and the batch
+      CLI. `$use_domain` imports to the third bucket, since rmut
+      takes the host from the system name (or `$hostname`) already
+- [x] `$user_agent`: off by default (neomutt's default), `[mail]
+      user_agent = true` adds `User-Agent: rmut/VERSION` when the
+      draft has none of its own. `finalize` grew a `finalize_with`
+      that both send paths call
+- [x] `$sig_on_top`: `[mail] sig_on_top` puts the signature above
+      the quoted original. `with_signature` became `with_signature_at`
+      with an `on_top`; the interactive and batch drafts share it
+- [x] All three settable at `:`, imported (with `use_domain`
+      satisfied), a core test (finalize's User-Agent and the two
+      signature placements), an importer test, e2e
+      scenario_outgoing_envelope, and the parity fixture grew all
+      three
+- [ ] Split out to R71/R72: `$postpone` / `$recall` quadoptions and
+      the compose-menu editing keys (edit-from, attach-message,
+      rename-attachment, toggle-unlink, view-text/mailcap…); the
+      reply-crypto family (`$crypt_replysign`, `$crypt_replyencrypt`,
+      `$pgp_replyinline`, extract-keys/mail-key) with R64's crypto
+      patterns; `$use_envelope_from`, `$dsn_notify`/`$dsn_return`,
+      `$reply_self`, `$fcc_attach`/`$fcc_clear`, `$forward_edit`; and
+      `$send_charset`/`$charset`/`$assumed_charset`
 
 ## R68: the small keys and the session knobs
 
@@ -1682,6 +1685,38 @@ sensitive enough to want their own round.
       an unknown certificate, and `$ssl_client_cert`. This weakens
       TLS if done wrong, so it wants a careful design and a real
       test, not a rider
+
+## R71: the compose menu and its quadoptions
+
+Goal: the interactive compose-menu functions and the send/recall
+quadoptions, split out of R67.
+
+- [ ] `$postpone` (rmut always offers `p`) and `$recall` (always
+      offers the postponed picker at `m`): mutt's quadoptions, `no`
+      meaning "never ask"
+- [ ] Compose-menu keys: edit-from, edit-reply-to, `A`
+      attach-message from the open mailbox (only the forwarded
+      original attaches today), rename-attachment, toggle-unlink,
+      toggle-disposition, new-mime, move-up/down, write-fcc,
+      view-text/view-mailcap, ispell
+- [ ] Envelope odds: `$use_envelope_from` / `$envelope_from_address`,
+      `$dsn_notify` / `$dsn_return`, `$reply_self`, `$fcc_attach` /
+      `$fcc_clear`, `$forward_edit`, `$mime_forward_rest`
+
+## R72: reply crypto and charset
+
+Goal: the crypto defaults and the charset knobs R67 deferred.
+
+- [ ] Reply crypto (with R64's `~g`/`~G`/`~V`/`~k`):
+      `$crypt_replysign`, `$crypt_replyencrypt`,
+      `$crypt_replysignencrypted`, `$crypt_opportunistic_encrypt`,
+      `$pgp_replyinline` / `$pgp_autoinline`, `$postpone_encrypt`;
+      the index's Ctrl+K extract-keys, Esc k mail-key, Esc P
+      check-traditional-pgp
+- [ ] `$send_charset` / `$charset`: rmut writes utf-8 and reads what
+      mailparse decodes; sending in another charset is worth refusing
+      explicitly, and reading `$assumed_charset` for undeclared
+      8-bit mail is worth doing
 
 ## Still open inside rounds marked done
 

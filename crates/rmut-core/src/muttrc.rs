@@ -101,6 +101,9 @@ struct State {
     /// `set signature` and `set nosig_dashes`.
     signature: Option<String>,
     no_sig_dashes: bool,
+    sig_on_top: bool,
+    hostname: Option<String>,
+    user_agent: bool,
     /// mutt's $abort_nosubject and $abort_unmodified, when they are
     /// not what rmut does anyway.
     abort_nosubject: Option<String>,
@@ -1038,6 +1041,25 @@ impl State {
                 }
             }
             "signature" => self.signature = Some(v),
+            "sig_on_top" => {
+                if is_yes(value) {
+                    self.sig_on_top = true;
+                } else {
+                    self.satisfy(line, "the signature goes below the quote, as in mutt");
+                }
+            }
+            "hostname" => self.hostname = Some(v),
+            "use_domain" => self.differently(
+                line,
+                "rmut takes the Message-ID host from the system name or [mail] hostname",
+            ),
+            "user_agent" => {
+                if is_yes(value) {
+                    self.user_agent = true;
+                } else {
+                    self.satisfy(line, "rmut adds no User-Agent by default");
+                }
+            }
             "sig_dashes" => {
                 if !is_yes(value) {
                     self.no_sig_dashes = true;
@@ -1562,6 +1584,9 @@ impl State {
             || self.forward_quote
             || self.signature.is_some()
             || self.no_sig_dashes
+            || self.sig_on_top
+            || self.hostname.is_some()
+            || self.user_agent
             || self.abort_nosubject.is_some()
             || self.no_abort_unmodified
             || self.text_flowed
@@ -1682,6 +1707,15 @@ impl State {
             }
             if self.no_sig_dashes {
                 out += "sig_dashes = false\n";
+            }
+            if self.sig_on_top {
+                out += "sig_on_top = true\n";
+            }
+            if let Some(v) = &self.hostname {
+                out += &format!("hostname = {}\n", quote(v));
+            }
+            if self.user_agent {
+                out += "user_agent = true\n";
             }
             if let Some(v) = &self.abort_nosubject {
                 out += &format!("abort_nosubject = {}\n", quote(v));
@@ -2864,6 +2898,22 @@ mod tests {
         // mutt waits for the OS when it is zero or less.
         let (cfg, _) = to_config("set connect_timeout=-1\n");
         assert_eq!(cfg.net.connect_timeout, 0);
+    }
+
+    #[test]
+    fn the_envelope_settings_carry_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set hostname = mail.example.net\n",
+            "set user_agent = yes\n",
+            "set sig_on_top = yes\n",
+        ));
+        assert_eq!(
+            cfg.mail.hostname.as_deref(),
+            Some("mail.example.net"),
+            "{toml}"
+        );
+        assert_eq!(cfg.mail.user_agent, Some(true));
+        assert_eq!(cfg.mail.sig_on_top, Some(true));
     }
 
     #[test]

@@ -1014,6 +1014,15 @@ in a pipe (|). It is read for each draft, so a generated one can say
 something new; unreadable is no signature at all. sig_dashes, on
 unless turned off, puts a line holding "\-\- " above it, which is also
 what the attachment reminder treats as the end of the message.
+.B sig_on_top
+(mutt's, off by default) puts the signature above the quoted original
+instead of below.
+.TP
+.B hostname ", " user_agent
+mutt's $hostname sets the host in a generated Message\-ID (the system
+name when unset). mutt's $user_agent, off by default, adds a
+.I "User-Agent: rmut/VERSION"
+header to outgoing mail.
 .TP
 .B forward_quote
 mutt's $forward_quote: the forwarded message comes in quoted with

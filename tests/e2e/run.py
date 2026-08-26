@@ -3185,7 +3185,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.66")
+    r.expect("rmut 1.67")
     r.settle()
 
     # A refused pattern names itself.
@@ -3219,6 +3219,47 @@ def scenario_decode_family(tmp):
         body = f.read()
     assert "hello from base64" in body, body
     assert "aGVsbG8" not in body, body
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_outgoing_envelope(tmp):
+    """R67: $hostname sets the Message-ID host, $user_agent adds the
+    header, $sig_on_top puts the signature above the quote."""
+    md = make_maildir(tmp, "md-envelope")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "envelope-sent.eml")
+    editor = os.path.join(tmp, "envelope-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "the body of my reply\\n" >> "$1"\n')
+    sendmail = os.path.join(tmp, "envelope-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(editor, 0o755)
+    os.chmod(sendmail, 0o755)
+    sig = os.path.join(tmp, "envelope-sig")
+    with open(sig, "w") as f:
+        f.write("Jarda\n")
+    cfg = os.path.join(tmp, "envelope-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\nsignature = "{sig}"\nsig_on_top = true\n'
+                'hostname = "mail.example.net"\nuser_agent = true\ninclude = "no"\n')
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                                "RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+
+    # Reply, send.
+    r.keys(b"r")
+    r.expect("To:")
+    r.keys(b"jane@example.com\r\ry")
+    wait_for(lambda: os.path.exists(sent_file), desc="the reply went out")
+    r.expect("message sent")
+    sent = open(sent_file).read()
+    assert "Message-ID:" in sent and "@mail.example.net>" in sent, sent
+    assert "User-Agent: rmut/" in sent, sent
+    # sig_on_top: the signature sits above the body.
+    assert "-- \nJarda" in sent, sent
+    assert sent.index("Jarda") < sent.index("the body of my reply"), sent
     r.keys(b"q")
     r.close()
 
@@ -3949,6 +3990,7 @@ SCENARIOS = [
     scenario_thread_surgery,
     scenario_labels_and_flags,
     scenario_decode_family,
+    scenario_outgoing_envelope,
 ]
 
 

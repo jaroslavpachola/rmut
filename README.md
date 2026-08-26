@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.66**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.67**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -322,6 +322,9 @@ settable (`$abort_nosubject`, `$abort_unmodified`):
 [mail]
 signature = "~/.signature"    # a file, or a command when it ends in |
 sig_dashes = true             # the "-- " line above it (the default)
+sig_on_top = false            # true puts the signature above the quote
+hostname = "mail.example.net" # the Message-ID host (mutt's $hostname)
+user_agent = false            # true adds a User-Agent: rmut/... header
 abort_nosubject = "ask-yes"   # empty subject: yes/no/ask-yes/ask-no
 abort_unmodified = true       # a first edit that changed nothing is
                               # not a message: the draft is dropped

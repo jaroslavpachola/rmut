@@ -306,6 +306,15 @@ pub struct Mail {
     /// mutt's $sig_dashes: the signature is introduced by a line
     /// holding "-- ". True unless set otherwise, as in mutt.
     pub sig_dashes: Option<bool>,
+    /// mutt's $sig_on_top: the signature goes above the quoted
+    /// original rather than below it. Off by default, as in mutt.
+    pub sig_on_top: Option<bool>,
+    /// mutt's $hostname: the host in a generated Message-ID. The
+    /// system hostname when unset.
+    pub hostname: Option<String>,
+    /// mutt's $user_agent: add a `User-Agent: rmut/VERSION` header to
+    /// outgoing mail. Off by default, as neomutt has it.
+    pub user_agent: Option<bool>,
     /// mutt's $abort_nosubject: a draft with an empty subject.
     /// "ask-yes" (the default) asks with Enter aborting, "ask-no"
     /// asks with Enter sending it on, "yes" aborts without asking,

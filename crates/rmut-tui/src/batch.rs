@@ -49,9 +49,12 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         .as_deref()
         .and_then(compose::signature_text)
     {
-        Some(sig) => {
-            compose::with_signature(&out.body, &sig, config.mail.sig_dashes.unwrap_or(true))
-        }
+        Some(sig) => compose::with_signature_at(
+            &out.body,
+            &sig,
+            config.mail.sig_dashes.unwrap_or(true),
+            config.mail.sig_on_top.unwrap_or(false),
+        ),
         None => out.body.clone(),
     };
     let mut text = compose::draft_text(
@@ -85,11 +88,18 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
             })
         })
         .collect::<Result<_>>()?;
-    let final_text = compose::finalize(
+    let msg_host = config
+        .mail
+        .hostname
+        .clone()
+        .filter(|h| !h.trim().is_empty())
+        .unwrap_or_else(|| host.clone());
+    let final_text = compose::finalize_with(
         &text,
         &compose::from_address(&text).context("cannot parse the From address")?,
-        &compose::make_message_id(&host),
+        &compose::make_message_id(&msg_host),
         &compose::rfc2822_now(),
+        config.mail.user_agent.unwrap_or(false),
     )?;
     let final_text = if attachments.is_empty() {
         final_text

@@ -445,9 +445,10 @@ impl Session {
             }
         }
         // mutt's $signature closes every draft it starts, quoted
-        // original or not.
+        // original or not; $sig_on_top puts it above the quote.
         if let Some(sig) = self.signature() {
-            body = compose::with_signature(&body, &sig, self.sig_dashes());
+            let on_top = self.config.mail.sig_on_top.unwrap_or(false);
+            body = compose::with_signature_at(&body, &sig, self.sig_dashes(), on_top);
         }
         // An answered Cc ($askcc) is what the user said, over
         // whatever the group reply worked out.

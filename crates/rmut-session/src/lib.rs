@@ -3508,11 +3508,20 @@ impl Session {
             .current_identity(&[])
             .from_line()
             .unwrap_or_else(|| default_from(&host));
-        let final_text = match compose::finalize(
+        // mutt's $hostname overrides the Message-ID host.
+        let msg_host = self
+            .config
+            .mail
+            .hostname
+            .clone()
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or(host);
+        let final_text = match compose::finalize_with(
             &raw,
             &from,
-            &compose::make_message_id(&host),
+            &compose::make_message_id(&msg_host),
             &compose::rfc2822_now(),
+            self.config.mail.user_agent.unwrap_or(false),
         ) {
             Ok(t) => t,
             Err(err) => {

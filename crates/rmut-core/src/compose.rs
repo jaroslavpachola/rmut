@@ -250,16 +250,30 @@ pub fn signature_text(setting: &str) -> Option<String> {
 /// The body with the signature under it, mutt's way: a blank line,
 /// then $sig_dashes' "-- " line when it is on, then the signature.
 pub fn with_signature(body: &str, signature: &str, dashes: bool) -> String {
+    with_signature_at(body, signature, dashes, false)
+}
+
+/// The signature added to a draft. mutt's $sig_on_top puts it above
+/// the quoted original instead of below (with a blank line between,
+/// so the reply is written between the signature and the quote).
+pub fn with_signature_at(body: &str, signature: &str, dashes: bool, on_top: bool) -> String {
+    let mut sig = String::new();
+    if dashes {
+        sig += "-- \n";
+    }
+    sig += signature;
+    if !sig.ends_with('\n') {
+        sig.push('\n');
+    }
+    if on_top {
+        return format!("{sig}\n{body}");
+    }
     let mut out = body.to_string();
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
     out.push('\n');
-    if dashes {
-        out += "-- \n";
-    }
-    out += signature;
-    out.push('\n');
+    out += &sig;
     out
 }
 
@@ -284,8 +298,25 @@ fn header_present(head: &str, name: &str) -> bool {
 }
 
 /// Finalize an edited draft for sending: require a recipient, add
+/// mutt's $user_agent header, when the caller asks for it.
+pub fn user_agent_header() -> String {
+    format!("User-Agent: rmut/{}", env!("CARGO_PKG_VERSION"))
+}
+
 /// From/Date/Message-ID when the user didn't write them.
 pub fn finalize(draft: &str, from: &str, msg_id: &str, date: &str) -> Result<String> {
+    finalize_with(draft, from, msg_id, date, false)
+}
+
+/// Like `finalize`, adding a `User-Agent` header when `user_agent`
+/// and the draft has none of its own.
+pub fn finalize_with(
+    draft: &str,
+    from: &str,
+    msg_id: &str,
+    date: &str,
+    user_agent: bool,
+) -> Result<String> {
     let (head, body) = draft.split_once("\n\n").unwrap_or((draft.trim_end(), ""));
     let has_recipients = head.lines().any(|l| {
         l.split_once(':').is_some_and(|(k, v)| {
@@ -302,6 +333,9 @@ pub fn finalize(draft: &str, from: &str, msg_id: &str, date: &str) -> Result<Str
     }
     if !header_present(&head, "Message-ID") {
         head += &format!("\nMessage-ID: {msg_id}");
+    }
+    if user_agent && !header_present(&head, "User-Agent") {
+        head += &format!("\n{}", user_agent_header());
     }
     Ok(format!("{head}\n\n{body}"))
 }
@@ -1193,6 +1227,31 @@ mod tests {
         let out2 = finalize(draft2, "me@host", "<i>", "D").unwrap();
         assert!(out2.contains("From: custom@x"));
         assert!(!out2.contains("me@host"));
+    }
+
+    #[test]
+    fn user_agent_and_signature_placement() {
+        let draft = "To: a@b\n\nhi";
+        let plain = finalize_with(draft, "me@x", "<id@h>", "Mon", false).unwrap();
+        assert!(!plain.contains("User-Agent"));
+        let ua = finalize_with(draft, "me@x", "<id@h>", "Mon", true).unwrap();
+        assert!(ua.contains(&user_agent_header()), "{ua}");
+        // A draft that already carries one is left alone.
+        let own = finalize_with(
+            "To: a@b\nUser-Agent: mine\n\nhi",
+            "me@x",
+            "<id@h>",
+            "Mon",
+            true,
+        )
+        .unwrap();
+        assert_eq!(own.matches("User-Agent").count(), 1, "{own}");
+        // sig_on_top puts the signature above the body.
+        let below = with_signature_at("the reply", "Jane", true, false);
+        assert!(below.trim_end().ends_with("Jane"), "{below}");
+        let above = with_signature_at("the reply", "Jane", true, true);
+        assert!(above.starts_with("-- \nJane\n"), "{above}");
+        assert!(above.trim_end().ends_with("the reply"), "{above}");
     }
 
     #[test]
