@@ -155,6 +155,17 @@ fn write_message(dir: &Path, i: usize, subject: &str, extra: Option<&str>) {
     fs::write(dir.join("cur").join(format!("{i:04}.rmut:2,")), text).unwrap();
 }
 
+/// A message written in the same clock tick as the fixture leaves
+/// new/ and cur/ with the mtimes the session already saw, so the poll
+/// would skip the rescan. Push them a second on, as time would.
+fn touch_dirs(dir: &Path) {
+    for sub in ["new", "cur"] {
+        let f = fs::File::open(dir.join(sub)).unwrap();
+        let t = f.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(1);
+        f.set_modified(t).unwrap();
+    }
+}
+
 #[test]
 fn a_mailbox_opens_on_its_messages() {
     let f = Fixture::new(&["one", "two", "three"]);
@@ -724,6 +735,7 @@ fn mark_old_can_be_told_not_to() {
     let mut f = Fixture::new(&["read"]);
     let arrival = f._dir.path().join("new").join("1234.rmut");
     fs::write(&arrival, "From: s@example.com\nSubject: fresh\n\nbody\n").unwrap();
+    touch_dirs(f._dir.path());
     f.session.check_new_mail();
     assert_eq!(f.session.new_count(), 1);
     f.session.mark_old_unread();
@@ -736,6 +748,7 @@ fn mark_old_can_be_told_not_to() {
     let mut f = Fixture::with_config(&["read"], config);
     let arrival = f._dir.path().join("new").join("1234.rmut");
     fs::write(&arrival, "From: s@example.com\nSubject: fresh\n\nbody\n").unwrap();
+    touch_dirs(f._dir.path());
     f.session.check_new_mail();
     f.session.mark_old_unread();
     assert_eq!(f.session.new_count(), 1, "left as it was found");
@@ -752,6 +765,7 @@ fn an_arrival_says_so_as_an_arrival() {
         "From: s@example.com\nSubject: fresh\n\nbody\n",
     )
     .unwrap();
+    touch_dirs(f._dir.path());
     f.session.check_new_mail();
     let said = f.log.notices();
     assert!(
@@ -825,6 +839,7 @@ fn reverse_realname_off_keeps_the_configured_name() {
         "to my work address",
         Some("Cc: Jane Work <work@example.com>"),
     );
+    touch_dirs(f._dir.path());
     f.session.check_new_mail();
     let b = base(&mut f);
     assert_eq!(
@@ -840,6 +855,7 @@ fn reverse_realname_off_keeps_the_configured_name() {
         "to my work address",
         Some("Cc: Jane Work <work@example.com>"),
     );
+    touch_dirs(f._dir.path());
     f.session.check_new_mail();
     let b = base(&mut f);
     assert_eq!(
