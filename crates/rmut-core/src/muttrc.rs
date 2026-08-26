@@ -172,6 +172,9 @@ struct State {
     sign_key: Option<String>,
     sign_by_default: bool,
     encrypt_by_default: bool,
+    reply_sign: bool,
+    reply_encrypt: bool,
+    reply_sign_encrypted: bool,
     print: Option<String>,
     query_command: Option<String>,
     trash: Option<String>,
@@ -686,6 +689,13 @@ impl State {
             "pgp_sign_as" | "pgp_default_key" => self.sign_key = Some(v),
             "crypt_autosign" | "pgp_autosign" => self.sign_by_default = is_yes(&v),
             "crypt_autoencrypt" | "pgp_autoencrypt" => self.encrypt_by_default = is_yes(&v),
+            "crypt_replysign" => self.reply_sign = is_yes(&v),
+            "crypt_replyencrypt" => self.reply_encrypt = is_yes(&v),
+            "crypt_replysignencrypted" => self.reply_sign_encrypted = is_yes(&v),
+            "assumed_charset" => self.differently(
+                line,
+                "rmut lets mailparse decode declared charsets; undeclared 8-bit is read as UTF-8",
+            ),
             "print_command" => self.print = Some(v),
             "query_command" => self.query_command = Some(v),
             "trash" => self.trash = Some(v),
@@ -1954,7 +1964,13 @@ impl State {
                 }
             }
         }
-        if self.sign_key.is_some() || self.sign_by_default || self.encrypt_by_default {
+        if self.sign_key.is_some()
+            || self.sign_by_default
+            || self.encrypt_by_default
+            || self.reply_sign
+            || self.reply_encrypt
+            || self.reply_sign_encrypted
+        {
             out += "\n[pgp]\n";
             if let Some(k) = &self.sign_key {
                 out += &format!("sign_key = {}\n", quote(k));
@@ -1964,6 +1980,15 @@ impl State {
             }
             if self.encrypt_by_default {
                 out += "encrypt_by_default = true\n";
+            }
+            if self.reply_sign {
+                out += "reply_sign = true\n";
+            }
+            if self.reply_encrypt {
+                out += "reply_encrypt = true\n";
+            }
+            if self.reply_sign_encrypted {
+                out += "reply_sign_encrypted = true\n";
             }
         }
         let mut skipped = self.skipped.clone();
@@ -2927,6 +2952,17 @@ mod tests {
         // mutt waits for the OS when it is zero or less.
         let (cfg, _) = to_config("set connect_timeout=-1\n");
         assert_eq!(cfg.net.connect_timeout, 0);
+    }
+
+    #[test]
+    fn reply_crypto_settings_carry_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set crypt_replysign = yes\n",
+            "set crypt_replyencrypt = yes\n",
+        ));
+        assert!(cfg.pgp.reply_sign, "{toml}");
+        assert!(cfg.pgp.reply_encrypt);
+        assert!(!cfg.pgp.reply_sign_encrypted);
     }
 
     #[test]

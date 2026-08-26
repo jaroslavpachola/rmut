@@ -623,6 +623,14 @@ pub struct Pgp {
     /// security menu can still change it per message).
     pub sign_by_default: bool,
     pub encrypt_by_default: bool,
+    /// mutt's $crypt_replysign: a reply to a signed message defaults
+    /// to signed. $crypt_replyencrypt: a reply to an encrypted one
+    /// defaults to encrypted (on in mutt, off here until asked).
+    /// $crypt_replysignencrypted: a reply to signed-and-encrypted
+    /// mail defaults to signed too. All off by default.
+    pub reply_sign: bool,
+    pub reply_encrypt: bool,
+    pub reply_sign_encrypted: bool,
 }
 
 impl Default for Pgp {
@@ -632,6 +640,9 @@ impl Default for Pgp {
             sign_key: None,
             sign_by_default: false,
             encrypt_by_default: false,
+            reply_sign: false,
+            reply_encrypt: false,
+            reply_sign_encrypted: false,
         }
     }
 }

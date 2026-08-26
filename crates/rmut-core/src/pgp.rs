@@ -267,6 +267,53 @@ fn sig_phrase(sig: &Sig) -> String {
 /// Inspect a raw message; Some when it is PGP-encrypted or signed in
 /// any of the four shapes (PGP/MIME encrypted or signed, inline
 /// encrypted, clearsigned).
+/// Whether a message is signed and/or encrypted, without running gpg:
+/// just the MIME type and the inline PGP markers. For the reply-crypto
+/// defaults, which must not decrypt anything.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Crypto {
+    pub signed: bool,
+    pub encrypted: bool,
+}
+
+pub fn classify(raw: &[u8]) -> Crypto {
+    let Ok(mail) = parse_mail(raw) else {
+        return Crypto::default();
+    };
+    if mail.ctype.mimetype == "multipart/encrypted" {
+        return Crypto {
+            encrypted: true,
+            signed: false,
+        };
+    }
+    if mail.ctype.mimetype == "multipart/signed"
+        && mail.ctype.params.get("protocol").map(String::as_str)
+            == Some("application/pgp-signature")
+    {
+        return Crypto {
+            signed: true,
+            encrypted: false,
+        };
+    }
+    // Inline PGP: look at the text body's opening marker.
+    if let Some(text) = message::extract_text(&mail) {
+        let t = text.trim_start();
+        if t.starts_with("-----BEGIN PGP MESSAGE-----") {
+            return Crypto {
+                encrypted: true,
+                signed: false,
+            };
+        }
+        if t.starts_with("-----BEGIN PGP SIGNED MESSAGE-----") {
+            return Crypto {
+                signed: true,
+                encrypted: false,
+            };
+        }
+    }
+    Crypto::default()
+}
+
 pub fn view(cfg: &Pgp, raw: &[u8]) -> Option<View> {
     let mail = parse_mail(raw).ok()?;
     if mail.ctype.mimetype == "multipart/encrypted" && mail.subparts.len() >= 2 {
@@ -913,5 +960,25 @@ printf -- '-----BEGIN PGP MESSAGE-----\nCCC\n-----END PGP MESSAGE-----\n'"#,
                 .unwrap()
                 .contains("BEGIN PGP MESSAGE")
         );
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::classify;
+
+    #[test]
+    fn classify_reads_the_mime_type_only() {
+        let enc = b"Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=b\r\n\r\n--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n--b--\r\n";
+        let c = classify(enc);
+        assert!(c.encrypted && !c.signed);
+        let sig = b"Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b--\r\n";
+        let c = classify(sig);
+        assert!(c.signed && !c.encrypted);
+        let inline = b"Content-Type: text/plain\r\n\r\n-----BEGIN PGP MESSAGE-----\r\nxx\r\n-----END PGP MESSAGE-----\r\n";
+        assert!(classify(inline).encrypted);
+        let plain = b"Content-Type: text/plain\r\n\r\nnothing here\r\n";
+        let c = classify(plain);
+        assert!(!c.signed && !c.encrypted);
     }
 }

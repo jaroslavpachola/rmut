@@ -1767,3 +1767,83 @@ fn postpone_quadoption_decides_without_asking() {
     assert!(f.answer_enter(ask).is_none());
     assert!(f.session.has_postponed(), "Enter filed it");
 }
+
+#[test]
+fn reply_crypto_defaults_from_the_original() {
+    use crate::{ComposeBase, ComposeKind, Security};
+    let mut config = reply_config();
+    config.pgp.reply_sign = true;
+    config.pgp.reply_encrypt = true;
+    let mut f = Fixture::new(&[]);
+    f.session.config = config;
+    let _ = f.session.recompile();
+
+    let write = |dir: &std::path::Path, name: &str, ctype: &str, body: &str| -> ComposeBase {
+        let path = dir.join("cur").join(format!("{name}:2,S"));
+        fs::write(
+            &path,
+            format!("From: s@x\nSubject: q\nContent-Type: {ctype}\n\n{body}\n"),
+        )
+        .unwrap();
+        ComposeBase {
+            path,
+            reply_to: String::new(),
+            from_hdr: String::new(),
+            has_reply_to: false,
+            orig_to: String::new(),
+            orig_cc: String::new(),
+            list_post: None,
+            followup_to: String::new(),
+            from_addr: String::new(),
+            from_display: String::new(),
+            subject: "q".into(),
+            date: 0,
+            msg_id: None,
+            references: vec![],
+        }
+    };
+    let dir = f._dir.path().to_path_buf();
+
+    // A signed original: reply defaults to signed.
+    let signed = write(
+        &dir,
+        "0001",
+        "multipart/signed; protocol=\"application/pgp-signature\"; boundary=b",
+        "--b\nContent-Type: text/plain\n\nhi\n--b--",
+    );
+    assert_eq!(
+        f.session.security_for(&ComposeKind::Reply, Some(&signed)),
+        Security::Sign
+    );
+
+    // An encrypted original: reply defaults to encrypted.
+    let enc = write(
+        &dir,
+        "0002",
+        "multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=b",
+        "--b\nContent-Type: application/pgp-encrypted\n\nVersion: 1\n--b--",
+    );
+    assert_eq!(
+        f.session.security_for(&ComposeKind::Reply, Some(&enc)),
+        Security::Encrypt
+    );
+
+    // A plain original: nothing.
+    let plain = write(&dir, "0003", "text/plain", "just words");
+    assert_eq!(
+        f.session.security_for(&ComposeKind::Reply, Some(&plain)),
+        Security::None
+    );
+    // Forwarding a signed message does not inherit the default: only
+    // replies do, as in mutt.
+    assert_eq!(
+        f.session.security_for(&ComposeKind::Forward, Some(&signed)),
+        Security::None
+    );
+    // The setting off: back to none even for a signed original.
+    f.session.config.pgp.reply_sign = false;
+    assert_eq!(
+        f.session.security_for(&ComposeKind::Reply, Some(&signed)),
+        Security::None
+    );
+}

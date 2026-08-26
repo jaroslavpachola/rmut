@@ -2006,13 +2006,15 @@ def scenario_import_muttrc(tmp):
     out = proc.stdout
     unclaimed = [l for l in out.split("# not imported:")[-1].splitlines()
                  if l.startswith("#   set")]
-    assert len(unclaimed) == 8, "\n".join(unclaimed)
-    # R61's seven and R62's six: settings now, or answered by what
-    # rmut already does.
+    assert len(unclaimed) == 6, "\n".join(unclaimed)
+    # Settings now, or answered by what rmut already does. The ratchet
+    # a round has to move: R72 claimed assumed_charset and the crypt
+    # reply defaults, leaving six real holes.
     for name in ("signature", "sig_dashes", "forward_quote", "reply_to",
                  "abort_nosubject", "abort_unmodified", "honor_followup_to",
                  "mark_old", "beep_new", "wait_key", "print",
-                 "reverse_realname", "timeout"):
+                 "reverse_realname", "timeout", "crypt_replysign",
+                 "crypt_replyencrypt", "assumed_charset"):
         assert not any(f"set {name} " in l for l in unclaimed), name
 
 
@@ -3215,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.70")
+    r.expect("rmut 1.71")
     r.settle()
 
     # A refused pattern names itself.

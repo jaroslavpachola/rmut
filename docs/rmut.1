@@ -1243,6 +1243,13 @@ Signing key for \-\-local\-user; gpg's default key when unset.
 .TP
 .B sign_by_default, encrypt_by_default
 Preselect signing/encrypting for new drafts.
+.TP
+.B reply_sign, reply_encrypt, reply_sign_encrypted
+mutt's $crypt_replysign / $crypt_replyencrypt /
+$crypt_replysignencrypted: a reply inherits the original's protection
+\(em signed when it was signed, encrypted when it was encrypted, and
+signed too when answering encrypted mail. Off by default; detection
+reads the MIME type only, never decrypting.
 .SH FORMAT STRINGS
 .B index.format
 takes

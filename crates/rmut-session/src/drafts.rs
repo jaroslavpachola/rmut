@@ -490,7 +490,7 @@ impl Session {
                 // $abort_unmodified when it hands it straight back.
                 let staged = std::fs::read_to_string(&path).unwrap_or_default();
                 self.staged = Some((path.clone(), staged));
-                let security = self.default_security();
+                let security = self.security_for(&setup.kind, setup.base.as_ref());
                 self.requests.push(Request::Editor(Compose {
                     path,
                     recall_source: None,

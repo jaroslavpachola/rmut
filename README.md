@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.70**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.71**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -270,7 +270,13 @@ per message: in the compose menu, `p` opens the security menu with
 (e)ncrypt, (s)ign, (b)oth, (c)lear, and the chosen state shows in the
 menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption
 looks keys up by recipient address and always encrypts to the sender
-too, so the Fcc copy stays readable. Passphrases are gpg-agent's
+too, so the Fcc copy stays readable. A reply can inherit the
+original's protection: `reply_sign` signs replies to signed mail,
+`reply_encrypt` encrypts replies to encrypted mail, `reply_sign_encrypted`
+signs replies to encrypted mail too (mutt's `$crypt_replysign` /
+`$crypt_replyencrypt` / `$crypt_replysignencrypted`, all off by
+default). Detection reads the original's MIME type only — it never
+decrypts to decide. Passphrases are gpg-agent's
 business; rmut never sees them.
 
 ## Sending mail
@@ -970,6 +976,9 @@ command = "gpg"
 sign_key = "jane@example.com"  # --local-user; gpg's default key if unset
 sign_by_default = false        # preselect security for new drafts
 encrypt_by_default = false
+reply_sign = false             # a reply to signed mail defaults signed
+reply_encrypt = false          # a reply to encrypted mail, encrypted
+reply_sign_encrypted = false   # a reply to encrypted mail, signed too
 ```
 
 Key syntax: a character, `ctrl+x`, `alt+x`, or enter/esc/space/tab/

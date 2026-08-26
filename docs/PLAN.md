@@ -1731,20 +1731,36 @@ draft-assembly plumbing, not a rider.
       `$reply_self`, `$fcc_attach` / `$fcc_clear`, `$forward_edit`,
       `$mime_forward_rest`
 
-## R72: reply crypto and charset
+## R72: reply crypto and charset (done, 1.71)
 
-Goal: the crypto defaults and the charset knobs R67 deferred.
+Goal: the crypto defaults and the charset knobs R67 deferred. The
+gpg-integration key operations and inline-vs-MIME PGP split into R76
+below — they need gpg fixtures and a second PGP encoding path, not a
+rider.
 
-- [ ] Reply crypto (with R64's `~g`/`~G`/`~V`/`~k`):
-      `$crypt_replysign`, `$crypt_replyencrypt`,
-      `$crypt_replysignencrypted`, `$crypt_opportunistic_encrypt`,
-      `$pgp_replyinline` / `$pgp_autoinline`, `$postpone_encrypt`;
-      the index's Ctrl+K extract-keys, Esc k mail-key, Esc P
+- [x] `$crypt_replysign`, `$crypt_replyencrypt`,
+      `$crypt_replysignencrypted`: a reply inherits the original's
+      protection. A new `pgp::classify` reads the MIME type (and the
+      inline PGP markers) *without running gpg* — the defaults must
+      never decrypt to decide — and `Session::security_for` layers
+      those on the `sign_by_default` / `encrypt_by_default` base for
+      replies only, as mutt does. All three `[pgp]` bools, off by
+      default, settable at `:` and imported
+- [x] `$charset` / `$send_charset` were already handled (satisfied
+      for UTF-8, skipped otherwise); `$assumed_charset` joins the
+      third bucket, pointing at how mailparse decodes declared
+      charsets and rmut reads undeclared 8-bit as UTF-8
+- [x] Core test for `classify` (each MIME shape and inline marker), a
+      session test for `security_for` over signed / encrypted / plain
+      originals and the reply-only rule, an importer test; the parity
+      fixture grew `crypt_replysign` / `crypt_replyencrypt`. No e2e:
+      the send-through-gpg path is already the PGP scenario's job, and
+      the default is pure logic
+- [ ] Left for R76: `$crypt_opportunistic_encrypt` (per-recipient key
+      lookup), `$pgp_replyinline` / `$pgp_autoinline` (a second,
+      inline PGP encoding beside PGP/MIME), `$postpone_encrypt`, and
+      the index key ops Ctrl+K extract-keys, Esc k mail-key, Esc P
       check-traditional-pgp
-- [ ] `$send_charset` / `$charset`: rmut writes utf-8 and reads what
-      mailparse decodes; sending in another charset is worth refusing
-      explicitly, and reading `$assumed_charset` for undeclared
-      8-bit mail is worth doing
 
 ## R73: the small keys and the screen knobs
 
@@ -1793,6 +1809,18 @@ draft plumbing.
 - [ ] Envelope odds: `$use_envelope_from` / `$envelope_from_address`,
       `$dsn_notify` / `$dsn_return`, `$reply_self`, `$fcc_attach` /
       `$fcc_clear`, `$forward_edit`, `$mime_forward_rest`
+
+## R76: the PGP odds
+
+Goal: the crypto pieces R72 deferred — each needs gpg fixtures or a
+new encoding path.
+
+- [ ] `$crypt_opportunistic_encrypt` (encrypt when every recipient
+      has a key), `$pgp_replyinline` / `$pgp_autoinline` (inline PGP
+      as an alternative to PGP/MIME), `$postpone_encrypt`
+- [ ] The index key ops: Ctrl+K extract-keys (gpg --import from the
+      message), Esc k mail-key (mail your public key), Esc P
+      check-traditional-pgp
 
 ## Still open inside rounds marked done
 

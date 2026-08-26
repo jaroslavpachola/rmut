@@ -194,7 +194,7 @@ pub struct ComposeSetup {
 }
 
 /// PGP treatment for an outgoing draft, chosen at the send prompt.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Security {
     None,
     Sign,
@@ -3191,15 +3191,55 @@ impl Session {
 
     /// Initial security for a fresh draft, from the [pgp] config.
     pub fn default_security(&self) -> Security {
-        match (
+        Self::combine(
             self.config.pgp.sign_by_default,
             self.config.pgp.encrypt_by_default,
-        ) {
+        )
+    }
+
+    fn combine(sign: bool, encrypt: bool) -> Security {
+        match (sign, encrypt) {
             (true, true) => Security::Both,
             (true, false) => Security::Sign,
             (false, true) => Security::Encrypt,
             (false, false) => Security::None,
         }
+    }
+
+    /// The security a fresh draft starts with. mutt's reply-crypto:
+    /// replying to a signed message can default to signed
+    /// ($crypt_replysign), to an encrypted one to encrypted
+    /// ($crypt_replyencrypt), and to signed-and-encrypted mail to
+    /// signed too ($crypt_replysignencrypted). Detection reads the
+    /// original's MIME type only, never decrypting.
+    pub fn security_for(&self, kind: &ComposeKind, base: Option<&ComposeBase>) -> Security {
+        let mut sign = self.config.pgp.sign_by_default;
+        let mut encrypt = self.config.pgp.encrypt_by_default;
+        let is_reply = matches!(
+            kind,
+            ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply
+        );
+        if is_reply
+            && let Some(base) = base
+            && let Ok(raw) = std::fs::read(&base.path)
+        {
+            let crypto = rmut_core::pgp::classify(&raw);
+            if crypto.encrypted && self.config.pgp.reply_encrypt {
+                encrypt = true;
+            }
+            if crypto.signed && self.config.pgp.reply_sign {
+                sign = true;
+            }
+            // Signed-and-encrypted: mutt keys the sign default off a
+            // separate option, since the encryption already hid the
+            // signature. rmut only sees one of the two from the MIME
+            // type, so this applies when the encrypted original is
+            // being answered under reply_sign_encrypted.
+            if crypto.encrypted && self.config.pgp.reply_sign_encrypted {
+                sign = true;
+            }
+        }
+        Self::combine(sign, encrypt)
     }
 
     /// Anything due in the outbox goes out; whatever still waits owns
