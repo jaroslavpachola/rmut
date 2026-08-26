@@ -1889,3 +1889,29 @@ fn simple_search_expands_a_bare_word() {
     // A word with a ~ is a pattern already: ~s lunch, not expanded.
     assert_eq!(limit(&mut f, "~s lunch"), ["lunch", "lunch"]);
 }
+
+#[test]
+fn wrap_search_can_be_turned_off() {
+    // jane, petr, jane again: searching "jane" from the second jane
+    // finds nothing forward unless the search wraps.
+    let mut f = Fixture::new(&["from jane", "from petr", "also jane"]);
+    for (i, m) in f.session.msgs.iter_mut().enumerate() {
+        m.env.from = if i == 1 { "petr".into() } else { "jane".into() };
+    }
+    // Search sets last_search; put the cursor on the last message.
+    let ask = Some(f.session.ask_search(false));
+    f.answer_line(ask, "~f jane");
+    f.session.select(2);
+
+    // With wrap on (default), n from the last match wraps to the first.
+    f.session.search_next();
+    assert_eq!(f.session.sel, 0);
+    assert_eq!(f.log.last_text(), "search wrapped");
+
+    // With wrap off, n from the last match stops.
+    f.session.config.mail.wrap_search = Some(false);
+    f.session.select(2);
+    f.session.search_next();
+    assert_eq!(f.session.sel, 2, "stayed put");
+    assert_eq!(f.log.last_text(), "not found");
+}

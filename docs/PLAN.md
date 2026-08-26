@@ -1915,12 +1915,28 @@ Goal: the keys R77 left.
       mark-message hotkeys, mark-as-new, error-history, what-key,
       list-action over List-Unsubscribe / List-Help
 
-## R81: the search knobs and the un* commands
+## R81: $wrap_search (done, 1.77)
 
-Goal: what R79 left — search-behaviour options and config teardown.
+Goal: the search-wrap toggle, the cleanest of R81's set. `$search_context`
+and the `un*` commands split into R83.
 
-- [ ] `$search_context`, `$wrap_search`; `$sort_browser`,
-      `$sort_alias`
+- [x] `$wrap_search`: `[mail] wrap_search = false` stops `n` at the
+      last (or first) match instead of looping to the other end;
+      `search_next` breaks on the wrap boundary when it is off. True
+      by default, as in mutt
+- [x] Settable at `:`, imported (`nowrap_search`), a session test
+      (wrap on loops to the first match, off stays put and says "not
+      found"), an importer test, the parity fixture grew it
+- [ ] Left for R83: `$search_context`, `$sort_browser`, `$sort_alias`,
+      and the config-teardown commands `uncolor`, `mono`/`unmono`,
+      `unhook`, `unmailboxes`, `unalias`, `reset`; `$shell`, `$tmpdir`
+
+## R83: search context and the un* commands
+
+Goal: what R81 left.
+
+- [ ] `$search_context` (pager: lines of context kept above a hit
+      scrolled to the top), `$sort_browser`, `$sort_alias`
 - [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
       `unalias`, `reset`; `$shell`, `$tmpdir`
 

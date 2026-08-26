@@ -268,7 +268,9 @@ it was going.
 .B Alt+/
 searches backwards (mutt's search-reverse), and
 .B n
-then repeats backwards too. Both wrap around with a note.
+then repeats backwards too. Both wrap around with a note, unless
+.B "[mail] wrap_search = false"
+(mutt's $wrap_search), which stops at the last or first match.
 .TP
 .B "l ~D" ", " "U " PATTERN
 picking one message out of a run marked for deletion: deleted

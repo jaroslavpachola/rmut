@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.76**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.77**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -135,7 +135,8 @@ decode-save/decode-copy (the message as the pager shows it), `Y` edit the
 X-Label, `V` show the version, Alt+l show the active limit, `l` limit,
 `/` search
 + `n` next (Alt+/ searches backwards, and `n` then keeps going that
-way), `c` open mailbox by path (Alt+c opens it read-only; Tab completes
+way; `n` wraps around the ends unless `[mail] wrap_search = false`),
+`c` open mailbox by path (Alt+c opens it read-only; Tab completes
 mailboxes,
 account folders and nearby maildirs; empty Tab opens the folder
 browser), `y` folder browser (with

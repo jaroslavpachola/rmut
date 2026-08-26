@@ -2105,8 +2105,14 @@ impl Session {
         if self.visible.is_empty() {
             return;
         }
+        // mutt's $wrap_search: without it, `n` stops at the last (or
+        // first) match rather than looping to the other end.
+        let wrap = self.config.mail.wrap_search.unwrap_or(true);
         let positions = self.positions();
         for (vi, wrapped) in wrap_order(self.visible.len(), self.sel, !self.search_rev) {
+            if wrapped && !wrap {
+                break;
+            }
             let mi = self.visible[vi];
             if self.env_matches_at(&patterns, &self.msgs[mi].env, positions[mi], mi) {
                 if wrapped {

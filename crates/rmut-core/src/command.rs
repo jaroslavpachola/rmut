@@ -318,6 +318,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "forward_format" => Text(&mut cfg.mail.forward_format),
         "reply_regexp" => Text(&mut cfg.mail.reply_regexp),
         "simple_search" => Text(&mut cfg.mail.simple_search),
+        "wrap_search" => FlagOpt(&mut cfg.mail.wrap_search),
         "include" => Text(&mut cfg.mail.include),
         "forward_quote" => Flag(&mut cfg.mail.forward_quote),
         "signature" => Text(&mut cfg.mail.signature),

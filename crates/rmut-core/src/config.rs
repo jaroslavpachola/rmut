@@ -294,6 +294,10 @@ pub struct Mail {
     /// mutt's $forward_format: the subject a forward carries, the
     /// same format string over the message being forwarded.
     pub forward_format: Option<String>,
+    /// mutt's $wrap_search: `n` wraps around the ends of the index.
+    /// True by default, as in mutt; false stops at the last / first
+    /// match instead.
+    pub wrap_search: Option<bool>,
     /// mutt's $simple_search: the template a bare-word search expands
     /// to, `%s` the word. Default `~f %s | ~s %s` (from or subject),
     /// which is what a bare word already did; set it to add `~b %s`
