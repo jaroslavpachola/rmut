@@ -194,6 +194,7 @@ struct State {
     date_format: Option<String>,
     pager_index_lines: Option<u64>,
     pager_context: Option<u64>,
+    search_context: Option<u64>,
     forward_attach: bool,
     /// mime_forward = ask-yes/ask-no.
     forward_ask: bool,
@@ -833,6 +834,10 @@ impl State {
             },
             "pager_context" => match v.parse() {
                 Ok(n) => self.pager_context = Some(n),
+                Err(_) => self.skip(line, "not a number"),
+            },
+            "search_context" => match v.parse() {
+                Ok(n) => self.search_context = Some(n),
                 Err(_) => self.skip(line, "not a number"),
             },
             "quote_regexp" => self.quote_regexp = Some(v.to_string()),
@@ -1874,6 +1879,7 @@ impl State {
         }
         if self.pager_index_lines.is_some()
             || self.pager_context.is_some()
+            || self.search_context.is_some()
             || self.quote_regexp.is_some()
             || self.pager_format.is_some()
             || self.wrap.is_some()
@@ -1893,6 +1899,9 @@ impl State {
             }
             if let Some(n) = self.pager_context {
                 out += &format!("context = {n}\n");
+            }
+            if let Some(n) = self.search_context {
+                out += &format!("search_context = {n}\n");
             }
             if let Some(re) = &self.quote_regexp {
                 out += &format!("quote_regexp = {}\n", quote(re));
@@ -3065,6 +3074,12 @@ mod tests {
             Some("~f %s | ~s %s | ~b %s"),
             "{toml}"
         );
+    }
+
+    #[test]
+    fn search_context_carries_over() {
+        let (cfg, toml) = to_config("set search_context = 3\n");
+        assert_eq!(cfg.pager.search_context, 3, "{toml}");
     }
 
     #[test]

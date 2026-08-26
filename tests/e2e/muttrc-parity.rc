@@ -31,6 +31,7 @@ set sendmail = "/usr/sbin/sendmail -oi"
 set sort = threads
 set sort_aux = reverse-last-date-received
 set strict_threads = yes
+set search_context = 3
 set hide_thread_subject = yes
 set status_chars = "-*%A"
 set nowrap_search

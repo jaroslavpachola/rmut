@@ -440,6 +440,9 @@ pub struct Pager {
     pub index_lines: u16,
     /// Lines of overlap when paging (mutt's pager_context).
     pub context: usize,
+    /// mutt's $search_context: lines of context kept above a pager
+    /// search hit scrolled toward the top. Default 0.
+    pub search_context: usize,
     /// mutt's $quote_regexp: classifies quoted body lines (depth =
     /// quote characters in the match). Default `^([ \t]*[|>:}#])+`.
     pub quote_regexp: Option<String>,

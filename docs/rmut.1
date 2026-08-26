@@ -964,6 +964,10 @@ Lines of the message index kept visible above the pager.
 .B context
 Lines of overlap when paging (mutt's pager_context).
 .TP
+.B search_context
+Lines of context kept above a pager search hit scrolled toward the
+top (mutt's $search_context, default 0).
+.TP
 .B quote_regexp
 Regex classifying quoted body lines (mutt's $quote_regexp; default
 "^([ \\t]*[|>:}#])+"). The depth \(em the number of quote characters

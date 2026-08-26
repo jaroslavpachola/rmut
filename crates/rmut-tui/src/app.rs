@@ -1951,12 +1951,14 @@ impl App {
             &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
+        let context = self.session.config.pager.search_context;
         match search_lines(&lines, &matcher, pager.scroll, forward) {
             Some((hit, wrapped)) => {
                 // The hit becomes the top line even near the end (past
                 // max_scroll), like mutt; otherwise close-to-the-end
                 // hits would be indistinguishable and n would stall.
-                pager.scroll = hit;
+                // mutt's $search_context keeps a few lines above it.
+                pager.scroll = hit.saturating_sub(context);
                 if wrapped {
                     self.note(match forward {
                         true => "Search wrapped to top.",

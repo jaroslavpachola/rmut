@@ -353,6 +353,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "pager_index_lines" => Num16(&mut cfg.pager.index_lines),
         "sidebar_width" => Num16(&mut cfg.sidebar.width),
         "pager_context" => NumUsize(&mut cfg.pager.context),
+        "search_context" => NumUsize(&mut cfg.pager.search_context),
         "mail_check" => NumU64Opt(&mut cfg.mail.poll_seconds),
         "undo_send" => NumU64(&mut cfg.mail.undo_send),
         "connect_timeout" => NumU64(&mut cfg.net.connect_timeout),

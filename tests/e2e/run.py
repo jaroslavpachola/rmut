@@ -3232,7 +3232,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.80")
+    r.expect("rmut 1.81")
     r.settle()
 
     # A refused pattern names itself.
@@ -3551,6 +3551,30 @@ def scenario_status_chars(tmp):
     r.expect("rmut[!]")
     r.keys(b"u")
     r.keys(b"q")
+    r.close()
+
+
+def scenario_search_context(tmp):
+    """R83: $search_context keeps a few lines above a pager search hit."""
+    md = make_maildir(tmp, "md-sctx")
+    body = [f"line {i:02}" for i in range(1, 41)]
+    body[29] = "the needle here"
+    with open(os.path.join(md, "cur/1751790000.9.host:2,S"), "w") as f:
+        f.write("From: Jane <jane@example.com>\r\nSubject: report\r\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\nMessage-ID: <r@x>\r\n\r\n"
+                + "\r\n".join(body) + "\r\n")
+    cfg = os.path.join(tmp, "sctx-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[pager]\nsearch_context = 3\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), rows=20)
+    r.expect("report")
+    r.keys(b"\r")
+    r.expect("line 01")
+    r.keys(b"/needle\r")
+    # With 3 lines of context, the hit is not the top line: lines 27-29
+    # (three above) are visible above "the needle here".
+    r.expect("the needle here", "line 27")
+    r.keys(b"qq")
     r.close()
 
 
@@ -4289,6 +4313,7 @@ SCENARIOS = [
     scenario_history_file,
     scenario_layout,
     scenario_status_chars,
+    scenario_search_context,
 ]
 
 

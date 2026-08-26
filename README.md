@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.80**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.81**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -904,6 +904,7 @@ hide_thread_subject = false  # true blanks a thread reply's subject
 [pager]
 index_lines = 10             # keep a slice of the index above the pager
 context = 3                  # overlapping lines when paging
+search_context = 0           # lines kept above a search hit (mutt's)
 reflow_text = true           # false: keep a format=flowed part's own
                              # line breaks instead of rewrapping it
 alternative_order = ["text/plain", "text/html"]

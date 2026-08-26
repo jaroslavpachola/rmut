@@ -1936,14 +1936,21 @@ and the `un*` commands split into R83.
       and the config-teardown commands `uncolor`, `mono`/`unmono`,
       `unhook`, `unmailboxes`, `unalias`, `reset`; `$shell`, `$tmpdir`
 
-## R83: search context and the un* commands
+## R83: $search_context (done, 1.81)
 
-Goal: what R81 left.
+Goal: the search-context lines, the cleanest of R83's set. The `un*`
+commands and the browser/alias sort split into R87.
 
-- [ ] `$search_context` (pager: lines of context kept above a hit
-      scrolled to the top), `$sort_browser`, `$sort_alias`
-- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
-      `unalias`, `reset`; `$shell`, `$tmpdir`
+- [x] `$search_context`: `[pager] search_context` keeps that many
+      lines above a pager search hit rather than scrolling it flush to
+      the top (`pager_search_step` subtracts it from the hit line).
+      Default 0, as in mutt
+- [x] Settable at `:`, imported, an importer test, e2e
+      scenario_search_context (with 3 lines of context the hit is not
+      the top line), the parity fixture grew it
+- [ ] Left for R87: `$sort_browser`, `$sort_alias`, and the config-
+      teardown commands `uncolor`, `mono`/`unmono`, `unhook`,
+      `unmailboxes`, `unalias`, `reset`; `$shell`, `$tmpdir`
 
 ## R82: $status_chars (done, 1.78)
 
@@ -2009,6 +2016,14 @@ Goal: the keys R80 left, each needing more than a binding.
 - [ ] next-unread-mailbox, purge-message (a per-message purge flag),
       mark-message hotkeys, mark-as-new, error-history, what-key,
       list-action over List-Unsubscribe / List-Help
+
+## R87: the browser sort and the un* commands
+
+Goal: what R83 left.
+
+- [ ] `$sort_browser`, `$sort_alias`
+- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
+      `unalias`, `reset`; `$shell`, `$tmpdir`
 
 ## Still open inside rounds marked done
 
