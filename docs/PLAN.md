@@ -1622,38 +1622,39 @@ headers, and reply-crypto belongs with R64's deferred `~g`/`~G`.
       `$reply_self`, `$fcc_attach`/`$fcc_clear`, `$forward_edit`; and
       `$send_charset`/`$charset`/`$assumed_charset`
 
-## R68: the small keys and the session knobs
+## R68: navigation — jumping, sorting, the sender's address (done, 1.68)
 
-Goal: one-liners, any of which can ride with an earlier round.
+Goal: the mutt navigation keys and sort orders rmut lacked. The rest
+of the old R68 grab-bag (screen knobs, the mark options, the `un*`
+commands, persistent history) split into R73/R74 below.
 
-- [ ] Keys: `@` display-address, `%` toggle-write, `\` search-toggle
-      in the pager, number-jump (`12<enter>`), H/M/L
-      current-top/middle/bottom and top-page/middle-page/bottom-page,
-      next-unread-mailbox, purge-message (delete past `$trash`),
-      mark-message hotkeys, mark-as-new, error-history, what-key,
-      list-action over List-Unsubscribe/List-Help
-- [ ] Sort keys: `to`, `mailbox-order` (unsorted, which an mbox user
-      expects), `label` with R64; `$sort_browser`, `$sort_alias`
-- [ ] `$history_file` / `$save_history` / `$history` (R23's history
-      dies with the session), `$simple_search` (the bare-word pattern
-      is hardcoded to subject|from), `$search_context`,
-      `$wrap_search`
-- [ ] Screen: `$status_on_top`, `$status_chars`, `$arrow_cursor`,
-      `$menu_scroll` / `$menu_context` / `$menu_move_off`, the `$help`
-      bar toggle, `$ts_enabled` / `$ts_status_format` /
-      `$ts_icon_format` (the terminal title, which the TUI never
-      sets), `$sleep_time`, `$read_inc` / `$write_inc` / `$net_inc`
-      progress on the message line
-- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
-      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
-      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
-      `$thread_received`, `$mail_check_recent`, `$check_new`
-- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
-      `unalias`, `reset`; `$shell`, `$tmpdir`
-- [ ] The importer classifies every one of the 418 into carried,
-      satisfied, its-own-way, refused-by-name, or hole, so a
-      "no rmut equivalent" line is a decision and not an absence;
-      smime_*, pop_*, mixmaster and autocrypt refuse under Non-goals
+- [x] Number entry: a run of digits in the index then Enter jumps to
+      that message (mutt's count-then-jump), shown on the message
+      line as it is typed; any other key ends the run, Esc cancels
+- [x] `@` display-address: the selected message's full From header
+      on the message line, in the index and (already) the pager
+- [x] Sort keys `to` (by the first To address) and `unsorted` /
+      `mailbox-order` (the on-disk file-name order, which an mbox
+      user expects); the sort menu grew `o` and `u`, matching mutt's
+      own letters (verified against `mutt_select_sort`:
+      d/f/r/s/o/t/u/z…). `label` was already there from R64
+- [x] Session test for the two sort orders and the menu keys, e2e
+      scenario_navigation (number-jump, `@`, sort-to, a past-the-end
+      number), importer maps `display-address`
+- [ ] Split to R73/R74: `$history_file`/`$save_history` (R23's
+      history dies with the session), `$simple_search` (the bare-word
+      pattern, which expands at every parse site), the screen knobs
+      (`$status_on_top`, `$arrow_cursor`, the terminal title
+      `$ts_*`…), the mark options (`$delete_untag`, `$keep_flagged`,
+      `$maildir_trash`…), the remaining keys (`%` toggle-write, `\`
+      pager search-toggle, H/M/L, purge-message, next-unread-mailbox),
+      and the `un*` commands (`uncolor`, `unhook`, `unmailboxes`,
+      `unalias`, `reset`)
+- [ ] Still owed by the importer: classify every one of mutt's 418
+      variables into carried / satisfied / its-own-way /
+      refused-by-name / hole, so a "no rmut equivalent" line is a
+      decision, not an absence (smime_*, pop_*, mixmaster, autocrypt
+      refuse under Non-goals)
 
 ## R69: IMAP folder management
 
@@ -1717,6 +1718,40 @@ Goal: the crypto defaults and the charset knobs R67 deferred.
       mailparse decodes; sending in another charset is worth refusing
       explicitly, and reading `$assumed_charset` for undeclared
       8-bit mail is worth doing
+
+## R73: the small keys and the screen knobs
+
+Goal: the one-liner keys and display options split out of R68.
+
+- [ ] Keys: `%` toggle-write, `\` pager search-toggle, H/M/L
+      current-top/middle/bottom, top/middle/bottom-page,
+      next-unread-mailbox, purge-message (delete past `$trash`),
+      mark-message hotkeys, mark-as-new, error-history, what-key,
+      list-action over List-Unsubscribe/List-Help
+- [ ] Screen: `$status_on_top`, `$status_chars`, `$arrow_cursor`,
+      `$menu_scroll` / `$menu_context` / `$menu_move_off`, the `$help`
+      bar toggle, `$ts_enabled` / `$ts_status_format` /
+      `$ts_icon_format` (the terminal title), `$sleep_time`,
+      `$read_inc` / `$write_inc` / `$net_inc`
+- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
+      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
+      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
+      `$thread_received`, `$mail_check_recent`, `$check_new`
+
+## R74: history, simple_search, and the un* commands
+
+Goal: the session-persistence and config-teardown pieces.
+
+- [ ] `$history_file` / `$save_history` / `$history`: R23's prompt
+      history dies with the session; persist it
+- [ ] `$simple_search`: the bare-word pattern is hardcoded to
+      subject|from. Make it the configurable template (`~f %s | ~s
+      %s`), expanded where a simple search (no `~`) reaches the
+      parse sites — limit, search, pattern-ops, but not color rules
+- [ ] `$search_context`, `$wrap_search`; `$sort_browser`,
+      `$sort_alias`
+- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
+      `unalias`, `reset`; `$shell`, `$tmpdir`
 
 ## Still open inside rounds marked done
 

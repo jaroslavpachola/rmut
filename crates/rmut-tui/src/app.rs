@@ -303,6 +303,9 @@ pub struct App {
     pending_suspend: bool,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
+    /// mutt's number entry: digits typed in the index accumulate here
+    /// until Enter jumps to that message.
+    jump_buffer: String,
     quit: bool,
 }
 
@@ -460,6 +463,7 @@ impl App {
             pending_shell: None,
             pending_suspend: false,
             tag_next: false,
+            jump_buffer: String::new(),
             quit: false,
         };
         app.session.install_notices(Box::new(notices));
@@ -563,6 +567,32 @@ impl App {
     /// Something worth saying that is not a complaint.
     pub(crate) fn note(&mut self, msg: impl Into<String>) {
         self.session.note(msg);
+    }
+
+    /// mutt's number entry: jump to the message with this 1-based
+    /// index (as `%C` shows it), if it is in the current limit.
+    fn jump_to_number(&mut self, buf: &str) {
+        match buf.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= self.session.visible.len() => {
+                self.session.select(n - 1);
+                self.note("");
+            }
+            _ => self.error(format!("no message {buf}")),
+        }
+    }
+
+    /// mutt's display-address (@): the full From header of the
+    /// selected message on the message line.
+    fn display_address(&mut self) {
+        match self
+            .session
+            .visible
+            .get(self.session.sel)
+            .map(|&i| self.session.msgs[i].env.from_full.clone())
+        {
+            Some(from) if !from.trim().is_empty() => self.note(from),
+            _ => self.note("(no From address)"),
+        }
     }
 
     fn error(&mut self, msg: impl Into<String>) {
@@ -1087,6 +1117,31 @@ impl App {
             self.replay(seq.to_vec());
             return;
         }
+        // mutt's number entry: a run of digits then Enter jumps to
+        // that message; any other key ends the run and is handled as
+        // usual (Esc just cancels it).
+        if let KeyCode::Char(c) = key.code
+            && c.is_ascii_digit()
+            && key.modifiers.is_empty()
+        {
+            self.jump_buffer.push(c);
+            self.note(format!("Jump to message: {}", self.jump_buffer));
+            return;
+        }
+        if !self.jump_buffer.is_empty() {
+            let buf = std::mem::take(&mut self.jump_buffer);
+            match key.code {
+                KeyCode::Enter => {
+                    self.jump_to_number(&buf);
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.note("");
+                    return;
+                }
+                _ => {}
+            }
+        }
         let Some(action) = self.keymap.lookup_index(&key) else {
             self.tag_next = false;
             return;
@@ -1129,6 +1184,7 @@ impl App {
             }
             IndexAction::ShowVersion => self.note(concat!("rmut ", env!("CARGO_PKG_VERSION"))),
             IndexAction::ShowLimit => self.session.show_limit(),
+            IndexAction::DisplayAddress => self.display_address(),
             IndexAction::ParentMessage => self.session.jump_parent(false),
             IndexAction::RootMessage => self.session.jump_parent(true),
             IndexAction::NextThread => self.session.jump_thread(true),

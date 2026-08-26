@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.67**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.68**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -121,10 +121,12 @@ before purging deleted messages, like mutt: Enter takes the yes, and
 `[mail] delete = "yes"` skips the question), Space page down,
 Ctrl+L repaint, `!` shell command, Ctrl+Z suspend (fg brings it
 back), `o` sort
-(`d`ate `f`rom `s`ubject si`z`e `t`hreads `y` label, uppercase
-reverses),
+(`d`ate `f`rom t`o` `s`ubject si`z`e `t`hreads `y`label `u`nsorted,
+uppercase reverses),
 Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
+type a number then Enter to jump to that message, `@` show the
+sender's full address,
 step between threads, Ctrl+R/Alt+r mark a thread/subthread read, `P`
 jump to the parent, `#` break a thread, `&` link the tagged messages
 under the cursor (all of these want thread sort), Alt+s/Alt+C

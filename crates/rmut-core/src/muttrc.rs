@@ -2259,6 +2259,7 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "edit-label" => "edit-label",
         "show-version" => "show-version",
         "show-limit" => "show-limit",
+        "display-address" => "display-address",
         "help" => "help",
         _ => return None,
     })

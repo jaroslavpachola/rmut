@@ -223,6 +223,13 @@ are on disk. Undo is rmut's own; mutt has nothing like it
 jump to the next / previous new-or-unread message, wrapping around
 (mutt's next-new-then-unread)
 .TP
+.B <digits> Enter
+mutt's number entry: type a message's index, then Enter jumps to it
+.TP
+.B @
+display\-address: the selected message's full From header on the
+message line
+.TP
 .B D U T Ctrl+T
 prompt for a pattern and delete / undelete / tag / untag every
 matching message (within the active limit), reporting the count
@@ -896,8 +903,9 @@ The index line, see
 below.
 .TP
 .B sort
-Initial sort: date, from, subject, size or threads, with an optional
-"reverse\-" prefix.
+Initial sort: date, from, to, subject, size, threads, label or
+unsorted (mutt's mailbox\-order), with an optional "reverse\-"
+prefix.
 .TP
 .B sort_aux
 Which thread comes first, in mutt's spellings: a bare date orders each

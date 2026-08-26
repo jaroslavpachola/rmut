@@ -3185,7 +3185,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.67")
+    r.expect("rmut 1.68")
     r.settle()
 
     # A refused pattern names itself.
@@ -3261,6 +3261,38 @@ def scenario_outgoing_envelope(tmp):
     assert "-- \nJarda" in sent, sent
     assert sent.index("Jarda") < sent.index("the body of my reply"), sent
     r.keys(b"q")
+    r.close()
+
+
+def scenario_navigation(tmp):
+    """R68: number-jump moves to a message by index, @ shows the
+    sender's full address, o o sorts by To."""
+    md = make_maildir(tmp, "md-nav")
+    write_msgs(md, ["jane", "petr", "ci", "alice"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:4")
+
+    # Type 3 then Enter: jump to message 3.
+    r.keys(b"3")
+    r.expect("Jump to message: 3")
+    r.keys(b"\r")
+    r.settle()
+    r.keys(b"\r")  # open it
+    r.expect("Message 3/4")
+    r.keys(b"i")
+
+    # @ shows the full From address of the selected message.
+    r.keys(b"=@")
+    r.expect("@example.com")
+
+    # Sort by To (o then o).
+    r.keys(b"oo")
+    r.expect("sorted by to")
+
+    # A number past the end says so.
+    r.keys(b"99\r")
+    r.expect("no message 99")
+    r.keys(b"x")
     r.close()
 
 
@@ -3991,6 +4023,7 @@ SCENARIOS = [
     scenario_labels_and_flags,
     scenario_decode_family,
     scenario_outgoing_envelope,
+    scenario_navigation,
 ]
 
 

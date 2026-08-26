@@ -91,6 +91,11 @@ pub enum SortKey {
     Threads,
     /// mutt's sort=label: by X-Label, unlabelled last.
     Label,
+    /// mutt's sort=to: by the first To address.
+    To,
+    /// mutt's sort=mailbox-order: unsorted, the order on disk (by
+    /// file name, which is stable across a rescan).
+    Unsorted,
 }
 
 impl SortKey {
@@ -102,6 +107,8 @@ impl SortKey {
             SortKey::Size => "size",
             SortKey::Threads => "threads",
             SortKey::Label => "label",
+            SortKey::To => "to",
+            SortKey::Unsorted => "unsorted",
         }
     }
 }
@@ -1540,6 +1547,17 @@ impl Session {
                         };
                         key(&a.env).cmp(&key(&b.env))
                     }
+                    SortKey::To => {
+                        let first_to =
+                            |e: &Envelope| e.to.first().cloned().unwrap_or_default().to_lowercase();
+                        first_to(&a.env).cmp(&first_to(&b.env))
+                    }
+                    SortKey::Unsorted => a
+                        .env
+                        .file
+                        .path
+                        .file_name()
+                        .cmp(&b.env.file.path.file_name()),
                     SortKey::Threads => unreachable!(),
                 };
                 if rev { ord.reverse() } else { ord }
@@ -3798,6 +3816,8 @@ pub fn parse_sort(spec: &str) -> Option<(SortKey, bool)> {
         "size" => SortKey::Size,
         "threads" => SortKey::Threads,
         "label" => SortKey::Label,
+        "to" => SortKey::To,
+        "unsorted" | "mailbox-order" => SortKey::Unsorted,
         _ => return None,
     };
     // Thread sort has no reverse variant.

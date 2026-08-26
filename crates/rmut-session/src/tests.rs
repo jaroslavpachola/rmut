@@ -1683,3 +1683,40 @@ fn pipe_split_runs_the_command_per_message() {
     f.session.pipe_message(&cmd, true);
     assert_eq!(fs::read_to_string(&count).unwrap(), "xxx");
 }
+
+#[test]
+fn sort_by_to_and_unsorted() {
+    let mut f = Fixture::new(&[]);
+    let d = f._dir.path().to_path_buf();
+    // Three messages addressed to different people, written in a
+    // fixed file order so "unsorted" is predictable.
+    let write = |name: &str, to: &str, subj: &str| {
+        fs::write(
+            d.join("cur").join(format!("{name}:2,S")),
+            format!("From: s@x\nTo: {to}\nSubject: {subj}\nDate: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <{name}@x>\n\nbody\n"),
+        )
+        .unwrap();
+    };
+    write("0001", "zoe@example.com", "first");
+    write("0002", "amy@example.com", "second");
+    write("0003", "mike@example.com", "third");
+    touch_dirs(&d);
+    f.session.check_new_mail();
+
+    f.session.sort = SortKey::To;
+    f.session.apply_sort();
+    assert_eq!(f.subjects(), ["second", "third", "first"]); // amy, mike, zoe
+
+    // Unsorted: the on-disk (file name) order.
+    f.session.sort = SortKey::Unsorted;
+    f.session.apply_sort();
+    assert_eq!(f.subjects(), ["first", "second", "third"]);
+
+    // The sort menu keys reach them (o = to, u = unsorted).
+    let ask = Some(f.session.ask_sort());
+    f.answer_key(ask, 'o');
+    assert_eq!(f.session.sort, SortKey::To);
+    let ask = Some(f.session.ask_sort());
+    f.answer_key(ask, 'u');
+    assert_eq!(f.session.sort, SortKey::Unsorted);
+}

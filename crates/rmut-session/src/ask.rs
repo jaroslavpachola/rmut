@@ -886,8 +886,12 @@ impl Session {
                     Key::Char('z') => (SortKey::Size, false),
                     Key::Char('Z') => (SortKey::Size, true),
                     Key::Char('t') | Key::Char('T') => (SortKey::Threads, false),
+                    Key::Char('o') => (SortKey::To, false),
+                    Key::Char('O') => (SortKey::To, true),
                     Key::Char('y') => (SortKey::Label, false),
                     Key::Char('Y') => (SortKey::Label, true),
+                    Key::Char('u') => (SortKey::Unsorted, false),
+                    Key::Char('U') => (SortKey::Unsorted, true),
                     _ => return None,
                 };
                 self.sort = sort;
