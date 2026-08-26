@@ -530,6 +530,13 @@ pub struct Ui {
     /// mutt's $history_file: where prompt history persists across
     /// sessions. Unset means in-memory only, as rmut was before.
     pub history_file: Option<String>,
+    /// mutt's $status_on_top: the status bar (and message line) sit at
+    /// the top, under the help bar, rather than the bottom. Off by
+    /// default, as in mutt.
+    pub status_on_top: Option<bool>,
+    /// mutt's $arrow_cursor: mark the selected row with an arrow
+    /// instead of reverse video. Off by default, as in mutt.
+    pub arrow_cursor: Option<bool>,
     /// mutt's $save_history: entries kept per history bucket in the
     /// file. Defaults to 100 (rmut's in-memory cap).
     pub save_history: Option<usize>,
@@ -547,6 +554,8 @@ impl Default for Ui {
             title_format: None,
             history_file: None,
             save_history: None,
+            status_on_top: None,
+            arrow_cursor: None,
         }
     }
 }

@@ -279,6 +279,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "ts_status_format" => Text(&mut cfg.ui.title_format),
         "ts_enabled" => FlagOpt(&mut cfg.ui.set_title),
         "history_file" => Text(&mut cfg.ui.history_file),
+        "status_on_top" => FlagOpt(&mut cfg.ui.status_on_top),
+        "arrow_cursor" => FlagOpt(&mut cfg.ui.arrow_cursor),
         "theme" => Text(&mut cfg.ui.theme),
         "sendmail" => Text(&mut cfg.mail.sendmail),
         "editor" | "visual" => Text(&mut cfg.mail.editor),

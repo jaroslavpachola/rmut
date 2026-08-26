@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.75**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.76**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -939,6 +939,9 @@ title_format = "rmut: %f"    # its format, the status specifiers again
 history_file = "~/.rmut_history"  # persist prompt history across
                              # sessions (mutt's $history_file); unset
                              # keeps it in-memory only
+status_on_top = false        # true puts the status bar near the top
+arrow_cursor = false         # true marks the selection with -> not
+                             # reverse video (mutt's $arrow_cursor)
 
 [[color_index]]              # mutt's `color index FG BG PATTERN`:
 pattern = "~f boss@example.com"   # any limit/search pattern; first

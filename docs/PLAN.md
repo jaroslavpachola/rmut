@@ -1861,18 +1861,28 @@ Goal: the window-motion keys, the cleanest of R73's leftover keys.
       mark-as-new, error-history, what-key, list-action over
       List-Unsubscribe / List-Help
 
-## R78: the layout and mark knobs
+## R78: the layout knobs (done, 1.76)
 
-Goal: the display-layout and mark options R73 left.
+Goal: the two visible display options, the cleanest of R73's layout
+set. The rest of the layout knobs and the mark options split into R82.
 
-- [ ] Layout: `$status_on_top`, `$status_chars`, `$arrow_cursor`,
-      `$menu_scroll` / `$menu_context` / `$menu_move_off`, the `$help`
-      bar toggle, `$sleep_time`, `$read_inc` / `$write_inc` /
-      `$net_inc`
-- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
+- [x] `$status_on_top`: the status bar and message line move to just
+      under the help bar rather than the bottom — `draw`'s vertical
+      layout reorders and re-labels its four regions. Off by default
+- [x] `$arrow_cursor`: the selected index row is marked with `->`
+      instead of reverse video; `draw_index` prepends the marker and
+      skips the REVERSED modifier. Off by default
+- [x] Both `[ui]` bools, settable at `:`, imported (with the `no`
+      defaults satisfied), an importer test, e2e scenario_layout (the
+      arrow and the top-placed status bar), the parity fixture grew
+      both
+- [ ] Left for R82: the rest of the layout knobs (`$status_chars`,
+      `$menu_scroll`/`$menu_context`/`$menu_move_off`, the `$help`
+      toggle, `$sleep_time`, `$read_inc`/`$write_inc`/`$net_inc`) and
+      the mark/thread options (`$delete_untag`, `$keep_flagged`,
       `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
-      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
-      `$thread_received`, `$mail_check_recent`, `$check_new`
+      `$hide_thread_subject`, `$hide_limited`/`$hide_top_limited`,
+      `$thread_received`, `$mail_check_recent`, `$check_new`)
 
 ## R79: persistent prompt history (done, 1.75)
 
@@ -1913,6 +1923,19 @@ Goal: what R79 left — search-behaviour options and config teardown.
       `$sort_alias`
 - [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
       `unalias`, `reset`; `$shell`, `$tmpdir`
+
+## R82: the mark options and the rest of the layout
+
+Goal: the mark/thread behaviour knobs and the smaller layout options
+R78 left.
+
+- [ ] Layout: `$status_chars`, `$menu_scroll` / `$menu_context` /
+      `$menu_move_off`, the `$help` bar toggle, `$sleep_time`,
+      `$read_inc` / `$write_inc` / `$net_inc`
+- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
+      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
+      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
+      `$thread_received`, `$mail_check_recent`, `$check_new`
 
 ## Still open inside rounds marked done
 

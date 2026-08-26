@@ -3217,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.75")
+    r.expect("rmut 1.76")
     r.settle()
 
     # A refused pattern names itself.
@@ -3495,6 +3495,25 @@ def scenario_history_file(tmp):
     r.expect("Limit")
     r.keys(b"\x1b[A\r")    # Up recalls "~f jane", Enter applies it
     r.expect("Msgs:1")
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_layout(tmp):
+    """R78: $arrow_cursor marks the selection with -> and
+    $status_on_top puts the status bar near the top."""
+    md = make_maildir(tmp, "md-layout")
+    write_msgs(md, ["jane", "petr"])
+    cfg = os.path.join(tmp, "layout-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[ui]\nstatus_on_top = true\narrow_cursor = true\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), rows=12)
+    r.expect("Msgs:2")
+    # The arrow marks the selected row.
+    r.expect("->")
+    # status_on_top: the "---rmut:" bar and the index both drawn; the
+    # bar appears above the second message row in the raw stream.
+    r.expect("---rmut:")
     r.keys(b"q")
     r.close()
 
@@ -4232,6 +4251,7 @@ SCENARIOS = [
     scenario_simple_search,
     scenario_page_motion,
     scenario_history_file,
+    scenario_layout,
 ]
 
 

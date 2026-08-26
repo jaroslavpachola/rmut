@@ -22,13 +22,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // status bar, and the message line under it. The message line is
     // always there, empty when there is nothing to say, so a note
     // never crowds the status bar out and the content never jumps.
-    let [help_area, content_area, status_area, message_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
+    // mutt's $status_on_top: the status and message rows go just under
+    // the help bar rather than at the bottom.
+    let on_top = app.session.config.ui.status_on_top.unwrap_or(false);
+    let areas: [Rect; 4] = if on_top {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(frame.area())
+    } else {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area())
+    };
+    let (help_area, content_area, status_area, message_area) = if on_top {
+        (areas[0], areas[3], areas[1], areas[2])
+    } else {
+        (areas[0], areas[1], areas[2], areas[3])
+    };
 
     let help = match app.mode {
         Mode::Index => INDEX_HELP,
@@ -185,6 +203,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let rows = area.height as usize;
+    let arrow = app.session.config.ui.arrow_cursor.unwrap_or(false);
     // Keep the selection visible.
     if app.session.sel < app.index_offset {
         app.index_offset = app.session.sel;
@@ -309,9 +328,16 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         }) {
             style = style.patch(*rule);
         }
-        if vi == app.session.sel {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
+        // mutt's $arrow_cursor: an arrow marks the selection instead
+        // of reverse video.
+        let text = if arrow {
+            format!("{}{text}", if vi == app.session.sel { "->" } else { "  " })
+        } else {
+            if vi == app.session.sel {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            text
+        };
         lines.push(Line::from(Span::styled(text, style)));
     }
     frame.render_widget(Paragraph::new(lines), area);
