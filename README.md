@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.61**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.62**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -376,6 +376,7 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `smart_wrap`, `collapse_unread`, `uncollapse_jump`, `quit`,
 `confirmappend`, `save_name`, `force_name`, `forward_quote`,
 `signature`, `sig_dashes`, `abort_nosubject`, `abort_unmodified`,
+`mark_old`, `print`, `beep_new`, `wait_key`, `reverse_realname`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -749,6 +750,8 @@ name = "Jane Doe"            # From: Jane Doe <jane@example.com>
 email = "jane@example.com"
 reverse_name = false         # true: a reply's From becomes whichever
                              # of your addresses the mail was sent to
+reverse_realname = true      # false: only the address comes over, the
+                             # name above stays (mutt's setting)
 
 [[identities]]               # conditional identity (folder-/send-hook):
 folder = "*work*"            # glob on the open mailbox, and/or
@@ -797,6 +800,10 @@ abort_nosubject = "ask-yes"  # empty subject: "yes" aborts without
                              # asking, "no" never asks
 abort_unmodified = true      # false: keep a draft the first editor
                              # pass left untouched
+mark_old = true              # unread mail ages to old (O) when you
+                             # leave the mailbox, as in mutt
+print_confirm = "ask-no"     # mutt's $print: "ask-yes" makes Enter
+                             # print, "yes" never asks, "no" refuses
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default
@@ -843,6 +850,10 @@ status_format = "---rmut: %f [Msgs:%?M?%M/?%m New:%n%?d? Del:%d?] (sort:%s)%?V? 
                              # %d deleted %F flagged %t tagged %s sort
                              # %V limit %r pending-mark %v version,
                              # with %?X?then&else? conditionals
+beep = true                  # ring the bell on an error (mutt's $beep)
+beep_new = false             # true: ring when mail arrives, too
+wait_key = true              # a shell escape (!) ends with "Press
+                             # Enter", so its output can be read
 
 [[color_index]]              # mutt's `color index FG BG PATTERN`:
 pattern = "~f boss@example.com"   # any limit/search pattern; first

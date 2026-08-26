@@ -917,8 +917,8 @@ impl Session {
         self.dir_mtimes = dir_mtimes(&self.dir);
         self.resort(keep);
         if arrived > 0 {
-            self.note(format!("new mail in {} (+{arrived})", self.title));
             let title = self.title.clone();
+            self.notify(Notice::NewMail(format!("new mail in {title} (+{arrived})")));
             self.run_new_mail_command(&title, arrived);
         }
     }
@@ -1170,7 +1170,7 @@ impl Session {
         }
         // The open mailbox's own announcement (from the rescan) wins.
         if !grew.is_empty() && self.notice().is_none() {
-            self.note(format!("new mail in {}", grew.join(", ")));
+            self.notify(Notice::NewMail(format!("new mail in {}", grew.join(", "))));
         }
     }
 
@@ -1970,7 +1970,7 @@ impl Session {
     /// unread new mail ages to old: moved out of new/ without the
     /// seen flag, shown as O and no longer counted as new.
     pub fn mark_old_unread(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.config.mail.mark_old.unwrap_or(true) {
             return;
         }
         for m in &mut self.msgs {
@@ -2588,11 +2588,19 @@ impl Session {
     /// replied-to message came to; otherwise the layered identity
     /// (global, account, matching [[identities]] rules).
     pub fn compose_from(&self, base: Option<&ComposeBase>, to: &str) -> Option<String> {
+        // mutt's $reverse_realname: on (the default), the address
+        // comes over with the name it was addressed under; off, only
+        // the address moves and the configured name stays.
+        let realname = self.config.identity.reverse_realname.unwrap_or(true);
         if self.config.identity.reverse_name
             && let Some(b) = base
-            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, self.me())
+            && let Some(from) = compose::reverse_from(&b.orig_to, &b.orig_cc, self.me(), realname)
         {
-            return Some(from);
+            let rcpts = compose::addresses(to);
+            return Some(match self.current_identity(&rcpts).name {
+                Some(name) if !realname && !from.contains('<') => format!("{name} <{from}>"),
+                _ => from,
+            });
         }
         let rcpts = compose::addresses(to);
         self.current_identity(&rcpts).from_line()
@@ -3289,7 +3297,11 @@ impl Session {
     /// can be set from a command mid-session, so it is read here
     /// rather than remembered by the sink.
     fn notify(&mut self, notice: Notice) {
-        if notice.is_error() && self.config.ui.beep {
+        // mutt's $beep_new rings for an arrival the same way $beep
+        // rings for a complaint, and is off by default.
+        if (notice.is_error() && self.config.ui.beep)
+            || (notice.is_new_mail() && self.config.ui.beep_new)
+        {
             use std::io::Write as _;
             let mut out = std::io::stdout();
             let _ = out.write_all(b"\x07");

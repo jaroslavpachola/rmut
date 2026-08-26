@@ -22,6 +22,10 @@ pub enum Notice {
         deleted: usize,
         updated: usize,
     },
+    /// Mail has arrived, where the prose says. A front end asked for
+    /// mutt's $beep_new needs to know that without reading the
+    /// sentence, which is what earns this its own shape.
+    NewMail(String),
 }
 
 impl Notice {
@@ -31,10 +35,15 @@ impl Notice {
         matches!(self, Notice::Error(_))
     }
 
+    /// Whether mail has just arrived: $beep_new rings for it.
+    pub fn is_new_mail(&self) -> bool {
+        matches!(self, Notice::NewMail(_))
+    }
+
     /// The prose for a front end with a line to spare.
     pub fn text(&self) -> String {
         match self {
-            Notice::Info(msg) | Notice::Error(msg) => msg.clone(),
+            Notice::Info(msg) | Notice::Error(msg) | Notice::NewMail(msg) => msg.clone(),
             Notice::Synced { deleted, updated } => {
                 format!("synced: {deleted} deleted, {updated} updated")
             }
@@ -103,6 +112,14 @@ mod tests {
         };
         assert_eq!(notice.text(), "synced: 2 deleted, 3 updated");
         assert!(!notice.is_error());
+    }
+
+    #[test]
+    fn new_mail_is_prose_a_bell_can_recognize() {
+        let notice = Notice::NewMail("new mail in inbox (+2)".into());
+        assert_eq!(notice.text(), "new mail in inbox (+2)");
+        assert!(notice.is_new_mail() && !notice.is_error());
+        assert!(!Notice::Info("x".into()).is_new_mail());
     }
 
     #[test]

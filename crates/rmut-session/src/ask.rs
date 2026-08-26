@@ -82,8 +82,11 @@ pub enum AskKind {
     Pipe {
         tagged: bool,
     },
+    /// mutt's $print: print this message? `default_yes` is what Enter
+    /// takes, from ask-yes or ask-no (rmut's default, as in mutt).
     PrintConfirm {
         tagged: bool,
+        default_yes: bool,
     },
     BounceTo {
         tagged: bool,
@@ -340,15 +343,38 @@ impl Session {
         })
     }
 
-    pub fn ask_print(&self, tagged: bool) -> Option<Ask> {
+    /// mutt's $print: the question before `p` does anything. rmut has
+    /// always asked with Enter declining, which is mutt's ask-no
+    /// default; the other three answer it for you.
+    pub fn ask_print(&mut self, tagged: bool) -> Option<Ask> {
         self.visible.get(self.sel)?;
+        let quad = self
+            .config
+            .mail
+            .print_confirm
+            .clone()
+            .unwrap_or_else(|| "ask-no".into());
+        match quad.as_str() {
+            "no" => {
+                self.error("printing is off ([mail] print_confirm)");
+                return None;
+            }
+            "yes" => {
+                self.print_current(tagged);
+                return None;
+            }
+            _ => {}
+        }
         let n = self.op_targets(tagged).len();
         Some(Ask::Key {
             label: match n {
                 1 => "Print message? (y/n): ".to_string(),
                 _ => format!("Print {n} messages? (y/n): "),
             },
-            what: AskKind::PrintConfirm { tagged },
+            what: AskKind::PrintConfirm {
+                tagged,
+                default_yes: quad == "ask-yes",
+            },
         })
     }
 
@@ -769,8 +795,14 @@ impl Session {
                 }
                 None
             }
-            (AskKind::PrintConfirm { tagged }, Answer::Key(key)) => {
-                if key == Key::Char('y') {
+            (
+                AskKind::PrintConfirm {
+                    tagged,
+                    default_yes,
+                },
+                Answer::Key(key),
+            ) => {
+                if key == Key::Char('y') || (default_yes && key == Key::Enter) {
                     self.print_current(tagged);
                 }
                 None

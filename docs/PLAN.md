@@ -1391,6 +1391,40 @@ setting in every dotfiles repo that rmut had no answer for at all.
       14, down from 21 when this round started. The count is a
       ratchet a round has to move, not a number in a plan file
 
+## R62: the small habits (done, 1.62)
+
+Goal: the settings that are one flag each, and the reading of the
+code that says which of them rmut already had.
+
+- [x] `[mail] mark_old`: rmut has aged unread mail to old on the way
+      out since the parity round; the setting is to stop it. `[ui]
+      wait_key`: the "Press Enter to continue" after a shell escape
+      was unconditional; off brings the screen straight back. Both
+      were doing mutt's default already, so the importer satisfies
+      `yes` and carries `no`
+- [x] `[mail] print_confirm` (mutt's $print): rmut has always asked
+      before printing, with Enter declining, which is mutt's ask-no.
+      All four values now: ask-yes moves the Enter, yes never asks,
+      no refuses. The command stays `[mail] print`, as mutt's
+      $print_command is a separate setting
+- [x] `[ui] beep_new`: the one real gap. An arrival is a
+      `Notice::NewMail` now rather than prose, which is what
+      notice.rs asks of a variant: a front end that rings for mail
+      should not have to read the sentence. The bell hangs off that,
+      next to $beep's
+- [x] `[identity] reverse_realname`: with reverse_name on, rmut took
+      the address *and* the name it was addressed under, which is
+      mutt's default; off keeps the configured name and moves only
+      the address
+- [x] `$timeout` is mutt waiting out a keypress before checking for
+      mail. rmut's poll runs on its own timer, so it goes in the
+      third bucket pointing at poll_seconds, not the hole list
+- [x] All five settable at runtime, one core test, four session
+      tests, one importer test, e2e scenario_small_habits. The
+      parity fixture is down to 8 unclaimed lines from 14: the
+      crypto trio, two charset options, folder_format,
+      imap_check_subscribed and notmuch's default URI
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the

@@ -2757,7 +2757,10 @@ impl App {
     fn run_shell(&mut self, terminal: &mut DefaultTerminal, command: &str) {
         ratatui::restore();
         let status = Command::new("sh").arg("-c").arg(command).status();
-        {
+        // mutt's $wait_key: what the command printed is worth reading,
+        // so the index waits before painting over it. Off, the screen
+        // comes straight back.
+        if self.session.config.ui.wait_key.unwrap_or(true) {
             use std::io::BufRead as _;
             let mut out = std::io::stdout();
             let _ = write!(out, "\nPress Enter to continue... ");

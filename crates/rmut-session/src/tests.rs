@@ -719,6 +719,136 @@ fn abort_unmodified_off_keeps_the_untouched_draft() {
 }
 
 #[test]
+fn mark_old_can_be_told_not_to() {
+    // A message in new/: leaving the mailbox ages it, as mutt does.
+    let mut f = Fixture::new(&["read"]);
+    let arrival = f._dir.path().join("new").join("1234.rmut");
+    fs::write(&arrival, "From: s@example.com\nSubject: fresh\n\nbody\n").unwrap();
+    f.session.check_new_mail();
+    assert_eq!(f.session.new_count(), 1);
+    f.session.mark_old_unread();
+    assert_eq!(f.session.new_count(), 0, "aged to old on the way out");
+    assert!(!arrival.exists(), "and moved out of new/");
+
+    // $mark_old off: it is still new next time.
+    let mut config = Config::default();
+    config.mail.mark_old = Some(false);
+    let mut f = Fixture::with_config(&["read"], config);
+    let arrival = f._dir.path().join("new").join("1234.rmut");
+    fs::write(&arrival, "From: s@example.com\nSubject: fresh\n\nbody\n").unwrap();
+    f.session.check_new_mail();
+    f.session.mark_old_unread();
+    assert_eq!(f.session.new_count(), 1, "left as it was found");
+    assert!(arrival.exists());
+}
+
+#[test]
+fn an_arrival_says_so_as_an_arrival() {
+    // $beep_new needs the notice to be recognizable without reading
+    // the sentence.
+    let mut f = Fixture::new(&["read"]);
+    fs::write(
+        f._dir.path().join("new").join("1234.rmut"),
+        "From: s@example.com\nSubject: fresh\n\nbody\n",
+    )
+    .unwrap();
+    f.session.check_new_mail();
+    let said = f.log.notices();
+    assert!(
+        said.iter().any(rmut_core::notice::Notice::is_new_mail),
+        "{said:?}"
+    );
+    assert!(f.log.said("new mail in"), "and it still reads as prose");
+}
+
+#[test]
+fn the_print_question_takes_mutts_four_answers() {
+    let printed = tempfile::tempdir().unwrap();
+    let target = printed.path().join("out");
+    let command = format!("cat > {}", target.display());
+    let config_with = |quad: Option<&str>| {
+        let mut config = Config::default();
+        config.mail.print = Some(command.clone());
+        config.mail.print_confirm = quad.map(str::to_string);
+        config
+    };
+
+    // The default is mutt's ask-no: the question comes, Enter is no.
+    let mut f = Fixture::with_config(&["one"], config_with(None));
+    let ask = f.session.ask_print(false);
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Print message? (y/n): ");
+    f.answer_enter(ask);
+    assert!(!target.exists(), "Enter declined");
+
+    // ask-yes: the same question, the other default.
+    let mut f = Fixture::with_config(&["one"], config_with(Some("ask-yes")));
+    let ask = f.session.ask_print(false);
+    assert!(ask.is_some());
+    f.answer_enter(ask);
+    assert!(target.exists(), "Enter printed");
+    fs::remove_file(&target).unwrap();
+
+    // yes: no question at all.
+    let mut f = Fixture::with_config(&["one"], config_with(Some("yes")));
+    assert!(f.session.ask_print(false).is_none());
+    assert!(f.log.said("printed via"), "{}", f.log.last_text());
+    assert!(target.exists());
+    fs::remove_file(&target).unwrap();
+
+    // no: nothing printed, and it says why.
+    let mut f = Fixture::with_config(&["one"], config_with(Some("no")));
+    assert!(f.session.ask_print(false).is_none());
+    assert!(f.log.said("printing is off"), "{}", f.log.last_text());
+    assert!(!target.exists());
+}
+
+#[test]
+fn reverse_realname_off_keeps_the_configured_name() {
+    let with = |realname: Option<bool>| {
+        let mut config = Config::default();
+        config.identity.name = Some("Jane at home".into());
+        config.identity.email = Some("work@example.com".into());
+        config.identity.reverse_name = true;
+        config.identity.reverse_realname = realname;
+        config
+    };
+    let base = |f: &mut Fixture| {
+        f.select("to my work address");
+        f.session.compose_base().unwrap()
+    };
+    // The message came to "Jane Work <work@example.com>": on (mutt's
+    // default) that whole form is the reply's From.
+    let mut f = Fixture::with_config(&[], with(None));
+    write_message(
+        f._dir.path(),
+        0,
+        "to my work address",
+        Some("Cc: Jane Work <work@example.com>"),
+    );
+    f.session.check_new_mail();
+    let b = base(&mut f);
+    assert_eq!(
+        f.session.compose_from(Some(&b), "").as_deref(),
+        Some("Jane Work <work@example.com>")
+    );
+
+    // Off: the address moves, the configured name stays.
+    let mut f = Fixture::with_config(&[], with(Some(false)));
+    write_message(
+        f._dir.path(),
+        0,
+        "to my work address",
+        Some("Cc: Jane Work <work@example.com>"),
+    );
+    f.session.check_new_mail();
+    let b = base(&mut f);
+    assert_eq!(
+        f.session.compose_from(Some(&b), "").as_deref(),
+        Some("Jane at home <work@example.com>")
+    );
+}
+
+#[test]
 fn the_attachment_reminder_reads_the_body_not_the_quotes() {
     let mut config = reply_config();
     config.mail.abort_noattach = Some("ask".into());

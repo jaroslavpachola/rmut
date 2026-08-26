@@ -757,13 +757,17 @@ pub fn addresses(field: &str) -> Vec<String> {
 /// mutt's reverse_name: the first of my addresses (`alternates`
 /// included) the original was addressed to, in the form it appeared:
 /// the display name from the To/Cc header is kept.
-pub fn reverse_from(orig_to: &str, orig_cc: &str, me: Me) -> Option<String> {
+pub fn reverse_from(orig_to: &str, orig_cc: &str, me: Me, realname: bool) -> Option<String> {
     let mine = |single: &mailparse::SingleInfo| -> Option<String> {
         if !me.is_me(&single.addr) {
             return None;
         }
         Some(match &single.display_name {
-            Some(name) if !name.trim().is_empty() => format!("{name} <{}>", single.addr),
+            // mutt's $reverse_realname off: the address is theirs,
+            // the name stays whatever the identity says.
+            Some(name) if realname && !name.trim().is_empty() => {
+                format!("{name} <{}>", single.addr)
+            }
             _ => single.addr.clone(),
         })
     };
@@ -1127,16 +1131,21 @@ mod tests {
         let me = Me::addresses(&addrs);
         // Display name kept, match case-insensitive.
         assert_eq!(
-            reverse_from("Boss Me <Jane@example.com>, bob@y", "", me).as_deref(),
+            reverse_from("Boss Me <Jane@example.com>, bob@y", "", me, true).as_deref(),
             Some("Boss Me <Jane@example.com>")
+        );
+        // mutt's $reverse_realname off: the address alone comes over.
+        assert_eq!(
+            reverse_from("Boss Me <Jane@example.com>, bob@y", "", me, false).as_deref(),
+            Some("Jane@example.com")
         );
         // Bare address stays bare; Cc is searched after To.
         assert_eq!(
-            reverse_from("bob@y", "old@example.com", me).as_deref(),
+            reverse_from("bob@y", "old@example.com", me, true).as_deref(),
             Some("old@example.com")
         );
-        assert_eq!(reverse_from("bob@y, eve@z", "", me), None);
-        assert_eq!(reverse_from("", "", me), None);
+        assert_eq!(reverse_from("bob@y, eve@z", "", me, true), None);
+        assert_eq!(reverse_from("", "", me, true), None);
     }
 
     #[test]

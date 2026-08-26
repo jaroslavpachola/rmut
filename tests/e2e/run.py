@@ -1976,10 +1976,13 @@ def scenario_import_muttrc(tmp):
     out = proc.stdout
     unclaimed = [l for l in out.split("# not imported:")[-1].splitlines()
                  if l.startswith("#   set")]
-    assert len(unclaimed) == 14, "\n".join(unclaimed)
-    # R61's seven: settings now, or answered by what rmut already does.
+    assert len(unclaimed) == 8, "\n".join(unclaimed)
+    # R61's seven and R62's six: settings now, or answered by what
+    # rmut already does.
     for name in ("signature", "sig_dashes", "forward_quote", "reply_to",
-                 "abort_nosubject", "abort_unmodified", "honor_followup_to"):
+                 "abort_nosubject", "abort_unmodified", "honor_followup_to",
+                 "mark_old", "beep_new", "wait_key", "print",
+                 "reverse_realname", "timeout"):
         assert not any(f"set {name} " in l for l in unclaimed), name
 
 
@@ -3711,6 +3714,43 @@ def scenario_signature_and_send_questions(tmp):
     r.close()
 
 
+def scenario_small_habits(tmp):
+    """R62: mutt's $print question, $wait_key after a shell escape,
+    and $mark_old leaving unread mail alone."""
+    md = make_maildir(tmp, "md-habits")
+    write_msgs(md, ["jane", "petr"])   # petr is in new/
+    printed = os.path.join(tmp, "printed.txt")
+    touched = os.path.join(tmp, "shell-ran")
+    cfg = os.path.join(tmp, "habits-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\nmark_old = false\nprint_confirm = "ask-yes"\n'
+                f'print = "cat > {printed}"\n\n[ui]\nwait_key = false\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:2")
+
+    # $print = ask-yes: the question comes, and Enter takes the yes.
+    r.keys(b"p")
+    r.expect("Print message?")
+    r.keys(b"\r")
+    wait_for(lambda: os.path.exists(printed), desc="the printed message")
+    # The cursor starts on the new message (mutt's first-new).
+    assert "petr@example.com" in open(printed).read()
+
+    # $wait_key off: the index comes straight back, with nothing
+    # waiting for an Enter that the test never sends.
+    r.keys(b"!")
+    r.expect("Shell command:")
+    r.keys(f"touch {touched}\r".encode())
+    wait_for(lambda: os.path.exists(touched), desc="the shell escape")
+    r.expect("finished")
+    r.expect("Msgs:2")
+
+    # $mark_old off: the unread arrival is still in new/ afterwards.
+    r.keys(b"q")
+    r.close()
+    assert os.listdir(os.path.join(md, "new")), "the arrival stayed new"
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_sync_delete_flag_limit,
@@ -3765,6 +3805,7 @@ SCENARIOS = [
     scenario_reading_habits,
     scenario_leaving_habits,
     scenario_signature_and_send_questions,
+    scenario_small_habits,
 ]
 
 

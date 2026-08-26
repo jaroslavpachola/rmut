@@ -176,6 +176,11 @@ pub struct Identity {
     /// mutt's reverse_name: a reply's From becomes whichever of your
     /// addresses the original was sent to.
     pub reverse_name: bool,
+    /// mutt's $reverse_realname: the display name comes over with the
+    /// address reverse_name found. True unless set otherwise, as in
+    /// mutt; false keeps the configured name and takes the address
+    /// alone.
+    pub reverse_realname: Option<bool>,
 }
 
 /// One `[[identities]]` entry. With both globs set, both must match;
@@ -245,6 +250,14 @@ pub struct Mail {
     pub save_name: bool,
     /// mutt's $force_name: the same, whether or not it exists.
     pub force_name: bool,
+    /// mutt's $mark_old: unread mail left behind in the mailbox ages
+    /// to old (O in the index, out of the new count) when you leave.
+    /// True unless set otherwise, as in mutt.
+    pub mark_old: Option<bool>,
+    /// mutt's $print: what `p` does. "ask-no" (the default) asks with
+    /// Enter declining, "ask-yes" asks with Enter printing, "yes"
+    /// prints without asking and "no" refuses to print at all.
+    pub print_confirm: Option<String>,
     /// mutt's $alias_file: where aliases are read from and where
     /// create-alias appends. $RMUT_ALIASES, then
     /// ~/.config/rmut/aliases, when unset.
@@ -449,6 +462,13 @@ pub struct Ui {
     pub status_format: Option<String>,
     /// Ring the terminal bell on error statuses (mutt's $beep).
     pub beep: bool,
+    /// mutt's $beep_new: ring it when mail arrives, too. Off by
+    /// default, as in mutt.
+    pub beep_new: bool,
+    /// mutt's $wait_key: a shell escape ends with "Press Enter to
+    /// continue", so whatever it printed can be read before the
+    /// index paints over it. True unless set otherwise, as in mutt.
+    pub wait_key: Option<bool>,
 }
 
 impl Default for Ui {
@@ -457,6 +477,8 @@ impl Default for Ui {
             theme: None,
             status_format: None,
             beep: true,
+            beep_new: false,
+            wait_key: None,
         }
     }
 }
