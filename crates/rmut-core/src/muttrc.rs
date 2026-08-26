@@ -126,6 +126,8 @@ struct State {
     wrap: Option<i64>,
     tilde: bool,
     status_format: Option<String>,
+    title_format: Option<String>,
+    set_title: bool,
     no_beep: bool,
     /// `set beep_new`: ring for an arrival as well.
     beep_new: bool,
@@ -707,6 +709,14 @@ impl State {
                 }
             }
             "status_format" => self.status_format = Some(v),
+            "ts_status_format" | "ts_icon_format" => self.title_format = Some(v),
+            "ts_enabled" => {
+                if is_yes(value) {
+                    self.set_title = true;
+                } else {
+                    self.satisfy(line, "rmut leaves the terminal title alone by default");
+                }
+            }
             "imap_user" => self.imap_user = Some(v),
             "smtp_url" => self.smtp_url = Some(v),
             "imap_pass" => self.imap_pass = Some(v),
@@ -1931,12 +1941,24 @@ impl State {
                 out += "system_cas = false\n";
             }
         }
-        if self.status_format.is_some() || self.no_beep || self.beep_new || self.no_wait_key {
+        if self.status_format.is_some()
+            || self.title_format.is_some()
+            || self.set_title
+            || self.no_beep
+            || self.beep_new
+            || self.no_wait_key
+        {
             out += "\n[ui]\n";
             if let Some(sf) = &self.status_format {
                 out += "# rmut renders %f %m %M %n %u %d %F %t %s %V %r %v and\n";
                 out += "# %?X?then&else? conditionals; other specifiers show literally\n";
                 out += &format!("status_format = {}\n", quote(sf));
+            }
+            if self.set_title {
+                out += "set_title = true\n";
+            }
+            if let Some(tf) = &self.title_format {
+                out += &format!("title_format = {}\n", quote(tf));
             }
             if self.no_beep {
                 out += "beep = false\n";
@@ -2313,6 +2335,7 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "show-version" => "show-version",
         "show-limit" => "show-limit",
         "display-address" => "display-address",
+        "toggle-write" => "toggle-write",
         "help" => "help",
         _ => return None,
     })
@@ -2952,6 +2975,16 @@ mod tests {
         // mutt waits for the OS when it is zero or less.
         let (cfg, _) = to_config("set connect_timeout=-1\n");
         assert_eq!(cfg.net.connect_timeout, 0);
+    }
+
+    #[test]
+    fn ts_title_settings_carry_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set ts_enabled = yes\n",
+            "set ts_status_format = \"rmut %f (%m)\"\n",
+        ));
+        assert_eq!(cfg.ui.set_title, Some(true), "{toml}");
+        assert_eq!(cfg.ui.title_format.as_deref(), Some("rmut %f (%m)"));
     }
 
     #[test]

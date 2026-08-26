@@ -276,6 +276,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "pager_format" => Text(&mut cfg.pager.format),
         "quote_regexp" => Text(&mut cfg.pager.quote_regexp),
         "status_format" => Text(&mut cfg.ui.status_format),
+        "ts_status_format" => Text(&mut cfg.ui.title_format),
+        "ts_enabled" => FlagOpt(&mut cfg.ui.set_title),
         "theme" => Text(&mut cfg.ui.theme),
         "sendmail" => Text(&mut cfg.mail.sendmail),
         "editor" | "visual" => Text(&mut cfg.mail.editor),

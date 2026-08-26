@@ -3217,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.71")
+    r.expect("rmut 1.72")
     r.settle()
 
     # A refused pattern names itself.
@@ -3372,6 +3372,32 @@ def scenario_compose_menu(tmp):
     assert "From: boss@example.com" in sent, sent
     assert "Subject: second subject" in sent, sent
     r.keys(b"q")
+    r.close()
+
+
+def scenario_title_and_write(tmp):
+    """R73: $ts_enabled sets the terminal title (an OSC escape), and %
+    toggles the mailbox read-only."""
+    md = make_maildir(tmp, "md-title")
+    write_msgs(md, ["jane", "petr"])
+    cfg = os.path.join(tmp, "title-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[ui]\nset_title = true\ntitle_format = "rmut: %f [%m]"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:2")
+    # The OSC 2 title escape carries the format's output.
+    r.expect("\x1b]", "rmut: ")
+    assert "[2]" in r.buf, r.buf[-200:]
+
+    # % marks the mailbox read-only; a delete then refuses.
+    r.keys(b"%")
+    r.expect("marked read-only")
+    r.keys(b"d")
+    r.expect("read-only")
+    # % again makes it writable.
+    r.keys(b"%")
+    r.expect("marked writable")
+    r.keys(b"x")
     r.close()
 
 
@@ -4104,6 +4130,7 @@ SCENARIOS = [
     scenario_outgoing_envelope,
     scenario_navigation,
     scenario_compose_menu,
+    scenario_title_and_write,
 ]
 
 

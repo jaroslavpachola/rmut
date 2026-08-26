@@ -1762,24 +1762,36 @@ rider.
       the index key ops Ctrl+K extract-keys, Esc k mail-key, Esc P
       check-traditional-pgp
 
-## R73: the small keys and the screen knobs
+## R73: the terminal title and the write toggle (done, 1.72)
 
-Goal: the one-liner keys and display options split out of R68.
+Goal: the terminal title and `%`, the two most-wanted of R68's
+screen/key grab-bag. The rest of the keys, the layout knobs, and the
+mark options split into R77 and R78 below.
 
-- [ ] Keys: `%` toggle-write, `\` pager search-toggle, H/M/L
-      current-top/middle/bottom, top/middle/bottom-page,
-      next-unread-mailbox, purge-message (delete past `$trash`),
-      mark-message hotkeys, mark-as-new, error-history, what-key,
-      list-action over List-Unsubscribe/List-Help
-- [ ] Screen: `$status_on_top`, `$status_chars`, `$arrow_cursor`,
-      `$menu_scroll` / `$menu_context` / `$menu_move_off`, the `$help`
-      bar toggle, `$ts_enabled` / `$ts_status_format` /
-      `$ts_icon_format` (the terminal title), `$sleep_time`,
-      `$read_inc` / `$write_inc` / `$net_inc`
-- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
-      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
-      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
-      `$thread_received`, `$mail_check_recent`, `$check_new`
+- [x] `$ts_enabled` / `$ts_status_format` (and `$ts_icon_format`, the
+      same slot): the terminal title, set while running from a format
+      string over the status specifiers (default "rmut: %f"), only
+      re-sent when it changes. `index_status`'s field function was
+      pulled out to `index_status_field` so the bar and the title
+      share it; the title goes out as an OSC via crossterm's SetTitle.
+      Off by default, as in mutt
+- [x] `%` toggle-write: flip the open mailbox's writable state for the
+      session (`Session::toggle_write`); the `-R` session flag cannot
+      be turned off this way, as mutt refuses too
+- [x] Both settable at `:`, imported (with `ts_enabled = no`
+      satisfied), an importer test, e2e scenario_title_and_write (the
+      OSC escape carries the format, `%` makes a delete refuse then
+      writable again), the parity fixture grew both
+- [ ] Left for R77/R78: `\` pager search-toggle, H/M/L, top/middle/
+      bottom-page, next-unread-mailbox, purge-message, mark-message
+      hotkeys, mark-as-new, error-history, what-key, list-action; the
+      layout knobs `$status_on_top`, `$status_chars`, `$arrow_cursor`,
+      `$menu_scroll`/`$menu_context`/`$menu_move_off`, the `$help`
+      toggle, `$sleep_time`, `$read_inc`/`$write_inc`/`$net_inc`; and
+      the mark options `$delete_untag`, `$keep_flagged`, `$flag_safe`,
+      `$maildir_trash`, `$uncollapse_new`, `$hide_thread_subject`,
+      `$hide_limited`/`$hide_top_limited`, `$thread_received`,
+      `$mail_check_recent`, `$check_new`
 
 ## R74: history, simple_search, and the un* commands
 
@@ -1821,6 +1833,29 @@ new encoding path.
 - [ ] The index key ops: Ctrl+K extract-keys (gpg --import from the
       message), Esc k mail-key (mail your public key), Esc P
       check-traditional-pgp
+
+## R77: the rest of the small keys
+
+Goal: the one-liner keys R73 left.
+
+- [ ] `\` pager search-toggle, H/M/L current-top/middle/bottom,
+      top/middle/bottom-page, next-unread-mailbox, purge-message
+      (delete past `$trash`), mark-message hotkeys, mark-as-new,
+      error-history, what-key, list-action over List-Unsubscribe /
+      List-Help
+
+## R78: the layout and mark knobs
+
+Goal: the display-layout and mark options R73 left.
+
+- [ ] Layout: `$status_on_top`, `$status_chars`, `$arrow_cursor`,
+      `$menu_scroll` / `$menu_context` / `$menu_move_off`, the `$help`
+      bar toggle, `$sleep_time`, `$read_inc` / `$write_inc` /
+      `$net_inc`
+- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
+      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
+      `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
+      `$thread_received`, `$mail_check_recent`, `$check_new`
 
 ## Still open inside rounds marked done
 

@@ -230,6 +230,11 @@ mutt's number entry: type a message's index, then Enter jumps to it
 display\-address: the selected message's full From header on the
 message line
 .TP
+.B %
+toggle\-write: mark the mailbox read\-only or writable for the
+session (mutt's toggle\-write; the \-R session flag cannot be undone
+this way)
+.TP
 .B D U T Ctrl+T
 prompt for a pattern and delete / undelete / tag / untag every
 matching message (within the active limit), reporting the count
@@ -1122,6 +1127,11 @@ below.
 .B beep
 Ring the terminal bell on error statuses (mutt's $beep, default
 true). Errors also take over the bottom line in the error color.
+.TP
+.B set_title, title_format
+mutt's $ts_enabled / $ts_status_format: set the terminal title while
+running (off by default), from a format string with the status
+specifiers (default "rmut: %f").
 .SS [sidebar]
 .TP
 .B visible, width

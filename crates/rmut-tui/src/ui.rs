@@ -748,7 +748,28 @@ fn index_status(app: &App, width: usize, rows: usize) -> String {
         .status_format
         .as_deref()
         .unwrap_or(format::DEFAULT_STATUS_FORMAT);
-    format::render_status(fmt, width, &|spec| match spec {
+    format::render_status(fmt, width, &|spec| index_status_field(app, spec, rows))
+}
+
+/// mutt's $ts_status_format: the terminal title, from the same fields
+/// as the status line (a wide width, so %>… padding does not clip).
+pub fn index_title(app: &App, rows: usize) -> String {
+    let fmt = app
+        .session
+        .config
+        .ui
+        .title_format
+        .as_deref()
+        .unwrap_or("rmut: %f");
+    format::render_status(fmt, 200, &|spec| index_status_field(app, spec, rows))
+        .trim_end()
+        .to_string()
+}
+
+/// One status specifier's value, shared by the bottom bar and the
+/// terminal title.
+fn index_status_field(app: &App, spec: char, rows: usize) -> String {
+    match spec {
         'f' => app.session.title.clone(),
         'm' => app.session.msgs.len().to_string(),
         // Shown message count, only when a limit narrows the view.
@@ -818,7 +839,7 @@ fn index_status(app: &App, width: usize, rows: usize) -> String {
         }
         '%' => "%".to_string(),
         other => format!("%{other}"),
-    })
+    }
 }
 
 /// The classic pager bottom line; override with `[pager] format`.

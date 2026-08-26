@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.71**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.72**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -126,7 +126,7 @@ uppercase reverses),
 Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
 type a number then Enter to jump to that message, `@` show the
-sender's full address,
+sender's full address, `%` toggle the mailbox read-only,
 step between threads, Ctrl+R/Alt+r mark a thread/subthread read, `P`
 jump to the parent, `#` break a thread, `&` link the tagged messages
 under the cursor (all of these want thread sort), Alt+s/Alt+C
@@ -930,6 +930,9 @@ beep = true                  # ring the bell on an error (mutt's $beep)
 beep_new = false             # true: ring when mail arrives, too
 wait_key = true              # a shell escape (!) ends with "Press
                              # Enter", so its output can be read
+set_title = false            # true sets the terminal title (mutt's
+                             # $ts_enabled)
+title_format = "rmut: %f"    # its format, the status specifiers again
 
 [[color_index]]              # mutt's `color index FG BG PATTERN`:
 pattern = "~f boss@example.com"   # any limit/search pattern; first

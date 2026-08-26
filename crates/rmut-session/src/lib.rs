@@ -1974,6 +1974,22 @@ impl Session {
         true
     }
 
+    /// mutt's toggle-write (%): flip the mailbox's writable state for
+    /// the session. The -R session flag cannot be turned off this
+    /// way, as mutt refuses too.
+    pub fn toggle_write(&mut self) {
+        if self.read_only_session {
+            self.error("mailbox is read-only for the whole session (-R)");
+            return;
+        }
+        self.read_only = !self.read_only;
+        if self.read_only {
+            self.note("mailbox marked read-only");
+        } else {
+            self.note("mailbox marked writable");
+        }
+    }
+
     /// mutt's show-limit: the active limit pattern, or that there is
     /// none.
     pub fn show_limit(&mut self) {

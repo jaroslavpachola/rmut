@@ -315,6 +315,9 @@ pub struct App {
     /// mutt's number entry: digits typed in the index accumulate here
     /// until Enter jumps to that message.
     jump_buffer: String,
+    /// mutt's $ts_enabled: the last terminal title written, so it is
+    /// only re-sent when it changes.
+    last_title: String,
     quit: bool,
 }
 
@@ -473,6 +476,7 @@ impl App {
             pending_suspend: false,
             tag_next: false,
             jump_buffer: String::new(),
+            last_title: String::new(),
             quit: false,
         };
         app.session.install_notices(Box::new(notices));
@@ -599,6 +603,21 @@ impl App {
         self.session.note(msg);
     }
 
+    /// mutt's $ts_enabled: set the terminal title from
+    /// $ts_status_format when it changes.
+    fn update_title(&mut self, rows: usize) {
+        if !self.session.config.ui.set_title.unwrap_or(false) {
+            return;
+        }
+        let title = crate::ui::index_title(self, rows);
+        if title == self.last_title {
+            return;
+        }
+        self.last_title = title.clone();
+        use ratatui::crossterm::{execute, terminal::SetTitle};
+        let _ = execute!(std::io::stdout(), SetTitle(title));
+    }
+
     /// mutt's number entry: jump to the message with this 1-based
     /// index (as `%C` shows it), if it is in the current limit.
     fn jump_to_number(&mut self, buf: &str) {
@@ -669,6 +688,7 @@ impl App {
             // may have asked for something too.
             self.run_requests_quietly();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
+            self.update_title(terminal.size().map(|s| s.height as usize).unwrap_or(0));
             // Macro-queued keys run first, without waiting for input.
             let key = match self.pending_keys.pop_front() {
                 Some(key) => Some(key),
@@ -1234,6 +1254,7 @@ impl App {
             }
             IndexAction::ShowVersion => self.note(concat!("rmut ", env!("CARGO_PKG_VERSION"))),
             IndexAction::ShowLimit => self.session.show_limit(),
+            IndexAction::ToggleWrite => self.session.toggle_write(),
             IndexAction::DisplayAddress => self.display_address(),
             IndexAction::ParentMessage => self.session.jump_parent(false),
             IndexAction::RootMessage => self.session.jump_parent(true),

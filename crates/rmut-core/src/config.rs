@@ -516,6 +516,12 @@ pub struct Ui {
     /// continue", so whatever it printed can be read before the
     /// index paints over it. True unless set otherwise, as in mutt.
     pub wait_key: Option<bool>,
+    /// mutt's $ts_enabled: set the terminal title (and icon) while
+    /// running. Off by default, as in mutt.
+    pub set_title: Option<bool>,
+    /// mutt's $ts_status_format: the title's format, the same
+    /// specifiers as status_format. Defaults to "rmut: %f".
+    pub title_format: Option<String>,
 }
 
 impl Default for Ui {
@@ -526,6 +532,8 @@ impl Default for Ui {
             beep: true,
             beep_new: false,
             wait_key: None,
+            set_title: None,
+            title_format: None,
         }
     }
 }
