@@ -213,6 +213,19 @@ pub struct Mail {
     pub poll_seconds: Option<u64>,
     /// Shell command the printed message is piped to (default lpr).
     pub print: Option<String>,
+    /// mutt's $pipe_decode: pipe the decoded message (brief headers,
+    /// decoded body) rather than the raw one. Off by default.
+    pub pipe_decode: Option<bool>,
+    /// mutt's $print_decode: print the decoded message. On by
+    /// default, as in mutt.
+    pub print_decode: Option<bool>,
+    /// mutt's $pipe_split / $print_split: run the command once per
+    /// tagged message instead of once over them all. Off by default.
+    pub pipe_split: Option<bool>,
+    pub print_split: Option<bool>,
+    /// mutt's $pipe_sep: what separates concatenated messages in one
+    /// pipe run. Newline by default.
+    pub pipe_sep: Option<String>,
     /// Default target offered by `s` (save message to a mailbox).
     pub save: Option<String>,
     /// "inline" (quoted text, the default) or "attach" (the original

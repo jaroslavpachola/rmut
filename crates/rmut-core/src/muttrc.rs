@@ -2186,6 +2186,8 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "tag-prefix" => "tag-prefix",
         "query" => "query",
         "save-message" => "save",
+        "decode-save" => "decode-save",
+        "decode-copy" => "decode-copy",
         "print-message" => "print",
         "edit" => "edit",
         "resend-message" => "resend",

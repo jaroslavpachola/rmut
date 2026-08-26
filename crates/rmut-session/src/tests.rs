@@ -1608,3 +1608,78 @@ fn the_read_only_pattern_table() {
     f.answer_line(ask, "~g");
     assert_eq!(f.log.last_text(), "bad pattern: ~g is not supported");
 }
+
+#[test]
+fn decode_save_writes_the_decoded_message() {
+    let mut f = Fixture::new(&[]);
+    let d = f._dir.path().to_path_buf();
+    // A base64 text/plain message: the raw body is not readable text.
+    fs::write(
+        d.join("cur").join("0000.rmut:2,S"),
+        "From: Jane <jane@example.com>\nTo: me@example.com\nSubject: encoded\n         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <e@x>\n         MIME-Version: 1.0\nContent-Type: text/plain\nContent-Transfer-Encoding: base64\n\n         aGVsbG8gd29ybGQK\n",
+    )
+    .unwrap();
+    touch_dirs(&d);
+    f.session.check_new_mail();
+
+    let out = d.join("decoded");
+    // decode-save: the delivered copy holds the decoded body.
+    let ask = f.session.ask_copy_decode(true, false, true);
+    f.answer_line(ask, out.to_str().unwrap());
+    assert!(
+        f.log.last_text().starts_with("saved to"),
+        "{}",
+        f.log.last_text()
+    );
+    let copy_path = fs::read_dir(out.join("cur"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let body = fs::read_to_string(&copy_path).unwrap();
+    assert!(body.contains("hello world"), "decoded: {body}");
+    assert!(!body.contains("aGVsbG8"), "still base64: {body}");
+    assert!(
+        body.contains("Subject: encoded"),
+        "weeded headers kept: {body}"
+    );
+    // The original was marked deleted, and z brings it back.
+    assert!(f.session.msgs[0].env.file.flags.deleted);
+    f.session.undo_last();
+    assert!(!f.session.msgs[0].env.file.flags.deleted);
+    assert!(!copy_path.exists(), "undo removed the copy");
+
+    // A plain copy keeps the raw base64.
+    let out2 = d.join("raw");
+    let ask = f.session.ask_copy(false, false);
+    f.answer_line(ask, out2.to_str().unwrap());
+    let raw = fs::read_to_string(
+        fs::read_dir(out2.join("cur"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+    assert!(raw.contains("aGVsbG8"), "copy stays raw: {raw}");
+}
+
+#[test]
+fn pipe_split_runs_the_command_per_message() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    for m in &mut f.session.msgs {
+        m.env.tagged = true;
+    }
+    let count = f._dir.path().join("count");
+    let cmd = format!("printf x >> {}", count.display());
+    // pipe_split off (default): one run over all three.
+    f.session.pipe_message(&cmd, true);
+    assert_eq!(fs::read_to_string(&count).unwrap(), "x");
+    fs::remove_file(&count).unwrap();
+    // pipe_split on: one run each.
+    f.session.config.mail.pipe_split = Some(true);
+    f.session.pipe_message(&cmd, true);
+    assert_eq!(fs::read_to_string(&count).unwrap(), "xxx");
+}

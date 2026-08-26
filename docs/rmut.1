@@ -744,6 +744,24 @@ New-mail poll interval.
 .B print
 Command the printed message is piped to (default lpr).
 .TP
+.B pipe_decode ", " print_decode
+Pipe / print the decoded message (weeded headers, decoded body)
+rather than the raw one. pipe_decode is off, print_decode on, as in
+mutt. The
+.B "Alt+s"
+(decode\-save) and
+.B "Alt+C"
+(decode\-copy) keys deliver that decoded form to a mailbox whatever
+these say.
+.TP
+.B pipe_split ", " print_split
+Run the command once per tagged message instead of once over them
+all. Off by default.
+.TP
+.B pipe_sep
+What separates concatenated messages in one pipe run (default
+newline).
+.TP
 .B save
 Default target offered by
 .BR s .

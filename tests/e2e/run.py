@@ -3185,13 +3185,41 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.64")
+    r.expect("rmut 1.65")
     r.settle()
 
     # A refused pattern names itself.
     r.keys(b"l\x15~G\r")
     r.expect("~G is not supported")
     r.keys(b"x")
+    r.close()
+
+
+def scenario_decode_family(tmp):
+    """R65: Alt+s decode-saves the decoded message to a mailbox."""
+    md = make_maildir(tmp, "md-decode")
+    with open(os.path.join(md, "cur", "1751000000.1.host:2,S"), "w") as f:
+        f.write("From: Jane <jane@example.com>\r\nTo: me@example.com\r\n"
+                "Subject: encoded\r\nDate: Mon, 10 Mar 2024 10:00:00 +0000\r\n"
+                "Message-ID: <enc@example.com>\r\nMIME-Version: 1.0\r\n"
+                "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+                "aGVsbG8gZnJvbSBiYXNlNjQK\r\n")
+    out = os.path.join(tmp, "decoded")
+    r = Rmut(md, base_env(tmp))
+    r.expect("encoded")
+    r.keys(b"\x1bs")
+    r.expect("Decode-save to mailbox:")
+    r.keys(out.encode() + b"\r")
+    r.expect("saved to")
+    r.settle()
+    cur = os.path.join(out, "cur")
+    files = os.listdir(cur)
+    assert len(files) == 1, files
+    with open(os.path.join(cur, files[0])) as f:
+        body = f.read()
+    assert "hello from base64" in body, body
+    assert "aGVsbG8" not in body, body
+    r.keys(b"q")
     r.close()
 
 
@@ -3920,6 +3948,7 @@ SCENARIOS = [
     scenario_small_habits,
     scenario_thread_surgery,
     scenario_labels_and_flags,
+    scenario_decode_family,
 ]
 
 

@@ -1518,27 +1518,35 @@ gap.
       with sort and undo, the read-only pattern table, the refusals),
       importer sort=label
 
-## R65: decoded save, pipe and print
+## R65: decoded save, pipe and print (done, 1.65)
 
-Goal: mutt's decode family. rmut saves and copies raw, pipes raw,
-prints decoded, and none of it is a setting.
+Goal: mutt's decode family. rmut saved and copied raw, piped raw,
+printed decoded, and none of it was a setting.
 
-- [ ] Esc s decode-save / Esc C decode-copy: the message as
-      displayed (brief headers, decoded body, attachments described)
-      into a mailbox; decrypt-save / decrypt-copy for PGP mail
-- [ ] `$pipe_decode`, `$pipe_sep`, `$pipe_split`, `$print_decode`,
-      `$print_split`, `$copy_decode_weed`/`$pipe_decode_weed`/
-      `$print_decode_weed`: the decode-and-weed knobs over pipe and
-      print, with R41's concatenated tagged run as the `split = no`
-      case it already is
-- [ ] `$display_filter`: the message piped through a command before
-      the pager shows it; `$prompt_after`
-- [ ] Attachment menu: `d`/`u` delete-entry and undelete-entry, so
-      a 20 MB attachment can be stripped from a received message and
-      the sync writes the message back without it (the same rewrite
-      as R63's re-threading); `T` view-text and `m` view-mailcap;
-      reply, forward and bounce from inside the menu;
-      `$attach_save_dir`, `$attach_format`
+- [x] Alt+s decode-save / Alt+C decode-copy (mutt's Esc s / Esc C):
+      the message as the pager shows it (weeded headers, decoded
+      body) into a mailbox, one undo step, take the tag prefix. A new
+      `displayed_text` builds that form; `copy_one` takes a `decode`
+      flag, so save/copy and decode-save/copy are one path
+- [x] `$pipe_decode` (off) and `$print_decode` (on) decide raw vs
+      decoded for pipe and print; `$pipe_split` / `$print_split` run
+      the command once per message; `$pipe_sep` separates the
+      concatenated run (mutt's `split = no`, which R41 already was).
+      `run_over` is the shared driver, all five settable at `:` and
+      imported
+- [x] Fixed on the way: `pipe_to` errored on a BrokenPipe when the
+      command ignores stdin and exits first (grep -q, printf), which
+      aborted the rest of a split run and could drop mail from a
+      concatenated one under load. A BrokenPipe on the stdin write is
+      no longer a failure; the exit status is the verdict
+- [x] Deferred honestly, each its own reason: decrypt-save/copy
+      (PGP, with the crypto patterns of R64); `$display_filter` and
+      `$prompt_after`; and attachment delete-entry / undelete-entry,
+      which rebuilds the MIME tree and re-encodes — a round of its
+      own, not a rider here. `$copy_decode_weed` and friends fold
+      into decode-save's weeding
+- [x] e2e scenario_decode_family, two session tests (decode-save's
+      decoded copy and undo, pipe_split's per-message runs)
 
 ## R66: IMAP folders and the trust store
 

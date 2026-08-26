@@ -78,6 +78,9 @@ pub enum AskKind {
     CopyTo {
         delete: bool,
         tagged: bool,
+        /// mutt's decode-save / decode-copy: deliver the decoded
+        /// message rather than the raw bytes.
+        decode: bool,
     },
     Pipe {
         tagged: bool,
@@ -160,6 +163,7 @@ pub enum AskKind {
         input: String,
         delete: bool,
         tagged: bool,
+        decode: bool,
     },
 }
 
@@ -287,22 +291,34 @@ impl Session {
     /// Where to save or copy. None when there is nothing to copy, or
     /// when saving would have to write a read-only mailbox.
     pub fn ask_copy(&mut self, delete: bool, tagged: bool) -> Option<Ask> {
+        self.ask_copy_decode(delete, tagged, false)
+    }
+
+    /// mutt's decode-save / decode-copy, which are save / copy of the
+    /// decoded message.
+    pub fn ask_copy_decode(&mut self, delete: bool, tagged: bool, decode: bool) -> Option<Ask> {
         self.visible.get(self.sel)?;
         // Save marks the original deleted; a plain copy is fine.
         if delete && self.deny_readonly() {
             return None;
         }
         Some(Ask::Line {
-            label: match delete {
-                true => "Save to mailbox: ".into(),
-                false => "Copy to mailbox: ".into(),
+            label: match (delete, decode) {
+                (true, false) => "Save to mailbox: ".into(),
+                (false, false) => "Copy to mailbox: ".into(),
+                (true, true) => "Decode-save to mailbox: ".into(),
+                (false, true) => "Decode-copy to mailbox: ".into(),
             },
             prefill: self
                 .save_name_target()
                 .or_else(|| self.config.mail.save.clone())
                 .unwrap_or_default(),
             wants: Wants::Mailbox,
-            what: AskKind::CopyTo { delete, tagged },
+            what: AskKind::CopyTo {
+                delete,
+                tagged,
+                decode,
+            },
         })
     }
 
@@ -623,7 +639,14 @@ impl Session {
                 self.apply_pattern(input, op.verb(), |m| op.apply(m));
                 None
             }
-            (AskKind::CopyTo { delete, tagged }, Answer::Line(input)) => {
+            (
+                AskKind::CopyTo {
+                    delete,
+                    tagged,
+                    decode,
+                },
+                Answer::Line(input),
+            ) => {
                 let input = self.expand_folder(input);
                 // mutt's $confirmappend: adding to a mailbox that is
                 // already there is worth a question.
@@ -634,10 +657,11 @@ impl Session {
                             input,
                             delete,
                             tagged,
+                            decode,
                         },
                     });
                 }
-                self.copy_message(&input, delete, tagged);
+                self.copy_message(&input, delete, tagged, decode);
                 None
             }
             (
@@ -645,12 +669,13 @@ impl Session {
                     input,
                     delete,
                     tagged,
+                    decode,
                 },
                 Answer::Key(key),
             ) => {
                 // ask-yes, like mutt's: Enter takes the yes.
                 if matches!(key, Key::Char('y') | Key::Enter) {
-                    self.copy_message(&input, delete, tagged);
+                    self.copy_message(&input, delete, tagged, decode);
                 }
                 None
             }

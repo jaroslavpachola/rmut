@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.64**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.65**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -127,7 +127,8 @@ Alt+v/Alt+V fold thread/all, Alt+d/Alt+u/Alt+t delete/undelete/tag a
 whole thread, Ctrl+D/Ctrl+U the same for a subthread, Alt+n/Alt+p
 step between threads, Ctrl+R/Alt+r mark a thread/subthread read, `P`
 jump to the parent, `#` break a thread, `&` link the tagged messages
-under the cursor (all of these want thread sort), `Y` edit the
+under the cursor (all of these want thread sort), Alt+s/Alt+C
+decode-save/decode-copy (the message as the pager shows it), `Y` edit the
 X-Label, `V` show the version, Alt+l show the active limit, `l` limit,
 `/` search
 + `n` next (Alt+/ searches backwards, and `n` then keeps going that
@@ -155,7 +156,8 @@ message, `d` delete and advance, `u`/`F`/`t` undelete/flag/tag without
 leaving the message, `h` toggle full headers,
 `v` attachments, `m`/`r`/`g`/`L`/`f` compose/reply/list-reply/forward,
 `p` print,
-`s` save, `C`/`|`/`b` copy/pipe/bounce, `e`/Alt+e edit raw/resend,
+`s` save, `C`/`|`/`b` copy/pipe/bounce, Alt+s/Alt+C decode-save/copy,
+`e`/Alt+e edit raw/resend,
 `:` run a config command, `q`/`i` back. Space past the end opens the next message and wrapped
 lines carry a leading `+` marker, like mutt. Replies ask mutt's
 ask-yes questions: Reply-To (when the header is set), "No subject,
@@ -630,7 +632,9 @@ uppercase letter, as mutt compiles it.
 (`Tag-` sits on the message line while it waits, as in mutt):
 `d`/`u`/`F`/`N`/`t` mark them all, `s`/`C` save or copy them all (one
 prompt, one undo step), `|` and `p` pipe or print them concatenated
-into a single run of the command (mutt's `$pipe_split` unset), and
+into a single run of the command (mutt's `$pipe_split` unset, the
+separator mutt's `$pipe_sep`; `pipe_split`/`print_split` = true run it
+once per message instead), and
 `b` bounces them all to the same addresses, with the confirmation
 counting what it is about to do.
 

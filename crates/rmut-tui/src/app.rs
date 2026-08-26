@@ -1156,6 +1156,14 @@ impl App {
                     .ask_copy(action == IndexAction::Save, apply_tagged);
                 self.open_ask(ask);
             }
+            IndexAction::DecodeSave | IndexAction::DecodeCopy => {
+                let ask = self.session.ask_copy_decode(
+                    action == IndexAction::DecodeSave,
+                    apply_tagged,
+                    true,
+                );
+                self.open_ask(ask);
+            }
             IndexAction::Pipe => {
                 let ask = self.session.ask_pipe(apply_tagged);
                 self.open_ask(ask);
@@ -2913,6 +2921,8 @@ fn takes_tagged(action: IndexAction) -> bool {
             | Tag
             | Save
             | Copy
+            | DecodeSave
+            | DecodeCopy
             | Pipe
             | Print
             | Bounce

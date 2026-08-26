@@ -264,6 +264,7 @@ enum Again {
         input: String,
         delete: bool,
         tagged: bool,
+        decode: bool,
     },
     Pipe {
         command: String,
@@ -1156,7 +1157,8 @@ impl Session {
                 input,
                 delete,
                 tagged,
-            } => self.copy_message(&input, delete, tagged),
+                decode,
+            } => self.copy_message(&input, delete, tagged, decode),
             Again::Pipe { command, tagged } => self.pipe_message(&command, tagged),
             Again::Print { tagged } => self.print_current(tagged),
             Again::Bounce { to, tagged } => self.bounce_current(&to, tagged),
@@ -2387,7 +2389,7 @@ impl Session {
     /// Copy the message to a mailbox (local maildir path or a folder
     /// of the open IMAP account); with `delete` the original is marked
     /// deleted afterwards, mutt's s versus C.
-    pub fn copy_message(&mut self, input: &str, delete: bool, tagged: bool) {
+    pub fn copy_message(&mut self, input: &str, delete: bool, tagged: bool, decode: bool) {
         if input.is_empty() {
             self.error("no mailbox given");
             return;
@@ -2404,6 +2406,7 @@ impl Session {
                 input: input.to_string(),
                 delete,
                 tagged,
+                decode,
             },
         ) {
             return;
@@ -2417,7 +2420,7 @@ impl Session {
         let mut note = None;
         let mut target = String::new();
         for &i in &targets {
-            match self.copy_one(i, input, &mut created) {
+            match self.copy_one(i, input, decode, &mut created) {
                 Ok(shown) => {
                     if shown.starts_with("imap:") {
                         note = Some(format!("the copy in {shown} stays"));
@@ -2472,10 +2475,18 @@ impl Session {
         &mut self,
         i: usize,
         spec: &str,
+        decode: bool,
         created: &mut Vec<PathBuf>,
     ) -> Result<String, String> {
         let flags = self.msgs[i].env.file.flags;
-        let bytes = self.message_bytes(i).ok_or("cannot read the message")?;
+        // mutt's decode-save/decode-copy deliver the message as the
+        // pager shows it (weeded headers, decoded body); plain save
+        // keeps the bytes verbatim.
+        let bytes = if decode {
+            self.displayed_text(i)?.into_bytes()
+        } else {
+            self.message_bytes(i).ok_or("cannot read the message")?
+        };
         match remote::parse_spec(spec) {
             Some((account, folder)) => match &mut self.imap {
                 Some(imap) if imap.facts.account.name == account => imap
@@ -2534,16 +2545,22 @@ impl Session {
         ) {
             return;
         }
-        let Some(bytes) = self.op_bytes(tagged) else {
-            return;
-        };
-        let n = self.op_targets(tagged).len();
-        match pipe_to(command, &bytes) {
+        let targets = self.op_targets(tagged);
+        let n = targets.len();
+        let decode = self.config.mail.pipe_decode.unwrap_or(false);
+        let split = self.config.mail.pipe_split.unwrap_or(false);
+        let sep = self
+            .config
+            .mail
+            .pipe_sep
+            .clone()
+            .unwrap_or_else(|| "\n".into());
+        match self.run_over(&targets, command, decode, split, &sep) {
             Ok(()) => self.note(match n {
                 1 => format!("piped to {command}"),
                 _ => format!("piped {n} messages to {command}"),
             }),
-            Err(err) => self.error(format!("pipe failed: {err:#}")),
+            Err(err) => self.error(format!("pipe failed: {err}")),
         }
     }
 
@@ -2664,8 +2681,29 @@ impl Session {
         Ok(view)
     }
 
-    /// Pipe the message as displayed (brief headers, decoded body) to
-    /// the configured print command, lpr by default.
+    /// The message as the pager shows it: brief (weeded) headers and
+    /// the decoded body. Used by print, decode-save/copy, and a
+    /// decoded pipe.
+    fn displayed_text(&mut self, i: usize) -> Result<String, String> {
+        let path = self.msgs[i].env.file.path.clone();
+        let view = self
+            .load_view(&path)
+            .map_err(|err| format!("cannot decode: {err:#}"))?;
+        let mut text = String::new();
+        for (name, value) in &view.brief {
+            text += &format!("{name}: {value}\n");
+        }
+        text.push('\n');
+        text += &view.body;
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    /// Pipe the message to the print command (lpr by default). mutt's
+    /// $print_decode (on) prints the decoded form; $print_split runs
+    /// the command once per message.
     pub fn print_current(&mut self, tagged: bool) {
         let paths = self.target_paths(tagged);
         if !self.have_bodies(&paths, Again::Print { tagged }) {
@@ -2675,39 +2713,67 @@ impl Session {
         if targets.is_empty() {
             return;
         }
-        let mut text = String::new();
-        for i in targets.iter().copied() {
-            let path = self.msgs[i].env.file.path.clone();
-            let view = match self.load_view(&path) {
-                Ok(v) => v,
-                Err(err) => {
-                    self.error(format!("cannot print: {err:#}"));
-                    return;
-                }
-            };
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            for (name, value) in &view.brief {
-                text += &format!("{name}: {value}\n");
-            }
-            text.push('\n');
-            text += &view.body;
-        }
-        let n = targets.len();
         let command = self
             .config
             .mail
             .print
             .clone()
             .unwrap_or_else(|| "lpr".into());
-        match pipe_to(&command, text.as_bytes()) {
+        let decode = self.config.mail.print_decode.unwrap_or(true);
+        let split = self.config.mail.print_split.unwrap_or(false);
+        let n = targets.len();
+        match self.run_over(&targets, &command, decode, split, "\n") {
             Ok(()) => self.note(match n {
                 1 => format!("printed via {command}"),
                 _ => format!("printed {n} messages via {command}"),
             }),
-            Err(err) => self.error(format!("print failed: {err:#}")),
+            Err(err) => self.error(format!("print failed: {err}")),
         }
+    }
+
+    /// The bytes of one message for pipe/print/save: decoded (as the
+    /// pager shows it) or raw.
+    fn op_one_bytes(&mut self, i: usize, decode: bool) -> Result<Vec<u8>, String> {
+        if decode {
+            self.displayed_text(i).map(String::into_bytes)
+        } else {
+            self.message_bytes(i)
+                .map(|mut b| {
+                    if !b.ends_with(b"\n") {
+                        b.push(b'\n');
+                    }
+                    b
+                })
+                .ok_or_else(|| "cannot read the message".into())
+        }
+    }
+
+    /// Run `command` over the targets: once per message when `split`,
+    /// else once over them all joined by `sep` (mutt's $pipe_split /
+    /// $pipe_sep, and the same for print).
+    fn run_over(
+        &mut self,
+        targets: &[usize],
+        command: &str,
+        decode: bool,
+        split: bool,
+        sep: &str,
+    ) -> Result<(), String> {
+        if split {
+            for &i in targets {
+                let bytes = self.op_one_bytes(i, decode)?;
+                pipe_to(command, &bytes).map_err(|err| format!("{err:#}"))?;
+            }
+            return Ok(());
+        }
+        let mut all: Vec<u8> = Vec::new();
+        for (n, &i) in targets.iter().enumerate() {
+            if n > 0 {
+                all.extend_from_slice(sep.as_bytes());
+            }
+            all.extend_from_slice(&self.op_one_bytes(i, decode)?);
+        }
+        pipe_to(command, &all).map_err(|err| format!("{err:#}"))
     }
 
     /// The identity in effect for this mailbox (and, when known, the
@@ -3790,11 +3856,17 @@ pub fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("running {command}"))?;
-    child
-        .stdin
-        .take()
-        .context("no stdin on print child")?
-        .write_all(bytes)?;
+    // A command that ignores stdin and exits (grep -q, printf) can
+    // close the pipe before we finish writing; that BrokenPipe is not
+    // a failure, so let the exit status be the verdict.
+    {
+        let mut stdin = child.stdin.take().context("no stdin on the child")?;
+        if let Err(err) = stdin.write_all(bytes)
+            && err.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(err.into());
+        }
+    }
     let status = child.wait()?;
     anyhow::ensure!(status.success(), "{command} exited with {status}");
     Ok(())
