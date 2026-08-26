@@ -527,6 +527,12 @@ pub struct Ui {
     /// mutt's $ts_status_format: the title's format, the same
     /// specifiers as status_format. Defaults to "rmut: %f".
     pub title_format: Option<String>,
+    /// mutt's $history_file: where prompt history persists across
+    /// sessions. Unset means in-memory only, as rmut was before.
+    pub history_file: Option<String>,
+    /// mutt's $save_history: entries kept per history bucket in the
+    /// file. Defaults to 100 (rmut's in-memory cap).
+    pub save_history: Option<usize>,
 }
 
 impl Default for Ui {
@@ -539,6 +545,8 @@ impl Default for Ui {
             wait_key: None,
             set_title: None,
             title_format: None,
+            history_file: None,
+            save_history: None,
         }
     }
 }

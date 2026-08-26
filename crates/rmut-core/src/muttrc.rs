@@ -128,6 +128,7 @@ struct State {
     status_format: Option<String>,
     title_format: Option<String>,
     set_title: bool,
+    history_file: Option<String>,
     no_beep: bool,
     /// `set beep_new`: ring for an arrival as well.
     beep_new: bool,
@@ -711,6 +712,11 @@ impl State {
             }
             "status_format" => self.status_format = Some(v),
             "ts_status_format" | "ts_icon_format" => self.title_format = Some(v),
+            "history_file" => self.history_file = Some(v),
+            "save_history" | "history" => self.differently(
+                line,
+                "rmut keeps 100 entries per prompt; set [ui] history_file to persist them",
+            ),
             "ts_enabled" => {
                 if is_yes(value) {
                     self.set_title = true;
@@ -1949,6 +1955,7 @@ impl State {
         }
         if self.status_format.is_some()
             || self.title_format.is_some()
+            || self.history_file.is_some()
             || self.set_title
             || self.no_beep
             || self.beep_new
@@ -1962,6 +1969,9 @@ impl State {
             }
             if self.set_title {
                 out += "set_title = true\n";
+            }
+            if let Some(v) = &self.history_file {
+                out += &format!("history_file = {}\n", quote(v));
             }
             if let Some(tf) = &self.title_format {
                 out += &format!("title_format = {}\n", quote(tf));
@@ -2992,6 +3002,16 @@ mod tests {
         assert_eq!(
             cfg.mail.simple_search.as_deref(),
             Some("~f %s | ~s %s | ~b %s"),
+            "{toml}"
+        );
+    }
+
+    #[test]
+    fn history_file_carries_over() {
+        let (cfg, toml) = to_config("set history_file = ~/.rmut_history\n");
+        assert_eq!(
+            cfg.ui.history_file.as_deref(),
+            Some("~/.rmut_history"),
             "{toml}"
         );
     }

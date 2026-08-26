@@ -474,7 +474,12 @@ Every line prompt is a small line editor: Left/Right, Home/End (also
 ctrl+a / ctrl+e), Backspace and Del (ctrl+d) around the cursor,
 ctrl+u kills to the start, ctrl+k to the end, ctrl+w the word before
 the cursor. Up/Down recall the prompt kind's history (patterns,
-addresses, mailboxes, files, commands), newest first.
+addresses, mailboxes, files, commands), newest first. The history is
+per session unless
+.B "[ui] history_file"
+(mutt's $history_file) names a file to persist it in, up to
+.B save_history
+entries a kind (default 100).
 .SS Compose questions
 Like mutt's ask-yes defaults: replying to a message with a Reply-To
 asks "Reply to ...?" (no falls back to From), an empty Subject asks

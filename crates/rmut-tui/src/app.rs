@@ -110,6 +110,12 @@ pub enum LineKind {
     },
 }
 
+/// The history buckets `LineKind::history_bucket` can return, for
+/// mapping a persisted bucket name back to its &'static str on load.
+const KNOWN_BUCKETS: &[&str] = &[
+    "mailbox", "pattern", "address", "command", "other", "file", "notmuch",
+];
+
 impl LineKind {
     /// History bucket, mutt-style: one shared list per input class.
     /// The kinds whose answer names a mailbox, so `=x` / `+x` expand
@@ -480,6 +486,7 @@ impl App {
             quit: false,
         };
         app.session.install_notices(Box::new(notices));
+        app.load_history();
         if !all.is_empty() {
             app.note(all.join("; "));
         }
@@ -731,6 +738,7 @@ impl App {
         // Whatever is still inside its $undo_send window goes out now:
         // quitting is not cancelling.
         self.exit_notes.extend(self.session.flush_outbox());
+        self.save_history();
         Ok(())
     }
 
@@ -940,6 +948,62 @@ impl App {
     /// Up/Down at a line prompt: recall the kind's history (newest
     /// first); stepping back past the newest restores the line that
     /// was being typed.
+    /// mutt's $history_file: the file path, expanded.
+    fn history_path(&self) -> Option<std::path::PathBuf> {
+        self.session
+            .config
+            .ui
+            .history_file
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+            .map(expand_tilde)
+    }
+
+    /// Load persisted prompt history: `bucket\tentry` lines, newest
+    /// first within each bucket, as save_history wrote them.
+    fn load_history(&mut self) {
+        let Some(path) = self.history_path() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        for line in text.lines() {
+            if let Some((bucket, entry)) = line.split_once('\t')
+                && !entry.is_empty()
+                && let Some(known) = KNOWN_BUCKETS.iter().find(|b| **b == bucket)
+            {
+                self.history
+                    .entry(known)
+                    .or_default()
+                    .push(entry.to_string());
+            }
+        }
+    }
+
+    /// Write the history back, capped at save_history entries per
+    /// bucket, so the next session recalls it.
+    fn save_history(&mut self) {
+        let Some(path) = self.history_path() else {
+            return;
+        };
+        let cap = self.session.config.ui.save_history.unwrap_or(100);
+        let mut out = String::new();
+        for (bucket, entries) in &self.history {
+            for entry in entries.iter().take(cap) {
+                // A tab or newline in an entry would corrupt the file;
+                // both are vanishingly rare in a prompt, and dropped.
+                if !entry.contains(['\t', '\n']) {
+                    out += &format!("{bucket}\t{entry}\n");
+                }
+            }
+        }
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, out);
+    }
+
     fn history_step(&mut self, older: bool) {
         let Some(Prompt::Line {
             buf,

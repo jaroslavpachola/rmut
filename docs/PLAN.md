@@ -1874,16 +1874,27 @@ Goal: the display-layout and mark options R73 left.
       `$hide_thread_subject`, `$hide_limited` / `$hide_top_limited`,
       `$thread_received`, `$mail_check_recent`, `$check_new`
 
-## R79: history and the config-teardown commands
+## R79: persistent prompt history (done, 1.75)
 
-Goal: the session-persistence and un* pieces R74 left.
+Goal: R23's prompt history persisted, the one piece of R79's set that
+survives a restart. The `un*` commands and the remaining search knobs
+split into R81 below.
 
-- [ ] `$history_file` / `$save_history` / `$history`: R23's prompt
-      history dies with the session; persist it to a file
-- [ ] `$search_context`, `$wrap_search`; `$sort_browser`,
-      `$sort_alias`
-- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
-      `unalias`, `reset`; `$shell`, `$tmpdir`
+- [x] `$history_file`: `[ui] history_file` names a file that R23's
+      per-kind prompt history is loaded from at startup and written to
+      on the way out (`bucket\tentry` lines, newest first), so
+      patterns, addresses, mailboxes and the rest come back next
+      session. `$save_history` caps the entries a bucket keeps in the
+      file (default 100, rmut's in-memory cap); `$history` and
+      `$save_history` are the "its own way" note. Unset keeps the
+      in-memory-only behaviour rmut had
+- [x] Importer carries `history_file`, an importer test, e2e
+      scenario_history_file (a first session runs a limit search and
+      quits, a second recalls it with Up), the parity fixture grew it
+- [ ] Left for R81: `$search_context`, `$wrap_search`,
+      `$sort_browser`, `$sort_alias`, and the config-teardown commands
+      `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`, `unalias`,
+      `reset`; `$shell`, `$tmpdir`
 
 ## R80: the last of the small keys
 
@@ -1893,6 +1904,15 @@ Goal: the keys R77 left.
       (delete past `$trash`, which needs a per-message purge flag),
       mark-message hotkeys, mark-as-new, error-history, what-key,
       list-action over List-Unsubscribe / List-Help
+
+## R81: the search knobs and the un* commands
+
+Goal: what R79 left — search-behaviour options and config teardown.
+
+- [ ] `$search_context`, `$wrap_search`; `$sort_browser`,
+      `$sort_alias`
+- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
+      `unalias`, `reset`; `$shell`, `$tmpdir`
 
 ## Still open inside rounds marked done
 

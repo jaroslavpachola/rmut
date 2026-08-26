@@ -3217,7 +3217,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.74")
+    r.expect("rmut 1.75")
     r.settle()
 
     # A refused pattern names itself.
@@ -3462,6 +3462,40 @@ def scenario_page_motion(tmp):
     mid = opened_number()
     assert top < mid < 20, (top, mid)
     r.keys(b"ix")
+    r.close()
+
+
+def scenario_history_file(tmp):
+    """R79: $history_file persists prompt history across sessions."""
+    md = make_maildir(tmp, "md-hist")
+    write_msgs(md, ["jane", "petr"])
+    histfile = os.path.join(tmp, "rmut-history")
+    cfg = os.path.join(tmp, "hist-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[ui]\nhistory_file = "{histfile}"\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+
+    # First session: run a limit search, then quit.
+    r = Rmut(md, env)
+    r.expect("Msgs:2")
+    r.keys(b"l~f jane\r")
+    r.expect("Msgs:1")
+    r.keys(b"l\r")   # clear the limit
+    r.expect("Msgs:2")
+    r.keys(b"q")     # quit (writes the history on the way out)
+    wait_for(lambda: os.path.exists(histfile), desc="history file written")
+    r.close()
+    saved = open(histfile).read()
+    assert "pattern\t~f jane" in saved, saved
+
+    # Second session: the limit prompt's Up recalls it.
+    r = Rmut(md, env)
+    r.expect("Msgs:2")
+    r.keys(b"l")            # open the limit prompt
+    r.expect("Limit")
+    r.keys(b"\x1b[A\r")    # Up recalls "~f jane", Enter applies it
+    r.expect("Msgs:1")
+    r.keys(b"q")
     r.close()
 
 
@@ -4197,6 +4231,7 @@ SCENARIOS = [
     scenario_title_and_write,
     scenario_simple_search,
     scenario_page_motion,
+    scenario_history_file,
 ]
 
 
