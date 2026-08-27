@@ -2270,8 +2270,17 @@ Decisions, made going in so the rounds do not re-argue them:
   the key handling, a C++ compiler + CMake + Qt dev headers to build
   (this machine has the 6.4.2 runtime only), and tests on the QML
   side. What it buys, Qt's text engine and platform look, the keymap
-  interface would barely use. Rejected unless native look becomes a
-  requirement. This machine: Wayland, Mesa 25.2 on Iris Xe, GL 4.6.
+  interface would barely use. Also looked at: qtbridge-rust, The Qt
+  Company's own bridge (github.com/qt/qtbridge-rust, crates.io
+  `qtbridge` 0.2.0 of 2026-07, pushed the day it was looked at,
+  LGPL-3 / commercial, "pre-release"). Nicer than cxx-qt, plain
+  Cargo build with attribute macros, no CMake, but the same shape,
+  "Qt Quick user interfaces with Rust backends", QML holding the
+  screens, and it "requires Qt 6.10 or higher" with `qmake` on PATH
+  and the private headers; Ubuntu 24.04 ships 6.4.2, so on this
+  machine it means the Qt installer or a source build before the
+  first window. Rejected unless native look becomes a
+  requirement; if it does, qtbridge is the bridge to use. This machine: Wayland, Mesa 25.2 on Iris Xe, GL 4.6.
 - **The editor stays external.** Compose hands the draft to
   `$EDITOR` inside `gui.terminal` (`$TERMINAL`, then a short list:
   foot, alacritty, kitty, xterm), `-e`, and waits, exactly as the
