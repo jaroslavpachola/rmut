@@ -2232,6 +2232,148 @@ Easy to lose under a (done, x.y) heading:
   server-side `~b` search and an APPEND still block the TUI
 - R59: `move` + `mbox` dropped on purpose; stays dropped unless asked
 
+## The GUI front end (proposed, 2026-08-27)
+
+Goal: `rmut-gui`, a second front end over `rmut-session`, in a
+window. Same keys, same `$index_format`, same muttrc; what it adds is
+what a terminal cannot do, and nothing else.
+
+Why now, counted. The session contract is small and has stopped
+moving: `Function -> Outcome { Done | Ask | Front(FrontOp) }`, 20
+`FrontOp`s, two shapes of `Ask`, notices through `NoticeSink`, IMAP
+on its own thread. Since the split, `function.rs` changed in 3
+commits while `lib.rs` changed in 41: features land in the session,
+not in the contract. The cost is the TUI crate's shape, 6.2k lines
+with eight screens in `Mode` and seven process-spawn sites, which a
+second front end re-implements once and then follows.
+
+Decisions, made going in so the rounds do not re-argue them:
+
+- **Toolkit: egui/eframe.** `ui.rs::draw(frame, app)` is already
+  immediate-mode; an eframe `update` is the same function over
+  different primitives, and it stays one static binary. It is the
+  biggest dependency the project has taken (winit, glow); that is
+  the price, and it is paid by `rmut-gui` only. `cargo install rmut`
+  does not change.
+- **The editor stays external.** Compose hands the draft to
+  `$EDITOR` inside `gui.terminal` (`$TERMINAL`, then a short list:
+  foot, alacritty, kitty, xterm), `-e`, and waits, exactly as the
+  TUI waits with the screen stood down. mutt's identity is the
+  editor, and a built-in one would be a different program. A
+  `TextEdit` compose is allowed later, opt-in, never the default.
+- **HTML stays rejected.** The GUI renders the same text the pager
+  renders. Images it can show; documents it cannot.
+- **Doubling is bounded by a test.** `rmut-front` enumerates every
+  `FrontOp` and every `AskKind`; each front end registers what it
+  handles, and the unhandled set is asserted, not discovered. A new
+  `FrontOp` fails the GUI's build until it is either handled or
+  listed as a said-once "not in the GUI" notice.
+
+Each round is shippable alone and leaves the TUI and its 69
+scenarios unchanged.
+
+### G1: rmut-front, the part of a front end that is not a toolkit
+
+The prep that pays without a GUI: what the TUI does that has nothing
+to do with ratatui, moved under it so both front ends share it.
+
+- [ ] `rmut-front` crate. `keymap.rs` moves in with its own `Key`
+      type (a char, a named key, modifiers), so it no longer imports
+      crossterm; the TUI maps `KeyEvent -> Key` at its edge
+- [ ] The pure `ui.rs` functions move: `pager_rows`, `wrap_line_with`,
+      `quote_depth`, `recenter`, `humanize_size`, `index_title` and
+      the `$status_format` expander, `Row` / `RowKind`. `Style` becomes
+      a toolkit-free description (fg, bg, bold, underline, reverse)
+      that `theme.rs` and the GUI each map from; the color rule
+      compiler moves with it
+- [ ] The line editor: the `Prompt` editing keys, per-class history,
+      Tab completion (`Complete`) and the `Wants`-driven candidate
+      lists, out of `app.rs` into `rmut-front`. This is the one
+      piece where a wrong split would show in the TUI's feel, so it
+      goes last in the round, behind the pty scenarios
+- [ ] The `FrontOp` / `AskKind` coverage registry described above,
+      with the TUI as its first user (which handles all of them)
+- [ ] `app.rs` shrinks by what left; nothing else in it changes.
+      69/69 scenarios, unit tests follow their code
+
+### G2: a window that reads mail
+
+The smallest GUI that is honestly usable: read-only, keyboard-driven,
+the same keys.
+
+- [ ] `crates/rmut-gui`, workspace member, binary `rmut-gui`; the
+      same `parse_args` (moved to `rmut-front`) so `-f`, `-R`, `-e`
+      mean what they mean; `-s` and `-z`/`-Z` are refused with a
+      pointer to `rmut`
+- [ ] Index: `session.visible` through `format::IndexFields` and the
+      shared `$index_format` expander, monospace by default, the
+      index color rules applied. Thread depth, collapse, the sidebar
+- [ ] Pager: `pager_rows` over the same `MessageView`, quote colors,
+      body color rules, `$pager_index_lines`, search highlight
+- [ ] Status bar and message line from the shared expander; notices
+      through a `NoticeSink` that also calls `request_repaint`
+- [ ] Repaint discipline: the window idles. Worker `Done` messages
+      and IDLE wakeups request a repaint; `poll_network` and
+      `check_new_mail` run from a `request_repaint_after` tick at the
+      session's own intervals, never per frame
+- [ ] `Ask::Line` and `Ask::Key` as a bottom line, driven by the
+      shared line editor, history and completion included
+- [ ] `FrontOp`s handled: Exit, OpenSelected, Help, Redraw, PageMove,
+      Sidebar, ErrorHistory, OpenMailbox, ChangeMailbox, Folders,
+      WhatKey, CommandPrompt. Everything that writes or spawns is a
+      said-once notice, and `read_only_session` is forced
+- [ ] Tests without a pty: `egui_kittest` (check the version pairs
+      with the egui in use) drives keys and reads the accessibility
+      tree; a `scenario_gui_index` and `scenario_gui_pager` cover
+      what the pty scenarios cover for the TUI's first two screens
+
+### G3: a window that changes mail
+
+- [ ] Drop the forced read-only; sync, delete/undelete, flags, tags,
+      tag-prefix, limit, search, sort, all through the same
+      `Function`s. The write path is the session's; the round is
+      the prompts and confirmations reaching the screen
+- [ ] The folder browser, postponed list and query list as
+      selectable lists (the `Mode` screens that are lists)
+- [ ] Attachments: the list, save, pipe; `mailcap` viewers spawn as
+      they do in the TUI. `image/*` parts render inline in the pager
+      (the first thing the GUI does that the terminal cannot)
+- [ ] Coverage registry: every `AskKind` handled
+
+### G4: a window that sends mail
+
+- [ ] `gui.terminal` and the spawn wrapper: run `TERMINAL -e CMD`,
+      wait, reload. `$EDITOR` for compose, RawEdit, new-mime files;
+      `!` and `$shell` for the shell; `print_command` and pipes as
+      today
+- [ ] The compose menu screen over `Compose`; send, postpone, recall,
+      PGP prompts, `$undo_send`, the exit notes shown in a dialog
+      instead of on stderr
+- [ ] Coverage registry: every `FrontOp` handled; the said-once
+      notice path is removed from the GUI
+
+### G5: what only a window can do
+
+Each one small, each one behind a `[gui]` key, none changing the
+TUI.
+
+- [ ] Clickable URLs in the pager (`$url_browser`, then xdg-open)
+- [ ] Proportional font for the body, monospace for the index and
+      for `format=flowed` verbatim blocks; `gui.font`, `gui.size`
+- [ ] Native new-mail notification (`notify-rust` or the D-Bus call
+      directly) when the window is unfocused, gated by
+      `$new_mail_command` being unset
+- [ ] A scrollbar and mouse selection in the pager, mouse click to
+      select in the index. No toolbar, no menus: the keymap is the
+      interface
+- [ ] Several windows are not several sessions; one mailbox per
+      process, as with `rmut`. Revisit only if daily use asks
+
+Order of proof: G1 lands regardless of the rest. G2 is used daily for
+a week before G3 starts; if reading mail in the window is not better
+than reading it in the terminal, the plan stops there, with G1 kept
+and `rmut-gui` a read-only viewer that costs nothing to keep.
+
 ## Beyond mutt (frozen: only on explicit request)
 
 Ideas that exploit what mutt structurally can't do. Unlike the
@@ -2260,9 +2402,9 @@ value-per-effort:
   instant without notmuch
 - Unified inbox: several accounts' inboxes merged into one live
   virtual mailbox (flagship-sized; after the parity rounds)
-- A GUI over the session library: only after R50-R53 (and R55, which
-  it would need too), and only worth starting if the doubling of
-  every round is accepted going in
+- A GUI over the session library: planned above (G1-G5, 2026-08-27),
+  with the doubling bounded by the coverage registry rather than
+  accepted open-ended
 
 Explicitly rejected even here: embedded scripting languages, HTML
 rendering engines, notmuch-tag write-back, the fat that sank other
