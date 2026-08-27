@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -21,6 +20,7 @@ use rmut_session::{
     write_draft,
 };
 
+use rmut_front::editor::{Complete, Edit, History, LineEdit};
 use rmut_front::style::rule_style;
 use rmut_front::theme::Theme;
 use rmut_front::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};
@@ -113,12 +113,6 @@ pub enum LineKind {
     },
 }
 
-/// The history buckets `LineKind::history_bucket` can return, for
-/// mapping a persisted bucket name back to its &'static str on load.
-const KNOWN_BUCKETS: &[&str] = &[
-    "mailbox", "pattern", "address", "command", "other", "file", "notmuch",
-];
-
 impl LineKind {
     /// History bucket, mutt-style: one shared list per input class.
     /// The kinds whose answer names a mailbox, so `=x` / `+x` expand
@@ -176,15 +170,9 @@ pub enum KeyKind {
 pub enum Prompt {
     Line {
         label: String,
-        buf: String,
+        /// The text and the cursor, edited by the shared line editor.
+        edit: LineEdit,
         kind: LineKind,
-        /// Cursor as a char position into `buf`.
-        cursor: usize,
-        /// Index into the kind's history while browsing with Up/Down.
-        hist_pos: Option<usize>,
-        /// The line being typed, restored when browsing steps back
-        /// past the newest history entry.
-        stash: String,
     },
     Key {
         label: String,
@@ -195,34 +183,12 @@ pub enum Prompt {
 impl Prompt {
     /// A line prompt with the cursor at the end of the prefill.
     fn line(label: impl Into<String>, buf: String, kind: LineKind) -> Prompt {
-        let cursor = buf.chars().count();
         Prompt::Line {
             label: label.into(),
-            buf,
+            edit: LineEdit::new(buf),
             kind,
-            cursor,
-            hist_pos: None,
-            stash: String::new(),
         }
     }
-}
-
-/// Byte offset of the `cursor`-th char (the length when past the end).
-pub(crate) fn byte_at(buf: &str, cursor: usize) -> usize {
-    buf.char_indices()
-        .nth(cursor)
-        .map(|(i, _)| i)
-        .unwrap_or(buf.len())
-}
-
-/// Tab-completion state at an address prompt: candidates for the token
-/// at `start`, `expect` being the whole buffer after the last
-/// insertion (an edit in between restarts the match).
-struct Complete {
-    start: usize,
-    candidates: Vec<String>,
-    index: usize,
-    expect: String,
 }
 
 /// The sink the TUI installs in its session: mutt's message line says
@@ -309,7 +275,7 @@ pub struct App {
     /// Keys queued by a macro, consumed before real terminal input.
     pending_keys: std::collections::VecDeque<KeyEvent>,
     /// Prompt history per input class (newest first), for the session.
-    history: HashMap<&'static str, Vec<String>>,
+    history: History,
     /// Compiled [[color_index]] rules: (patterns, style patch); the
     /// first matching rule colors the line.
     pub index_rules: Vec<(Vec<Pattern>, rmut_front::style::Style)>,
@@ -466,7 +432,7 @@ impl App {
             pending_raw_edit: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
-            history: HashMap::new(),
+            history: History::default(),
             index_rules,
             sidebar: Vec::new(),
             sidebar_sel: 0,
@@ -893,8 +859,8 @@ impl App {
                 self.prompt = None;
                 self.run_key_prompt(kind, key.code);
             }
-            Some(Prompt::Line { buf, cursor, .. }) => match key.code {
-                KeyCode::Esc => {
+            Some(Prompt::Line { edit, .. }) => match edit.key(key) {
+                Edit::Cancel => {
                     self.prompt = None;
                     self.session.cancel_setup();
                     // Escaping a sub-prompt of the send flow (attach
@@ -903,73 +869,15 @@ impl App {
                         self.open_compose_menu();
                     }
                 }
-                // The line editor, mutt/readline style.
-                KeyCode::Left => *cursor = cursor.saturating_sub(1),
-                KeyCode::Right => *cursor = (*cursor + 1).min(buf.chars().count()),
-                KeyCode::Home => *cursor = 0,
-                KeyCode::End => *cursor = buf.chars().count(),
-                KeyCode::Char('a') if is_ctrl(&key) => *cursor = 0,
-                KeyCode::Char('e') if is_ctrl(&key) => *cursor = buf.chars().count(),
-                KeyCode::Backspace => {
-                    if *cursor > 0 {
-                        buf.remove(byte_at(buf, *cursor - 1));
-                        *cursor -= 1;
+                Edit::History(older) => self.history_step(older),
+                Edit::Complete => self.tab_complete(),
+                Edit::Submit => {
+                    if let Some(Prompt::Line { edit, kind, .. }) = self.prompt.take() {
+                        self.history.push(kind.history_bucket(), &edit.buf);
+                        self.run_line_prompt(kind, edit.buf.trim());
                     }
                 }
-                KeyCode::Delete => {
-                    if *cursor < buf.chars().count() {
-                        buf.remove(byte_at(buf, *cursor));
-                    }
-                }
-                KeyCode::Char('d') if is_ctrl(&key) => {
-                    if *cursor < buf.chars().count() {
-                        buf.remove(byte_at(buf, *cursor));
-                    }
-                }
-                KeyCode::Char('u') if is_ctrl(&key) => {
-                    // Kill to the start of the line.
-                    let i = byte_at(buf, *cursor);
-                    buf.replace_range(..i, "");
-                    *cursor = 0;
-                }
-                KeyCode::Char('k') if is_ctrl(&key) => {
-                    let i = byte_at(buf, *cursor);
-                    buf.truncate(i);
-                }
-                KeyCode::Char('w') if is_ctrl(&key) => {
-                    // Kill the word before the cursor.
-                    let chars: Vec<char> = buf.chars().collect();
-                    let mut c = *cursor;
-                    while c > 0 && chars[c - 1].is_whitespace() {
-                        c -= 1;
-                    }
-                    while c > 0 && !chars[c - 1].is_whitespace() {
-                        c -= 1;
-                    }
-                    let (start, end) = (byte_at(buf, c), byte_at(buf, *cursor));
-                    buf.replace_range(start..end, "");
-                    *cursor = c;
-                }
-                KeyCode::Char(c) if !is_ctrl(&key) => {
-                    buf.insert(byte_at(buf, *cursor), c);
-                    *cursor += 1;
-                }
-                KeyCode::Up => self.history_step(true),
-                KeyCode::Down => self.history_step(false),
-                KeyCode::Tab => self.tab_complete(),
-                KeyCode::Enter => {
-                    if let Some(Prompt::Line { buf, kind, .. }) = self.prompt.take() {
-                        let entry = buf.trim().to_string();
-                        if !entry.is_empty() {
-                            let bucket = self.history.entry(kind.history_bucket()).or_default();
-                            bucket.retain(|e| e != &entry);
-                            bucket.insert(0, entry);
-                            bucket.truncate(100);
-                        }
-                        self.run_line_prompt(kind, buf.trim());
-                    }
-                }
-                _ => {}
+                Edit::Edited | Edit::Ignored => {}
             },
             None => {}
         }
@@ -989,89 +897,25 @@ impl App {
             .map(expand_tilde)
     }
 
-    /// Load persisted prompt history: `bucket\tentry` lines, newest
-    /// first within each bucket, as save_history wrote them.
     fn load_history(&mut self) {
-        let Some(path) = self.history_path() else {
-            return;
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
-        };
-        for line in text.lines() {
-            if let Some((bucket, entry)) = line.split_once('\t')
-                && !entry.is_empty()
-                && let Some(known) = KNOWN_BUCKETS.iter().find(|b| **b == bucket)
-            {
-                self.history
-                    .entry(known)
-                    .or_default()
-                    .push(entry.to_string());
-            }
+        if let Some(path) = self.history_path() {
+            self.history.load(&path);
         }
     }
 
     /// Write the history back, capped at save_history entries per
     /// bucket, so the next session recalls it.
     fn save_history(&mut self) {
-        let Some(path) = self.history_path() else {
-            return;
-        };
-        let cap = self.session.config.ui.save_history.unwrap_or(100);
-        let mut out = String::new();
-        for (bucket, entries) in &self.history {
-            for entry in entries.iter().take(cap) {
-                // A tab or newline in an entry would corrupt the file;
-                // both are vanishingly rare in a prompt, and dropped.
-                if !entry.contains(['\t', '\n']) {
-                    out += &format!("{bucket}\t{entry}\n");
-                }
-            }
+        if let Some(path) = self.history_path() {
+            let cap = self.session.config.ui.save_history.unwrap_or(100);
+            self.history.save(&path, cap);
         }
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(&path, out);
     }
 
     fn history_step(&mut self, older: bool) {
-        let Some(Prompt::Line {
-            buf,
-            cursor,
-            kind,
-            hist_pos,
-            stash,
-            ..
-        }) = &mut self.prompt
-        else {
-            return;
-        };
-        let bucket = self
-            .history
-            .get(kind.history_bucket())
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        if bucket.is_empty() {
-            return;
+        if let Some(Prompt::Line { edit, kind, .. }) = &mut self.prompt {
+            edit.history_step(self.history.get(kind.history_bucket()), older);
         }
-        let next = match (*hist_pos, older) {
-            (None, true) => Some(0),
-            (None, false) => return,
-            (Some(p), true) => Some((p + 1).min(bucket.len() - 1)),
-            (Some(0), false) => None,
-            (Some(p), false) => Some(p - 1),
-        };
-        match next {
-            Some(p) => {
-                if hist_pos.is_none() {
-                    *stash = buf.clone();
-                }
-                *buf = bucket[p].clone();
-            }
-            None => *buf = stash.clone(),
-        }
-        *hist_pos = next;
-        *cursor = buf.chars().count();
     }
 
     fn run_key_prompt(&mut self, kind: KeyKind, code: KeyCode) {
@@ -1121,7 +965,7 @@ impl App {
     /// folder browser instead. Repeated Tab cycles the candidates.
     fn tab_complete(&mut self) {
         let (buf_now, kind) = match &self.prompt {
-            Some(Prompt::Line { buf, kind, .. }) => (buf.clone(), kind.clone()),
+            Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), kind.clone()),
             _ => return,
         };
         // A session question says what its answer is; the front end's
@@ -1151,32 +995,19 @@ impl App {
             return;
         }
         let set_buf = |app: &mut App, text: &str| {
-            if let Some(Prompt::Line { buf, cursor, .. }) = &mut app.prompt {
-                *buf = text.to_string();
-                *cursor = buf.chars().count();
+            if let Some(Prompt::Line { edit, .. }) = &mut app.prompt {
+                edit.set(text);
             }
         };
         if let Some(c) = &mut self.complete
-            && c.expect == buf_now
-            && c.candidates.len() > 1
+            && let Some((next, note)) = c.cycle(&buf_now)
         {
-            c.index = (c.index + 1) % c.candidates.len();
-            let next = format!("{}{}", &buf_now[..c.start], c.candidates[c.index]);
-            c.expect = next.clone();
-            let note = format!("match {}/{}", c.index + 1, c.candidates.len());
             set_buf(self, &next);
             self.note(note);
             return;
         }
         self.complete = None;
-        let after_comma = if is_addr {
-            buf_now.rfind(',').map(|i| i + 1).unwrap_or(0)
-        } else {
-            0
-        };
-        let start =
-            after_comma + buf_now[after_comma..].len() - buf_now[after_comma..].trim_start().len();
-        let word = buf_now[start..].trim().to_string();
+        let (start, word) = Complete::token(&buf_now, is_addr);
         if word.is_empty() {
             self.error("nothing to complete");
             return;
@@ -1207,22 +1038,16 @@ impl App {
                 })
                 .collect()
         };
-        match candidates.len() {
-            0 => self.error(format!("no matches for {word}")),
-            n => {
-                let next = format!("{}{}", &buf_now[..start], candidates[0]);
-                set_buf(self, &next);
-                if n > 1 {
-                    self.note(format!("match 1/{n} (Tab cycles)"));
-                }
-                self.complete = Some(Complete {
-                    start,
-                    candidates,
-                    index: 0,
-                    expect: next,
-                });
-            }
+        if candidates.is_empty() {
+            self.error(format!("no matches for {word}"));
+            return;
         }
+        let (state, next, note) = Complete::first(&buf_now, start, candidates);
+        set_buf(self, &next);
+        if let Some(note) = note {
+            self.note(note);
+        }
+        self.complete = Some(state);
     }
 
     fn run_line_prompt(&mut self, kind: LineKind, input: &str) {
@@ -2269,9 +2094,8 @@ impl App {
                 self.mode = Mode::Index;
                 // The normal compose chain, with To prefilled.
                 self.start_compose(ComposeKind::New);
-                if let Some(Prompt::Line { buf, cursor, .. }) = &mut self.prompt {
-                    *buf = addr;
-                    *cursor = buf.chars().count();
+                if let Some(Prompt::Line { edit, .. }) = &mut self.prompt {
+                    edit.set(&addr);
                 }
             }
             _ => {}

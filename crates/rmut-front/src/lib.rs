@@ -3,6 +3,7 @@
 //! the rounds move it here) the layout and formatting that turn a
 //! session into rows of text. Nothing in here draws.
 
+pub mod editor;
 pub mod key;
 pub mod keymap;
 pub mod pager;

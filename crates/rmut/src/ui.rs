@@ -598,12 +598,10 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16
 fn draw_message_line(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(prompt) = &app.prompt {
         let mut text = match prompt {
-            Prompt::Line {
-                label, buf, cursor, ..
-            } => {
+            Prompt::Line { label, edit, .. } => {
                 // The marker sits at the cursor, not always at the end.
-                let i = crate::app::byte_at(buf, *cursor);
-                format!("{label}{}\u{2581}{}", &buf[..i], &buf[i..])
+                let i = rmut_front::editor::byte_at(&edit.buf, edit.cursor);
+                format!("{label}{}\u{2581}{}", &edit.buf[..i], &edit.buf[i..])
             }
             Prompt::Key { label, .. } => label.clone(),
         };
