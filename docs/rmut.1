@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.82.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.83.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -607,7 +607,9 @@ connect_timeout, net_timeout, pager_stop, markers, smart_wrap,
 collapse_unread, uncollapse_jump, quit, confirmappend, save_name,
 force_name, forward_quote, signature, sig_dashes, abort_nosubject,
 abort_unmodified, mark_old, print, beep_new, wait_key,
-reverse_realname,
+reverse_realname, delete_untag, flag_safe, maildir_trash,
+mail_check_recent, check_new, uncollapse_new, menu_scroll,
+menu_context, menu_move_off, help,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -1094,6 +1096,28 @@ mutt's $mark_old: unread mail you leave behind ages to old when you
 leave the mailbox \(em shown as O, out of the new count (on by
 default, as in mutt). Off, it is still new next time.
 .TP
+.B delete_untag
+mutt's $delete_untag: marking a tagged message for deletion, or
+saving it away, takes its tag off (on by default, as in mutt).
+.TP
+.B flag_safe
+mutt's $flag_safe: a flagged message cannot be marked for deletion,
+by any of the ways of doing so (off by default).
+.TP
+.B maildir_trash
+mutt's $maildir_trash: a purge gives deleted messages the maildir T
+flag instead of unlinking them; they stay in the index marked D.
+Maildir only (off by default).
+.TP
+.B mail_check_recent
+mutt's $mail_check_recent: "new mail in X" only when X has grown
+since the last look (on by default). Off announces any mailbox
+holding new mail, once, until it empties.
+.TP
+.B check_new
+mutt's $check_new: look for mail delivered to the open maildir while
+it is open (on by default). Off stops the rescan; IMAP is unaffected.
+.TP
 .B print_confirm
 mutt's $print, the question before
 .B p
@@ -1141,6 +1165,10 @@ Unfolding a thread puts the cursor on its first unread message
 A thread reply whose subject repeats its parent's shows only the tree
 arrow (mutt's $hide_thread_subject). Off by default here, where mutt
 has it on, so rmut's look is unchanged until asked.
+.TP
+.B uncollapse_new
+A folded thread that receives a new message unfolds (mutt's
+$uncollapse_new, on). Off, it stays folded and the count grows.
 .SS [ui]
 .TP
 .B theme
@@ -1167,6 +1195,23 @@ top, under the help bar, rather than at the bottom.
 .B arrow_cursor
 mutt's, off by default: mark the selected row with an arrow instead
 of reverse video.
+.TP
+.B menu_scroll
+When the cursor leaves the screen the index scrolls a line at a time
+(on by default here, where mutt turns a page); off shows the next
+page instead (mutt's $menu_scroll).
+.TP
+.B menu_context
+Lines kept in view beyond the cursor when the index scrolls or pages
+(mutt's $menu_context, 0).
+.TP
+.B menu_move_off
+The last message may scroll up past the bottom of the screen (mutt's
+$menu_move_off, on). Off keeps the index bottom\-stuck once it fills
+the screen.
+.TP
+.B help
+The key\-help bar on the top line (mutt's $help, on).
 .TP
 .B status_chars
 mutt's $status_chars: the characters

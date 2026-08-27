@@ -199,10 +199,13 @@ impl PatternOp {
         }
     }
 
-    fn apply(self, m: &mut Msg) {
+    fn apply(self, m: &mut Msg, flag_safe: bool) {
         match self {
             PatternOp::Delete => {
-                if !m.env.file.flags.deleted {
+                // mutt's delete-pattern sets the flag and nothing
+                // else: $flag_safe applies, $delete_untag does not.
+                let safe = flag_safe && m.env.file.flags.flagged;
+                if !m.env.file.flags.deleted && !safe {
                     m.env.file.flags.deleted = true;
                     m.dirty = true;
                 }
@@ -666,7 +669,8 @@ impl Session {
                 None
             }
             (AskKind::Pattern { op }, Answer::Line(input)) => {
-                self.apply_pattern(input, op.verb(), |m| op.apply(m));
+                let flag_safe = self.config.mail.flag_safe;
+                self.apply_pattern(input, op.verb(), |m| op.apply(m, flag_safe));
                 None
             }
             (

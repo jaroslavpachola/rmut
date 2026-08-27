@@ -527,7 +527,12 @@ impl Session {
                     self.select(self.sel.saturating_add(1));
                 }
             }
-            Delete => self.mark_selected(tagged, "delete", |m| m.env.file.flags.deleted = true),
+            Delete => {
+                let rules = self.delete_rules();
+                self.mark_selected(tagged, "delete", move |m| {
+                    rules.mark(m);
+                })
+            }
             Undelete => {
                 self.mark_selected(tagged, "undelete", |m| m.env.file.flags.deleted = false)
             }

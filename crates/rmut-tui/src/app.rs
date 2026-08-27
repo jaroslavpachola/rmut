@@ -744,9 +744,14 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent, width: usize, height: usize) {
-        // Rows available for content: total minus the help bar, the
-        // status bar and the message line.
-        let page = height.saturating_sub(3).max(1);
+        // Rows available for content: total minus the help bar (when
+        // $help shows it), the status bar and the message line.
+        let bars = if self.session.config.ui.help.unwrap_or(true) {
+            3
+        } else {
+            2
+        };
+        let page = height.saturating_sub(bars).max(1);
         self.view_size = (width, page);
         // mutt's Ctrl+G: whatever the connection is doing, stop. It
         // comes before every menu, since the point of it is to get

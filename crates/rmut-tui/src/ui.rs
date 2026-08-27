@@ -25,9 +25,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // mutt's $status_on_top: the status and message rows go just under
     // the help bar rather than at the bottom.
     let on_top = app.session.config.ui.status_on_top.unwrap_or(false);
+    // mutt's $help: without it the top line goes to the content.
+    let help_rows = if app.session.config.ui.help.unwrap_or(true) {
+        1
+    } else {
+        0
+    };
     let areas: [Rect; 4] = if on_top {
         Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(help_rows),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),
@@ -35,7 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .areas(frame.area())
     } else {
         Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(help_rows),
             Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -58,7 +64,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Query { .. } => QUERY_HELP,
         Mode::Help { .. } => HELP_HELP,
     };
-    frame.render_widget(Line::from(help).style(app.theme.bar_style()), help_area);
+    if help_rows > 0 {
+        frame.render_widget(Line::from(help).style(app.theme.bar_style()), help_area);
+    }
 
     if matches!(app.mode, Mode::Pager(_)) {
         // Optionally keep a slice of the index visible above the pager
@@ -203,13 +211,20 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let rows = area.height as usize;
-    let arrow = app.session.config.ui.arrow_cursor.unwrap_or(false);
-    // Keep the selection visible.
-    if app.session.sel < app.index_offset {
-        app.index_offset = app.session.sel;
-    } else if app.session.sel >= app.index_offset + rows {
-        app.index_offset = app.session.sel + 1 - rows;
-    }
+    let ui = &app.session.config.ui;
+    let arrow = ui.arrow_cursor.unwrap_or(false);
+    // Keep the selection visible, the way mutt's menu does.
+    app.index_offset = recenter(
+        app.index_offset,
+        app.session.sel,
+        rows,
+        app.session.visible.len(),
+        Menu {
+            scroll: ui.menu_scroll.unwrap_or(true),
+            context: ui.menu_context,
+            move_off: ui.menu_move_off.unwrap_or(true),
+        },
+    );
     let width = area.width as usize;
     let mut lines = Vec::with_capacity(rows);
     // `~m` / `~=` in a [[color_index]] rule need the numbering on
@@ -529,6 +544,43 @@ pub fn wrap_line_with(line: &str, width: usize, smart: bool) -> Vec<String> {
         };
     }
     out
+}
+
+/// mutt's $menu_scroll, $menu_context and $menu_move_off, as the
+/// index's recentering reads them.
+#[derive(Clone, Copy)]
+pub struct Menu {
+    pub scroll: bool,
+    pub context: usize,
+    pub move_off: bool,
+}
+
+/// Where the index's first row goes so the cursor stays on screen:
+/// mutt's menu_check_recenter, line for line. `top` is the row now at
+/// the top, `sel` the cursor, `rows` the screen, `max` the entries.
+/// With `scroll` the view moves just far enough (keeping `context`
+/// lines beyond the cursor); without it a whole page turns. Unless
+/// `move_off`, the last entry never scrolls up past the bottom.
+pub fn recenter(top: usize, sel: usize, rows: usize, max: usize, menu: Menu) -> usize {
+    let (mut top, sel, rows, max) = (top as i64, sel as i64, rows as i64, max as i64);
+    let c = (menu.context as i64).min(rows / 2);
+    if !menu.move_off && max <= rows {
+        top = 0;
+    } else if menu.scroll || rows <= 0 || c < menu.context as i64 {
+        if sel < top + c {
+            top = sel - c;
+        } else if sel >= top + rows - c {
+            top = sel - rows + c + 1;
+        }
+    } else if sel < top + c {
+        top -= (rows - c) * ((top + rows - 1 - sel) / (rows - c)) - c;
+    } else if sel >= top + rows - c {
+        top += (rows - c) * ((sel - top) / (rows - c)) - c;
+    }
+    if !menu.move_off {
+        top = top.min(max - rows);
+    }
+    top.max(0) as usize
 }
 
 fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
@@ -951,7 +1003,9 @@ fn pager_status(app: &App, pager: &Pager, content_height: u16, width: usize) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{PagerStyle, RowKind, humanize_size, pager_rows, quote_depth, wrap_line_with};
+    use super::{
+        Menu, PagerStyle, RowKind, humanize_size, pager_rows, quote_depth, recenter, wrap_line_with,
+    };
     use rmut_core::message::MessageView;
     use rmut_session::default_quote_re;
 
@@ -1043,5 +1097,69 @@ mod tests {
         assert_eq!(humanize_size(2048), "2.0K");
         assert_eq!(humanize_size(204800), "200K");
         assert_eq!(humanize_size(2 * 1024 * 1024), "2.0M");
+    }
+
+    #[test]
+    fn recenter_scrolls_a_line_or_turns_a_page() {
+        let scroll = Menu {
+            scroll: true,
+            context: 0,
+            move_off: true,
+        };
+        let page = Menu {
+            scroll: false,
+            context: 0,
+            move_off: true,
+        };
+        // Moving down off a 10-row screen: scrolling shows one more
+        // line, paging turns the whole page (mutt's default).
+        assert_eq!(recenter(0, 10, 10, 100, scroll), 1);
+        assert_eq!(recenter(0, 10, 10, 100, page), 10);
+        // Moving up off the top is symmetrical.
+        assert_eq!(recenter(20, 19, 10, 100, scroll), 19);
+        assert_eq!(recenter(20, 19, 10, 100, page), 10);
+        // On screen already: nothing moves.
+        assert_eq!(recenter(20, 25, 10, 100, scroll), 20);
+        assert_eq!(recenter(20, 25, 10, 100, page), 20);
+    }
+
+    #[test]
+    fn recenter_keeps_context_lines() {
+        let m = Menu {
+            scroll: true,
+            context: 3,
+            move_off: true,
+        };
+        // The cursor stays three rows clear of the bottom edge.
+        assert_eq!(recenter(0, 7, 10, 100, m), 1);
+        // And of the top edge.
+        assert_eq!(recenter(20, 22, 10, 100, m), 19);
+        // Context is capped at half the screen (a 4-row screen: 2).
+        let big = Menu {
+            scroll: true,
+            context: 9,
+            move_off: true,
+        };
+        assert_eq!(recenter(0, 2, 4, 100, big), 1);
+    }
+
+    #[test]
+    fn recenter_move_off_pins_the_bottom() {
+        let stuck = Menu {
+            scroll: true,
+            context: 0,
+            move_off: false,
+        };
+        // Fewer entries than rows: the top is always the top.
+        assert_eq!(recenter(3, 4, 10, 5, stuck), 0);
+        // The last page stays full: top never passes max - rows.
+        assert_eq!(recenter(95, 99, 10, 100, stuck), 90);
+        // With move_off (the default) it may.
+        let free = Menu {
+            scroll: true,
+            context: 0,
+            move_off: true,
+        };
+        assert_eq!(recenter(95, 99, 10, 100, free), 95);
     }
 }

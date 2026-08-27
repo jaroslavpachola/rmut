@@ -250,6 +250,30 @@ pub struct Held {
 /// An operation that has asked the connection for something and is
 /// waiting to be carried on. The front end keeps drawing meanwhile,
 /// and calls [`Session::poll_network`] until the answer lands.
+/// How a message is marked for deletion: mutt's $flag_safe and
+/// $delete_untag, read once per operation.
+#[derive(Clone, Copy)]
+pub struct DeleteRules {
+    pub flag_safe: bool,
+    pub untag: bool,
+}
+
+impl DeleteRules {
+    /// Mark `m` deleted the way mutt_set_flag(MUTT_DELETE) does:
+    /// refused for a flagged message under flag_safe, and the tag
+    /// comes off under delete_untag. Whether the message changed.
+    pub fn mark(self, m: &mut Msg) -> bool {
+        if self.flag_safe && m.env.file.flags.flagged {
+            return false;
+        }
+        m.env.file.flags.deleted = true;
+        if self.untag {
+            m.env.tagged = false;
+        }
+        true
+    }
+}
+
 enum Pending {
     /// The poll tick's look at the server.
     CheckNew,
@@ -352,6 +376,9 @@ pub struct Session {
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
+    /// The mailboxes announced under $mail_check_recent = false, so
+    /// each is said once while it holds new mail.
+    mailbox_announced: HashSet<String>,
     /// Unread counts of the open account's folders, as of the last
     /// time the connection was free to count them.
     unseen: HashMap<String, usize>,
@@ -511,6 +538,7 @@ impl Session {
             idle: None,
             backfill: None,
             mailbox_new: HashMap::new(),
+            mailbox_announced: HashSet::new(),
             unseen: HashMap::new(),
             read_only: false,
             read_only_session: false,
@@ -982,6 +1010,7 @@ impl Session {
             .map(|m| (m.env.file.path.clone(), m))
             .collect();
         let mut arrived = 0usize;
+        let mut arrivals: Vec<PathBuf> = Vec::new();
         for file in files {
             match old.remove(&file.path) {
                 Some(prev) if prev.pending() => self.msgs.push(prev),
@@ -994,6 +1023,7 @@ impl Session {
                     if let Ok(env) = message::envelope(file) {
                         if env.file.is_new {
                             arrived += 1;
+                            arrivals.push(env.file.path.clone());
                         }
                         self.msgs.push(Msg { env, dirty: false });
                     }
@@ -1001,7 +1031,24 @@ impl Session {
             }
         }
         self.dir_mtimes = dir_mtimes(&self.dir);
-        self.resort(keep);
+        self.resort(keep.clone());
+        // mutt's $uncollapse_new: a folded thread that just grew
+        // unfolds, so the arrival is on screen and not a count.
+        if self.sort == SortKey::Threads
+            && self.config.index.uncollapse_new.unwrap_or(true)
+            && !self.collapsed.is_empty()
+        {
+            let mut unfolded = false;
+            for path in &arrivals {
+                if let Some(mi) = self.msgs.iter().position(|m| &m.env.file.path == path) {
+                    let root = self.thread_root.get(mi).copied().unwrap_or(mi);
+                    unfolded |= self.collapsed.remove(&self.msgs[root].env.file.path);
+                }
+            }
+            if unfolded {
+                self.rebuild_visible(keep);
+            }
+        }
         if arrived > 0 {
             let title = self.title.clone();
             self.notify(Notice::NewMail(format!("new mail in {title} (+{arrived})")));
@@ -1061,7 +1108,11 @@ impl Session {
         self.check_other_mailboxes();
         // The counts moved: whatever shows them wants redrawing.
         self.requests.push(Request::MailboxesChanged);
-        if dir_mtimes(&self.dir) != self.dir_mtimes {
+        // mutt's $check_new: off, a local maildir is not rescanned
+        // while open; what the server says still lands (IMAP is
+        // unaffected, as in mutt).
+        let check_new = self.config.mail.check_new.unwrap_or(true) || self.imap.is_some();
+        if check_new && dir_mtimes(&self.dir) != self.dir_mtimes {
             self.rescan();
         }
         // The server's own counts follow when it gets round to them,
@@ -1275,6 +1326,15 @@ impl Session {
             if let Some(p) = prev.filter(|&p| count > p) {
                 self.run_new_mail_command(&spec, count - p);
                 grew.push(spec);
+            } else if !self.config.mail.mail_check_recent.unwrap_or(true) {
+                // mutt's $mail_check_recent unset: a mailbox holding
+                // new mail is announced whether or not it grew, once,
+                // until it has been emptied.
+                if count == 0 {
+                    self.mailbox_announced.remove(&spec);
+                } else if self.mailbox_announced.insert(spec.clone()) {
+                    grew.push(spec);
+                }
             }
         }
         // The open mailbox's own announcement (from the rescan) wins.
@@ -1315,6 +1375,15 @@ impl Session {
     }
 
     /// Apply `f` to every tagged message, marking them dirty.
+    /// What a deletion has to respect: mutt's $flag_safe (a flagged
+    /// message stays) and $delete_untag (the mark takes the tag off).
+    pub fn delete_rules(&self) -> DeleteRules {
+        DeleteRules {
+            flag_safe: self.config.mail.flag_safe,
+            untag: self.config.mail.delete_untag.unwrap_or(true),
+        }
+    }
+
     pub fn each_tagged(&mut self, what: &str, f: impl Fn(&mut Msg)) {
         let tagged: Vec<usize> = (0..self.msgs.len())
             .filter(|&i| self.msgs[i].env.tagged)
@@ -1750,11 +1819,13 @@ impl Session {
         };
         self.push_undo(&what, &targets);
         let want_tag = !self.msgs[mi].env.tagged;
+        let rules = self.delete_rules();
         for &i in &targets {
             match op {
                 ThreadOp::Delete => {
-                    self.msgs[i].env.file.flags.deleted = true;
-                    self.msgs[i].dirty = true;
+                    if rules.mark(&mut self.msgs[i]) {
+                        self.msgs[i].dirty = true;
+                    }
                 }
                 ThreadOp::Undelete => {
                     self.msgs[i].env.file.flags.deleted = false;
@@ -2290,10 +2361,28 @@ impl Session {
         let mut removed = 0usize;
         let mut saved = 0usize;
         let mut errors: Vec<String> = Vec::new();
+        // mutt's $maildir_trash: a purge writes the T flag and keeps
+        // the message, still marked, instead of unlinking it. Only a
+        // real maildir: the server purges IMAP, the mirror mbox.
+        let trash = self.config.mail.maildir_trash && self.imap.is_none() && self.mbox.is_none();
         self.msgs.retain_mut(|m| {
             if m.env.file.flags.deleted {
                 if !purge {
                     return true; // stays marked for a later purge
+                }
+                if trash {
+                    if m.dirty {
+                        match maildir::store_flags(&m.env.file) {
+                            Ok(path) => {
+                                m.env.file.path = path;
+                                m.env.file.is_new = false;
+                                m.dirty = false;
+                                saved += 1;
+                            }
+                            Err(err) => errors.push(err.to_string()),
+                        }
+                    }
+                    return true;
                 }
                 match maildir::remove(&m.env.file) {
                     Ok(()) => {
@@ -2557,8 +2646,10 @@ impl Session {
                     self.error(format!("cannot store the edited copy: {err:#}"));
                     return;
                 }
-                if let Some(m) = self.cur_mut() {
-                    m.env.file.flags.deleted = true;
+                let rules = self.delete_rules();
+                if let Some(m) = self.cur_mut()
+                    && rules.mark(m)
+                {
                     m.dirty = true;
                 }
                 self.check_new_mail();
@@ -2693,9 +2784,11 @@ impl Session {
         });
         let n = copied.len();
         if delete {
+            let rules = self.delete_rules();
             for &i in &copied {
-                self.msgs[i].env.file.flags.deleted = true;
-                self.msgs[i].dirty = true;
+                if rules.mark(&mut self.msgs[i]) {
+                    self.msgs[i].dirty = true;
+                }
             }
         }
         let mut status = match (delete, n) {

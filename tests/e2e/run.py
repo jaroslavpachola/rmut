@@ -1959,7 +1959,10 @@ def scenario_tag_save_sort(tmp):
     r.expect("Tagged:1")  # the custom status_format counts it
     r.keys(b"t")    # tag the second
     r.keys(b";d")   # delete all tagged
-    r.expect("applied to 2", "Del:2")
+    # mutt's $delete_untag: the marks take the tags off with them.
+    r.expect("applied to 2", "Del:2", "no tags")
+    r.keys(b"=tt")  # tag both again (t advances)
+    r.expect("Tagged:2")
     r.keys(b";u")   # and undelete them again (Del:1 below proves it)
     r.keys(b"s")    # save the selected message
     r.expect("Save to mailbox:")
@@ -3538,6 +3541,27 @@ def scenario_layout(tmp):
     r.close()
 
 
+def scenario_help_bar_off(tmp):
+    """R85: $help = false drops the key-help line; the rest of the
+    screen (the index and the status bar) is intact and one row
+    taller. $menu_context keeps lines in view past the cursor."""
+    md = make_maildir(tmp, "md-nohelp")
+    write_msgs(md, ["jane", "petr", "ci", "alice", "bob"])
+    cfg = os.path.join(tmp, "nohelp-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[ui]\nhelp = false\nmenu_context = 1\n')
+    # Six rows: without the help bar four go to the index (with it,
+    # three), so five messages need one scroll, not two.
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}), rows=6)
+    r.expect("Msgs:5", absent=["q:Quit"])
+    # The cursor starts on the last message; the first row is scrolled
+    # off. Moving up to the top brings it back, one line at a time.
+    r.keys(b"gg")
+    r.expect("Lunch on Friday?")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_status_chars(tmp):
     """R82: $status_chars sets the %r mailbox-state marker."""
     md = make_maildir(tmp, "md-schars")
@@ -4319,6 +4343,7 @@ SCENARIOS = [
     scenario_layout,
     scenario_status_chars,
     scenario_search_context,
+    scenario_help_bar_off,
 ]
 
 

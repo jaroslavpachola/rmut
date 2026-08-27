@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.82**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.83**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -422,6 +422,9 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `confirmappend`, `save_name`, `force_name`, `forward_quote`,
 `signature`, `sig_dashes`, `abort_nosubject`, `abort_unmodified`,
 `mark_old`, `print`, `beep_new`, `wait_key`, `reverse_realname`,
+`delete_untag`, `flag_safe`, `maildir_trash`, `mail_check_recent`,
+`check_new`, `uncollapse_new`, `menu_scroll`, `menu_context`,
+`menu_move_off`, `help`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -878,6 +881,14 @@ abort_unmodified = true      # false: keep a draft the first editor
                              # pass left untouched
 mark_old = true              # unread mail ages to old (O) when you
                              # leave the mailbox, as in mutt
+delete_untag = true          # deleting a tagged message untags it
+flag_safe = false            # true: a flagged message cannot be
+                             # deleted (mutt's $flag_safe)
+maildir_trash = false        # true: a purge writes the maildir T flag
+                             # instead of unlinking (maildir only)
+mail_check_recent = true     # false announces any mailbox holding new
+                             # mail, once, not only one that grew
+check_new = true             # false stops rescanning the open maildir
 print_confirm = "ask-no"     # mutt's $print: "ask-yes" makes Enter
                              # print, "yes" never asks, "no" refuses
 
@@ -900,6 +911,7 @@ sort_aux = "last-date-sent"  # which thread comes first: last- by its
 date_format = "%d.%m.%Y"     # strftime for the date column
 hide_thread_subject = false  # true blanks a thread reply's subject
                              # when it repeats the parent's (mutt's)
+uncollapse_new = true        # a folded thread unfolds when it grows
 
 [pager]
 index_lines = 10             # keep a slice of the index above the pager
@@ -946,6 +958,12 @@ history_file = "~/.rmut_history"  # persist prompt history across
 status_on_top = false        # true puts the status bar near the top
 arrow_cursor = false         # true marks the selection with -> not
                              # reverse video (mutt's $arrow_cursor)
+menu_scroll = true           # false turns a page when the cursor
+                             # leaves the screen (mutt's default)
+menu_context = 0             # lines kept in view past the cursor
+menu_move_off = true         # false keeps the last message on the
+                             # bottom row once the index fills
+help = true                  # false drops the key-help top line
 status_chars = "-*%"         # mutt's $status_chars: %r marker for
                              # unchanged/changed/read-only (unset keeps
                              # rmut's nothing/*/%)

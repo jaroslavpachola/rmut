@@ -2005,18 +2005,48 @@ split into R85.
       `$menu_context` / `$menu_move_off`, the `$help` toggle,
       `$sleep_time`, `$read_inc` / `$write_inc` / `$net_inc`)
 
-## R85: the harder mark options and the last layout knobs
+## R85: the harder mark options and the last layout knobs (done, 1.83)
 
 Goal: the mark/thread behaviour knobs that touch the delete/sync
-paths, and the smaller layout options R84 left.
+paths, and the smaller layout options R84 left. The first of the 2.0
+cut.
 
-- [ ] Marks and threads: `$delete_untag`, `$keep_flagged`,
-      `$flag_safe`, `$maildir_trash`, `$uncollapse_new`,
-      `$hide_limited` / `$hide_top_limited`, `$thread_received`,
-      `$mail_check_recent`, `$check_new`
-- [ ] Layout: `$menu_scroll` / `$menu_context` / `$menu_move_off`,
-      the `$help` bar toggle, `$sleep_time`, `$read_inc` /
-      `$write_inc` / `$net_inc`
+- [x] `DeleteRules` (mutt's mutt_set_flag(MUTT_DELETE), read once per
+      operation): `$flag_safe` keeps a flagged message from every
+      way of deleting (d, `;d`, delete-thread, delete-pattern, a
+      save, an edit), `$delete_untag` (on, as in mutt) takes the tag
+      off with the mark, except under delete-pattern, where mutt
+      leaves it. The pty scenario that undeleted "the tagged" after
+      `;d` learned to re-tag, as a mutt user has to
+- [x] `$maildir_trash`: a purge writes the T flag and keeps the
+      message in the index marked D; maildir only (the server purges
+      IMAP, the mirror mbox). `$` reports it as an update, not a
+      deletion
+- [x] `$uncollapse_new` (on): a folded thread that receives a new
+      message unfolds; off, it stays folded and its count grows.
+      Done in the rescan, after the resort placed the arrival
+- [x] `$mail_check_recent` (on): off, a watched mailbox holding new
+      mail is announced whether or not it grew, once, until it
+      empties (`mailbox_announced`)
+- [x] `$check_new` (on): off, the open maildir is not rescanned while
+      open; IMAP is unaffected, as in mutt
+- [x] `$menu_scroll` / `$menu_context` / `$menu_move_off`: mutt's
+      menu_check_recenter, line for line, as `ui::recenter`, with
+      unit tests against the C. menu_scroll is on by default here
+      (rmut always scrolled a line; mutt turns a page) so the feel is
+      unchanged until asked
+- [x] `$help` off drops the top line; the page size follows
+- [x] Answered in the importer rather than implemented, each with
+      its reason: `$keep_flagged` (no `$move`), `$hide_limited` /
+      `$hide_top_limited` (rmut's tree never marks limited-out
+      messages, which is the set side), `$thread_received` (no
+      subject threading to date), `$sleep_time` (rmut never pauses on
+      a message), `$read_inc` / `$write_inc` / `$net_inc` / `$time_inc`
+      (progress shows as the connection reports it)
+- [x] Settable at :, imported (both sides of each), importer tests,
+      six session tests, a pty scenario for the help bar and
+      menu_context, the parity fixture grew eight lines. 68/68
+      scenarios
 
 ## R86: the last keys
 
@@ -2093,9 +2123,9 @@ the major bump marks the roadmap finishing, not an incompatibility.
 
 Blocking, in order:
 
-- [ ] R85: the mark/thread knobs on the delete/sync path and the last
+- [x] R85: the mark/thread knobs on the delete/sync path and the last
       layout knobs. These go *before* the tag because they are where
-      muscle memory can lose mail
+      muscle memory can lose mail (1.83)
 - [ ] R86: the last keys
 - [ ] R87: the browser sort and the `un*` / `reset` commands (muttrc
       compatibility)

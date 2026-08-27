@@ -276,6 +276,25 @@ pub struct Mail {
     /// to old (O in the index, out of the new count) when you leave.
     /// True unless set otherwise, as in mutt.
     pub mark_old: Option<bool>,
+    /// mutt's $delete_untag: marking a tagged message for deletion
+    /// (d, or a save) takes its tag off. True unless set otherwise,
+    /// as in mutt.
+    pub delete_untag: Option<bool>,
+    /// mutt's $flag_safe: a flagged message cannot be marked for
+    /// deletion, by any of the ways of doing so. Off by default.
+    pub flag_safe: bool,
+    /// mutt's $maildir_trash: a purge gives deleted messages the
+    /// maildir T flag instead of unlinking them; they stay in the
+    /// index marked D. Maildir only. Off by default.
+    pub maildir_trash: bool,
+    /// mutt's $mail_check_recent: "new mail in X" only when X has
+    /// grown since the last look. False announces any mailbox holding
+    /// new mail, once, until it empties. True unless set otherwise.
+    pub mail_check_recent: Option<bool>,
+    /// mutt's $check_new: look for mail delivered to the open maildir
+    /// while it is open. False stops the rescan (IMAP is unaffected,
+    /// as in mutt). True unless set otherwise.
+    pub check_new: Option<bool>,
     /// mutt's $print: what `p` does. "ask-no" (the default) asks with
     /// Enter declining, "ask-yes" asks with Enter printing, "yes"
     /// prints without asking and "no" refuses to print at all.
@@ -431,6 +450,9 @@ pub struct Index {
     /// arrow). Off by default here, where mutt has it on, so rmut's
     /// look is unchanged unless asked.
     pub hide_thread_subject: Option<bool>,
+    /// mutt's $uncollapse_new: a collapsed thread that receives a new
+    /// message unfolds. True unless set otherwise, as in mutt.
+    pub uncollapse_new: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -549,6 +571,21 @@ pub struct Ui {
     /// mutt's $arrow_cursor: mark the selected row with an arrow
     /// instead of reverse video. Off by default, as in mutt.
     pub arrow_cursor: Option<bool>,
+    /// mutt's $menu_scroll: the index scrolls a line at a time when
+    /// the cursor leaves the screen; false shows the next page
+    /// instead. On by default here (rmut always scrolled), where mutt
+    /// pages.
+    pub menu_scroll: Option<bool>,
+    /// mutt's $menu_context: lines kept in view beyond the cursor
+    /// when the index scrolls or pages. 0 by default.
+    pub menu_context: usize,
+    /// mutt's $menu_move_off: the last message may scroll up past
+    /// the bottom of the screen; false keeps the index bottom-stuck
+    /// once it fills the screen. True unless set otherwise.
+    pub menu_move_off: Option<bool>,
+    /// mutt's $help: the key-help bar on the top line. True unless
+    /// set otherwise.
+    pub help: Option<bool>,
     /// mutt's $status_chars: the characters `%r` shows for the
     /// mailbox state — [0] unchanged, [1] changed (needs sync), [2]
     /// read-only. Unset keeps rmut's own (nothing / `*` / `%`).
@@ -572,6 +609,10 @@ impl Default for Ui {
             save_history: None,
             status_on_top: None,
             arrow_cursor: None,
+            menu_scroll: None,
+            menu_context: 0,
+            menu_move_off: None,
+            help: None,
             status_chars: None,
         }
     }

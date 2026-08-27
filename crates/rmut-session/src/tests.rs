@@ -2105,3 +2105,189 @@ fn a_read_only_mailbox_refuses_the_functions_that_would_write() {
         f.log.last_text()
     );
 }
+
+// ---- R85: the marks and the poll knobs
+
+#[test]
+fn delete_untag_takes_the_tag_off_a_deleted_message() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    f.tag("one");
+    f.tag("two");
+    f.session.run_function(Function::Delete, true, 10);
+    assert!(f.is_deleted("one") && f.is_deleted("two"));
+    assert!(
+        !f.is_tagged("one") && !f.is_tagged("two"),
+        "mutt's $delete_untag"
+    );
+
+    // Off: the tag stays on the deleted message.
+    let mut config = Config::default();
+    config.mail.delete_untag = Some(false);
+    let mut f = Fixture::with_config(&["one", "two"], config);
+    f.tag("one");
+    f.session.run_function(Function::Delete, true, 10);
+    assert!(f.is_deleted("one") && f.is_tagged("one"));
+}
+
+#[test]
+fn flag_safe_keeps_a_flagged_message_from_every_delete() {
+    let mut config = Config::default();
+    config.mail.flag_safe = true;
+    let mut f = Fixture::with_config(&["keep", "drop"], config);
+    let keep = f.path_of("keep");
+    for m in &mut f.session.msgs {
+        if m.env.file.path == keep {
+            m.env.file.flags.flagged = true;
+        }
+    }
+    // d on the cursor.
+    f.select("keep");
+    f.session.run_function(Function::Delete, false, 10);
+    assert!(!f.is_deleted("keep"));
+    // D with a pattern that matches everything.
+    let ask = match f.session.run_function(Function::DeletePattern, false, 10) {
+        Outcome::Ask(ask) => Some(ask),
+        _ => panic!("delete-pattern asks"),
+    };
+    f.answer_line(ask, "~A");
+    assert!(
+        !f.is_deleted("keep"),
+        "flag_safe holds under delete-pattern"
+    );
+    assert!(f.is_deleted("drop"));
+    // Tagged: the flagged one is skipped, the other goes.
+    f.session.run_function(Function::Undelete, false, 10);
+    f.tag("keep");
+    f.tag("drop");
+    f.session.run_function(Function::Delete, true, 10);
+    assert!(!f.is_deleted("keep") && f.is_deleted("drop"));
+}
+
+#[test]
+fn maildir_trash_purges_by_flagging_t() {
+    let mut config = Config::default();
+    config.mail.maildir_trash = true;
+    let mut f = Fixture::with_config(&["gone", "stays"], config);
+    f.select("gone");
+    f.session.run_function(Function::Delete, false, 10);
+    f.session.sync(true);
+    // Nothing unlinked: the message is still in the index, marked,
+    // and its file carries T.
+    assert_eq!(
+        f.log.notices().last(),
+        Some(&Notice::Synced {
+            deleted: 0,
+            updated: 1
+        })
+    );
+    assert_eq!(f.subjects(), ["gone", "stays"]);
+    assert!(f.is_deleted("gone"));
+    let path = f.path_of("gone");
+    assert!(path.to_string_lossy().ends_with("T"), "{}", path.display());
+    assert!(path.exists());
+}
+
+#[test]
+fn uncollapse_new_unfolds_a_thread_that_grows() {
+    let mut f = thread_fixture();
+    f.session.sort = SortKey::Threads;
+    f.session.apply_sort();
+    f.select("root");
+    f.session.toggle_collapse(false);
+    assert_eq!(f.subjects(), ["root", "unrelated"]);
+    // A reply to the folded thread lands in new/.
+    let dir = f._dir.path().to_path_buf();
+    write_new_message(&dir, 9, "Re: root once more", "<m0@example.com>");
+    touch_dirs(&dir);
+    f.session.check_new_mail();
+    assert!(
+        f.subjects().contains(&"Re: root once more".to_string()),
+        "the thread unfolded: {:?}",
+        f.subjects()
+    );
+
+    // Off: the thread stays folded, its count one higher.
+    let mut config = Config::default();
+    config.index.uncollapse_new = Some(false);
+    let mut f = thread_fixture_with(config);
+    f.session.sort = SortKey::Threads;
+    f.session.apply_sort();
+    f.select("root");
+    f.session.toggle_collapse(false);
+    let dir = f._dir.path().to_path_buf();
+    write_new_message(&dir, 9, "Re: root once more", "<m0@example.com>");
+    touch_dirs(&dir);
+    f.session.check_new_mail();
+    assert_eq!(f.subjects(), ["root", "unrelated"]);
+    assert_eq!(f.session.msgs.len(), 5, "counted, not shown");
+}
+
+#[test]
+fn check_new_off_leaves_the_open_maildir_alone() {
+    let mut config = Config::default();
+    config.mail.check_new = Some(false);
+    let mut f = Fixture::with_config(&["one"], config);
+    let dir = f._dir.path().to_path_buf();
+    write_new_message(&dir, 5, "arrived", "");
+    touch_dirs(&dir);
+    f.session.check_new_mail();
+    assert_eq!(f.subjects(), ["one"], "no rescan while open");
+    // Back on (the default): the next look finds it.
+    f.session.config.mail.check_new = None;
+    f.session.check_new_mail();
+    assert_eq!(f.subjects(), ["one", "arrived"]);
+}
+
+#[test]
+fn mail_check_recent_off_announces_a_mailbox_that_holds_new_mail() {
+    let other = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(other.path().join(sub)).unwrap();
+    }
+    write_new_message(other.path(), 1, "waiting", "");
+    let spec = other.path().to_string_lossy().to_string();
+
+    // Default: the first look only sets the baseline; nothing grew.
+    let mut config = Config::default();
+    config.mail.mailboxes = vec![spec.clone()];
+    let mut f = Fixture::with_config(&["one"], config);
+    f.session.check_new_mail();
+    assert!(!f.log.said("new mail in"), "{}", f.log.last_text());
+
+    // Off: what holds new mail is announced, once.
+    let mut config = Config::default();
+    config.mail.mailboxes = vec![spec];
+    config.mail.mail_check_recent = Some(false);
+    let mut f = Fixture::with_config(&["one"], config);
+    f.session.check_new_mail();
+    assert!(f.log.said("new mail in"), "{}", f.log.last_text());
+    let said = f.log.notices().len();
+    f.session.check_new_mail();
+    let repeated = f
+        .log
+        .notices()
+        .iter()
+        .skip(said)
+        .any(|n| matches!(n, Notice::NewMail(_)));
+    assert!(!repeated, "said once");
+}
+
+/// A message straight into new/, unseen, replying to `parent` when
+/// one is given.
+fn write_new_message(dir: &Path, i: usize, subject: &str, parent: &str) {
+    let refs = if parent.is_empty() {
+        String::new()
+    } else {
+        format!("In-Reply-To: {parent}\nReferences: {parent}\n")
+    };
+    let text = format!(
+        "From: Sender {i} <s{i}@example.com>\n\
+         To: me@example.com\n\
+         Subject: {subject}\n\
+         Date: Mon, 2{i} Mar 2024 10:00:00 +0000\n\
+         Message-ID: <n{i}@example.com>\n\
+         {refs}\n\
+         body {i}\n"
+    );
+    fs::write(dir.join("new").join(format!("17000000{i}.n{i}.host")), text).unwrap();
+}

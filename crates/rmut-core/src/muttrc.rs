@@ -139,6 +139,22 @@ struct State {
     no_wait_key: bool,
     /// `set nomark_old`: unread mail stays new when you leave.
     no_mark_old: bool,
+    /// The R85 marks: $delete_untag off, $flag_safe, $maildir_trash,
+    /// $mail_check_recent off, $check_new off.
+    no_delete_untag: bool,
+    flag_safe: bool,
+    maildir_trash: bool,
+    no_mail_check_recent: bool,
+    no_check_new: bool,
+    /// `set nouncollapse_new`: a folded thread stays folded when it
+    /// grows.
+    no_uncollapse_new: bool,
+    /// The menu knobs: $menu_scroll off, $menu_context, $menu_move_off
+    /// off, and $help off.
+    no_menu_scroll: bool,
+    menu_context: Option<usize>,
+    no_menu_move_off: bool,
+    no_help: bool,
     /// mutt's $print quadoption, when it is not rmut's ask-no.
     print_confirm: Option<String>,
     /// mutt's leaving and filing habits.
@@ -897,6 +913,89 @@ impl State {
                     self.no_mark_old = true;
                 }
             }
+            "delete_untag" => {
+                if is_yes(value) {
+                    self.satisfy(line, "deleting a tagged message untags it, as in mutt");
+                } else {
+                    self.no_delete_untag = true;
+                }
+            }
+            "flag_safe" => {
+                if is_yes(value) {
+                    self.flag_safe = true;
+                } else {
+                    self.satisfy(line, "flagged messages can be deleted, as in mutt");
+                }
+            }
+            "maildir_trash" => {
+                if is_yes(value) {
+                    self.maildir_trash = true;
+                } else {
+                    self.satisfy(line, "a purge unlinks, as in mutt");
+                }
+            }
+            "keep_flagged" => {
+                self.differently(line, "rmut has no $move: nothing leaves the spool on its own");
+            }
+            "uncollapse_new" => {
+                if is_yes(value) {
+                    self.satisfy(line, "a folded thread unfolds when it grows, as in mutt");
+                } else {
+                    self.no_uncollapse_new = true;
+                }
+            }
+            "hide_limited" | "hide_top_limited" => {
+                if is_yes(value) {
+                    self.satisfy(line, "rmut never marks limited-out messages in the tree");
+                } else {
+                    self.differently(line, "rmut's tree shows only what the limit shows");
+                }
+            }
+            "thread_received" => {
+                self.differently(
+                    line,
+                    "rmut threads by References only; there is no subject threading to date",
+                );
+            }
+            "mail_check_recent" => {
+                if is_yes(value) {
+                    self.satisfy(line, "only a mailbox that grew is announced, as in mutt");
+                } else {
+                    self.no_mail_check_recent = true;
+                }
+            }
+            "check_new" => {
+                if is_yes(value) {
+                    self.satisfy(line, "the open maildir is rescanned as it changes, as in mutt");
+                } else {
+                    self.no_check_new = true;
+                }
+            }
+            "menu_move_off" => {
+                if is_yes(value) {
+                    self.satisfy(line, "the last message may scroll off the bottom, as in mutt");
+                } else {
+                    self.no_menu_move_off = true;
+                }
+            }
+            "menu_context" => match v.parse::<usize>() {
+                Ok(0) => self.satisfy(line, "no context lines is the default"),
+                Ok(n) => self.menu_context = Some(n),
+                Err(_) => self.skip(line, "menu_context wants a number"),
+            },
+            "help" => {
+                if is_yes(value) {
+                    self.satisfy(line, "the help bar is on by default");
+                } else {
+                    self.no_help = true;
+                }
+            }
+            "sleep_time" => {
+                self.differently(line, "rmut never pauses on a message; it stays until the next key");
+            }
+            "read_inc" | "write_inc" | "net_inc" | "time_inc" => {
+                self.differently(line, "progress shows as the connection reports it");
+            }
             "print" => {
                 // mutt's quadoption. rmut asks with Enter declining,
                 // which is mutt's ask-no default.
@@ -1226,7 +1325,11 @@ impl State {
                 }
             }
             "menu_scroll" => {
-                self.satisfy(line, "menus always scroll line-wise");
+                if is_yes(value) {
+                    self.satisfy(line, "the index scrolls a line at a time by default");
+                } else {
+                    self.no_menu_scroll = true;
+                }
             }
             "imap_authenticators" | "smtp_authenticators" => {
                 let m = v.to_lowercase();
@@ -1671,6 +1774,11 @@ impl State {
             || !self.my_hdr.is_empty()
             || self.metoo
             || self.no_mark_old
+            || self.no_delete_untag
+            || self.flag_safe
+            || self.maildir_trash
+            || self.no_mail_check_recent
+            || self.no_check_new
             || self.print_confirm.is_some()
             || self.forward_quote
             || self.signature.is_some()
@@ -1799,6 +1907,21 @@ impl State {
             if self.no_mark_old {
                 out += "mark_old = false\n";
             }
+            if self.no_delete_untag {
+                out += "delete_untag = false\n";
+            }
+            if self.flag_safe {
+                out += "flag_safe = true\n";
+            }
+            if self.maildir_trash {
+                out += "maildir_trash = true\n";
+            }
+            if self.no_mail_check_recent {
+                out += "mail_check_recent = false\n";
+            }
+            if self.no_check_new {
+                out += "check_new = false\n";
+            }
             if let Some(v) = &self.print_confirm {
                 out += &format!("print_confirm = {}\n", quote(v));
             }
@@ -1852,6 +1975,7 @@ impl State {
             || self.collapse_unread_off
             || self.uncollapse_jump
             || self.hide_thread_subject
+            || self.no_uncollapse_new
         {
             out += "\n[index]\n";
             if let Some(f) = &self.index_format {
@@ -1875,6 +1999,9 @@ impl State {
             }
             if self.hide_thread_subject {
                 out += "hide_thread_subject = true\n";
+            }
+            if self.no_uncollapse_new {
+                out += "uncollapse_new = false\n";
             }
         }
         if self.pager_index_lines.is_some()
@@ -2009,6 +2136,10 @@ impl State {
             || self.history_file.is_some()
             || self.status_on_top
             || self.arrow_cursor
+            || self.no_menu_scroll
+            || self.menu_context.is_some()
+            || self.no_menu_move_off
+            || self.no_help
             || self.status_chars.is_some()
             || self.set_title
             || self.no_beep
@@ -2032,6 +2163,18 @@ impl State {
             }
             if self.arrow_cursor {
                 out += "arrow_cursor = true\n";
+            }
+            if self.no_menu_scroll {
+                out += "menu_scroll = false\n";
+            }
+            if let Some(n) = self.menu_context {
+                out += &format!("menu_context = {n}\n");
+            }
+            if self.no_menu_move_off {
+                out += "menu_move_off = false\n";
+            }
+            if self.no_help {
+                out += "help = false\n";
             }
             if let Some(v) = &self.status_chars {
                 out += &format!("status_chars = {}\n", quote(v));
@@ -3086,6 +3229,48 @@ mod tests {
     fn hide_thread_subject_carries_over() {
         let (cfg, toml) = to_config("set hide_thread_subject = yes\n");
         assert_eq!(cfg.index.hide_thread_subject, Some(true), "{toml}");
+    }
+
+    #[test]
+    fn mark_options_carry_over() {
+        // R85: the non-default side of each comes across; the default
+        // side is satisfied and emits nothing.
+        let (cfg, toml) = to_config(
+            "set nodelete_untag\nset flag_safe\nset maildir_trash\n\
+             set nomail_check_recent\nset nocheck_new\nset nouncollapse_new\n",
+        );
+        assert_eq!(cfg.mail.delete_untag, Some(false), "{toml}");
+        assert!(cfg.mail.flag_safe);
+        assert!(cfg.mail.maildir_trash);
+        assert_eq!(cfg.mail.mail_check_recent, Some(false));
+        assert_eq!(cfg.mail.check_new, Some(false));
+        assert_eq!(cfg.index.uncollapse_new, Some(false));
+        let (cfg, toml) = to_config(
+            "set delete_untag\nset noflag_safe\nset nomaildir_trash\n\
+             set mail_check_recent\nset check_new\nset uncollapse_new\n",
+        );
+        assert_eq!(cfg.mail.delete_untag, None, "{toml}");
+        assert!(!cfg.mail.flag_safe);
+        assert!(!cfg.mail.maildir_trash);
+        assert_eq!(cfg.index.uncollapse_new, None);
+        assert!(!toml.contains("not imported"), "{toml}");
+    }
+
+    #[test]
+    fn menu_knobs_carry_over() {
+        let (cfg, toml) =
+            to_config("set nomenu_scroll\nset menu_context = 3\nset nomenu_move_off\nset nohelp\n");
+        assert_eq!(cfg.ui.menu_scroll, Some(false), "{toml}");
+        assert_eq!(cfg.ui.menu_context, 3);
+        assert_eq!(cfg.ui.menu_move_off, Some(false));
+        assert_eq!(cfg.ui.help, Some(false));
+        // The ones rmut answers another way are reported, not holes.
+        let (_, toml) = to_config(
+            "set keep_flagged\nset thread_received\nset sleep_time = 0\nset read_inc = 100\n\
+             set hide_limited\n",
+        );
+        assert!(!toml.contains("not imported"), "{toml}");
+        assert!(toml.contains("no $move"), "{toml}");
     }
 
     #[test]
