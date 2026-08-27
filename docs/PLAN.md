@@ -2390,8 +2390,14 @@ TUI.
       directly) when the window is unfocused, gated by
       `$new_mail_command` being unset
 - [ ] A scrollbar and mouse selection in the pager, mouse click to
-      select in the index. No toolbar, no menus: the keymap is the
-      interface
+      select in the index
+- [ ] Menus, since egui has them (`MenuBar`, `menu_button`,
+      `SubMenu`, `Response::context_menu`): a bar of Mailbox /
+      Message / Thread / Help and a right-click menu on an index row,
+      every item a `Function` labelled with its bound key, so the
+      menus are the help screen made clickable. The keymap stays the
+      primary interface; the menus are generated from it, never a
+      second list of what rmut can do
 - [ ] Several windows are not several sessions; one mailbox per
       process, as with `rmut`. Revisit only if daily use asks
 
