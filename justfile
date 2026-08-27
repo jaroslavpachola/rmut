@@ -23,4 +23,5 @@ check: test lint e2e
 publish:
     cargo publish -p rmut-core
     cargo publish -p rmut-session
+    cargo publish -p rmut-front
     cargo publish -p rmut

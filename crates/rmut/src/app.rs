@@ -9,19 +9,20 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use rmut_core::config::Config;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::{alias, command, compose, maildir, message};
+use rmut_front::{KeyCode, KeyEvent, KeyModifiers};
 use rmut_session::{
     Answer, Ask, AskKind, Compose, ComposeKind, FrontOp, Function, Key, Outcome, PageSpot, Request,
     Session, SidebarOp, Wants, default_from, draft_full, expand_tilde, pipe_to, wrap_order,
     write_draft,
 };
 
-use crate::keymap::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};
 use crate::theme::Theme;
+use rmut_front::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};
 
 /// neomutt's $abort_noattach_regex default: the words that make a
 /// draft look like it should have carried a file.
@@ -697,7 +698,7 @@ impl App {
                         && let Event::Key(key) = event::read()?
                         && key.kind == KeyEventKind::Press
                     {
-                        Some(key)
+                        Some(front_key(key))
                     } else {
                         None
                     }
@@ -3216,6 +3217,40 @@ enum View {
     Filter,
     Mailcap,
     Text,
+}
+
+/// The terminal's key as the front-end vocabulary has it: the
+/// codes rmut binds, the three modifiers it reads, nothing else.
+fn front_key(key: ratatui::crossterm::event::KeyEvent) -> KeyEvent {
+    use ratatui::crossterm::event::{KeyCode as C, KeyModifiers as M};
+    let code = match key.code {
+        C::Char(c) => KeyCode::Char(c),
+        C::Enter => KeyCode::Enter,
+        C::Esc => KeyCode::Esc,
+        C::Tab => KeyCode::Tab,
+        C::Backspace => KeyCode::Backspace,
+        C::Delete => KeyCode::Delete,
+        C::Up => KeyCode::Up,
+        C::Down => KeyCode::Down,
+        C::Left => KeyCode::Left,
+        C::Right => KeyCode::Right,
+        C::PageUp => KeyCode::PageUp,
+        C::PageDown => KeyCode::PageDown,
+        C::Home => KeyCode::Home,
+        C::End => KeyCode::End,
+        _ => KeyCode::Other,
+    };
+    let mut mods = KeyModifiers::NONE;
+    if key.modifiers.contains(M::SHIFT) {
+        mods |= KeyModifiers::SHIFT;
+    }
+    if key.modifiers.contains(M::CONTROL) {
+        mods |= KeyModifiers::CONTROL;
+    }
+    if key.modifiers.contains(M::ALT) {
+        mods |= KeyModifiers::ALT;
+    }
+    KeyEvent::new(code, mods)
 }
 
 fn is_ctrl(key: &KeyEvent) -> bool {

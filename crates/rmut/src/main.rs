@@ -1,6 +1,5 @@
 mod app;
 mod batch;
-mod keymap;
 mod theme;
 mod ui;
 

@@ -1,0 +1,13 @@
+[package]
+name = "rmut-front"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "the part of an rmut front end that is not a toolkit: keys, keymaps, layout and formatting shared by the terminal and window front ends"
+keywords = ["mail", "mutt"]
+categories = ["email"]
+
+[dependencies]
+rmut-session = { workspace = true }

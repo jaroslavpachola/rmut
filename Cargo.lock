@@ -618,6 +618,7 @@ dependencies = [
  "ratatui",
  "regex-lite",
  "rmut-core",
+ "rmut-front",
  "rmut-session",
  "tempfile",
  "toml",
@@ -639,6 +640,13 @@ dependencies = [
  "tempfile",
  "toml",
  "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "rmut-front"
+version = "2.0.0"
+dependencies = [
+ "rmut-session",
 ]
 
 [[package]]

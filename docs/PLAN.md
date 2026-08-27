@@ -2342,7 +2342,7 @@ Decisions, made going in so the rounds do not re-argue them:
   `FrontOp` fails the GUI's build until it is either handled or
   listed as a said-once "not in the GUI" notice.
 
-Each round is shippable alone and leaves the TUI and its 69
+Each round is shippable alone and leaves the TUI and its 70
 scenarios unchanged.
 
 ### G1: rmut-front, the part of a front end that is not a toolkit
@@ -2350,9 +2350,11 @@ scenarios unchanged.
 The prep that pays without a GUI: what the TUI does that has nothing
 to do with ratatui, moved under it so both front ends share it.
 
-- [ ] `rmut-front` crate. `keymap.rs` moves in with its own `Key`
-      type (a char, a named key, modifiers), so it no longer imports
-      crossterm; the TUI maps `KeyEvent -> Key` at its edge
+- [x] `rmut-front` crate. `keymap.rs` moves in over its own
+      `key` module (`KeyCode`, `KeyModifiers`, `KeyEvent`, shaped
+      like crossterm's so the move was an import swap); the TUI maps
+      crossterm's event to it at its one read site (`front_key`).
+      `just publish` gained the crate in order. 70/70
 - [ ] The pure `ui.rs` functions move: `pager_rows`, `wrap_line_with`,
       `quote_depth`, `recenter`, `humanize_size`, `index_title` and
       the `$status_format` expander, `Row` / `RowKind`. `Style` becomes

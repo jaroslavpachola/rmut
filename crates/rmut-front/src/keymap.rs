@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::key::{KeyCode, KeyEvent, KeyModifiers};
 use rmut_session::Function;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

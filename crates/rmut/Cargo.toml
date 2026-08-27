@@ -19,6 +19,7 @@ libc = { workspace = true }
 ratatui = { workspace = true }
 regex-lite = { workspace = true }
 rmut-core = { workspace = true }
+rmut-front = { workspace = true }
 rmut-session = { workspace = true }
 
 [dev-dependencies]
