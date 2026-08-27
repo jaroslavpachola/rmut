@@ -1206,7 +1206,7 @@ wanted": the TUI is what pays for it today.
       folder, an Fcc). Each is one user-initiated action, bounded by
       R54's connect timeout; the machinery to move them is the same
       `Pending`, if they prove worth it
-- [x] Bugfix (1.81, 2026-08-27): the answer came back on a channel
+- [x] Bugfix (1.82, 2026-08-27): the answer came back on a channel
       nothing woke the loop for, and the loop slept its full 1s input
       poll on every fetch: 1013ms per IMAP body, measured, from the
       day R55 shipped. Now the poll is 30ms while a job is in flight.
