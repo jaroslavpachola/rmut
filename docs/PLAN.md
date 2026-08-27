@@ -2254,7 +2254,16 @@ Decisions, made going in so the rounds do not re-argue them:
   different primitives, and it stays one static binary. It is the
   biggest dependency the project has taken (winit, glow); that is
   the price, and it is paid by `rmut-gui` only. `cargo install rmut`
-  does not change.
+  does not change. Checked 2026-08-27: egui / eframe / egui_kittest
+  0.36.1 (released together 2026-08-07); eframe's `glow` renderer
+  for the smaller binary, `wayland` feature on by default; egui
+  repaints only on input or `request_repaint*`, so idling is the
+  default, not a discipline; egui_kittest drives the AccessKit tree
+  (`Harness`, `get_by_label`) and renders headless with `wgpu`. The
+  alternatives at that date: iced 0.14.0 (2025-12, no release since),
+  slint 1.17 (a DSL and a runtime of its own), gtk4 0.11 (the C
+  stack), gpui 0.2 (Zed's, young as a crate). This machine: Wayland,
+  Mesa 25.2 on Iris Xe, GL 4.6.
 - **The editor stays external.** Compose hands the draft to
   `$EDITOR` inside `gui.terminal` (`$TERMINAL`, then a short list:
   foot, alacritty, kitty, xterm), `-e`, and waits, exactly as the
