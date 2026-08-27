@@ -2208,7 +2208,7 @@ Blocking, in order:
       crate that "exists only to reserve a name" may be removed): the
       binary crate is `rmut` itself, ripgrep's shape, so
       `cargo install rmut` is the real thing and no placeholder holds
-      the name; a GUI would be `rmut-gui`, or a name of its own as
+      the name; a GUI would be `rmut-egui`, or a name of its own as
       krokiet is. Published the same day at 2.0.0
 - [x] Docs: `docs/rmut.1` version line, a README opening that
       describes 2.0 instead of listing rounds, and this entry
@@ -2281,7 +2281,7 @@ Easy to lose under a (done, x.y) heading:
 
 ## The GUI front end (proposed, 2026-08-27)
 
-Goal: `rmut-gui`, a second front end over `rmut-session`, in a
+Goal: `rmut-egui`, a second front end over `rmut-session`, in a
 window. Same keys, same `$index_format`, same muttrc; what it adds is
 what a terminal cannot do, and nothing else.
 
@@ -2300,7 +2300,7 @@ Decisions, made going in so the rounds do not re-argue them:
   immediate-mode; an eframe `update` is the same function over
   different primitives, and it stays one static binary. It is the
   biggest dependency the project has taken (winit, glow); that is
-  the price, and it is paid by `rmut-gui` only. `cargo install rmut`
+  the price, and it is paid by `rmut-egui` only. `cargo install rmut`
   does not change. Checked 2026-08-27: egui / eframe / egui_kittest
   0.36.1 (released together 2026-08-07); eframe's `glow` renderer
   for the smaller binary, `wayland` feature on by default; egui
@@ -2374,7 +2374,7 @@ to do with ratatui, moved under it so both front ends share it.
 The smallest GUI that is honestly usable: read-only, keyboard-driven,
 the same keys.
 
-- [ ] `crates/rmut-gui`, workspace member, binary `rmut-gui`; the
+- [ ] `crates/rmut-egui`, workspace member, binary `rmut-egui`; the
       same `parse_args` (moved to `rmut-front`) so `-f`, `-R`, `-e`
       mean what they mean; `-s` and `-z`/`-Z` are refused with a
       pointer to `rmut`
@@ -2451,7 +2451,7 @@ TUI.
 Order of proof: G1 lands regardless of the rest. G2 is used daily for
 a week before G3 starts; if reading mail in the window is not better
 than reading it in the terminal, the plan stops there, with G1 kept
-and `rmut-gui` a read-only viewer that costs nothing to keep.
+and `rmut-egui` a read-only viewer that costs nothing to keep.
 
 ## Beyond mutt (frozen: only on explicit request)
 
