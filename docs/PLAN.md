@@ -2262,8 +2262,16 @@ Decisions, made going in so the rounds do not re-argue them:
   (`Harness`, `get_by_label`) and renders headless with `wgpu`. The
   alternatives at that date: iced 0.14.0 (2025-12, no release since),
   slint 1.17 (a DSL and a runtime of its own), gtk4 0.11 (the C
-  stack), gpui 0.2 (Zed's, young as a crate). This machine: Wayland,
-  Mesa 25.2 on Iris Xe, GL 4.6.
+  stack), gpui 0.2 (Zed's, young as a crate). Qt, asked about the
+  same day: cxx-qt 0.10.0 (KDAB, 2026-08-24, alive; qmetaobject and
+  ritual are dead) bridges QObjects only, "these projects do not
+  provide Rust bindings for QWidgets APIs", so the UI would be QML
+  over Rust models: a second language holding the screens and half
+  the key handling, a C++ compiler + CMake + Qt dev headers to build
+  (this machine has the 6.4.2 runtime only), and tests on the QML
+  side. What it buys, Qt's text engine and platform look, the keymap
+  interface would barely use. Rejected unless native look becomes a
+  requirement. This machine: Wayland, Mesa 25.2 on Iris Xe, GL 4.6.
 - **The editor stays external.** Compose hands the draft to
   `$EDITOR` inside `gui.terminal` (`$TERMINAL`, then a short list:
   foot, alacritty, kitty, xterm), `-e`, and waits, exactly as the
