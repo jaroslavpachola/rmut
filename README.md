@@ -5,71 +5,39 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.86**: everything from the 1.0 roadmap plus R5–R17, hardening
-(R19), flow niceties (R20), and display customization (R21):
-mutt-style index
-with delete/flag/read toggles and real maildir sync, sort orders,
-limit/search patterns, mailbox switching, wrapped pager, attachment
-menu, **threading** (References/In-Reply-To, JWZ-style, `o t`,
-Alt+v/Alt+V to fold), **compose/reply/forward** via `$EDITOR` +
-sendmail(1) with postpone/recall, Fcc, and aliases, **configuration**
-(TOML: identity, mailboxes, sendmail/editor, index format string,
-themes/colors, key remapping), **new-mail detection**, a `?` help
-screen generated from the active keymap, and now **IMAP and SMTP
-accounts**: open `imap:account/FOLDER` mailboxes over TLS, with local
-caching, `$` sync mapped to the server, and sending via SMTP
-submission with an IMAP Fcc, **PGP via gpg(1)**: decrypt/verify on
-view, sign/encrypt from the send prompt, **attachments and message
-commands** (R8): `Attach:` pseudo-headers in the draft, copy/pipe/
-bounce/resend on `C`/`|`/`b`/`e`, **identities** (R9): per-account
-From, `[[identities]]` folder/recipient rules (the minimal folder-/
-send-hook), and mutt's reverse_name, **patterns v2** (R10):
-`!`/`|`/`()`, regexes, `~t`/`~c`/`~C`/`~e`/`~p`, `~d` date ranges, and
-**new-mail awareness** (R11): counts in the folder browser, watching
-the other configured mailboxes, IMAP IDLE, and **address completion**
-(R12): Tab at the To prompt completes aliases and query_command
-results, **macros** (R13): a key replays a sequence, prompts included,
-**OAuth2** (R14): XOAUTH2/OAUTHBEARER for IMAP and SMTP via a
-`token_command`, **mbox** (R15): system spools with sync write-back,
-**index polish** (R16): `%l` line counts and list-aware `%L`, a
-**sidebar** (R17): the configured mailboxes with new-mail counts, and
-**hardening** (R19): transparent IMAP reconnect, incremental refresh,
-a header cache for large maildirs, mbox rewrite backups, and **flow
-niceties** (R20): attach/review at the send prompt, create-alias,
-$trash, a postponed-draft picker, and **display customization** (R21):
-pattern→color index rules, mutt's status_format, `%M` collapsed
-counts, **distribution** (R22): CI, crates.io packages, a man page
-(`docs/rmut.1`), and tagged releases with a prebuilt x86_64-linux
-binary, and the **mutt-parity round**: mutt's defaults (index format,
-edit_headers, $resolve, $mark_old, first-new positioning, pager
-markers and $pager_stop, the ask-yes compose questions, e edits the
-raw message) plus the full **compose menu** after the editor, and a
-real **prompt line editor** (R23): cursor movement and mid-line
-editing (ctrl+a/e/u/k/w, arrows, Del) with per-kind history on
-Up/Down, and **pager body search** (R24, `\\` toggles hit highlighting): `/` searches the displayed
-text with `n`/`N` stepping through the hits, wrapping around, and
-**triage keys** (R25): Tab/Alt+Tab jump to the next/previous
-new-or-unread message, and `D`/`U`/`T`/Ctrl+T apply
-delete/undelete/tag/untag to every pattern match, and the
-**browser-and-odds round** (R26): the folder browser descends into
-directories and creates maildirs, the attachment menu pipes and
-prints parts, `rmut -R` opens read-only, `Q` queries addresses into
-a compose, and status_format gains `%>` right-alignment and `%P`,
-and **pager colors and motion** (R27): quoted lines tinted by depth
-(quote_regexp), `[[color_body]]` regex rules, highlighted search
-hits, Ctrl+D/Ctrl+U half-page, and `T`/`S` toggle/skip quoted text,
-and **header weeding and pager polish** (R28): ignore/unignore +
-hdr_order shape the brief header view, mutt's pager_format renders
-the bottom line, `$wrap` and `$tilde` round out the pager, and
-**notmuch search** (R18): `X` opens `notmuch search` hits as a
-read-only virtual mailbox, and **compose round 2** (R29):
-fast_reply/autoedit skip the prompts, the compose menu edits
-attachment descriptions/types and the Fcc, `forward = "ask"` asks
-per forward, and `copy = false` skips the sent copy, and
-**big mailboxes** (R30): `~b` searches server-side on IMAP, huge
-folders open progressively with a background backfill,
-new_mail_command fires on arrivals, and stale header caches sweep
-themselves.
+**2.0** — rmut is a daily-drivable mutt replacement: mutt's index,
+pager and compose workflow under mutt's default keys, over maildir,
+mbox and IMAP/SMTP (TLS, OAuth2), with PGP through gpg(1). 2.0 marks
+the parity roadmap finishing, not a break: every default mutt key
+does something, a muttrc imports (`--import-muttrc`) and loads
+without errors, and every setting in the parity fixture
+(`tests/e2e/muttrc-parity.rc`, the hundred-odd that turn up in every
+dotfiles repo) is carried over or answered by what rmut does
+instead. The config format did not change; a 1.x config is a 2.0
+config.
+
+What is there, briefly: an index with threads (References and
+In-Reply-To, folding, thread operations), mutt's patterns for limit,
+search, tag and delete, sort orders, `%`-format strings for the
+index, status and pager lines, colours by pattern and by depth of
+quoting, a sidebar and a folder browser with new-mail counts, a
+compose menu with attachments (files, messages, renames, dispositions),
+PGP sign/encrypt, postpone and recall, Fcc, identities and hooks
+(folder, message, reply, fcc, crypt), aliases and query_command
+completion, macros and mutt's enter-command (`:set`, `:bind`,
+`:color`, the `un*` family, `reset`), IMAP with a local cache, IDLE,
+transparent reconnect, server-side search and folder management, mbox
+with write-back, notmuch search into a virtual mailbox, undo and
+undo-send, and a man page (`docs/rmut.1`).
+
+Not there, on purpose: S/MIME, POP3, scoring, MH/MMDF folders,
+compressed-folder hooks, an embedded scripting language and an HTML
+rendering engine. Still to come in 2.x: `$tunnel` and accept-once
+for unknown certificates, the PGP odds (opportunistic encryption,
+inline PGP), and the envelope odds (`$dsn_*`, `$use_envelope_from`,
+`$reply_self`, ...). The round-by-round history is in
+[docs/PLAN.md](docs/PLAN.md).
+
 A pty-driven e2e suite (including fake IMAP/SMTP servers and a
 stub gpg) lives in `tests/e2e/`.
 
