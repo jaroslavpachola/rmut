@@ -347,6 +347,42 @@ pub struct Attachment {
     /// extension otherwise.
     pub mime: Option<String>,
     pub description: Option<String>,
+    /// mutt's rename-attachment: the filename the part is sent under,
+    /// when not the file's own. `@name="..."` on the line.
+    pub name: Option<String>,
+    /// mutt's toggle-disposition: Content-Disposition inline rather
+    /// than attachment. `@inline` on the line.
+    pub inline: bool,
+    /// mutt's toggle-unlink: the file goes once the message has been
+    /// sent. `@unlink` on the line.
+    pub unlink: bool,
+}
+
+impl Attachment {
+    /// A plain attachment of this file: nothing overridden.
+    pub fn of(path: PathBuf) -> Attachment {
+        Attachment {
+            path,
+            mime: None,
+            description: None,
+            name: None,
+            inline: false,
+            unlink: false,
+        }
+    }
+
+    /// The filename the part goes out under.
+    pub fn send_name(&self) -> &str {
+        self.name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| {
+                self.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("attachment")
+            })
+    }
 }
 
 /// A `type/subtype` token (letters, digits, `.+-`), so a content-type
@@ -371,6 +407,17 @@ pub fn attach_line(a: &Attachment) -> String {
     };
     if let Some(m) = &a.mime {
         line += &format!(" {m}");
+    }
+    // The @-options sit between the type and the description, where
+    // a description is not expected to start with an @.
+    if let Some(n) = a.name.as_deref().filter(|n| !n.is_empty()) {
+        line += &format!(" @name=\"{}\"", n.replace('"', ""));
+    }
+    if a.inline {
+        line += " @inline";
+    }
+    if a.unlink {
+        line += " @unlink";
     }
     if let Some(d) = &a.description {
         line += &format!(" {d}");
@@ -417,11 +464,29 @@ pub fn extract_attachments(draft: &str) -> (String, Vec<Attachment>) {
             }
             _ => {}
         }
-        attachments.push(Attachment {
-            path: expand_home(path),
-            mime,
-            description: (!desc.is_empty()).then(|| desc.to_string()),
-        });
+        // The @-options, in any order, ahead of the description.
+        let mut a = Attachment::of(expand_home(path));
+        a.mime = mime;
+        while let Some(rest) = desc.strip_prefix('@') {
+            if let Some(rest) = rest.strip_prefix("inline") {
+                a.inline = true;
+                desc = rest.trim_start();
+            } else if let Some(rest) = rest.strip_prefix("unlink") {
+                a.unlink = true;
+                desc = rest.trim_start();
+            } else if let Some(rest) = rest.strip_prefix("name=") {
+                let (name, rest) = match rest.strip_prefix('"') {
+                    Some(q) => q.split_once('"').unwrap_or((q, "")),
+                    None => rest.split_once(char::is_whitespace).unwrap_or((rest, "")),
+                };
+                a.name = (!name.is_empty()).then(|| name.to_string());
+                desc = rest.trim_start();
+            } else {
+                break; // a description that happens to start with @
+            }
+        }
+        a.description = (!desc.is_empty()).then(|| desc.to_string());
+        attachments.push(a);
     }
     let mut out = kept.join("\n");
     if let Some(body) = body {
@@ -529,14 +594,24 @@ pub fn mixed_entity(
     for a in files {
         let bytes =
             std::fs::read(&a.path).with_context(|| format!("reading {}", a.path.display()))?;
-        let name = a
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("attachment");
+        let mime = a.mime.as_deref().unwrap_or_else(|| content_type(&a.path));
+        let disposition = if a.inline { "inline" } else { "attachment" };
+        // An attached message (mutt's attach-message) goes in as it
+        // is, a message/rfc822 part with no encoding and no filename.
+        if mime.eq_ignore_ascii_case("message/rfc822") {
+            let mut p =
+                format!("Content-Type: message/rfc822\r\nContent-Disposition: {disposition}\r\n");
+            if let Some(d) = &a.description {
+                p += &format!("Content-Description: {d}\r\n");
+            }
+            p += "\r\n";
+            p += &String::from_utf8_lossy(&crate::pgp::crlf(&bytes));
+            parts.push(p);
+            continue;
+        }
         let mut p = format!(
-            "Content-Type: {}\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n",
-            a.mime.as_deref().unwrap_or_else(|| content_type(&a.path)),
+            "Content-Type: {mime}\r\nContent-Disposition: {disposition}; filename=\"{}\"\r\n",
+            a.send_name(),
         );
         if let Some(d) = &a.description {
             p += &format!("Content-Description: {d}\r\n");
@@ -1319,6 +1394,9 @@ mod tests {
             path: PathBuf::from("/tmp/two words.png"),
             mime: Some("image/png".into()),
             description: None,
+            name: None,
+            inline: false,
+            unlink: false,
         };
         let (_, files) = extract_attachments(&format!("{}\n\n", attach_line(&spaced)));
         assert_eq!(files[0].path, PathBuf::from("/tmp/two words.png"));
@@ -1344,6 +1422,9 @@ mod tests {
             path: dir.join("blob.bin"),
             mime: None,
             description: Some("raw bytes".into()),
+            name: None,
+            inline: false,
+            unlink: false,
         }];
         let orig = b"From: jane@x\r\nSubject: hi\r\n\r\noriginal body\r\n";
         let entity = mixed_entity("see attached", &files, Some(orig), false).unwrap();
@@ -1378,6 +1459,9 @@ mod tests {
             path: PathBuf::from("/nonexistent/nope.pdf"),
             mime: None,
             description: None,
+            name: None,
+            inline: false,
+            unlink: false,
         }];
         let err = mixed_entity("hi", &files, None, false).unwrap_err();
         assert!(err.to_string().contains("/nonexistent/nope.pdf"));
@@ -1399,5 +1483,64 @@ mod tests {
         let (rcpts, out) = smtp_envelope(text).unwrap();
         assert_eq!(rcpts, vec!["a@x"]);
         assert_eq!(out, text);
+    }
+
+    #[test]
+    fn attach_line_options_round_trip() {
+        let mut a = Attachment::of(PathBuf::from("/tmp/q2 report.pdf"));
+        a.mime = Some("application/pdf".into());
+        a.name = Some("report.pdf".into());
+        a.inline = true;
+        a.unlink = true;
+        a.description = Some("the Q2 numbers".into());
+        let line = attach_line(&a);
+        assert_eq!(
+            line,
+            "Attach: \"/tmp/q2 report.pdf\" application/pdf @name=\"report.pdf\" @inline @unlink the Q2 numbers"
+        );
+        let (_, back) = extract_attachments(&format!("To: x\n{line}\n\nbody"));
+        assert_eq!(back.len(), 1);
+        let b = &back[0];
+        assert_eq!(b.path, a.path);
+        assert_eq!(b.mime.as_deref(), Some("application/pdf"));
+        assert_eq!(b.name.as_deref(), Some("report.pdf"));
+        assert!(b.inline && b.unlink);
+        assert_eq!(b.description.as_deref(), Some("the Q2 numbers"));
+        // A line without options reads as before, and a description
+        // starting with @ is a description.
+        let (_, plain) = extract_attachments("Attach: /tmp/a.txt text/plain @home notes\n\n");
+        assert!(!plain[0].inline && plain[0].name.is_none());
+        assert_eq!(plain[0].description.as_deref(), Some("@home notes"));
+    }
+
+    #[test]
+    fn mixed_entity_honours_name_disposition_and_rfc822() {
+        let dir = std::env::temp_dir().join(format!("rmut-attach-opts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("data.bin");
+        std::fs::write(&file, b"xyz").unwrap();
+        let msg = dir.join("1.host:2,S");
+        std::fs::write(&msg, "From: a@x\nSubject: inner\n\nhello\n").unwrap();
+        let mut a = Attachment::of(file.clone());
+        a.name = Some("renamed.bin".into());
+        a.inline = true;
+        let mut m = Attachment::of(msg.clone());
+        m.mime = Some("message/rfc822".into());
+        let entity = mixed_entity("see attached", &[a, m], None, false).unwrap();
+        assert!(
+            entity.contains("Content-Disposition: inline; filename=\"renamed.bin\""),
+            "{entity}"
+        );
+        assert!(
+            entity.contains(
+                "Content-Type: message/rfc822\r\nContent-Disposition: attachment\r\n\r\nFrom: a@x"
+            ),
+            "{entity}"
+        );
+        assert!(
+            !entity.contains("filename=\"1.host"),
+            "a message has no filename"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

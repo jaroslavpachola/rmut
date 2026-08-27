@@ -160,6 +160,19 @@ pub enum AskKind {
         k: usize,
         is_type: bool,
     },
+    /// mutt's rename-attachment: the name the k-th file goes out as.
+    RenameAttachment {
+        k: usize,
+    },
+    /// mutt's new-mime, first half: the file to make.
+    NewMimeFile,
+    /// mutt's new-mime, second half: its Content-Type.
+    NewMimeType {
+        path: String,
+    },
+    /// mutt's write-fcc: the mailbox the message is written to, as
+    /// it stands, without sending.
+    WriteFcc,
     /// mutt's compose menu `p`: sign, encrypt, both, or neither.
     Security,
     /// Leaving the compose menu: postpone the draft, or throw it away?
@@ -255,6 +268,9 @@ pub enum Request {
     /// A mailto: to compose to, the way one on the command line is
     /// (mutt's list-action landed on a mailto: header).
     Mailto(rmut_core::mailto::Mailto),
+    /// Hand this file to the editor, then come back to the compose
+    /// menu (mutt's new-mime made it).
+    EditFile(std::path::PathBuf),
     /// Run a shell command with the display stood down, mutt's `!`.
     Shell(String),
     /// Stop, and pick the display back up when the job resumes.
@@ -644,6 +660,46 @@ impl Session {
         })
     }
 
+    /// mutt's rename-attachment (Ctrl+O): "Send attachment with name: ",
+    /// the current name prefilled; empty takes the override off.
+    pub fn ask_rename_attachment(&mut self, sel: usize) -> Option<Ask> {
+        let k = self.attach_index(sel)?;
+        let name = self
+            .attachments()
+            .get(k)
+            .map(|a| a.send_name().to_string())
+            .unwrap_or_default();
+        Some(Ask::Line {
+            label: "Send attachment with name: ".into(),
+            prefill: name,
+            wants: Wants::Other,
+            what: AskKind::RenameAttachment { k },
+        })
+    }
+
+    /// mutt's new-mime (n): a file to make and attach, then its type.
+    pub fn ask_new_mime(&self) -> Option<Ask> {
+        self.draft()?;
+        Some(Ask::Line {
+            label: "New file: ".into(),
+            prefill: String::new(),
+            wants: Wants::Other,
+            what: AskKind::NewMimeFile,
+        })
+    }
+
+    /// mutt's write-fcc (w): the message as it stands, into a mailbox,
+    /// without sending it. The open mailbox is the offer.
+    pub fn ask_write_fcc(&self) -> Option<Ask> {
+        self.draft()?;
+        Some(Ask::Line {
+            label: "Write message to mailbox: ".into(),
+            prefill: self.title.clone(),
+            wants: Wants::Mailbox,
+            what: AskKind::WriteFcc,
+        })
+    }
+
     pub fn ask_security(&self) -> Option<Ask> {
         self.draft()?;
         Some(Ask::Key {
@@ -837,6 +893,41 @@ impl Session {
             }
             (AskKind::AttachField { k, is_type }, Answer::Line(input)) => {
                 self.set_attach_field(k, input, is_type);
+                None
+            }
+            (AskKind::RenameAttachment { k }, Answer::Line(input)) => {
+                let name = input.trim().to_string();
+                self.edit_attachment(k, |a| {
+                    // The file's own name is no override.
+                    let own = a.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    a.name = (!name.is_empty() && name != own).then(|| name.clone());
+                });
+                self.requests.push(Request::ShowDraft);
+                None
+            }
+            (AskKind::NewMimeFile, Answer::Line(input)) => {
+                let path = input.trim().to_string();
+                if path.is_empty() {
+                    self.requests.push(Request::ShowDraft);
+                    return None;
+                }
+                Some(Ask::Line {
+                    label: "Content-Type: ".into(),
+                    prefill: String::new(),
+                    wants: Wants::Other,
+                    what: AskKind::NewMimeType { path },
+                })
+            }
+            (AskKind::NewMimeType { path }, Answer::Line(input)) => {
+                self.new_mime(&path, input.trim());
+                None
+            }
+            (AskKind::WriteFcc, Answer::Line(input)) => {
+                let mailbox = input.trim().to_string();
+                if !mailbox.is_empty() {
+                    self.write_draft_to(&mailbox);
+                }
+                self.requests.push(Request::ShowDraft);
                 None
             }
             (AskKind::Security, Answer::Key(key)) => {

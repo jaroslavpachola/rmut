@@ -404,6 +404,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "sort_browser" => Text(&mut cfg.ui.sort_browser),
         "sort_alias" => Text(&mut cfg.mail.sort_alias),
         "shell" => Text(&mut cfg.mail.shell),
+        "ispell" => Text(&mut cfg.mail.ispell),
         "tmpdir" => Text(&mut cfg.mail.tmpdir),
         "print" => Text(&mut cfg.mail.print_confirm),
         "reverse_realname" => FlagOpt(&mut cfg.identity.reverse_realname),

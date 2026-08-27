@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.85**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.86**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -358,7 +358,15 @@ was postponed with rather than gaining a second one.
 
 By default (like mutt) the editor gets only the message body;
 headers come from the prompts, and attachments are added with `a` at
-the compose menu. With `edit_headers = true` the draft's header block
+the compose menu. The menu has mutt's heavier functions too: `A`
+attaches the tagged messages of the open mailbox (the one under the
+cursor when none is tagged) as message/rfc822, `n` makes a new file
+of a given Content-Type and opens it in the editor, Ctrl+O renames a
+file for sending, `u` marks it to be unlinked after the send, Ctrl+D
+toggles inline/attachment, `K`/`J` move it up and down, `w` writes
+the message as it stands to a mailbox without sending, `i` runs
+`$ispell` over the draft, `V` views a file through its mailcap entry
+and Esc+v as text. With `edit_headers = true` the draft's header block
 is part of the editor buffer, where you can adjust To/Cc/Subject
 directly and attach files with `Attach:` pseudo-headers:
 
@@ -367,6 +375,7 @@ To: jane@example.com
 Subject: the report
 Attach: ~/report.pdf the Q2 numbers
 Attach: "/tmp/two words.png"
+Attach: /tmp/build.log text/plain @name="log.txt" @inline @unlink notes
 
 see attached
 ```
@@ -437,7 +446,7 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `delete_untag`, `flag_safe`, `maildir_trash`, `mail_check_recent`,
 `check_new`, `uncollapse_new`, `menu_scroll`, `menu_context`,
 `menu_move_off`, `help`, `error_history`, `sort_browser`,
-`sort_alias`, `shell`, `tmpdir`,
+`sort_alias`, `shell`, `tmpdir`, `ispell`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -906,6 +915,7 @@ sort_alias = "address"       # address completion order: address (the
                              # default), alias (by nick); reverse-
 shell = "/bin/zsh"           # what a bare ! runs ($SHELL, then sh)
 tmpdir = "~/tmp"             # where temporary files go ($TMPDIR, /tmp)
+ispell = "aspell"            # the compose menu's i: `ispell -x FILE`
 print_confirm = "ask-no"     # mutt's $print: "ask-yes" makes Enter
                              # print, "yes" never asks, "no" refuses
 

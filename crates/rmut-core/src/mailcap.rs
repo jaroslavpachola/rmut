@@ -120,6 +120,20 @@ pub fn command_for(entries: &[Entry], mimetype: &str) -> Option<String> {
         .map(|e| e.command.clone())
 }
 
+/// The viewer for `mimetype`, mutt's view-mailcap: the first matching
+/// entry whose `test` passes, terminal-wanting or not, with whether
+/// it writes to stdout (`copiousoutput`) rather than the terminal.
+pub fn viewer_for(entries: &[Entry], mimetype: &str) -> Option<(String, bool)> {
+    let want = mimetype.trim().to_lowercase();
+    let main = want.split('/').next().unwrap_or_default();
+    entries
+        .iter()
+        .filter(|e| e.mimetype == want || e.mimetype == format!("{main}/*"))
+        .filter(|e| !e.command.contains("%{"))
+        .find(|e| e.test.as_deref().is_none_or(test_passes))
+        .map(|e| (e.command.clone(), e.copiousoutput))
+}
+
 /// Run a `test=` field: success is exit status zero, and a test that
 /// cannot even start counts as failed.
 fn test_passes(command: &str) -> bool {

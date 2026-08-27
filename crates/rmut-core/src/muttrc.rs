@@ -160,6 +160,7 @@ struct State {
     sort_alias: Option<String>,
     shell: Option<String>,
     tmpdir: Option<String>,
+    ispell: Option<String>,
     /// mutt's $print quadoption, when it is not rmut's ask-no.
     print_confirm: Option<String>,
     /// mutt's leaving and filing habits.
@@ -1004,6 +1005,10 @@ impl State {
                 _ => self.sort_alias = Some(v.clone()),
             },
             "shell" => self.shell = Some(v.clone()),
+            "ispell" => match v.as_str() {
+                "ispell" => self.satisfy(line, "ispell is the default"),
+                _ => self.ispell = Some(v.clone()),
+            },
             "tmpdir" => self.tmpdir = Some(v.clone()),
             "sleep_time" => {
                 self.differently(line, "rmut never pauses on a message; it stays until the next key");
@@ -1797,6 +1802,7 @@ impl State {
             || self.sort_alias.is_some()
             || self.shell.is_some()
             || self.tmpdir.is_some()
+            || self.ispell.is_some()
             || self.print_confirm.is_some()
             || self.forward_quote
             || self.signature.is_some()
@@ -1948,6 +1954,9 @@ impl State {
             }
             if let Some(v) = &self.tmpdir {
                 out += &format!("tmpdir = {}\n", quote(v));
+            }
+            if let Some(v) = &self.ispell {
+                out += &format!("ispell = {}\n", quote(v));
             }
             if let Some(v) = &self.print_confirm {
                 out += &format!("print_confirm = {}\n", quote(v));
@@ -3318,6 +3327,8 @@ mod tests {
         assert_eq!(cfg.mail.sort_alias.as_deref(), Some("alias"));
         assert_eq!(cfg.mail.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(cfg.mail.tmpdir.as_deref(), Some("~/tmp"));
+        let (cfg, _) = to_config("set ispell = \"aspell -c\"\n");
+        assert_eq!(cfg.mail.ispell.as_deref(), Some("aspell -c"));
         let (_, toml) = to_config("set sort_browser = alpha\nset sort_alias = address\n");
         assert!(!toml.contains("not imported"), "{toml}");
     }

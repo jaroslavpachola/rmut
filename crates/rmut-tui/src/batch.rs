@@ -85,6 +85,9 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
                 path: path.clone(),
                 mime: None,
                 description: None,
+                name: None,
+                inline: false,
+                unlink: false,
             })
         })
         .collect::<Result<_>>()?;

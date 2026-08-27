@@ -210,6 +210,9 @@ pub struct Mail {
     pub postponed: Option<String>,
     pub sendmail: Option<String>,
     pub editor: Option<String>,
+    /// mutt's $ispell: the spell checker the compose menu's `i` runs
+    /// over the draft, as `ispell -x FILE`. "ispell" when unset.
+    pub ispell: Option<String>,
     pub poll_seconds: Option<u64>,
     /// Shell command the printed message is piped to (default lpr).
     pub print: Option<String>,

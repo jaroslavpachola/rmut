@@ -2531,3 +2531,132 @@ fn unalias_and_unmailboxes_at_the_prompt() {
         Config::default().pager.context
     );
 }
+
+// ---- R75: the heavier compose-menu functions
+
+/// A new message with a body, back from "the editor", in the compose
+/// menu's hands.
+fn draft_in_hand(f: &mut Fixture) {
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, "someone@example.com");
+    assert!(f.answer_line(ask, "functions").is_none());
+    let draft = draft_from_requests(&mut f.session);
+    let mut text = fs::read_to_string(&draft.path).unwrap();
+    text.push_str("the body\n");
+    fs::write(&draft.path, text).unwrap();
+    f.session.set_draft(draft);
+    assert!(f.session.draft().is_some(), "{}", f.log.last_text());
+}
+
+#[test]
+fn attach_message_takes_the_tagged_or_current_as_rfc822() {
+    let mut f = Fixture::with_config(&["one", "two", "three"], reply_config());
+    f.tag("one");
+    f.tag("three");
+    draft_in_hand(&mut f);
+    f.session.attach_messages();
+    assert!(f.log.said("attached 2 message(s)"), "{}", f.log.last_text());
+    let atts = f.session.attachments();
+    assert_eq!(atts.len(), 2);
+    assert!(
+        atts.iter()
+            .all(|a| a.mime.as_deref() == Some("message/rfc822") && a.inline)
+    );
+    assert_eq!(atts[0].path, f.path_of("one"));
+    // Nothing tagged: the message under the cursor.
+    let mut f = Fixture::with_config(&["one", "two"], reply_config());
+    f.select("two");
+    draft_in_hand(&mut f);
+    f.session.attach_messages();
+    assert_eq!(f.session.attachments()[0].path, f.path_of("two"));
+}
+
+#[test]
+fn rename_unlink_disposition_and_move_edit_the_attach_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    fs::write(&a, "a").unwrap();
+    fs::write(&b, "b").unwrap();
+    let mut f = Fixture::with_config(&["one"], reply_config());
+    draft_in_hand(&mut f);
+    f.session.attach_file(a.to_str().unwrap());
+    f.session.attach_file(b.to_str().unwrap());
+    // Rows: 0 the body, 1 a.txt, 2 b.txt.
+    let ask = f.session.ask_rename_attachment(1);
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Send attachment with name: "
+    );
+    f.answer_line(ask, "report.txt");
+    f.session.toggle_unlink(1);
+    f.session.toggle_disposition(2);
+    let atts = f.session.attachments();
+    assert_eq!(atts[0].name.as_deref(), Some("report.txt"));
+    assert_eq!(atts[0].send_name(), "report.txt");
+    assert!(atts[0].unlink && !atts[0].inline);
+    assert!(atts[1].inline && !atts[1].unlink);
+    // The body row cannot be renamed; b moves above a; a cannot go
+    // above the top.
+    assert!(f.session.ask_rename_attachment(0).is_none());
+    assert!(f.session.move_attachment(2, true));
+    let atts = f.session.attachments();
+    assert_eq!(atts[0].path, b);
+    assert!(!f.session.move_attachment(1, true), "already first");
+    // The file's own name is no override, and empty clears one.
+    let ask = f.session.ask_rename_attachment(2);
+    f.answer_line(ask, "");
+    assert_eq!(f.session.attachments()[1].name, None);
+}
+
+#[test]
+fn new_mime_makes_attaches_and_edits_and_write_fcc_files_the_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let fresh = dir.path().join("notes.md");
+    let mut f = Fixture::with_config(&["one"], reply_config());
+    draft_in_hand(&mut f);
+    let ask = f.session.ask_new_mime();
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "New file: ");
+    let ask = f.answer_line(ask, fresh.to_str().unwrap());
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Content-Type: ");
+    assert!(f.answer_line(ask, "text/markdown").is_none());
+    assert!(fresh.exists(), "made empty");
+    let atts = f.session.attachments();
+    assert_eq!(atts[0].mime.as_deref(), Some("text/markdown"));
+    let mut edit = None;
+    while let Some(request) = f.session.take_request() {
+        if let crate::Request::EditFile(path) = request {
+            edit = Some(path);
+        }
+    }
+    assert_eq!(edit.as_deref(), Some(fresh.as_path()));
+    // A type without a slash is refused, as mutt refuses it.
+    let ask = f.session.ask_new_mime();
+    let ask = f.answer_line(ask, dir.path().join("x").to_str().unwrap());
+    f.answer_line(ask, "plain");
+    assert_eq!(f.log.last_text(), "Content-Type is of the form base/sub");
+
+    // write-fcc: the message as it stands lands in a maildir; the
+    // draft is still in hand.
+    let archive = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(archive.path().join(sub)).unwrap();
+    }
+    let ask = f.session.ask_write_fcc();
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Write message to mailbox: "
+    );
+    f.answer_line(ask, archive.path().to_str().unwrap());
+    assert!(f.log.said("Message written to"), "{}", f.log.last_text());
+    let written: Vec<String> = ["cur", "new"]
+        .iter()
+        .flat_map(|sub| fs::read_dir(archive.path().join(sub)).unwrap())
+        .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(written.len(), 1);
+    assert!(written[0].contains("Subject: functions") && written[0].contains("text/markdown"));
+    assert!(f.session.draft().is_some());
+    f.session.write_draft_to(dir.path().to_str().unwrap());
+    assert!(f.log.said("is not a maildir"), "{}", f.log.last_text());
+}

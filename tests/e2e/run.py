@@ -3594,6 +3594,67 @@ def scenario_last_keys(tmp):
     r.close()
 
 
+def scenario_compose_functions(tmp):
+    """R75: the heavier compose-menu functions: A attaches the tagged
+    (or current) message as message/rfc822, Ctrl+O renames a file for
+    sending, u marks it to be unlinked, w writes the message to a
+    mailbox without sending, and the send honours all of it."""
+    md = make_maildir(tmp, "md-cfn")
+    write_msgs(md, ["jane"])
+    archive = make_maildir(tmp, "md-cfn-archive")
+    sent_file = os.path.join(tmp, "cfn-sent.eml")
+    editor = os.path.join(tmp, "cfn-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "the body\\n" >> "$1"\n')
+    sendmail = os.path.join(tmp, "cfn-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(editor, 0o755)
+    os.chmod(sendmail, 0o755)
+    doomed = os.path.join(tmp, "cfn-doomed.txt")
+    with open(doomed, "w") as f:
+        f.write("going, going\n")
+    env = base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail})
+    r = Rmut(md, env)
+    r.expect("Msgs:1")
+    r.keys(b"mto@example.com\rfunctions\r")
+    r.settle()
+    r.expect("-- Attachments")
+    # A: the message under the cursor, as message/rfc822.
+    r.keys(b"A")
+    r.expect("attached 1 message(s)", "message/rfc822")
+    # a file, then Ctrl+O renames it and u marks it for unlinking.
+    r.keys(b"a" + doomed.encode() + b"\r")
+    r.expect("cfn-doomed.txt")
+    r.keys(b"jj")   # onto the file (body, message, file)
+    r.keys(b"\x0f")
+    r.expect("Send attachment with name: ")
+    r.keys(b"\x15renamed.txt\r")  # ctrl+u clears the prefill
+    r.expect("as renamed.txt")
+    r.keys(b"u")
+    r.expect("[unlink]", "deleted after sending")
+    # w: written to the archive, not sent, the draft still here.
+    r.keys(b"w")
+    r.expect("Write message to mailbox: ")
+    r.keys(b"\x15" + archive.encode() + b"\r")
+    r.expect("Message written to")
+    written = [p for sub in ("cur", "new")
+               for p in os.listdir(os.path.join(archive, sub))]
+    assert len(written) == 1, written
+    assert not os.path.exists(sent_file)
+    # y: sent with the renamed part inline the message, and the file
+    # is gone.
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="the message went out")
+    sent = open(sent_file).read()
+    assert 'filename="renamed.txt"' in sent, sent
+    assert "Content-Type: message/rfc822" in sent, sent
+    assert "Subject: Lunch on Friday?" in sent, "the attached message rides whole"
+    wait_for(lambda: not os.path.exists(doomed), desc="the unlinked file went")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_status_chars(tmp):
     """R82: $status_chars sets the %r mailbox-state marker."""
     md = make_maildir(tmp, "md-schars")
@@ -4377,6 +4438,7 @@ SCENARIOS = [
     scenario_search_context,
     scenario_help_bar_off,
     scenario_last_keys,
+    scenario_compose_functions,
 ]
 
 

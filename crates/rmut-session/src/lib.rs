@@ -3670,6 +3670,14 @@ impl Session {
                         }
                     }
                 }
+                // mutt's toggle-unlink: files marked to go, go.
+                if let Ok(full) = draft_full(&compose_state) {
+                    for a in compose::extract_attachments(&full).1 {
+                        if a.unlink {
+                            let _ = std::fs::remove_file(&a.path);
+                        }
+                    }
+                }
                 let _ = std::fs::remove_file(&compose_state.path);
                 if let Some(src) = &compose_state.recall_source {
                     let _ = std::fs::remove_file(src);
@@ -4113,6 +4121,283 @@ impl Session {
     /// D in the compose menu: drop the selected Attach: line (the
     /// body and a forwarded original cannot be detached).
     /// Drop the `Attach:` line the menu's `sel`-th row stands for.
+    /// The k of the Attach: file a compose-menu row names, or an
+    /// error when the row is the body or the forwarded original.
+    pub fn attach_index(&mut self, sel: usize) -> Option<usize> {
+        let fixed = 1 + usize::from(self.draft().is_some_and(|c| c.attach.is_some()));
+        if sel < fixed {
+            self.error("only Attach: files can be changed here");
+            return None;
+        }
+        Some(sel - fixed)
+    }
+
+    /// The draft's Attach: files as they stand.
+    pub fn attachments(&self) -> Vec<compose::Attachment> {
+        self.draft()
+            .and_then(|c| draft_full(c).ok())
+            .map(|full| compose::extract_attachments(&full).1)
+            .unwrap_or_default()
+    }
+
+    /// Rewrite the k-th Attach: line through `f`.
+    pub fn edit_attachment(&mut self, k: usize, f: impl Fn(&mut compose::Attachment)) {
+        self.edit_draft_head(|head| {
+            let mut seen = 0usize;
+            head.lines()
+                .map(|l| {
+                    let is_attach = l
+                        .split_once(':')
+                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"));
+                    if is_attach {
+                        let (_, mut atts) = compose::extract_attachments(l);
+                        if let Some(mut a) = atts.pop() {
+                            let idx = seen;
+                            seen += 1;
+                            if idx == k {
+                                f(&mut a);
+                                return compose::attach_line(&a);
+                            }
+                        }
+                    }
+                    l.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    }
+
+    /// mutt's toggle-unlink (u): the file goes once the message has
+    /// been sent.
+    pub fn toggle_unlink(&mut self, sel: usize) {
+        let Some(k) = self.attach_index(sel) else {
+            return;
+        };
+        self.edit_attachment(k, |a| a.unlink = !a.unlink);
+        let on = self.attachments().get(k).is_some_and(|a| a.unlink);
+        self.note(if on {
+            "the file will be deleted after sending"
+        } else {
+            "the file will be kept after sending"
+        });
+    }
+
+    /// mutt's toggle-disposition (Ctrl+D): inline or attachment.
+    pub fn toggle_disposition(&mut self, sel: usize) {
+        let Some(k) = self.attach_index(sel) else {
+            return;
+        };
+        self.edit_attachment(k, |a| a.inline = !a.inline);
+    }
+
+    /// mutt's move-up / move-down: the k-th Attach: line swaps with
+    /// its neighbour. Whether anything moved.
+    pub fn move_attachment(&mut self, sel: usize, up: bool) -> bool {
+        let Some(k) = self.attach_index(sel) else {
+            return false;
+        };
+        let n = self.attachments().len();
+        let other = if up {
+            k.checked_sub(1)
+        } else {
+            (k + 1 < n).then_some(k + 1)
+        };
+        let Some(other) = other else { return false };
+        self.edit_draft_head(|head| {
+            let mut lines: Vec<String> = head.lines().map(String::from).collect();
+            let attach_rows: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| {
+                    l.split_once(':')
+                        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("attach"))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if let (Some(&a), Some(&b)) = (attach_rows.get(k), attach_rows.get(other)) {
+                lines.swap(a, b);
+            }
+            lines.join("\n")
+        });
+        true
+    }
+
+    /// One more Attach: line on the draft, wherever its head lives.
+    fn push_attach_line(&mut self, line: &str) -> std::io::Result<()> {
+        let Some(c) = self.draft_mut() else {
+            return Ok(());
+        };
+        match &mut c.hidden_head {
+            Some(head) => {
+                *head = format!("{}\n{line}", head.trim_end());
+                Ok(())
+            }
+            None => std::fs::read_to_string(&c.path).and_then(|text| {
+                let updated = match text.split_once("\n\n") {
+                    Some((head, body)) => format!("{head}\n{line}\n\n{body}"),
+                    None => format!("{}\n{line}\n", text.trim_end()),
+                };
+                std::fs::write(&c.path, updated)
+            }),
+        }
+    }
+
+    /// mutt's attach-message (A): mutt opens a mailbox and has you
+    /// tag messages in it; rmut takes the tagged messages of the open
+    /// mailbox (the one under the cursor when none is tagged), each
+    /// as a message/rfc822 part, inline as mutt makes them. A
+    /// header-only IMAP cache file is refused: open it first.
+    pub fn attach_messages(&mut self) {
+        if self.draft().is_none() {
+            return;
+        }
+        let tagged = self.msgs.iter().any(|m| m.env.tagged);
+        let paths = self.target_paths(tagged);
+        let mut attached = 0usize;
+        for path in paths {
+            if remote::is_partial(&path) {
+                self.error(format!(
+                    "{} is not fetched yet: open it first",
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+                ));
+                continue;
+            }
+            let mut a = compose::Attachment::of(path);
+            a.mime = Some("message/rfc822".into());
+            a.inline = true;
+            let line = compose::attach_line(&a);
+            match self.push_attach_line(&line) {
+                Ok(()) => attached += 1,
+                Err(err) => self.error(format!("cannot attach: {err}")),
+            }
+        }
+        if attached > 0 {
+            self.note(format!("attached {attached} message(s)"));
+        }
+        self.requests.push(Request::ShowDraft);
+    }
+
+    /// mutt's new-mime, both halves answered: the file exists (made
+    /// empty when it did not), is attached under the type given, and
+    /// goes to the editor.
+    pub fn new_mime(&mut self, path: &str, mime: &str) {
+        if mime.is_empty() {
+            self.requests.push(Request::ShowDraft);
+            return;
+        }
+        if !mime.contains('/') || mime.starts_with('/') || mime.ends_with('/') {
+            self.error("Content-Type is of the form base/sub");
+            self.requests.push(Request::ShowDraft);
+            return;
+        }
+        let file = expand_tilde(path);
+        if !file.exists()
+            && let Err(err) = std::fs::write(&file, b"")
+        {
+            self.error(format!("cannot create {}: {err}", file.display()));
+            self.requests.push(Request::ShowDraft);
+            return;
+        }
+        let mut a = compose::Attachment::of(file.clone());
+        a.mime = Some(mime.to_string());
+        let line = compose::attach_line(&a);
+        if let Err(err) = self.push_attach_line(&line) {
+            self.error(format!("cannot attach: {err}"));
+        } else {
+            self.requests.push(Request::EditFile(file));
+        }
+        self.requests.push(Request::ShowDraft);
+    }
+
+    /// mutt's ispell (i): the command that spell-checks the draft on
+    /// the real terminal, `$ispell -x FILE`.
+    pub fn ispell_command(&self) -> Option<String> {
+        let path = self.draft()?.path.display().to_string();
+        let ispell = self.config.mail.ispell.as_deref().unwrap_or("ispell");
+        Some(format!("{ispell} -x '{}'", path.replace('\'', "'\\''")))
+    }
+
+    /// The message as it would go out: headers finalized, attachments
+    /// and the forwarded original assembled, security applied.
+    fn outgoing_text(&self, c: &Compose) -> Result<String> {
+        let raw = draft_full(c).context("reading the draft")?;
+        let (raw, files) = compose::extract_attachments(&raw);
+        let host = maildir::hostname();
+        let from = self
+            .current_identity(&[])
+            .from_line()
+            .unwrap_or_else(|| default_from(&host));
+        let msg_host = self
+            .config
+            .mail
+            .hostname
+            .clone()
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or(host);
+        let text = compose::finalize_with(
+            &raw,
+            &from,
+            &compose::make_message_id(&msg_host),
+            &compose::rfc2822_now(),
+            self.config.mail.user_agent.unwrap_or(false),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let original = match &c.attach {
+            Some(path) => Some(std::fs::read(path).context("reading the original")?),
+            None => None,
+        };
+        self.secure_message(c.security, text, &files, original.as_deref())
+    }
+
+    /// mutt's write-fcc (w): the message as it stands into a mailbox
+    /// (a local maildir, or a folder of the open IMAP account), not
+    /// sent, the draft untouched.
+    pub fn write_draft_to(&mut self, mailbox: &str) {
+        let Some(c) = self.draft() else { return };
+        let text = match self.outgoing_text(c) {
+            Ok(t) => t,
+            Err(err) => {
+                self.error(format!("cannot write the message: {err:#}"));
+                return;
+            }
+        };
+        let flags = maildir::Flags {
+            seen: true,
+            ..Default::default()
+        };
+        match remote::parse_spec(mailbox) {
+            Some((account, folder)) => {
+                let Some(imap) = self
+                    .imap
+                    .as_mut()
+                    .filter(|i| i.facts.account.name == account)
+                else {
+                    self.error("write-fcc to IMAP needs a folder of the open account");
+                    return;
+                };
+                match imap.blocking(Job::Append {
+                    mailbox: Some(folder.to_string()),
+                    flags,
+                    body: text.into_bytes(),
+                }) {
+                    Ok(_) => self.note(format!("Message written to {mailbox}.")),
+                    Err(err) => self.error(format!("write failed: {err:#}")),
+                }
+            }
+            None => {
+                let dir = expand_tilde(mailbox);
+                if !dir.join("cur").is_dir() {
+                    self.error(format!("{mailbox} is not a maildir"));
+                    return;
+                }
+                match maildir::deliver(&dir, text.as_bytes(), flags) {
+                    Ok(_) => self.note(format!("Message written to {mailbox}.")),
+                    Err(err) => self.error(format!("write failed: {err:#}")),
+                }
+            }
+        }
+    }
+
     pub fn detach(&mut self, sel: usize) {
         let fixed = 1 + usize::from(self.draft().is_some_and(|c| c.attach.is_some()));
         if sel < fixed {

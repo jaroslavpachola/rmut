@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.85.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.86.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -525,6 +525,30 @@ edit To/Cc/Bcc/Subject (address prompts Tab-complete),
 edit the From and Reply-To,
 .B a
 attaches a file,
+.B A
+attaches the tagged messages of the open mailbox (the one under the
+cursor when none is tagged) as message/rfc822 parts,
+.B n
+makes a new file of a given Content\-Type, attaches it and opens it
+in the editor (mutt's new\-mime),
+.B Ctrl+O
+renames the selected file for sending (mutt's rename\-attachment;
+"@name=" on its Attach: line),
+.B u
+marks it to be unlinked once the message is sent ("@unlink"),
+.B Ctrl+D
+toggles its disposition between attachment and inline ("@inline"),
+.BR K / J
+move it up and down the table,
+.B w
+writes the message as it stands to a mailbox without sending it
+(mutt's write\-fcc),
+.B i
+runs $ispell over the draft ("ispell \-x FILE"),
+.B V
+views the selected file through its mailcap entry and
+.B Esc+v
+as text whatever its type,
 .B D
 detaches the selected file
 .RB ( j / k
@@ -634,7 +658,7 @@ abort_unmodified, mark_old, print, beep_new, wait_key,
 reverse_realname, delete_untag, flag_safe, maildir_trash,
 mail_check_recent, check_new, uncollapse_new, menu_scroll,
 menu_context, menu_move_off, help, error_history, sort_browser,
-sort_alias, shell, tmpdir,
+sort_alias, shell, tmpdir, ispell,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -1158,6 +1182,10 @@ under sh \-c, as mutt's does.
 mutt's $tmpdir: where temporary files go (a draft on its way to the
 editor, a part on its way to a viewer). $TMPDIR, then /tmp, when
 unset.
+.TP
+.B ispell
+mutt's $ispell: the spell checker the compose menu's i runs over the
+draft, as "ispell \-x FILE". ispell when unset.
 .TP
 .B print_confirm
 mutt's $print, the question before

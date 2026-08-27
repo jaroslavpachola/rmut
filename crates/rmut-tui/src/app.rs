@@ -299,6 +299,9 @@ pub struct App {
     /// Message whose raw bytes go through $EDITOR next loop tick
     /// (mutt's edit function).
     pending_raw_edit: Option<PathBuf>,
+    /// A plain file for the editor (mutt's new-mime made it); the
+    /// compose menu comes back after.
+    pending_file_edit: Option<PathBuf>,
     /// Address completion state at the To prompt (Tab cycles).
     complete: Option<Complete>,
     /// Keys queued by a macro, consumed before real terminal input.
@@ -470,6 +473,7 @@ impl App {
             redraw: false,
             what_key: false,
             pending_shell: None,
+            pending_file_edit: None,
             pending_suspend: false,
             tag_next: false,
             jump_buffer: String::new(),
@@ -530,6 +534,7 @@ impl App {
                 }
                 Request::ShowDraft => self.open_compose_menu(),
                 Request::Mailto(mailto) => self.start_mailto(&mailto),
+                Request::EditFile(path) => self.pending_file_edit = Some(path),
                 Request::Command(cmd) => {
                     let outcome = match &cmd {
                         command::Command::Push(seq) => self.push_command(seq),
@@ -715,6 +720,9 @@ impl App {
             }
             if let Some(path) = self.pending_raw_edit.take() {
                 self.edit_raw(&mut terminal, path);
+            }
+            if let Some(path) = self.pending_file_edit.take() {
+                self.edit_file(&mut terminal, &path);
             }
             if let Some(command) = self.pending_shell.take() {
                 self.run_shell(&mut terminal, &command);
@@ -2364,6 +2372,29 @@ impl App {
         }
     }
 
+    /// A plain file into the editor (mutt's new-mime), the compose
+    /// menu back afterwards.
+    fn edit_file(&mut self, terminal: &mut DefaultTerminal, path: &Path) {
+        let editor = self.session.config.mail.editor.clone().unwrap_or_else(|| {
+            std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".into())
+        });
+        ratatui::restore();
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{editor} \"$1\""))
+            .arg("rmut-editor")
+            .arg(path)
+            .status();
+        *terminal = ratatui::init();
+        let _ = terminal.clear();
+        if !status.is_ok_and(|s| s.success()) {
+            self.error(format!("editor failed on {}", path.display()));
+        }
+        self.open_compose_menu();
+    }
+
     /// Mutt's compose menu: entered after the editor, and again after
     /// every sub-prompt, until y sends, P/q postpones, or q discards.
     fn open_compose_menu(&mut self) {
@@ -2446,13 +2477,26 @@ impl App {
                 Ok(m) => crate::ui::humanize_size(m.len()),
                 Err(_) => "missing!".into(),
             };
+            // mutt's table shows the disposition and the unlink mark
+            // as one-letter columns; here they read as words.
+            let mut marks = String::new();
+            if a.inline {
+                marks += " [inline]";
+            }
+            if a.unlink {
+                marks += " [unlink]";
+            }
+            if let Some(name) = &a.name {
+                marks += &format!(" as {name}");
+            }
             out.push(format!(
-                "{:<28} {:>8}  {}{}",
+                "{:<28} {:>8}  {}{}{}",
                 a.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                 size,
                 a.mime
                     .as_deref()
                     .unwrap_or_else(|| compose::content_type(&a.path)),
+                marks,
                 a.description
                     .as_deref()
                     .map(|d| format!("  ({d})"))
@@ -2494,6 +2538,11 @@ impl App {
             KeyCode::Char('s') => self.ask_header("Subject"),
             KeyCode::Char('F') => self.ask_header("From"),
             KeyCode::Char('r') => self.ask_header("Reply-To"),
+            // Before plain d: ctrl+d toggles the disposition.
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let sel = *sel;
+                self.session.toggle_disposition(sel);
+            }
             KeyCode::Char('d') => {
                 let sel = *sel;
                 let ask = self.session.ask_attach_field(sel, false);
@@ -2506,6 +2555,42 @@ impl App {
             KeyCode::Char('a') => {
                 let ask = self.session.ask_attach_file();
                 self.open_ask(ask);
+            }
+            KeyCode::Char('A') => self.session.attach_messages(),
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let sel = *sel;
+                let ask = self.session.ask_rename_attachment(sel);
+                self.open_ask(ask);
+            }
+            KeyCode::Char('u') => {
+                let sel = *sel;
+                self.session.toggle_unlink(sel);
+            }
+            KeyCode::Char('n') => {
+                let ask = self.session.ask_new_mime();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('K') | KeyCode::Char('J') => {
+                let up = key.code == KeyCode::Char('K');
+                let at = *sel;
+                if self.session.move_attachment(at, up)
+                    && let Mode::Compose { sel } = &mut self.mode
+                {
+                    *sel = if up { at - 1 } else { at + 1 };
+                }
+            }
+            KeyCode::Char('w') => {
+                let ask = self.session.ask_write_fcc();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('i') => {
+                if let Some(command) = self.session.ispell_command() {
+                    self.pending_shell = Some(command);
+                }
+            }
+            KeyCode::Char('V') => self.view_compose_entry_with(View::Mailcap),
+            KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.view_compose_entry_with(View::Text)
             }
             KeyCode::Enter => self.view_compose_entry(),
             KeyCode::Char('D') => {
@@ -2542,9 +2627,63 @@ impl App {
     /// draft body, the forwarded original, or an attached file (text
     /// directly, other types through their [filters] command).
     fn view_compose_entry(&mut self) {
+        self.view_compose_entry_with(View::Filter);
+    }
+
+    /// mutt's view-mailcap (V) and view-text (Esc v) on a compose-menu
+    /// file: the mailcap viewer for its type on the real terminal, or
+    /// its bytes as text whatever the type.
+    fn view_compose_entry_with(&mut self, how: View) {
         let Mode::Compose { sel } = self.mode else {
             return;
         };
+        if how != View::Filter {
+            let Some(k) = self.session.attach_index(sel) else {
+                return;
+            };
+            let Some(a) = self.session.attachments().into_iter().nth(k) else {
+                return;
+            };
+            let mimetype = a
+                .mime
+                .clone()
+                .unwrap_or_else(|| compose::content_type(&a.path).to_string());
+            let name = a.path.display().to_string();
+            match how {
+                View::Text => match std::fs::read(&a.path) {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        let mut lines = vec![name, String::new()];
+                        lines.extend(text.lines().map(String::from));
+                        self.mode = Mode::Help { lines, scroll: 0 };
+                    }
+                    Err(err) => self.error(format!("cannot read {name}: {err}")),
+                },
+                _ => {
+                    let entries = rmut_core::mailcap::load();
+                    match rmut_core::mailcap::viewer_for(&entries, &mimetype) {
+                        Some((command, copious)) => {
+                            let quoted = format!("'{}'", name.replace('\'', "'\\''"));
+                            let command = command.replace("%s", &quoted);
+                            if copious {
+                                match run_file_filter(&command, &a.path) {
+                                    Ok(text) => {
+                                        let mut lines = vec![name, String::new()];
+                                        lines.extend(text.lines().map(String::from));
+                                        self.mode = Mode::Help { lines, scroll: 0 };
+                                    }
+                                    Err(err) => self.error(format!("viewer failed: {err:#}")),
+                                }
+                            } else {
+                                self.pending_shell = Some(command);
+                            }
+                        }
+                        None => self.error(format!("no mailcap entry for {mimetype}")),
+                    }
+                }
+            }
+            return;
+        }
         let Some(c) = self.session.draft() else {
             return;
         };
@@ -3068,6 +3207,15 @@ fn rule_style(
         }
     }
     style
+}
+
+/// How a compose-menu file is shown: through its [filters] command
+/// (Enter), its mailcap viewer (V), or as text (Esc v).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Filter,
+    Mailcap,
+    Text,
 }
 
 fn is_ctrl(key: &KeyEvent) -> bool {

@@ -1828,17 +1828,41 @@ History persistence and the `un*` commands split into R79 below.
       teardown commands `uncolor`, `mono`/`unmono`, `unhook`,
       `unmailboxes`, `unalias`, `reset`; `$shell`, `$tmpdir`
 
-## R75: the heavier compose-menu functions
+## R75: the heavier compose-menu functions (done, 1.86)
 
 Goal: the compose-menu work R71 left, which needs a picker or new
 draft plumbing. The compose-menu keys are in the 2.0 cut; the
 envelope odds moved to R89 (post-2.0).
 
-- [ ] `A` attach-message: attach another message from the open
-      mailbox as message/rfc822 (a tagged-message picker); the rest
-      of the compose-menu functions: rename-attachment, toggle-unlink,
-      toggle-disposition, new-mime, move-up/down, write-fcc,
-      view-text/view-mailcap, ispell
+- [x] The Attach: line grew mutt's per-part state as `@`-options
+      between the type and the description: `@name="..."`
+      (rename-attachment, Ctrl+O), `@inline` (toggle-disposition,
+      Ctrl+D), `@unlink` (toggle-unlink, `u`; the send removes the
+      file). `Attachment::of` and `send_name`; mixed_entity honours
+      all three, and sends a `message/rfc822` part whole, unencoded,
+      without a filename
+- [x] `A` attach-message: mutt opens a mailbox to tag in; rmut takes
+      the tagged messages of the open mailbox (the cursor's when none
+      is tagged), inline as mutt makes them, and refuses a header-only
+      IMAP cache file by name
+- [x] `n` new-mime: "New file: ", "Content-Type: " (base/sub
+      checked), the file made when missing, attached, and handed to
+      the editor through `Request::EditFile`; the menu comes back
+- [x] `K` / `J` move-up / move-down swap Attach: lines (mutt leaves
+      them unbound; the menu has no key table to bind by name yet)
+- [x] `w` write-fcc: `outgoing_text` is the send path's assembly
+      without the send (finalize, attachments, original, security),
+      delivered to a local maildir or appended to a folder of the
+      open account; the draft stays
+- [x] `i` ispell: `$ispell -x FILE` on the real terminal, through the
+      shell-escape path
+- [x] `V` view-mailcap: `mailcap::viewer_for`, terminal-wanting
+      entries run on the real terminal, copiousoutput ones into the
+      viewer; Esc+v view-text shows the bytes as text
+- [x] Two core tests (the line grammar round trip; name, disposition
+      and rfc822 in the entity), three session tests, a pty scenario
+      that attaches, renames, unlinks, writes and sends. 70/70
+      scenarios
 
 ## R76: the PGP odds (post-2.0)
 
@@ -2171,7 +2195,8 @@ Blocking, in order:
 - [x] R86: the last keys (1.84)
 - [x] R87: the browser sort and the `un*` / `reset` commands (muttrc
       compatibility) (1.85)
-- [ ] R75: the compose-menu functions (the envelope odds moved to R89)
+- [x] R75: the compose-menu functions (the envelope odds moved to R89)
+      (1.86)
 - [ ] R22 leftover: publish rmut-core, rmut-session and rmut-tui to
       crates.io. Crate names are permanent there: settle them first
 - [ ] Docs: `docs/rmut.1` version line (stuck at 1.62.0), a README
