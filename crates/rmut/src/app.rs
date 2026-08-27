@@ -21,7 +21,8 @@ use rmut_session::{
     write_draft,
 };
 
-use crate::theme::Theme;
+use rmut_front::style::rule_style;
+use rmut_front::theme::Theme;
 use rmut_front::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};
 
 /// neomutt's $abort_noattach_regex default: the words that make a
@@ -287,7 +288,7 @@ pub struct App {
     /// prefills from its searchbuf the same way).
     pub(crate) pager_search_text: String,
     /// Compiled [[color_body]] rules: regex + style, in config order.
-    pub(crate) body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
+    pub(crate) body_rules: Vec<(regex_lite::Regex, rmut_front::style::Style)>,
     /// Trouble from the send at exit, printed once the terminal is
     /// back (nobody would see a status line by then).
     pub exit_notes: Vec<String>,
@@ -311,7 +312,7 @@ pub struct App {
     history: HashMap<&'static str, Vec<String>>,
     /// Compiled [[color_index]] rules: (patterns, style patch); the
     /// first matching rule colors the line.
-    pub index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
+    pub index_rules: Vec<(Vec<Pattern>, rmut_front::style::Style)>,
     /// The left mailbox pane: (spec, new/unseen count) entries.
     pub sidebar: Vec<(String, usize)>,
     pub sidebar_sel: usize,
@@ -374,8 +375,8 @@ fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
 struct Derived {
     theme: Theme,
     keymap: Keymap,
-    index_rules: Vec<(Vec<Pattern>, ratatui::style::Style)>,
-    body_rules: Vec<(regex_lite::Regex, ratatui::style::Style)>,
+    index_rules: Vec<(Vec<Pattern>, rmut_front::style::Style)>,
+    body_rules: Vec<(regex_lite::Regex, rmut_front::style::Style)>,
 }
 
 impl Derived {
@@ -3186,35 +3187,6 @@ impl App {
         self.session.open_message();
         self.run_requests_quietly();
     }
-}
-
-/// The style of one colour rule: its fg and bg as colours, or, from
-/// mutt's `mono`, an attribute in the fg slot (bold, underline,
-/// reverse, standout; none clears).
-fn rule_style(
-    rule: &rmut_core::config::ColorRule,
-    what: &str,
-    warnings: &mut Vec<String>,
-) -> ratatui::style::Style {
-    use ratatui::style::{Modifier, Style};
-    let mut style = Style::new();
-    for (name, is_fg) in [(&rule.fg, true), (&rule.bg, false)] {
-        let Some(name) = name else { continue };
-        let attr = match name.as_str() {
-            "bold" => Some(Modifier::BOLD),
-            "underline" => Some(Modifier::UNDERLINED),
-            "reverse" | "standout" => Some(Modifier::REVERSED),
-            "none" => Some(Modifier::empty()),
-            _ => None,
-        };
-        match (attr, crate::theme::parse_color(name)) {
-            (Some(m), _) => style = style.add_modifier(m),
-            (None, Some(color)) if is_fg => style = style.fg(color),
-            (None, Some(color)) => style = style.bg(color),
-            (None, None) => warnings.push(format!("unknown {what} color {name:?}")),
-        }
-    }
-    style
 }
 
 /// How a compose-menu file is shown: through its [filters] command

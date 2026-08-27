@@ -6,6 +6,8 @@
 pub mod key;
 pub mod keymap;
 pub mod pager;
+pub mod style;
+pub mod theme;
 
 pub use key::{KeyCode, KeyEvent, KeyModifiers};
 pub use keymap::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};

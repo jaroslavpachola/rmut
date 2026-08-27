@@ -11,6 +11,7 @@ use rmut_front::pager::{
 };
 
 use crate::app::{App, Mode, Pager, Prompt};
+use crate::theme;
 
 const INDEX_HELP: &str = "?:Help q:Quit Enter:View m:New r:Reply g:Grp f:Fwd d:Del u:Undel F:Flag t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs v:Parts p:Print $:Sync";
 const PAGER_HELP: &str = "?:Help q:Back Enter:Scroll Space/-:Page j/k:Msg /:Find r:Reply f:Fwd d:Del s:Save h:Hdrs v:Parts p:Print";
@@ -69,7 +70,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Help { .. } => HELP_HELP,
     };
     if help_rows > 0 {
-        frame.render_widget(Line::from(help).style(app.theme.bar_style()), help_area);
+        frame.render_widget(
+            Line::from(help).style(theme::style(app.theme.bar_style())),
+            help_area,
+        );
     }
 
     if matches!(app.mode, Mode::Pager(_)) {
@@ -129,7 +133,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// the selection highlighted.
 fn draw_compose(frame: &mut Frame, area: Rect, app: &App, sel: usize) {
     let mut lines: Vec<Line> = Vec::new();
-    let header_color = app.theme.header;
+    let header_color = theme::color(app.theme.header);
     for (name, value) in app.compose_header_lines() {
         lines.push(Line::from(vec![
             Span::styled(format!("{name:>9}: "), Style::new().fg(header_color).bold()),
@@ -338,11 +342,11 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
             style = style.add_modifier(Modifier::BOLD);
         }
         if status == 'D' {
-            style = style.fg(app.theme.deleted);
+            style = style.fg(theme::color(app.theme.deleted));
         } else if env.tagged {
-            style = style.fg(app.theme.tagged);
+            style = style.fg(theme::color(app.theme.tagged));
         } else if env.file.flags.flagged {
-            style = style.fg(app.theme.flagged);
+            style = style.fg(theme::color(app.theme.flagged));
         }
         // The first matching [[color_index]] rule wins over the
         // built-in slot colors.
@@ -358,7 +362,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some((_, rule)) = app.index_rules.iter().find(|(patterns, _)| {
             rmut_core::pattern::matches_in(patterns, env, app.session.scope(pos), None)
         }) {
-            style = style.patch(*rule);
+            style = style.patch(theme::style(*rule));
         }
         // mutt's $arrow_cursor: an arrow marks the selection instead
         // of reverse video.
@@ -401,7 +405,7 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
 /// One pager row as styled spans: the base from its kind, then
 /// [[color_body]] spans, then search hits on top (body rows only).
 fn style_row(row: &Row, app: &App) -> Line<'static> {
-    let header_style = Style::new().fg(app.theme.header).bold();
+    let header_style = Style::new().fg(theme::color(app.theme.header)).bold();
     match row.kind {
         RowKind::Header => match row.text.split_once(": ") {
             Some((name, value)) => Line::from(vec![
@@ -414,7 +418,7 @@ fn style_row(row: &Row, app: &App) -> Line<'static> {
         RowKind::Quoted(depth) => {
             let base = match app.theme.quoted.len() {
                 0 => Style::new(),
-                n => Style::new().fg(app.theme.quoted[(depth - 1) % n]),
+                n => Style::new().fg(theme::color(app.theme.quoted[(depth - 1) % n])),
             };
             body_line(&row.text, base, app)
         }
@@ -437,14 +441,14 @@ fn body_line(text: &str, base: Style, app: &App) -> Line<'static> {
     };
     for (re, style) in &app.body_rules {
         for m in re.find_iter(text) {
-            paint(&mut styles, m.start(), m.end(), *style);
+            paint(&mut styles, m.start(), m.end(), theme::style(*style));
         }
     }
     if !app.pager_search_off
         && let Some(matcher) = &app.pager_search
     {
         for (start, end) in matcher.find_ranges(text) {
-            paint(&mut styles, start, end, app.theme.search);
+            paint(&mut styles, start, end, theme::style(app.theme.search));
         }
     }
     // Group equal-style runs into spans.
@@ -583,7 +587,10 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16
         Mode::Help { .. } => "---rmut: help".to_string(),
         Mode::Index => index_status(app, area.width as usize, content_height as usize),
     };
-    frame.render_widget(Line::from(text).style(app.theme.bar_style()), area);
+    frame.render_widget(
+        Line::from(text).style(theme::style(app.theme.bar_style())),
+        area,
+    );
 }
 
 /// mutt's message line: the prompt you are answering, or the last
@@ -612,7 +619,7 @@ fn draw_message_line(frame: &mut Frame, area: Rect, app: &App) {
     };
     let line = Line::from(notice.text());
     let line = match notice.is_error() {
-        true => line.style(app.theme.error),
+        true => line.style(theme::style(app.theme.error)),
         false => line,
     };
     frame.render_widget(line, area);

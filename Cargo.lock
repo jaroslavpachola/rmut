@@ -649,6 +649,7 @@ dependencies = [
  "regex-lite",
  "rmut-core",
  "rmut-session",
+ "toml",
 ]
 
 [[package]]
