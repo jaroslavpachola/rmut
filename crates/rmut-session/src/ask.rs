@@ -65,6 +65,16 @@ pub enum Answer<'a> {
 pub enum AskKind {
     /// mutt's limit: show only the messages matching a pattern.
     Limit,
+    /// mutt's mark-message: the stroke that will jump to this
+    /// Message-ID.
+    MarkMessage {
+        msg_id: String,
+    },
+    /// mutt's list-action: which RFC 2369 action, out of what the
+    /// message offers (None where it offers nothing).
+    ListAction {
+        actions: Vec<(&'static str, Option<String>)>,
+    },
     /// An index search; `back` is mutt's search-reverse.
     Search {
         back: bool,
@@ -242,6 +252,9 @@ pub enum Request {
     /// The draft is back in the front end's hands: put it on screen
     /// again, however drafts are shown.
     ShowDraft,
+    /// A mailto: to compose to, the way one on the command line is
+    /// (mutt's list-action landed on a mailto: header).
+    Mailto(rmut_core::mailto::Mailto),
     /// Run a shell command with the display stood down, mutt's `!`.
     Shell(String),
     /// Stop, and pick the display back up when the job resumes.
@@ -290,6 +303,53 @@ impl Session {
             prefill: String::new(),
             wants: Wants::Pattern,
             what: AskKind::Pattern { op },
+        })
+    }
+
+    /// mutt's mark-message: a hotkey that jumps back to the message
+    /// under the cursor. mutt prefixes it with $mark_macro_prefix
+    /// (`'`); rmut's macros are one key, so the stroke is the key.
+    pub fn ask_mark_message(&mut self) -> Option<Ask> {
+        let Some(msg_id) = self
+            .visible
+            .get(self.sel)
+            .and_then(|&i| self.msgs[i].env.msg_id.clone())
+        else {
+            self.error("No message ID to macro.");
+            return None;
+        };
+        Some(Ask::Line {
+            label: "Enter macro stroke: ".into(),
+            prefill: String::new(),
+            wants: Wants::Other,
+            what: AskKind::MarkMessage { msg_id },
+        })
+    }
+
+    /// mutt's list-action: the RFC 2369 actions the message under the
+    /// cursor offers, as a one-key menu.
+    pub fn ask_list_action(&mut self) -> Option<Ask> {
+        let &i = self.visible.get(self.sel)?;
+        let raw = self.message_bytes(i)?;
+        let actions = rmut_core::message::list_actions(&raw);
+        if actions.iter().all(|(_, url)| url.is_none()) {
+            self.error("No list actions available for this message.");
+            return None;
+        }
+        let label = actions
+            .iter()
+            .map(|(name, url)| {
+                let (head, tail) = name.split_at(1);
+                match url {
+                    Some(_) => format!("({}){tail}", head.to_lowercase()),
+                    None => format!("-{}{tail}-", head.to_lowercase()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(Ask::Key {
+            label: format!("List action: {label}: "),
+            what: AskKind::ListAction { actions },
         })
     }
 
@@ -909,6 +969,50 @@ impl Session {
                     if quit {
                         self.requests.push(Request::Quit);
                     }
+                }
+                None
+            }
+            (AskKind::MarkMessage { msg_id }, Answer::Line(input)) => {
+                let stroke = input.trim();
+                if stroke.is_empty() {
+                    return None;
+                }
+                // The id without its brackets (a `<` would read as a
+                // key name in the sequence), regex-quoted for ~i.
+                let id: String = msg_id
+                    .trim_matches(|c| c == '<' || c == '>')
+                    .chars()
+                    .flat_map(|c| match c {
+                        '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^'
+                        | '$' | '\\' => vec!['\\', c],
+                        c => vec![c],
+                    })
+                    .collect();
+                self.requests
+                    .push(Request::Command(rmut_core::command::Command::Macro {
+                        menu: rmut_core::command::Menu::Index,
+                        key: stroke.to_string(),
+                        seq: format!("/~i {id}<enter>"),
+                    }));
+                self.note(format!("Message bound to {stroke}."));
+                None
+            }
+            (AskKind::ListAction { actions }, Answer::Key(key)) => {
+                let Key::Char(c) = key else {
+                    return None;
+                };
+                let (name, url) = actions
+                    .iter()
+                    .find(|(name, _)| name.starts_with(c.to_ascii_uppercase()))?;
+                match url {
+                    None => self.error(format!("No list action available for {name}.")),
+                    Some(url) if !url.to_ascii_lowercase().starts_with("mailto:") => {
+                        self.error("List actions only support mailto: URIs. (Try a browser?)");
+                    }
+                    Some(url) => match rmut_core::mailto::parse(url) {
+                        Some(mailto) => self.requests.push(Request::Mailto(mailto)),
+                        None => self.error("Could not parse mailto: URI."),
+                    },
                 }
                 None
             }

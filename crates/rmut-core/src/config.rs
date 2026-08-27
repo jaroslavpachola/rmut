@@ -586,6 +586,9 @@ pub struct Ui {
     /// mutt's $help: the key-help bar on the top line. True unless
     /// set otherwise.
     pub help: Option<bool>,
+    /// mutt's $error_history: how many past errors error-history
+    /// shows. 0 disables it. 30 by default, as in mutt.
+    pub error_history: usize,
     /// mutt's $status_chars: the characters `%r` shows for the
     /// mailbox state — [0] unchanged, [1] changed (needs sync), [2]
     /// read-only. Unset keeps rmut's own (nothing / `*` / `%`).
@@ -613,6 +616,7 @@ impl Default for Ui {
             menu_context: 0,
             menu_move_off: None,
             help: None,
+            error_history: 30,
             status_chars: None,
         }
     }

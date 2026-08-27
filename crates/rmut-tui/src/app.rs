@@ -20,7 +20,7 @@ use rmut_session::{
     write_draft,
 };
 
-use crate::keymap::{Keymap, PagerAction, parse_key, parse_sequence};
+use crate::keymap::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};
 use crate::theme::Theme;
 
 /// neomutt's $abort_noattach_regex default: the words that make a
@@ -316,6 +316,9 @@ pub struct App {
     pub sidebar_visible: bool,
     /// Ctrl+L: clear and repaint before the next draw.
     redraw: bool,
+    /// mutt's what-key: every key is described instead of run, until
+    /// Ctrl+G.
+    what_key: bool,
     /// `!`: a shell command to run with the TUI stood down.
     pending_shell: Option<String>,
     /// Ctrl+Z: stop, and pick the terminal back up on SIGCONT.
@@ -483,6 +486,7 @@ impl App {
             sidebar_open: None,
             sidebar_visible,
             redraw: false,
+            what_key: false,
             pending_shell: None,
             pending_suspend: false,
             tag_next: false,
@@ -543,6 +547,7 @@ impl App {
                     });
                 }
                 Request::ShowDraft => self.open_compose_menu(),
+                Request::Mailto(mailto) => self.start_mailto(&mailto),
                 Request::Command(cmd) => {
                     let outcome = match &cmd {
                         command::Command::Push(seq) => self.push_command(seq),
@@ -760,6 +765,16 @@ impl App {
             self.session.abort_network();
             return;
         }
+        // mutt's what-key: keys are named, not run, until Ctrl+G.
+        if self.what_key {
+            if is_ctrl(&key) && key.code == KeyCode::Char('g') {
+                self.what_key = false;
+                self.clear_notice();
+            } else {
+                self.note(describe_key(&key));
+            }
+            return;
+        }
         // Ctrl+L repaints from the menus that have no keymap of their
         // own; the index and pager route it through theirs, so it can
         // be rebound there.
@@ -835,6 +850,23 @@ impl App {
             lines: self.keymap.help_lines(),
             scroll: 0,
         };
+    }
+
+    /// mutt's error-history: the recent complaints on the help
+    /// screen's machinery, oldest first.
+    fn open_error_history(&mut self, errors: Vec<String>) {
+        let mut lines = vec!["Error history".to_string(), String::new()];
+        if errors.is_empty() {
+            lines.push("  (no errors yet)".to_string());
+        }
+        lines.extend(errors.into_iter().map(|e| format!("  {e}")));
+        self.mode = Mode::Help { lines, scroll: 0 };
+    }
+
+    /// mutt's what-key: from here until Ctrl+G, every key is named.
+    fn start_what_key(&mut self) {
+        self.what_key = true;
+        self.note("Enter keys (^G to abort): ");
     }
 
     fn handle_help_key(&mut self, key: KeyEvent, page: usize) {
@@ -1318,6 +1350,9 @@ impl App {
             FrontOp::Folders => self.open_folder_browser(),
             FrontOp::CommandPrompt => self.open_command_prompt(),
             FrontOp::Help => self.open_help(),
+            FrontOp::OpenMailbox(spec) => self.open_mailbox_spec(&spec),
+            FrontOp::ErrorHistory(lines) => self.open_error_history(lines),
+            FrontOp::WhatKey => self.start_what_key(),
             FrontOp::Redraw => self.redraw = true,
             FrontOp::TagPrefix => self.tag_next = true,
             FrontOp::Query => {
@@ -1620,6 +1655,24 @@ impl App {
             }
             PagerAction::Help => {
                 self.open_help();
+                return;
+            }
+            PagerAction::ListAction => {
+                let ask = self.session.ask_list_action();
+                self.open_ask(ask);
+                return;
+            }
+            PagerAction::ErrorHistory => {
+                let outcome = self
+                    .session
+                    .run_function(Function::ErrorHistory, false, page);
+                if let Outcome::Front(FrontOp::ErrorHistory(lines)) = outcome {
+                    self.open_error_history(lines);
+                }
+                return;
+            }
+            PagerAction::WhatKey => {
+                self.start_what_key();
                 return;
             }
             _ => {}
@@ -2993,6 +3046,33 @@ impl App {
 
 fn is_ctrl(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+/// mutt's what-key line: the key's name, and its byte value in octal
+/// and decimal when it has one (mutt prints the curses code).
+fn describe_key(key: &KeyEvent) -> String {
+    let name = KeyPattern {
+        code: key.code,
+        mods: key.modifiers,
+    }
+    .display();
+    let value = match key.code {
+        KeyCode::Char(c) if is_ctrl(key) && c.is_ascii_alphabetic() => {
+            Some(c.to_ascii_lowercase() as u32 - 96)
+        }
+        KeyCode::Char(c) if !is_ctrl(key) && !key.modifiers.contains(KeyModifiers::ALT) => {
+            Some(c as u32)
+        }
+        KeyCode::Enter => Some(13),
+        KeyCode::Esc => Some(27),
+        KeyCode::Tab => Some(9),
+        KeyCode::Backspace => Some(127),
+        _ => None,
+    };
+    match value {
+        Some(v) => format!("Char = {name}, Octal = {v:o}, Decimal = {v}"),
+        None => format!("Char = {name}"),
+    }
 }
 
 /// Set once the ratatui alternate screen is up: progress switches

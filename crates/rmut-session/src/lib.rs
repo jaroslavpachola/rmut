@@ -45,6 +45,9 @@ pub struct Msg {
     pub env: message::Envelope,
     /// Flags changed since the last sync (rename pending).
     pub dirty: bool,
+    /// mutt's purge-message: deleted without the detour through
+    /// $trash. Meaningless unless deleted; undelete clears it.
+    pub purge: bool,
 }
 
 impl Msg {
@@ -376,6 +379,9 @@ pub struct Session {
     /// New-mail counts of the other configured mailboxes at the last
     /// poll, to notice growth (mutt's `mailboxes` awareness).
     mailbox_new: HashMap<String, usize>,
+    /// mutt's error history: the last $error_history complaints, for
+    /// the error-history screen.
+    error_history: std::collections::VecDeque<String>,
     /// The mailboxes announced under $mail_check_recent = false, so
     /// each is said once while it holds new mail.
     mailbox_announced: HashSet<String>,
@@ -478,7 +484,11 @@ impl Session {
         let (envelopes, skipped) = hdrcache::load_envelopes(dir)?;
         let mut msgs: Vec<Msg> = envelopes
             .into_iter()
-            .map(|env| Msg { env, dirty: false })
+            .map(|env| Msg {
+                env,
+                dirty: false,
+                purge: false,
+            })
             .collect();
         // Mutt's default sort: date, oldest first.
         msgs.sort_by_key(|m| m.env.date);
@@ -538,6 +548,7 @@ impl Session {
             idle: None,
             backfill: None,
             mailbox_new: HashMap::new(),
+            error_history: std::collections::VecDeque::new(),
             mailbox_announced: HashSet::new(),
             unseen: HashMap::new(),
             read_only: false,
@@ -1025,7 +1036,11 @@ impl Session {
                             arrived += 1;
                             arrivals.push(env.file.path.clone());
                         }
-                        self.msgs.push(Msg { env, dirty: false });
+                        self.msgs.push(Msg {
+                            env,
+                            dirty: false,
+                            purge: false,
+                        });
                     }
                 }
             }
@@ -1375,6 +1390,36 @@ impl Session {
     }
 
     /// Apply `f` to every tagged message, marking them dirty.
+    /// mutt's error-history: what has gone wrong lately, oldest
+    /// first. Empty when $error_history is 0.
+    pub fn error_history(&self) -> Vec<String> {
+        self.error_history.iter().cloned().collect()
+    }
+
+    /// mutt's next-unread-mailbox: the next configured mailbox after
+    /// the open one that holds new mail (a local new/ with files, an
+    /// IMAP folder with an unseen count), wrapping round. None when
+    /// no mailbox has any, which mutt reports as an error.
+    pub fn next_unread_mailbox(&self) -> Option<String> {
+        let boxes = &self.config.mail.mailboxes;
+        let start = boxes
+            .iter()
+            .position(|spec| *spec == self.title || expand_tilde(spec) == self.dir)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        (0..boxes.len())
+            .map(|k| &boxes[(start + k) % boxes.len()])
+            .filter(|spec| **spec != self.title && expand_tilde(spec) != self.dir)
+            .find(|spec| {
+                if spec.starts_with("imap:") {
+                    self.unseen.get(*spec).copied().unwrap_or(0) > 0
+                } else {
+                    maildir::new_count(&expand_tilde(spec)) > 0
+                }
+            })
+            .cloned()
+    }
+
     /// What a deletion has to respect: mutt's $flag_safe (a flagged
     /// message stays) and $delete_untag (the mark takes the tag off).
     pub fn delete_rules(&self) -> DeleteRules {
@@ -2262,10 +2307,11 @@ impl Session {
         // flight is collected first, so the answer waited for is this
         // job's own.
         self.settle();
+        // purge-message bypasses the trash, as in mutt's mx.c.
         let deleted: Vec<PathBuf> = self
             .msgs
             .iter()
-            .filter(|m| m.env.file.flags.deleted)
+            .filter(|m| m.env.file.flags.deleted && !m.purge)
             .map(|m| m.env.file.path.clone())
             .collect();
         match (remote::parse_spec(trash), &mut self.imap) {
@@ -2282,7 +2328,11 @@ impl Session {
             (None, None) => {
                 let dir = expand_tilde(trash);
                 maildir::create(&dir)?;
-                for m in self.msgs.iter().filter(|m| m.env.file.flags.deleted) {
+                for m in self
+                    .msgs
+                    .iter()
+                    .filter(|m| m.env.file.flags.deleted && !m.purge)
+                {
                     let bytes = std::fs::read(&m.env.file.path)?;
                     let mut flags = m.env.file.flags;
                     flags.deleted = false;
@@ -4125,6 +4175,13 @@ impl Session {
     /// can be set from a command mid-session, so it is read here
     /// rather than remembered by the sink.
     fn notify(&mut self, notice: Notice) {
+        if let Notice::Error(text) = &notice {
+            let keep = self.config.ui.error_history;
+            self.error_history.push_back(text.clone());
+            while self.error_history.len() > keep {
+                self.error_history.pop_front();
+            }
+        }
         // mutt's $beep_new rings for an arrival the same way $beep
         // rings for a complaint, and is off by default.
         if (notice.is_error() && self.config.ui.beep)

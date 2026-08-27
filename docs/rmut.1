@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.83.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.84.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -393,6 +393,24 @@ way any job suspends, with the terminal handed back and picked up
 again on
 .BR fg .
 Ctrl+L works in every menu; Ctrl+Z in the index and the pager
+.TP
+.B ~
+mark\-message: a stroke that becomes a hotkey jumping back to this
+message (a search for its Message\-ID). mutt prefixes it with
+$mark_macro_prefix; rmut's macros are one key, so the stroke is the
+key.
+.TP
+.B Esc+L
+list\-action: the message's RFC 2369 List\-* headers as a one\-key
+menu (help, post, subscribe, unsubscribe, archives, owner). A
+mailto: action opens a compose to it; anything else is refused, as
+in mutt.
+.TP
+.B (unbound)
+next\-unread\-mailbox opens the next configured mailbox holding new
+mail; purge\-message deletes past the trash; error\-history shows the
+recent errors ($error_history of them); what\-key names every key
+until Ctrl+G. Bind them by name, or run them with :exec.
 .SS Pager
 The body is the whole MIME tree rendered like mutt: text parts and
 [filters]-rendered parts inline, each attachment announced with
@@ -609,7 +627,7 @@ force_name, forward_quote, signature, sig_dashes, abort_nosubject,
 abort_unmodified, mark_old, print, beep_new, wait_key,
 reverse_realname, delete_untag, flag_safe, maildir_trash,
 mail_check_recent, check_new, uncollapse_new, menu_scroll,
-menu_context, menu_move_off, help,
+menu_context, menu_move_off, help, error_history,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -1212,6 +1230,10 @@ the screen.
 .TP
 .B help
 The key\-help bar on the top line (mutt's $help, on).
+.TP
+.B error_history
+How many past errors error\-history shows (mutt's $error_history,
+30). 0 disables it.
 .TP
 .B status_chars
 mutt's $status_chars: the characters

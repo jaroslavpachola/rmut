@@ -55,6 +55,51 @@ pub fn one_line(text: &str) -> String {
         .collect()
 }
 
+/// mutt's list-action menu, in its order: the RFC 2369 List-* headers
+/// a message may carry, each with the URL mutt would act on. mutt
+/// takes the first `<mailto:...>` in the header and nothing else;
+/// here a header holding only other schemes keeps its first URL, so
+/// the answer can be "only mailto: is supported" rather than "none".
+pub const LIST_ACTIONS: [(&str, &str); 6] = [
+    ("Help", "List-Help"),
+    ("Post", "List-Post"),
+    ("Subscribe", "List-Subscribe"),
+    ("Unsubscribe", "List-Unsubscribe"),
+    ("Archives", "List-Archive"),
+    ("Owner", "List-Owner"),
+];
+
+/// The list actions a raw message offers: one entry per action in
+/// [`LIST_ACTIONS`] order, None where the header is absent.
+pub fn list_actions(raw: &[u8]) -> Vec<(&'static str, Option<String>)> {
+    let headers = parse_mail(raw).map(|m| m.headers).unwrap_or_default();
+    LIST_ACTIONS
+        .iter()
+        .map(|&(name, header)| {
+            let url = headers
+                .get_first_value(header)
+                .and_then(|value| list_url(&value));
+            (name, url)
+        })
+        .collect()
+}
+
+/// mutt's mutt_parse_list_header: the first `<mailto:...>` among the
+/// angle-bracketed URLs of a List-* value, else the first URL of any
+/// scheme (mutt would have nothing; this lets the error name it).
+fn list_url(value: &str) -> Option<String> {
+    let urls: Vec<&str> = value
+        .split('<')
+        .skip(1)
+        .filter_map(|rest| rest.split_once('>').map(|(url, _)| url.trim()))
+        .filter(|url| !url.is_empty())
+        .collect();
+    urls.iter()
+        .find(|url| url.to_ascii_lowercase().starts_with("mailto:"))
+        .or(urls.first())
+        .map(|url| url.to_string())
+}
+
 pub fn envelope(file: MailFile) -> Result<Envelope> {
     let raw = fs::read(&file.path).with_context(|| format!("reading {}", file.path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", file.path.display()))?;
@@ -1310,5 +1355,28 @@ mod tests {
         // LF mail stays LF, and a message with no body is fine.
         let out = with_thread_headers(b"From: a@x\nSubject: s\n", Some("<p@x>"), &[]);
         assert_eq!(out, b"From: a@x\nSubject: s\nIn-Reply-To: <p@x>\n");
+    }
+
+    #[test]
+    fn list_actions_take_the_first_mailto_of_each_header() {
+        let raw = b"From: a@x\r\nList-Id: <dev.example.com>\r\n\
+List-Unsubscribe: <https://lists.example.com/leave>, <mailto:dev-leave@example.com?subject=x>\r\n\
+List-Help: <https://lists.example.com/help>\r\nSubject: s\r\n\r\nbody\r\n";
+        let actions = list_actions(raw);
+        assert_eq!(actions.len(), 6);
+        assert_eq!(
+            actions[3],
+            (
+                "Unsubscribe",
+                Some("mailto:dev-leave@example.com?subject=x".to_string())
+            ),
+            "the mailto wins over the https that came first"
+        );
+        assert_eq!(
+            actions[0],
+            ("Help", Some("https://lists.example.com/help".to_string())),
+            "no mailto: the first URL, so the refusal can name it"
+        );
+        assert_eq!(actions[1], ("Post", None));
     }
 }

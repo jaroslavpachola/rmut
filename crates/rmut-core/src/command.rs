@@ -341,6 +341,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "menu_context" => NumUsize(&mut cfg.ui.menu_context),
         "menu_move_off" => FlagOpt(&mut cfg.ui.menu_move_off),
         "help" => FlagOpt(&mut cfg.ui.help),
+        "error_history" => NumUsize(&mut cfg.ui.error_history),
         "print" => Text(&mut cfg.mail.print_confirm),
         "reverse_realname" => FlagOpt(&mut cfg.identity.reverse_realname),
         "tilde" => Flag(&mut cfg.pager.tilde),

@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.83**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.84**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -150,7 +150,12 @@ recipients, with a Resent-\* block), `e` edit the raw message (mutt's
 edit; the changed result replaces the original), Alt+e edit as a new
 draft (resend), `a` add the sender to the alias file (nick prompted, local
 part prefilled), `p` print (pipes the message to `mail.print`,
-default `lpr`), `:` run a config command (see **Enter-command**
+default `lpr`), `~` mark-message (a stroke becomes a hotkey that
+jumps back to the message), Esc+L list-action (the message's List-*
+headers: help, post, subscribe, unsubscribe, archives, owner; mailto:
+ones compose), and, unbound as in mutt but bindable by name,
+`next-unread-mailbox`, `purge-message` (delete past the trash),
+`error-history` and `what-key`, `:` run a config command (see **Enter-command**
 below), `q` quit (writes changes; asks before purging
 deletions, like mutt), `x` abort without saving. Leaving a mailbox
 ages unread new mail to old (`O`), mutt's mark_old.
@@ -424,7 +429,7 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `mark_old`, `print`, `beep_new`, `wait_key`, `reverse_realname`,
 `delete_untag`, `flag_safe`, `maildir_trash`, `mail_check_recent`,
 `check_new`, `uncollapse_new`, `menu_scroll`, `menu_context`,
-`menu_move_off`, `help`,
+`menu_move_off`, `help`, `error_history`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -964,6 +969,7 @@ menu_context = 0             # lines kept in view past the cursor
 menu_move_off = true         # false keeps the last message on the
                              # bottom row once the index fills
 help = true                  # false drops the key-help top line
+error_history = 30           # what error-history shows; 0 disables
 status_chars = "-*%"         # mutt's $status_chars: %r marker for
                              # unchanged/changed/read-only (unset keeps
                              # rmut's nothing/*/%)

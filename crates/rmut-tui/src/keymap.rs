@@ -162,6 +162,9 @@ pub enum PagerAction {
     CreateAlias,
     EnterCommand,
     Help,
+    ListAction,
+    ErrorHistory,
+    WhatKey,
 }
 
 impl PagerAction {
@@ -212,6 +215,9 @@ impl PagerAction {
             CreateAlias => "create-alias",
             EnterCommand => "enter-command",
             Help => "help",
+            ListAction => "list-action",
+            ErrorHistory => "error-history",
+            WhatKey => "what-key",
         }
     }
 
@@ -262,6 +268,9 @@ impl PagerAction {
             CreateAlias => "add the sender to the alias file",
             EnterCommand => "run a config command (set/bind/macro/color/...)",
             Help => "this help",
+            ListAction => "act on the message's List-* headers (subscribe, help, ...)",
+            ErrorHistory => "show the recent errors",
+            WhatKey => "say what a key is (Ctrl+G ends it)",
         }
     }
 
@@ -312,10 +321,18 @@ impl PagerAction {
             CreateAlias,
             EnterCommand,
             Help,
+            ListAction,
+            ErrorHistory,
+            WhatKey,
         ]
     }
 
     pub fn from_name(name: &str) -> Option<PagerAction> {
+        // mutt's pager calls toggle-new "mark-as-new".
+        let name = match name {
+            "mark-as-new" => "toggle-new",
+            other => other,
+        };
         PagerAction::all()
             .iter()
             .copied()
@@ -455,6 +472,8 @@ fn index_defaults() -> Vec<(KeyPattern, Function)> {
         (KeyPattern::ctrl('l'), Redraw),
         (KeyPattern::ctrl('z'), Suspend),
         (KeyPattern::ch('?'), Help),
+        (KeyPattern::ch('~'), MarkMessage),
+        (KeyPattern::alt('L'), ListAction),
     ]
 }
 
@@ -517,6 +536,7 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch('a'), CreateAlias),
         (KeyPattern::ch(':'), EnterCommand),
         (KeyPattern::ch('?'), Help),
+        (KeyPattern::alt('L'), ListAction),
     ]
 }
 

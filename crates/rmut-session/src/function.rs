@@ -106,6 +106,19 @@ pub enum Function {
     Redraw,
     Suspend,
     Help,
+    /// mutt's next-unread-mailbox: open the next configured mailbox
+    /// holding new mail.
+    NextUnreadMailbox,
+    /// mutt's purge-message: delete, bypassing $trash.
+    PurgeMessage,
+    /// mutt's mark-message: a hotkey that jumps back here.
+    MarkMessage,
+    /// mutt's error-history: the recent complaints on a screen.
+    ErrorHistory,
+    /// mutt's what-key: say what the next keys are.
+    WhatKey,
+    /// mutt's list-action: RFC 2369 List-* actions of the message.
+    ListAction,
 }
 
 impl Function {
@@ -195,6 +208,12 @@ impl Function {
             Redraw => "refresh",
             Suspend => "suspend",
             Help => "help",
+            NextUnreadMailbox => "next-unread-mailbox",
+            PurgeMessage => "purge-message",
+            MarkMessage => "mark-message",
+            ErrorHistory => "error-history",
+            WhatKey => "what-key",
+            ListAction => "list-action",
         }
     }
 
@@ -284,6 +303,12 @@ impl Function {
             Redraw => "repaint the screen",
             Suspend => "suspend rmut (fg brings it back)",
             Help => "this help",
+            NextUnreadMailbox => "open the next mailbox holding new mail",
+            PurgeMessage => "mark for deletion, bypassing the trash",
+            MarkMessage => "bind a key that jumps back to this message",
+            ErrorHistory => "show the recent errors",
+            WhatKey => "say what a key is (Ctrl+G ends it)",
+            ListAction => "act on the message's List-* headers (subscribe, help, ...)",
         }
     }
 
@@ -375,6 +400,12 @@ impl Function {
             Redraw,
             Suspend,
             Help,
+            NextUnreadMailbox,
+            PurgeMessage,
+            MarkMessage,
+            ErrorHistory,
+            WhatKey,
+            ListAction,
         ]
     }
 
@@ -441,6 +472,13 @@ impl From<Option<Ask>> for Outcome {
 pub enum FrontOp {
     /// mutt's `x`: leave without writing anything back.
     Exit,
+    /// Open this mailbox spec (mutt's next-unread-mailbox found it).
+    OpenMailbox(String),
+    /// Put these lines on a screen of their own: the error history,
+    /// oldest first.
+    ErrorHistory(Vec<String>),
+    /// Read keys and say what they are until Ctrl+G.
+    WhatKey,
     /// Read the selected message, however messages are read.
     OpenSelected,
     /// Start a draft. The session asks for the recipients once the
@@ -533,9 +571,32 @@ impl Session {
                     rules.mark(m);
                 })
             }
-            Undelete => {
-                self.mark_selected(tagged, "undelete", |m| m.env.file.flags.deleted = false)
+            Undelete => self.mark_selected(tagged, "undelete", |m| {
+                m.env.file.flags.deleted = false;
+                m.purge = false;
+            }),
+            PurgeMessage => {
+                let rules = self.delete_rules();
+                self.mark_selected(tagged, "purge", move |m| {
+                    if rules.mark(m) {
+                        m.purge = true;
+                    }
+                })
             }
+            NextUnreadMailbox => match self.next_unread_mailbox() {
+                Some(spec) => return Outcome::Front(FrontOp::OpenMailbox(spec)),
+                None => self.error("No mailboxes have new mail"),
+            },
+            MarkMessage => return self.ask_mark_message().into(),
+            ErrorHistory => {
+                if self.config.ui.error_history == 0 {
+                    self.error("Error History is disabled.");
+                } else {
+                    return Outcome::Front(FrontOp::ErrorHistory(self.error_history()));
+                }
+            }
+            WhatKey => return Outcome::Front(FrontOp::WhatKey),
+            ListAction => return self.ask_list_action().into(),
             Flag => self.mark_selected(tagged, "flag", |m| {
                 m.env.file.flags.flagged = !m.env.file.flags.flagged
             }),

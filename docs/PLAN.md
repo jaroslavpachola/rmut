@@ -2048,13 +2048,36 @@ cut.
       menu_context, the parity fixture grew eight lines. 68/68
       scenarios
 
-## R86: the last keys
+## R86: the last keys (done, 1.84)
 
 Goal: the keys R80 left, each needing more than a binding.
 
-- [ ] next-unread-mailbox, purge-message (a per-message purge flag),
-      mark-message hotkeys, mark-as-new, error-history, what-key,
-      list-action over List-Unsubscribe / List-Help
+- [x] `next-unread-mailbox`: the next configured mailbox after the
+      open one holding new mail (a local new/ with files, an IMAP
+      folder with an unseen count), wrapping; `FrontOp::OpenMailbox`.
+      "No mailboxes have new mail" otherwise, as in mutt
+- [x] `purge-message`: `Msg::purge`, set with the delete, cleared by
+      undelete, and `trash_deleted` skips it (mutt's mx.c). Tagged
+      too
+- [x] `~` mark-message: "Enter macro stroke: ", then a
+      `Request::Command(Macro)` binding the stroke to `/~i <id>` with
+      the brackets off and the dots quoted. mutt's $mark_macro_prefix
+      is not carried: rmut's macros are one key, so the stroke is the
+      key
+- [x] `mark-as-new` is mutt's pager name for toggle-new; the pager's
+      from_name knows it, so a muttrc `bind pager` line lands
+- [x] `error-history`: the session keeps the last $error_history
+      (30) complaints; the function hands them to the front end,
+      which shows them on the help screen's machinery. 0 disables
+- [x] `what-key`: "Enter keys (^G to abort): " and every key is
+      named ("Char = a, Octal = 141, Decimal = 97") until Ctrl+G
+- [x] Esc+L list-action: `message::list_actions` reads the RFC 2369
+      List-* headers (mutt's first-mailto rule, keeping a non-mailto
+      URL so the refusal can be specific), a one-key menu of the six,
+      a mailto: becomes `Request::Mailto` (the command-line path);
+      the rest is refused in mutt's words. Index and pager
+- [x] Five session tests, a core test for the header parse, a pty
+      scenario over what-key, error-history and `~`. 69/69 scenarios
 
 ## R87: the browser sort and the un* commands
 
@@ -2126,7 +2149,7 @@ Blocking, in order:
 - [x] R85: the mark/thread knobs on the delete/sync path and the last
       layout knobs. These go *before* the tag because they are where
       muscle memory can lose mail (1.83)
-- [ ] R86: the last keys
+- [x] R86: the last keys (1.84)
 - [ ] R87: the browser sort and the `un*` / `reset` commands (muttrc
       compatibility)
 - [ ] R75: the compose-menu functions (the envelope odds moved to R89)

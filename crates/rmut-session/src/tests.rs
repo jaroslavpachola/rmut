@@ -2291,3 +2291,186 @@ fn write_new_message(dir: &Path, i: usize, subject: &str, parent: &str) {
     );
     fs::write(dir.join("new").join(format!("17000000{i}.n{i}.host")), text).unwrap();
 }
+
+// ---- R86: the last keys
+
+#[test]
+fn purge_message_deletes_past_the_trash() {
+    let trash = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(trash.path().join(sub)).unwrap();
+    }
+    let mut config = Config::default();
+    config.mail.trash = Some(trash.path().to_string_lossy().to_string());
+    let mut f = Fixture::with_config(&["trashed", "purged", "kept"], config);
+    f.select("trashed");
+    f.session.run_function(Function::Delete, false, 10);
+    f.select("purged");
+    f.session.run_function(Function::PurgeMessage, false, 10);
+    assert!(f.is_deleted("purged"));
+    f.session.sync(true);
+    assert_eq!(f.subjects(), ["kept"]);
+    // One copy in the trash: the plain delete. The purge went nowhere.
+    let in_trash: Vec<String> = ["cur", "new"]
+        .iter()
+        .flat_map(|sub| fs::read_dir(trash.path().join(sub)).unwrap())
+        .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(in_trash.len(), 1, "{in_trash:?}");
+    assert!(in_trash[0].contains("Subject: trashed"));
+
+    // Undelete takes the purge mark off with the deletion.
+    let mut f = Fixture::new(&["one"]);
+    f.session.run_function(Function::PurgeMessage, false, 10);
+    f.select("one");
+    f.session.run_function(Function::Undelete, false, 10);
+    assert!(!f.is_deleted("one"));
+    assert!(!f.session.msgs[0].purge);
+}
+
+#[test]
+fn mark_message_binds_a_hotkey_that_searches_the_id() {
+    let mut f = Fixture::new(&["one", "two"]);
+    f.select("two");
+    let ask = match f.session.run_function(Function::MarkMessage, false, 10) {
+        Outcome::Ask(ask) => Some(ask),
+        _ => panic!("mark-message asks for the stroke"),
+    };
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Enter macro stroke: ");
+    f.answer_line(ask, "2");
+    assert!(f.log.said("Message bound to 2."), "{}", f.log.last_text());
+    // The macro the front end is handed: the stroke, a search for
+    // the id (brackets off, dots quoted) and Enter.
+    let Some(crate::Request::Command(rmut_core::command::Command::Macro { key, seq, .. })) =
+        f.session.take_request()
+    else {
+        panic!("a macro command comes back");
+    };
+    assert_eq!(key, "2");
+    assert_eq!(seq, "/~i m1@example\\.com<enter>");
+}
+
+#[test]
+fn next_unread_mailbox_finds_the_next_with_new_mail() {
+    let quiet = tempfile::tempdir().unwrap();
+    let busy = tempfile::tempdir().unwrap();
+    for dir in [quiet.path(), busy.path()] {
+        for sub in ["cur", "new", "tmp"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+    }
+    write_new_message(busy.path(), 1, "waiting", "");
+    let mut config = Config::default();
+    config.mail.mailboxes = vec![
+        quiet.path().to_string_lossy().to_string(),
+        busy.path().to_string_lossy().to_string(),
+    ];
+    let mut f = Fixture::with_config(&["one"], config);
+    // The open mailbox is not among them: the scan starts at the top
+    // and skips the quiet one.
+    assert_eq!(
+        f.session.next_unread_mailbox().as_deref(),
+        Some(busy.path().to_string_lossy().as_ref())
+    );
+    match f
+        .session
+        .run_function(Function::NextUnreadMailbox, false, 10)
+    {
+        Outcome::Front(FrontOp::OpenMailbox(spec)) => {
+            assert!(spec.ends_with(busy.path().file_name().unwrap().to_str().unwrap()))
+        }
+        _ => panic!("the front end is told which to open"),
+    }
+    // Nothing new anywhere: an error, as in mutt.
+    fs::remove_dir_all(busy.path().join("new")).unwrap();
+    fs::create_dir_all(busy.path().join("new")).unwrap();
+    f.session
+        .run_function(Function::NextUnreadMailbox, false, 10);
+    assert_eq!(f.log.last_text(), "No mailboxes have new mail");
+}
+
+#[test]
+fn error_history_keeps_the_last_complaints() {
+    let mut f = Fixture::new(&["one"]);
+    assert!(f.session.error_history().is_empty());
+    f.session.run_function(Function::SearchNext, false, 10);
+    f.session.run_function(Function::SearchNext, false, 10);
+    assert_eq!(f.session.error_history().len(), 2);
+    match f.session.run_function(Function::ErrorHistory, false, 10) {
+        Outcome::Front(FrontOp::ErrorHistory(lines)) => {
+            assert_eq!(lines.len(), 2);
+            assert!(lines[0].contains("no search pattern"), "{lines:?}");
+        }
+        _ => panic!("the history goes to the front end"),
+    }
+    // $error_history caps it; 0 turns it off.
+    f.session.config.ui.error_history = 1;
+    f.session.run_function(Function::SearchNext, false, 10);
+    assert_eq!(f.session.error_history().len(), 1);
+    f.session.config.ui.error_history = 0;
+    f.session.run_function(Function::ErrorHistory, false, 10);
+    assert_eq!(f.log.last_text(), "Error History is disabled.");
+}
+
+#[test]
+fn list_action_composes_to_the_mailto_and_refuses_the_rest() {
+    let mut f = Fixture::new(&[]);
+    let d = f._dir.path().to_path_buf();
+    write_message(
+        &d,
+        0,
+        "on the list",
+        Some(
+            "List-Unsubscribe: <https://lists.example.com/leave>, <mailto:dev-leave@example.com?subject=leave>\n\
+             List-Help: <https://lists.example.com/help>",
+        ),
+    );
+    write_message(&d, 1, "not on one", None);
+    touch_dirs(&d);
+    f.session.check_new_mail();
+    f.select("on the list");
+    let ask = match f.session.run_function(Function::ListAction, false, 10) {
+        Outcome::Ask(ask) => ask,
+        _ => panic!("list-action asks which"),
+    };
+    let label = ask_label(&ask).to_string();
+    assert!(
+        label.contains("(u)nsubscribe") && label.contains("(h)elp"),
+        "{label}"
+    );
+    assert!(
+        label.contains("-post-") && label.contains("-owner-"),
+        "{label}"
+    );
+    // A mailto: action becomes a compose request.
+    f.answer_key(Some(ask), 'u');
+    // Behind whatever the rescan queued (a counts change).
+    let mut mailto = None;
+    while let Some(request) = f.session.take_request() {
+        if let crate::Request::Mailto(m) = request {
+            mailto = Some(m);
+        }
+    }
+    let mailto = mailto.expect("a mailto compose comes back");
+    assert_eq!(mailto.to, "dev-leave@example.com");
+    assert_eq!(mailto.subject, "leave");
+    // An http action is refused the way mutt refuses it; an absent one
+    // too, by name.
+    let again = |f: &mut Fixture| match f.session.run_function(Function::ListAction, false, 10) {
+        Outcome::Ask(ask) => Some(ask),
+        _ => panic!("list-action asks which"),
+    };
+    let ask = again(&mut f);
+    f.answer_key(ask, 'h');
+    assert!(f.log.said("only support mailto"), "{}", f.log.last_text());
+    let ask = again(&mut f);
+    f.answer_key(ask, 'o');
+    assert_eq!(f.log.last_text(), "No list action available for Owner.");
+    // A message with no List-* headers has nothing to ask.
+    f.select("not on one");
+    f.session.run_function(Function::ListAction, false, 10);
+    assert_eq!(
+        f.log.last_text(),
+        "No list actions available for this message."
+    );
+}

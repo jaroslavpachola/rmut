@@ -3562,6 +3562,38 @@ def scenario_help_bar_off(tmp):
     r.close()
 
 
+def scenario_last_keys(tmp):
+    """R86: what-key names keys until Ctrl+G, error-history shows the
+    recent complaints on a screen, and ~ (mark-message) binds a
+    stroke that jumps back to the message."""
+    md = make_maildir(tmp, "md-lastkeys")
+    write_msgs(md, ["jane", "petr", "ci"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:3")
+    r.keys(b":exec what-key\r")
+    r.expect("Enter keys (^G to abort)")
+    r.keys(b"a")
+    r.expect("Char = a, Octal = 141, Decimal = 97")
+    r.keys(b"\x07")  # Ctrl+G ends it; the next key is a key again
+    # An error to remember, then the history screen.
+    r.keys(b"n")
+    r.expect("no search pattern")
+    r.keys(b":exec error-history\r")
+    r.expect("Error history", "no search pattern (use /)")
+    r.keys(b"q")
+    # mark-message: the stroke becomes a hotkey for this message.
+    r.keys(b"=")
+    r.keys(b"~")
+    r.expect("Enter macro stroke: ")
+    r.keys(b"1\r")
+    r.expect("Message bound to 1.")
+    r.keys(b"*")   # last message
+    r.keys(b"1")   # the hotkey: a search for the Message-ID
+    r.expect("Msgs:3", absent=["bad pattern", "not found"])
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_status_chars(tmp):
     """R82: $status_chars sets the %r mailbox-state marker."""
     md = make_maildir(tmp, "md-schars")
@@ -4344,6 +4376,7 @@ SCENARIOS = [
     scenario_status_chars,
     scenario_search_context,
     scenario_help_bar_off,
+    scenario_last_keys,
 ]
 
 
