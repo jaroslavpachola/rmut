@@ -1680,11 +1680,11 @@ impl App {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = crate::ui::pager_line_count(
+        let lines = rmut_front::pager::pager_line_count(
             &pager.view,
             width,
             pager.full_headers,
-            &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
+            &rmut_front::pager::PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
         let max_scroll = lines.saturating_sub(page);
@@ -1732,24 +1732,31 @@ impl App {
             PagerAction::ToggleQuoted => {
                 pager.hide_quoted = !pager.hide_quoted;
                 // The row count changed: keep the scroll in range.
-                let lines = crate::ui::pager_line_count(
+                let lines = rmut_front::pager::pager_line_count(
                     &pager.view,
                     width,
                     pager.full_headers,
-                    &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
+                    &rmut_front::pager::PagerStyle::of(
+                        &self.session.config,
+                        &self.session.quote_re,
+                    ),
                     pager.hide_quoted,
                 );
                 pager.scroll = pager.scroll.min(lines.saturating_sub(page));
             }
             PagerAction::SkipQuoted => {
-                let rows = crate::ui::pager_rows(
+                let rows = rmut_front::pager::pager_rows(
                     &pager.view,
                     width,
                     pager.full_headers,
-                    &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
+                    &rmut_front::pager::PagerStyle::of(
+                        &self.session.config,
+                        &self.session.quote_re,
+                    ),
                     pager.hide_quoted,
                 );
-                let quoted = |i: usize| matches!(rows[i].kind, crate::ui::RowKind::Quoted(_));
+                let quoted =
+                    |i: usize| matches!(rows[i].kind, rmut_front::pager::RowKind::Quoted(_));
                 // Past the next quoted block: find it, then leave it.
                 let mut i = pager.scroll;
                 while i < rows.len() && !quoted(i) {
@@ -1786,11 +1793,11 @@ impl App {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = crate::ui::pager_text_lines(
+        let lines = rmut_front::pager::pager_text_lines(
             &pager.view,
             width,
             pager.full_headers,
-            &crate::ui::PagerStyle::of(&self.session.config, &self.session.quote_re),
+            &rmut_front::pager::PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
         let context = self.session.config.pager.search_context;
@@ -2462,20 +2469,20 @@ impl App {
         out.push(format!(
             "{:<28} {:>8}  text/plain",
             "(message body)",
-            crate::ui::humanize_size(body_size)
+            rmut_front::pager::humanize_size(body_size)
         ));
         if let Some(orig) = &c.attach {
             let size = std::fs::metadata(orig).map(|m| m.len()).unwrap_or(0);
             out.push(format!(
                 "{:<28} {:>8}  message/rfc822  forwarded original",
                 orig.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
-                crate::ui::humanize_size(size)
+                rmut_front::pager::humanize_size(size)
             ));
         }
         let text = draft_full(c).unwrap_or_default();
         for a in compose::extract_attachments(&text).1 {
             let size = match std::fs::metadata(&a.path) {
-                Ok(m) => crate::ui::humanize_size(m.len()),
+                Ok(m) => rmut_front::pager::humanize_size(m.len()),
                 Err(_) => "missing!".into(),
             };
             // mutt's table shows the disposition and the unlink mark

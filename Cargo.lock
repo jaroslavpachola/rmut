@@ -646,6 +646,8 @@ dependencies = [
 name = "rmut-front"
 version = "2.0.0"
 dependencies = [
+ "regex-lite",
+ "rmut-core",
  "rmut-session",
 ]
 
