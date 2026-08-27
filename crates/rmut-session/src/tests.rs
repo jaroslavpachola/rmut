@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use rmut_core::config::Config;
 use rmut_core::notice::{Log, Notice};
 
-use crate::{Answer, Ask, AskKind, Key, PatternOp, Session, SortKey, subject_key, wrap_order};
+use crate::{
+    Answer, Ask, AskKind, FrontOp, Function, Key, Outcome, PatternOp, Session, SortKey,
+    subject_key, wrap_order,
+};
 
 /// A mailbox on disk and a session over it, with everything the
 /// session says recorded.
@@ -1957,4 +1960,148 @@ fn hide_thread_subject_blanks_a_repeated_subject() {
     assert!(!hidden_of(&f, "Plan"), "the root shows");
     assert!(hidden_of(&f, "Re: Plan"), "the repeated subject hides");
     assert!(!hidden_of(&f, "New idea"), "a fresh subject shows");
+}
+
+// ---- functions by name ----
+
+/// A page of index, for the functions that move by one.
+const PAGE: usize = 10;
+
+impl Fixture {
+    /// Run an index function by the name a muttrc would bind, which
+    /// is the only way a front end reaches one.
+    fn run(&mut self, name: &str) -> Outcome {
+        self.run_on(name, false)
+    }
+
+    /// The same, with mutt's tag-prefix in front of it.
+    fn run_tagged(&mut self, name: &str) -> Outcome {
+        self.run_on(name, true)
+    }
+
+    fn run_on(&mut self, name: &str, tagged: bool) -> Outcome {
+        let function =
+            Function::from_name(name).unwrap_or_else(|| panic!("no such function {name:?}"));
+        self.session.run_function(function, tagged, PAGE)
+    }
+}
+
+/// The question a function stopped at, for handing to `answer_line`.
+fn asked(outcome: Outcome) -> Option<Ask> {
+    match outcome {
+        Outcome::Ask(ask) => Some(ask),
+        _ => None,
+    }
+}
+
+fn front(outcome: Outcome) -> FrontOp {
+    match outcome {
+        Outcome::Front(op) => op,
+        _ => panic!("expected something only a front end can do"),
+    }
+}
+
+#[test]
+fn every_function_answers_to_the_name_it_prints() {
+    for &function in Function::all() {
+        assert_eq!(
+            Function::from_name(function.name()),
+            Some(function),
+            "{} does not round-trip",
+            function.name()
+        );
+        assert!(
+            !function.describe().is_empty(),
+            "{} has nothing to say for itself",
+            function.name()
+        );
+    }
+    assert_eq!(Function::from_name("fly-to-the-moon"), None);
+}
+
+#[test]
+fn delete_marks_and_moves_on() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    f.select("one");
+    f.run("delete");
+    assert!(f.is_deleted("one"));
+    // mutt's $resolve: the cursor is on the next message.
+    assert_eq!(f.subjects()[f.session.sel], "two");
+    f.run("undo");
+    assert!(!f.is_deleted("one"));
+}
+
+#[test]
+fn the_tagged_set_is_what_the_tag_prefix_hands_over() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    f.tag("one");
+    f.tag("three");
+    f.run_tagged("delete");
+    assert!(f.is_deleted("one") && f.is_deleted("three"));
+    assert!(!f.is_deleted("two"), "the untagged one is left alone");
+}
+
+#[test]
+fn the_tag_prefix_refuses_with_nothing_tagged() {
+    let mut f = Fixture::new(&["one", "two"]);
+    assert!(matches!(f.run("tag-prefix"), Outcome::Done));
+    assert_eq!(f.log.last_text(), "no tagged messages");
+    f.tag("two");
+    assert!(matches!(front(f.run("tag-prefix")), FrontOp::TagPrefix));
+    assert_eq!(f.log.last_text(), "Tag-");
+}
+
+#[test]
+fn a_function_that_needs_an_answer_hands_the_question_back() {
+    let mut f = Fixture::new(&["alpha", "beta"]);
+    let ask = asked(f.run("limit")).expect("limit asks for a pattern");
+    assert!(ask_label(&ask).starts_with("Limit"));
+    f.answer_line(Some(ask), "~s beta");
+    assert_eq!(f.subjects(), ["beta"]);
+}
+
+#[test]
+fn what_only_a_front_end_can_do_comes_back_named() {
+    let mut f = Fixture::new(&["one"]);
+    assert!(matches!(
+        front(f.run("reply")),
+        FrontOp::Compose(crate::ComposeKind::Reply)
+    ));
+    assert!(matches!(front(f.run("help")), FrontOp::Help));
+    assert!(matches!(
+        front(f.run("change-mailbox-readonly")),
+        FrontOp::ChangeMailbox { read_only: true }
+    ));
+}
+
+#[test]
+fn an_unconfigured_query_says_so_instead_of_prompting() {
+    let mut f = Fixture::new(&["one"]);
+    assert!(matches!(f.run("query"), Outcome::Done));
+    assert_eq!(f.log.last_text(), "no query_command configured");
+    f.session.config.mail.query_command = Some("lbdbq".into());
+    assert!(matches!(front(f.run("query")), FrontOp::Query));
+}
+
+#[test]
+fn page_motion_moves_by_the_page_it_is_given() {
+    let mut f = Fixture::new(&["one", "two", "three", "four", "five"]);
+    f.select("one");
+    f.session.run_function(Function::PageDown, false, 3);
+    assert_eq!(f.subjects()[f.session.sel], "four");
+    f.session.run_function(Function::PageUp, false, 2);
+    assert_eq!(f.subjects()[f.session.sel], "two");
+}
+
+#[test]
+fn a_read_only_mailbox_refuses_the_functions_that_would_write() {
+    let mut f = Fixture::new(&["one"]);
+    f.session.read_only = true;
+    f.run("delete");
+    assert!(!f.is_deleted("one"));
+    assert!(
+        f.log.last_text().contains("read-only"),
+        "{}",
+        f.log.last_text()
+    );
 }

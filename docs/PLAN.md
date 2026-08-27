@@ -2025,6 +2025,47 @@ Goal: what R83 left.
 - [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
       `unalias`, `reset`; `$shell`, `$tmpdir`
 
+## R88: functions where the logic is (done, 1.82)
+
+Goal: the index functions stop being part of the terminal. mutt names
+every operation and binds keys to the names, which is what makes a
+keymap a configuration rather than a program; rmut had the names, but
+they sat in `rmut-tui/src/keymap.rs` next to a 290-line dispatcher, so
+the only way to reach `delete` was to press a key on a pty. R53 moved
+the tests to where the logic is; this moves the last of the logic to
+where the tests are.
+
+- [x] `Function` (83 named index operations) with `name`, `from_name`,
+      `all`, `describe` and `takes_tagged` moves from
+      `rmut-tui/src/keymap.rs` into `rmut-session/src/function.rs`.
+      `describe` goes too: a menu bar wants those strings as badly as
+      a help screen does
+- [x] `Session::run_function(function, tagged, page)` does the mail
+      half and hands back an `Outcome`: `Done`, an `Ask` to put, or a
+      `FrontOp`. 57 of the 83 finish inside the session
+- [x] `FrontOp` is the honest list of what a session cannot do for
+      itself: open a menu, repaint, hand the terminal to an editor,
+      move the cursor by where it sits on screen. The session does
+      what checking it can first, so `Query` only comes back when
+      `$query_command` is set and `ChangeMailbox` only when the open
+      mailbox is ready to be left
+- [x] The TUI keeps the key tables (only it knows what a key is), the
+      mode machine, and a `run_front_op` for the 26 that come back.
+      `run_index_action` is 12 lines; `rmut-tui` is 602 lines lighter
+      and `rmut-session` 686 heavier
+- [x] Nine session tests that could not exist before, naming functions
+      the way a muttrc binds them: every name round-trips and
+      describes itself, delete marks and advances, `;` hands over the
+      tagged set and refuses when nothing is tagged, a question comes
+      back as a question, page motion uses the page it is given, a
+      read-only mailbox refuses what would write
+- [x] The pty suite's version assertion reads the workspace version
+      instead of pinning it, so a release bump stops failing a
+      scenario about labels
+- [ ] Left for a follow-up: the same for `PagerAction` (44 more
+      functions, 326 lines), and `$recall` becoming an `Ask` instead
+      of the front end's own quadoption branch
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:

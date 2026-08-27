@@ -25,12 +25,14 @@ use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thr
 mod ask;
 mod commands;
 mod drafts;
+mod function;
 #[cfg(test)]
 mod tests;
 mod worker;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
 pub use commands::CommandRun;
+pub use function::{FrontOp, Function, Outcome, PageSpot, SidebarOp};
 pub use worker::{Done, Facts, Imap, Job, Manage};
 
 /// How many undo steps to keep, and how many message snapshots in

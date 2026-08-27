@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rmut_session::Function;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct KeyPattern {
@@ -116,93 +117,6 @@ pub fn parse_key(input: &str) -> Option<KeyPattern> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum IndexAction {
-    Quit,
-    Abort,
-    Down,
-    Up,
-    PageDown,
-    PageUp,
-    First,
-    Last,
-    View,
-    Delete,
-    Undelete,
-    Flag,
-    ToggleNew,
-    Sync,
-    Compose,
-    Reply,
-    GroupReply,
-    ListReply,
-    Forward,
-    Sort,
-    Limit,
-    Search,
-    SearchReverse,
-    SearchNext,
-    NextNew,
-    PrevNew,
-    ChangeMailbox,
-    ChangeMailboxReadOnly,
-    Folders,
-    Attachments,
-    FoldThread,
-    FoldAll,
-    Print,
-    Tag,
-    TagPrefix,
-    DeleteThread,
-    UndeleteThread,
-    TagThread,
-    DeleteSubthread,
-    UndeleteSubthread,
-    NextThread,
-    PrevThread,
-    BreakThread,
-    LinkThreads,
-    ReadThread,
-    ReadSubthread,
-    TagSubthread,
-    ParentMessage,
-    RootMessage,
-    EditLabel,
-    ShowVersion,
-    ShowLimit,
-    ToggleWrite,
-    DisplayAddress,
-    PageTop,
-    PageMiddle,
-    PageBottom,
-    Undo,
-    DeletePattern,
-    UndeletePattern,
-    TagPattern,
-    UntagPattern,
-    FetchMail,
-    Save,
-    Copy,
-    DecodeSave,
-    DecodeCopy,
-    Pipe,
-    Bounce,
-    Resend,
-    Edit,
-    SidebarToggle,
-    SidebarNext,
-    SidebarPrev,
-    SidebarOpen,
-    CreateAlias,
-    Query,
-    Notmuch,
-    EnterCommand,
-    Shell,
-    Redraw,
-    Suspend,
-    Help,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PagerAction {
     Back,
     Down,
@@ -248,282 +162,6 @@ pub enum PagerAction {
     CreateAlias,
     EnterCommand,
     Help,
-}
-
-impl IndexAction {
-    pub fn name(self) -> &'static str {
-        use IndexAction::*;
-        match self {
-            Quit => "quit",
-            Abort => "abort",
-            Down => "down",
-            Up => "up",
-            PageDown => "page-down",
-            PageUp => "page-up",
-            First => "first",
-            Last => "last",
-            View => "view",
-            Delete => "delete",
-            Undelete => "undelete",
-            Flag => "flag",
-            ToggleNew => "toggle-new",
-            Sync => "sync",
-            Compose => "compose",
-            Reply => "reply",
-            GroupReply => "group-reply",
-            ListReply => "list-reply",
-            Forward => "forward",
-            Sort => "sort",
-            Limit => "limit",
-            Search => "search",
-            SearchReverse => "search-reverse",
-            SearchNext => "search-next",
-            NextNew => "next-new",
-            PrevNew => "previous-new",
-            ChangeMailbox => "change-mailbox",
-            ChangeMailboxReadOnly => "change-mailbox-readonly",
-            Folders => "folders",
-            Attachments => "attachments",
-            FoldThread => "fold-thread",
-            FoldAll => "fold-all",
-            Print => "print",
-            Tag => "tag",
-            TagPrefix => "tag-prefix",
-            DeleteThread => "delete-thread",
-            UndeleteThread => "undelete-thread",
-            TagThread => "tag-thread",
-            DeleteSubthread => "delete-subthread",
-            UndeleteSubthread => "undelete-subthread",
-            NextThread => "next-thread",
-            BreakThread => "break-thread",
-            LinkThreads => "link-threads",
-            ReadThread => "read-thread",
-            ReadSubthread => "read-subthread",
-            TagSubthread => "tag-subthread",
-            ParentMessage => "parent-message",
-            RootMessage => "root-message",
-            EditLabel => "edit-label",
-            ShowVersion => "show-version",
-            ShowLimit => "show-limit",
-            ToggleWrite => "toggle-write",
-            DisplayAddress => "display-address",
-            PageTop => "top-page",
-            PageMiddle => "middle-page",
-            PageBottom => "bottom-page",
-            PrevThread => "previous-thread",
-            Undo => "undo",
-            DeletePattern => "delete-pattern",
-            UndeletePattern => "undelete-pattern",
-            TagPattern => "tag-pattern",
-            UntagPattern => "untag-pattern",
-            FetchMail => "fetch-mail",
-            Save => "save",
-            Copy => "copy",
-            DecodeSave => "decode-save",
-            DecodeCopy => "decode-copy",
-            Pipe => "pipe",
-            Bounce => "bounce",
-            Resend => "resend",
-            Edit => "edit",
-            SidebarToggle => "sidebar-toggle",
-            SidebarNext => "sidebar-next",
-            SidebarPrev => "sidebar-prev",
-            SidebarOpen => "sidebar-open",
-            CreateAlias => "create-alias",
-            Query => "query",
-            Notmuch => "notmuch",
-            EnterCommand => "enter-command",
-            Shell => "shell-escape",
-            Redraw => "refresh",
-            Suspend => "suspend",
-            Help => "help",
-        }
-    }
-
-    pub fn describe(self) -> &'static str {
-        use IndexAction::*;
-        match self {
-            Quit => "quit (writes changes; asks before purging deletions)",
-            Abort => "quit without saving changes",
-            Down => "next message",
-            Up => "previous message",
-            PageDown => "page down",
-            PageUp => "page up",
-            First => "first message",
-            Last => "last message",
-            View => "view message",
-            Delete => "mark for deletion",
-            Undelete => "unmark deletion",
-            Flag => "toggle flagged mark",
-            ToggleNew => "toggle read/unread",
-            Sync => "write changes to the maildir",
-            Compose => "compose a new message",
-            Reply => "reply to sender",
-            GroupReply => "reply to all",
-            ListReply => "reply to the mailing list only",
-            Forward => "forward message",
-            Sort => "choose sort order",
-            Limit => "limit index by pattern",
-            Search => "search messages by pattern (the pager / searches its text)",
-            SearchReverse => "search backwards; n then repeats backwards too",
-            SearchNext => "repeat last search, the way it was going",
-            NextNew => "jump to the next new or unread message",
-            PrevNew => "jump to the previous new or unread message",
-            ChangeMailbox => "open a mailbox by path",
-            ChangeMailboxReadOnly => "open a mailbox read-only (Alt+c)",
-            Folders => "browse nearby mailboxes",
-            Attachments => "list message parts",
-            FoldThread => "fold/unfold current thread",
-            FoldAll => "fold/unfold all threads",
-            Print => "pipe message to the print command",
-            Tag => "toggle the tag on this message",
-            TagPrefix => "apply the next function to tagged messages",
-            DeleteThread => "mark the whole thread for deletion",
-            UndeleteThread => "unmark the whole thread",
-            TagThread => "tag/untag the whole thread",
-            DeleteSubthread => "mark this message and its replies for deletion",
-            UndeleteSubthread => "unmark this message and its replies",
-            NextThread => "jump to the next thread",
-            BreakThread => "break the thread in two at this message",
-            LinkThreads => "link the tagged messages under this one",
-            ReadThread => "mark the whole thread read",
-            ReadSubthread => "mark this message and its replies read",
-            TagSubthread => "tag this message and its replies",
-            ParentMessage => "jump to the parent message",
-            RootMessage => "jump to the thread's root message",
-            EditLabel => "add, change or clear the X-Label",
-            ShowVersion => "show the rmut version",
-            ShowLimit => "show the active limit pattern",
-            ToggleWrite => "toggle the mailbox's read-only state",
-            DisplayAddress => "show the sender's full address",
-            PageTop => "move to the top of the page",
-            PageMiddle => "move to the middle of the page",
-            PageBottom => "move to the bottom of the page",
-            PrevThread => "jump to the previous thread",
-            Undo => "cancel a held send, else undo the last delete/flag/tag/save",
-            DeletePattern => "delete every message matching a pattern",
-            UndeletePattern => "undelete every message matching a pattern",
-            TagPattern => "tag every message matching a pattern",
-            UntagPattern => "untag every message matching a pattern",
-            FetchMail => "check for new mail now",
-            Save => "save (copy + mark deleted) to a mailbox",
-            DecodeSave => "decode-save: the decoded message, original deleted",
-            DecodeCopy => "decode-copy: the decoded message",
-            Copy => "copy to a mailbox (original stays)",
-            Pipe => "pipe raw message to a shell command",
-            Bounce => "bounce (resend) message to new recipients",
-            Resend => "edit the message as a new draft",
-            Edit => "edit the raw message and replace it",
-            SidebarToggle => "show/hide the mailbox sidebar",
-            SidebarNext => "highlight the next sidebar mailbox",
-            SidebarPrev => "highlight the previous sidebar mailbox",
-            SidebarOpen => "open the highlighted sidebar mailbox",
-            CreateAlias => "add the sender to the alias file",
-            Query => "look up addresses with query_command",
-            Notmuch => "notmuch search into a read-only view",
-            EnterCommand => "run a config command (set/bind/macro/color/...)",
-            Shell => "run a shell command",
-            Redraw => "repaint the screen",
-            Suspend => "suspend rmut (fg brings it back)",
-            Help => "this help",
-        }
-    }
-
-    fn all() -> &'static [IndexAction] {
-        use IndexAction::*;
-        &[
-            Quit,
-            Abort,
-            Down,
-            Up,
-            PageDown,
-            PageUp,
-            First,
-            Last,
-            View,
-            Delete,
-            Undelete,
-            Flag,
-            ToggleNew,
-            Sync,
-            Compose,
-            Reply,
-            GroupReply,
-            ListReply,
-            Forward,
-            Sort,
-            Limit,
-            Search,
-            SearchReverse,
-            SearchNext,
-            NextNew,
-            PrevNew,
-            ChangeMailbox,
-            ChangeMailboxReadOnly,
-            Folders,
-            Attachments,
-            FoldThread,
-            FoldAll,
-            Print,
-            Tag,
-            TagPrefix,
-            DeleteThread,
-            UndeleteThread,
-            TagThread,
-            DeleteSubthread,
-            UndeleteSubthread,
-            NextThread,
-            PrevThread,
-            BreakThread,
-            LinkThreads,
-            ReadThread,
-            ReadSubthread,
-            TagSubthread,
-            ParentMessage,
-            RootMessage,
-            EditLabel,
-            ShowVersion,
-            ShowLimit,
-            ToggleWrite,
-            DisplayAddress,
-            PageTop,
-            PageMiddle,
-            PageBottom,
-            Undo,
-            DeletePattern,
-            UndeletePattern,
-            TagPattern,
-            UntagPattern,
-            FetchMail,
-            Save,
-            Copy,
-            DecodeSave,
-            DecodeCopy,
-            Pipe,
-            Bounce,
-            Resend,
-            Edit,
-            SidebarToggle,
-            SidebarNext,
-            SidebarPrev,
-            SidebarOpen,
-            CreateAlias,
-            Query,
-            Notmuch,
-            EnterCommand,
-            Shell,
-            Redraw,
-            Suspend,
-            Help,
-        ]
-    }
-
-    pub fn from_name(name: &str) -> Option<IndexAction> {
-        IndexAction::all()
-            .iter()
-            .copied()
-            .find(|a| a.name() == name)
-    }
 }
 
 impl PagerAction {
@@ -711,7 +349,7 @@ pub fn parse_sequence(input: &str) -> Option<Vec<KeyEvent>> {
 }
 
 pub struct Keymap {
-    pub index: Vec<(KeyPattern, IndexAction)>,
+    pub index: Vec<(KeyPattern, Function)>,
     pub pager: Vec<(KeyPattern, PagerAction)>,
     /// Macros: trigger → (replayed events, the sequence as written,
     /// kept for the help screen). Checked before the action bindings,
@@ -720,8 +358,8 @@ pub struct Keymap {
     pub macros_pager: Vec<(KeyPattern, Vec<KeyEvent>, String)>,
 }
 
-fn index_defaults() -> Vec<(KeyPattern, IndexAction)> {
-    use IndexAction::*;
+fn index_defaults() -> Vec<(KeyPattern, Function)> {
+    use Function::*;
     use KeyCode as K;
     vec![
         (KeyPattern::ch('q'), Quit),
@@ -895,8 +533,7 @@ impl Keymap {
         let mut warnings = Vec::new();
         let mut index = index_defaults();
         for (action_name, key_str) in index_over {
-            let (Some(action), Some(key)) =
-                (IndexAction::from_name(action_name), parse_key(key_str))
+            let (Some(action), Some(key)) = (Function::from_name(action_name), parse_key(key_str))
             else {
                 warnings.push(format!("bad index binding {action_name} = {key_str:?}"));
                 continue;
@@ -954,7 +591,7 @@ impl Keymap {
             .map(|(_, seq, _)| seq.as_slice())
     }
 
-    pub fn lookup_index(&self, key: &KeyEvent) -> Option<IndexAction> {
+    pub fn lookup_index(&self, key: &KeyEvent) -> Option<Function> {
         self.index
             .iter()
             .find(|(p, _)| p.matches(key))
@@ -971,7 +608,7 @@ impl Keymap {
     /// Lines for the help screen, grouped and ordered by action.
     pub fn help_lines(&self) -> Vec<String> {
         let mut lines = vec!["Index keys".to_string(), String::new()];
-        for &action in IndexAction::all() {
+        for &action in Function::all() {
             let keys: Vec<String> = self
                 .index
                 .iter()
@@ -1057,12 +694,12 @@ mod tests {
         let ev = |p: KeyPattern| KeyEvent::new(p.code, p.mods);
         assert_eq!(
             map.lookup_index(&ev(KeyPattern::ch('w'))),
-            Some(IndexAction::Sync)
+            Some(Function::Sync)
         );
         assert_eq!(map.lookup_index(&ev(KeyPattern::ch('$'))), None);
         assert_eq!(
             map.lookup_index(&ev(KeyPattern::ctrl('d'))),
-            Some(IndexAction::Delete)
+            Some(Function::Delete)
         );
         assert_eq!(map.lookup_index(&ev(KeyPattern::ch('d'))), None);
     }
@@ -1075,7 +712,7 @@ mod tests {
             Keymap::with_config(&over, &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert_eq!(warnings.len(), 1);
         let ev = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert_eq!(map.lookup_index(&ev), Some(IndexAction::Quit));
+        assert_eq!(map.lookup_index(&ev), Some(Function::Quit));
     }
 
     #[test]
@@ -1132,6 +769,6 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         );
-        assert_eq!(map.lookup_index(&ev), Some(IndexAction::Flag));
+        assert_eq!(map.lookup_index(&ev), Some(Function::Flag));
     }
 }

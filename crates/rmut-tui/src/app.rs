@@ -15,11 +15,12 @@ use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::{alias, command, compose, maildir, message};
 use rmut_session::{
-    Answer, Ask, AskKind, Compose, ComposeKind, Key, PatternOp, Request, Session, ThreadOp, Wants,
-    default_from, draft_full, expand_tilde, pipe_to, wrap_order, write_draft,
+    Answer, Ask, AskKind, Compose, ComposeKind, FrontOp, Function, Key, Outcome, PageSpot, Request,
+    Session, SidebarOp, Wants, default_from, draft_full, expand_tilde, pipe_to, wrap_order,
+    write_draft,
 };
 
-use crate::keymap::{IndexAction, Keymap, PagerAction, parse_key, parse_sequence};
+use crate::keymap::{Keymap, PagerAction, parse_key, parse_sequence};
 use crate::theme::Theme;
 
 /// neomutt's $abort_noattach_regex default: the words that make a
@@ -346,11 +347,11 @@ impl App {
 /// name the key tables use. None when the menu has no such function.
 fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
     if menu == command::Menu::Index {
-        if IndexAction::from_name(name).is_some() {
+        if Function::from_name(name).is_some() {
             return Some(name.to_string());
         }
         let mapped = rmut_core::muttrc::index_function(name)?;
-        IndexAction::from_name(mapped).map(|_| mapped.to_string())
+        Function::from_name(mapped).map(|_| mapped.to_string())
     } else {
         if PagerAction::from_name(name).is_some() {
             return Some(name.to_string());
@@ -643,18 +644,6 @@ impl App {
 
     /// mutt's display-address (@): the full From header of the
     /// selected message on the message line.
-    fn display_address(&mut self) {
-        match self
-            .session
-            .visible
-            .get(self.session.sel)
-            .map(|&i| self.session.msgs[i].env.from_full.clone())
-        {
-            Some(from) if !from.trim().is_empty() => self.note(from),
-            _ => self.note("(no From address)"),
-        }
-    }
-
     fn error(&mut self, msg: impl Into<String>) {
         self.session.error(msg);
     }
@@ -1289,296 +1278,91 @@ impl App {
         self.run_index_action(action, apply_tagged, page);
     }
 
-    /// One index action, however it arrived: a key, a macro replay, or
-    /// `:exec`.
-    fn run_index_action(&mut self, action: IndexAction, apply_tagged: bool, page: usize) {
-        // Any new action ends a previous `;` operation, including one
-        // whose prompt was abandoned with Esc.
-        if apply_tagged && !takes_tagged(action) {
+    /// One index function, however it arrived: a key, a macro
+    /// replay, a `:exec`. The session does the mail half and hands
+    /// back what only a front end can do.
+    fn run_index_action(&mut self, action: Function, apply_tagged: bool, page: usize) {
+        if apply_tagged && !action.takes_tagged() {
             self.error(format!("{} does not take the tagged set", action.name()));
             return;
         }
-        match action {
-            IndexAction::Tag => {
-                if let Some(&i) = self.session.visible.get(self.session.sel) {
-                    self.session.push_undo("tag", &[i]);
-                    self.session.msgs[i].env.tagged = !self.session.msgs[i].env.tagged;
-                    self.session.select(self.session.sel.saturating_add(1));
-                }
+        match self.session.run_function(action, apply_tagged, page) {
+            Outcome::Done => self.run_requests_quietly(),
+            Outcome::Ask(ask) => self.open_ask(Some(ask)),
+            Outcome::Front(op) => self.run_front_op(op, page),
+        }
+    }
+
+    /// The half of an index function that needs a screen.
+    fn run_front_op(&mut self, op: FrontOp, page: usize) {
+        match op {
+            FrontOp::Exit => self.quit = true,
+            FrontOp::OpenSelected => self.open_selected(),
+            FrontOp::Compose(kind) => self.start_compose(kind),
+            FrontOp::Resend => self.resend_current(),
+            FrontOp::RawEdit => self.start_raw_edit(),
+            FrontOp::Attachments => self.open_attachments(),
+            FrontOp::Folders => self.open_folder_browser(),
+            FrontOp::CommandPrompt => self.open_command_prompt(),
+            FrontOp::Help => self.open_help(),
+            FrontOp::Redraw => self.redraw = true,
+            FrontOp::TagPrefix => self.tag_next = true,
+            FrontOp::Query => {
+                self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
             }
-            IndexAction::Undo => self.undo_last(),
-            IndexAction::DeleteThread => self.session.thread_mark(false, ThreadOp::Delete),
-            IndexAction::UndeleteThread => self.session.thread_mark(false, ThreadOp::Undelete),
-            IndexAction::TagThread => self.session.thread_mark(false, ThreadOp::Tag),
-            IndexAction::DeleteSubthread => self.session.thread_mark(true, ThreadOp::Delete),
-            IndexAction::UndeleteSubthread => self.session.thread_mark(true, ThreadOp::Undelete),
-            IndexAction::BreakThread => self.session.break_thread(),
-            IndexAction::LinkThreads => self.session.link_threads(),
-            IndexAction::ReadThread => self.session.thread_mark(false, ThreadOp::Read),
-            IndexAction::ReadSubthread => self.session.thread_mark(true, ThreadOp::Read),
-            IndexAction::TagSubthread => self.session.thread_mark(true, ThreadOp::Tag),
-            IndexAction::EditLabel => {
-                let ask = self.session.ask_edit_label(apply_tagged);
-                self.open_ask(ask);
+            FrontOp::Notmuch => {
+                self.prompt = Some(Prompt::line(
+                    "Notmuch query: ",
+                    String::new(),
+                    LineKind::Notmuch,
+                ));
             }
-            IndexAction::ShowVersion => self.note(concat!("rmut ", env!("CARGO_PKG_VERSION"))),
-            IndexAction::ShowLimit => self.session.show_limit(),
-            IndexAction::ToggleWrite => self.session.toggle_write(),
-            IndexAction::PageTop => self.session.select(self.index_offset),
-            IndexAction::PageMiddle => self
-                .session
-                .select(self.index_offset + page.saturating_sub(1) / 2),
-            IndexAction::PageBottom => self
-                .session
-                .select(self.index_offset + page.saturating_sub(1)),
-            IndexAction::DisplayAddress => self.display_address(),
-            IndexAction::ParentMessage => self.session.jump_parent(false),
-            IndexAction::RootMessage => self.session.jump_parent(true),
-            IndexAction::NextThread => self.session.jump_thread(true),
-            IndexAction::PrevThread => self.session.jump_thread(false),
-            IndexAction::TagPrefix => {
-                if self.session.msgs.iter().any(|m| m.env.tagged) {
-                    self.tag_next = true;
-                    // mutt writes "Tag-" on its message line and
-                    // waits; rmut's one bottom line appends it to the
-                    // status bar, which then stays readable.
-                    self.note("Tag-");
-                } else {
-                    self.note("no tagged messages");
-                }
-            }
-            IndexAction::FetchMail => {
-                self.check_new_mail();
-                if self.notice().is_none() {
-                    self.note("checked for new mail");
-                }
-            }
-            IndexAction::Save | IndexAction::Copy => {
-                let ask = self
-                    .session
-                    .ask_copy(action == IndexAction::Save, apply_tagged);
-                self.open_ask(ask);
-            }
-            IndexAction::DecodeSave | IndexAction::DecodeCopy => {
-                let ask = self.session.ask_copy_decode(
-                    action == IndexAction::DecodeSave,
-                    apply_tagged,
-                    true,
-                );
-                self.open_ask(ask);
-            }
-            IndexAction::Pipe => {
-                let ask = self.session.ask_pipe(apply_tagged);
-                self.open_ask(ask);
-            }
-            IndexAction::Bounce => {
-                let ask = self.session.ask_bounce(apply_tagged);
-                self.open_ask(ask);
-            }
-            IndexAction::Resend => self.resend_current(),
-            IndexAction::Edit => self.start_raw_edit(),
-            IndexAction::CreateAlias => {
-                let ask = self.session.ask_alias();
-                self.open_ask(ask);
-            }
-            IndexAction::Query => {
-                if self.session.config.mail.query_command.is_none() {
-                    self.error("no query_command configured");
-                } else {
-                    self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
-                }
-            }
-            IndexAction::Notmuch => {
-                if self.session.config.mail.notmuch == Some(false) {
-                    self.error("notmuch is disabled in the config");
-                } else {
-                    self.prompt = Some(Prompt::line(
-                        "Notmuch query: ",
-                        String::new(),
-                        LineKind::Notmuch,
-                    ));
-                }
-            }
-            IndexAction::Quit => {
-                let ask = self.session.leave();
-                self.open_ask(ask);
-            }
-            IndexAction::Abort => self.quit = true,
-            IndexAction::Down => self.session.select(self.session.sel.saturating_add(1)),
-            IndexAction::Up => self.session.select(self.session.sel.saturating_sub(1)),
-            IndexAction::PageDown => self.session.select(self.session.sel.saturating_add(page)),
-            IndexAction::PageUp => self.session.select(self.session.sel.saturating_sub(page)),
-            IndexAction::First => self.session.select(0),
-            IndexAction::Last => self.session.select(usize::MAX),
-            IndexAction::View => self.open_selected(),
-            IndexAction::FoldThread => self.session.toggle_collapse(false),
-            IndexAction::FoldAll => self.session.toggle_collapse(true),
-            IndexAction::Delete => {
-                if self.session.deny_readonly() {
-                } else if apply_tagged {
-                    self.session
-                        .each_tagged("delete", |m| m.env.file.flags.deleted = true);
-                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
-                    self.session.push_undo("delete", &[i]);
-                    self.session.msgs[i].env.file.flags.deleted = true;
-                    self.session.msgs[i].dirty = true;
-                    self.session.select(self.session.sel.saturating_add(1));
-                }
-            }
-            IndexAction::Undelete => {
-                if self.session.deny_readonly() {
-                } else if apply_tagged {
-                    self.session
-                        .each_tagged("undelete", |m| m.env.file.flags.deleted = false);
-                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
-                    self.session.push_undo("undelete", &[i]);
-                    self.session.msgs[i].env.file.flags.deleted = false;
-                    self.session.msgs[i].dirty = true;
-                    // mutt's $resolve (on by default): advance.
-                    self.session.select(self.session.sel.saturating_add(1));
-                }
-            }
-            IndexAction::Flag => {
-                if self.session.deny_readonly() {
-                } else if apply_tagged {
-                    self.session.each_tagged("flag", |m| {
-                        m.env.file.flags.flagged = !m.env.file.flags.flagged
-                    });
-                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
-                    self.session.push_undo("flag", &[i]);
-                    let flags = &mut self.session.msgs[i].env.file.flags;
-                    flags.flagged = !flags.flagged;
-                    self.session.msgs[i].dirty = true;
-                    self.session.select(self.session.sel.saturating_add(1));
-                }
-            }
-            IndexAction::ToggleNew => {
-                if self.session.deny_readonly() {
-                } else if apply_tagged {
-                    self.session.each_tagged("toggle read", |m| {
-                        m.env.file.flags.seen = !m.env.file.flags.seen;
-                        m.env.file.is_new = false;
-                    });
-                } else if let Some(&i) = self.session.visible.get(self.session.sel) {
-                    self.session.push_undo("toggle read", &[i]);
-                    let file = &mut self.session.msgs[i].env.file;
-                    file.flags.seen = !file.flags.seen;
-                    file.is_new = false;
-                    self.session.msgs[i].dirty = true;
-                    self.session.select(self.session.sel.saturating_add(1));
-                }
-            }
-            IndexAction::Sync => {
-                if self.session.deleted_count() > 0 {
-                    let ask = self.session.ask_purge(false);
-                    self.open_ask(ask);
-                } else {
-                    self.session.sync(true);
-                }
-            }
-            IndexAction::Compose => self.start_compose(ComposeKind::New),
-            IndexAction::Reply => self.start_compose(ComposeKind::Reply),
-            IndexAction::GroupReply => self.start_compose(ComposeKind::GroupReply),
-            IndexAction::ListReply => {
-                let ask = self.session.start_list_reply();
-                self.open_ask(ask);
-            }
-            IndexAction::Forward => self.start_compose(ComposeKind::Forward),
-            IndexAction::Sort => {
-                let ask = self.session.ask_sort();
-                self.open_ask(Some(ask));
-            }
-            IndexAction::Limit => {
-                let ask = self.session.ask_limit();
-                self.open_ask(Some(ask));
-            }
-            IndexAction::Search => {
-                let ask = self.session.ask_search(false);
-                self.open_ask(Some(ask));
-            }
-            IndexAction::SearchReverse => {
-                let ask = self.session.ask_search(true);
-                self.open_ask(Some(ask));
-            }
-            IndexAction::SearchNext => self.session.search_next(),
-            IndexAction::NextNew => self.session.jump_new(true),
-            IndexAction::PrevNew => self.session.jump_new(false),
-            IndexAction::DeletePattern => {
-                let ask = self.session.ask_pattern(PatternOp::Delete);
-                self.open_ask(ask);
-            }
-            IndexAction::UndeletePattern => {
-                let ask = self.session.ask_pattern(PatternOp::Undelete);
-                self.open_ask(ask);
-            }
-            IndexAction::TagPattern => {
-                let ask = self.session.ask_pattern(PatternOp::Tag);
-                self.open_ask(ask);
-            }
-            IndexAction::UntagPattern => {
-                let ask = self.session.ask_pattern(PatternOp::Untag);
-                self.open_ask(ask);
-            }
-            IndexAction::Attachments => self.open_attachments(),
-            IndexAction::ChangeMailbox => {
-                if self.session.ready_to_leave() {
-                    self.prompt = Some(Prompt::line(
-                        "Open mailbox (Tab completes): ",
-                        String::new(),
-                        LineKind::ChangeDir,
-                    ));
-                }
-            }
-            IndexAction::ChangeMailboxReadOnly => {
-                if self.session.ready_to_leave() {
-                    self.prompt = Some(Prompt::line(
+            FrontOp::ChangeMailbox { read_only } => {
+                self.prompt = Some(match read_only {
+                    true => Prompt::line(
                         "Open mailbox read-only: ",
                         String::new(),
                         LineKind::ChangeDirReadOnly,
-                    ));
-                }
+                    ),
+                    false => Prompt::line(
+                        "Open mailbox (Tab completes): ",
+                        String::new(),
+                        LineKind::ChangeDir,
+                    ),
+                });
             }
-            IndexAction::Shell => {
-                let ask = self.session.ask_shell();
-                self.open_ask(Some(ask));
+            FrontOp::PageMove(spot) => {
+                let row = match spot {
+                    PageSpot::Top => 0,
+                    PageSpot::Middle => page.saturating_sub(1) / 2,
+                    PageSpot::Bottom => page.saturating_sub(1),
+                };
+                self.session.select(self.index_offset + row);
             }
-            IndexAction::Redraw => self.redraw = true,
-            IndexAction::Suspend => {
-                self.session.request_suspend();
-                self.run_requests_quietly();
-            }
-            IndexAction::Folders => self.open_folder_browser(),
-            IndexAction::Print => {
-                let ask = self.session.ask_print(apply_tagged);
-                self.open_ask(ask);
-            }
-            IndexAction::SidebarToggle => {
+            FrontOp::Sidebar(SidebarOp::Toggle) => {
                 self.sidebar_visible = !self.sidebar_visible;
                 self.refresh_sidebar();
             }
-            IndexAction::SidebarNext | IndexAction::SidebarPrev => {
-                if !self.sidebar_visible {
-                    self.note("the sidebar is hidden; B shows it");
-                } else if !self.sidebar.is_empty() {
-                    self.sidebar_sel = if action == IndexAction::SidebarNext {
-                        (self.sidebar_sel + 1).min(self.sidebar.len() - 1)
-                    } else {
-                        self.sidebar_sel.saturating_sub(1)
-                    };
+            FrontOp::Sidebar(_) if !self.sidebar_visible => {
+                self.note("the sidebar is hidden; B shows it")
+            }
+            FrontOp::Sidebar(SidebarOp::Next) => {
+                if !self.sidebar.is_empty() {
+                    self.sidebar_sel = (self.sidebar_sel + 1).min(self.sidebar.len() - 1);
                 }
             }
-            IndexAction::SidebarOpen => {
-                if !self.sidebar_visible {
-                    self.note("the sidebar is hidden; B shows it");
-                } else if self.session.ready_to_leave()
+            FrontOp::Sidebar(SidebarOp::Prev) => {
+                self.sidebar_sel = self.sidebar_sel.saturating_sub(1);
+            }
+            FrontOp::Sidebar(SidebarOp::Open) => {
+                if self.session.ready_to_leave()
                     && let Some((spec, _)) = self.sidebar.get(self.sidebar_sel).cloned()
                 {
                     self.open_mailbox_spec(&spec);
                 }
             }
-            IndexAction::EnterCommand => self.open_command_prompt(),
-            IndexAction::Help => self.open_help(),
         }
+        self.run_requests_quietly();
     }
 
     // ---- pager ----
@@ -2969,7 +2753,7 @@ impl App {
             _ => {
                 let name = resolve_function(command::Menu::Index, function)
                     .ok_or_else(|| format!("no such index function {function:?}"))?;
-                let action = IndexAction::from_name(&name)
+                let action = Function::from_name(&name)
                     .ok_or_else(|| format!("no such index function {function:?}"))?;
                 self.run_index_action(action, false, page);
             }
@@ -3192,29 +2976,6 @@ impl App {
         self.session.open_message();
         self.run_requests_quietly();
     }
-}
-
-/// Which functions `;` (tag-prefix) can hand the tagged set to. The
-/// rest say so rather than quietly acting on one message: resend and
-/// edit open a draft or an editor, of which rmut has one at a time.
-fn takes_tagged(action: IndexAction) -> bool {
-    use IndexAction::*;
-    matches!(
-        action,
-        Delete
-            | Undelete
-            | Flag
-            | ToggleNew
-            | Tag
-            | Save
-            | Copy
-            | DecodeSave
-            | DecodeCopy
-            | Pipe
-            | Print
-            | Bounce
-            | EditLabel
-    )
 }
 
 fn is_ctrl(key: &KeyEvent) -> bool {

@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.81**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.82**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -1065,8 +1065,9 @@ Three crates. `rmut-core` is the mail itself: maildir, mbox, IMAP,
 SMTP, compose, PGP, patterns, threading, the importer. `rmut-session`
 is an open mailbox and everything that can be done to it, with no
 screen attached: what is in it, what is selected, marks, sync, save
-and copy, the undo stack, the outbox, the hooks. `rmut-tui` owns the
-menus, the keys, the theme and the drawing, and drives a session.
+and copy, the undo stack, the outbox, the hooks, and the named
+functions a keymap binds. `rmut-tui` owns the menus, the keys, the
+theme and the drawing, and drives a session.
 
 An operation reports what it did as a `notice::Notice` rather than
 writing into a status field, and the front end installs the sink that
@@ -1079,5 +1080,13 @@ a prompt, and the front end answers with the `AskKind` it came with;
 answering can produce the next question. What only a front end can do
 comes back as a `Request`: quit, run an editor or a shell command,
 suspend, show the draft again. A front end that cannot do one of them
-simply does not honour it. See [docs/PLAN.md](docs/PLAN.md) for where
-that line is headed.
+simply does not honour it.
+
+Every index operation has the name a muttrc binds (`delete-message`,
+`group-reply`, `tag-prefix`), and the names live with the operations
+in `rmut-session`. A front end resolves whatever it has (a keystroke,
+a menu item, `:exec`) to a `Function`, hands it to
+`Session::run_function`, and reads the `Outcome`: done, a question to
+put, or a `FrontOp` naming the one thing it has to do itself. The key
+tables stay in the front end, since only it knows what a key is. See
+[docs/PLAN.md](docs/PLAN.md) for where that line is headed.

@@ -25,6 +25,11 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RMUT = os.path.join(REPO, "target", "debug", "rmut")
+# What V prints, read from the workspace rather than pinned here, so a
+# release bump does not fail a scenario about labels.
+VERSION = re.search(
+    r'^version = "(.*)"', open(os.path.join(REPO, "Cargo.toml")).read(), re.M
+).group(1)
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[78=>]")
 
@@ -3232,7 +3237,7 @@ def scenario_labels_and_flags(tmp):
 
     # V shows the version.
     r.keys(b"V")
-    r.expect("rmut 1.81")
+    r.expect(f"rmut {VERSION}")
     r.settle()
 
     # A refused pattern names itself.
