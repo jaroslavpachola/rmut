@@ -693,7 +693,15 @@ impl App {
             let key = match self.pending_keys.pop_front() {
                 Some(key) => Some(key),
                 None => {
-                    if event::poll(Duration::from_millis(1000))?
+                    // A network answer lands in a channel nothing
+                    // wakes this loop for; while one is due, look
+                    // often rather than sleeping a whole second on it.
+                    let wait = if self.session.busy().is_some() {
+                        30
+                    } else {
+                        1000
+                    };
+                    if event::poll(Duration::from_millis(wait))?
                         && let Event::Key(key) = event::read()?
                         && key.kind == KeyEventKind::Press
                     {

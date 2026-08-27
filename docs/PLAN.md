@@ -1206,6 +1206,16 @@ wanted": the TUI is what pays for it today.
       folder, an Fcc). Each is one user-initiated action, bounded by
       R54's connect timeout; the machinery to move them is the same
       `Pending`, if they prove worth it
+- [x] Bugfix (1.81, 2026-08-27): the answer came back on a channel
+      nothing woke the loop for, and the loop slept its full 1s input
+      poll on every fetch: 1013ms per IMAP body, measured, from the
+      day R55 shipped. Now the poll is 30ms while a job is in flight.
+      A user fetch also blocked (`settle`) behind the poll tick's
+      CheckNew + Unseen; it now defers itself and runs from
+      `poll_network` when the connection frees up, ahead of the
+      tick's own follow-ups. The e2e harness never saw the second:
+      its periodic forced redraws (SIGWINCH) woke the loop. Timing
+      claims about the TUI need a plain pty read, not `expect`
 
 ## Parity, second pass (proposed, 2026-08)
 

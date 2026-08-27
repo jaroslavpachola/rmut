@@ -387,6 +387,10 @@ pub struct Session {
     /// The operation waiting for the connection to come back, if
     /// any: at most one, because there is one connection.
     pending: Option<Pending>,
+    /// A user operation that wanted bodies while the poll tick held
+    /// the connection. It goes next, ahead of anything the tick would
+    /// start, without the front end blocking on the tick.
+    deferred: Option<Again>,
     /// Whether the message line is showing a progress line, so it can
     /// be taken back down when the job it belongs to is done.
     progress_noted: bool,
@@ -522,6 +526,7 @@ impl Session {
             attach_re: default_attach_re(),
             config,
             pending: None,
+            deferred: None,
             progress_noted: false,
             aborted: false,
             quit_default: true,
@@ -687,6 +692,10 @@ impl Session {
     /// open. Warnings come back for the front end to show, as at
     /// startup.
     pub fn switch_to(&mut self, spec: &str, progress: remote::Progress) -> Result<Vec<String>> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         let reuse = match remote::parse_spec(spec) {
             Some((account, mailbox))
                 if self
@@ -939,6 +948,10 @@ impl Session {
     /// local; a server search is a literal match); a failed search
     /// just falls back to reading bodies locally.
     pub fn resolve_body_terms(&mut self, patterns: &[Pattern]) {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         if self.imap.is_none() {
             return;
         }
@@ -1020,7 +1033,11 @@ impl Session {
     /// rest follows when it answers, so a poll tick never stops the
     /// screen. Everything local happens straight away.
     pub fn check_new_mail(&mut self) {
-        self.settle();
+        // The tick never waits for the connection: whatever is in
+        // flight is a user's, and the next tick is soon enough.
+        if self.pending.is_some() {
+            return;
+        }
         let backfilling = self.backfill.as_ref().is_some_and(|b| !b.done());
         // While the backfill streams headers in, skip the server
         // check, since a full reconcile would refetch its tail
@@ -1047,8 +1064,11 @@ impl Session {
         if dir_mtimes(&self.dir) != self.dir_mtimes {
             self.rescan();
         }
-        // The server's own counts follow when it gets round to them.
-        self.refresh_unseen();
+        // The server's own counts follow when it gets round to them,
+        // unless a user operation is waiting its turn: that goes first.
+        if self.deferred.is_none() {
+            self.refresh_unseen();
+        }
     }
 
     /// Collect whatever the connection has finished, and carry on the
@@ -1074,6 +1094,13 @@ impl Session {
         if let Some(pending) = self.pending.take() {
             self.resume(pending, done);
         }
+        // The connection is free: the operation that stood aside for
+        // the tick gets it now.
+        if self.pending.is_none()
+            && let Some(again) = self.deferred.take()
+        {
+            self.run_again(again);
+        }
     }
 
     /// What the connection is doing, for a front end that says so.
@@ -1092,6 +1119,8 @@ impl Session {
             imap.abort();
         }
         self.note(format!("aborted: {what}"));
+        // Giving up covers what was queued behind it too.
+        self.deferred = None;
         // This note replaces the progress line rather than following
         // it, so it must not be swept away when the answer lands.
         self.progress_noted = false;
@@ -1204,7 +1233,13 @@ impl Session {
         if missing.is_empty() {
             return true;
         }
-        self.settle();
+        // The poll tick has the connection: wait for it in
+        // poll_network rather than here, so the front end keeps
+        // drawing and reading keys meanwhile.
+        if self.pending.is_some() {
+            self.deferred = Some(again);
+            return false;
+        }
         !self.start(Job::FetchBodies(missing), Pending::Again(again))
     }
 
@@ -1425,6 +1460,10 @@ impl Session {
     /// The raw message on disk, fetched first when the IMAP cache
     /// holds headers only.
     pub fn message_bytes(&mut self, i: usize) -> Option<Vec<u8>> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         let path = self.msgs.get(i)?.env.file.path.clone();
         if remote::is_partial(&path)
             && let Some(imap) = &mut self.imap
@@ -2148,6 +2187,10 @@ impl Session {
     /// the server for IMAP mailboxes, maildir delivery otherwise (the
     /// deleted mark is dropped on the copy).
     fn trash_deleted(&mut self, trash: &str) -> Result<()> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         let deleted: Vec<PathBuf> = self
             .msgs
             .iter()
@@ -2384,6 +2427,10 @@ impl Session {
     /// Send a management action to the open IMAP account, refusing a
     /// spec for a different or absent account.
     fn on_account(&mut self, account: &str, action: Manage) -> Result<(), String> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         match &mut self.imap {
             Some(imap) if imap.facts.account.name == account => imap
                 .blocking(Job::Manage(action))
@@ -2394,6 +2441,10 @@ impl Session {
     }
 
     pub fn folder_candidates(&mut self) -> Result<Vec<(String, usize)>> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         // Local entries carry their new/ count; imap: specs of other
         // accounts show without one (no connection just for a count).
         let mut dirs: Vec<(String, usize)> = self
@@ -2484,6 +2535,10 @@ impl Session {
     /// since a message on a server cannot be rewritten in place),
     /// locally the file is written over and the mailbox rescanned.
     pub fn store_edited(&mut self, path: &Path, edited: &[u8]) {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         match &mut self.imap {
             Some(imap) => {
                 let Some(flags) = self
@@ -2667,6 +2722,10 @@ impl Session {
         decode: bool,
         created: &mut Vec<PathBuf>,
     ) -> Result<String, String> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         let flags = self.msgs[i].env.file.flags;
         // mutt's decode-save/decode-copy deliver the message as the
         // pager shows it (weeded headers, decoded body); plain save
@@ -2836,6 +2895,10 @@ impl Session {
     /// Fetch (IMAP), parse, and PGP-process a message the way the
     /// pager shows it.
     pub fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         // Cached IMAP messages start header-only; get the body now.
         if remote::is_partial(path)
             && let Some(imap) = &mut self.imap
@@ -3363,6 +3426,10 @@ impl Session {
     /// fails hands the draft back, for the front end to put on screen
     /// again.
     pub fn deliver(&mut self, held: Held) {
+        // One connection, one conversation: whatever the tick has in
+        // flight is collected first, so the answer waited for is this
+        // job's own.
+        self.settle();
         let Held {
             state: compose_state,
             text: final_text,
