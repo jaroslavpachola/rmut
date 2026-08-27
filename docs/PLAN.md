@@ -1684,10 +1684,11 @@ R66 because it needed the worker plumbing and the test server grown.
       create/subscribe/unsubscribe/rename/delete against the fake
       server and assert each verb reached it; 59/59 scenarios
 
-## R70: the tunnel and the unknown cert
+## R70: the tunnel and the unknown cert (post-2.0)
 
 Goal: the two trust/transport pieces R66 deferred, both security-
-sensitive enough to want their own round.
+sensitive enough to want their own round. Not a 2.0 blocker: the cert
+piece wants a careful design, not a deadline (see "The 2.0 cut").
 
 - [ ] `$tunnel` / `$preconnect`: run a command and speak IMAP over
       its stdin/stdout (ssh to the mail host), `$tunnel_is_secure`
@@ -1820,21 +1821,19 @@ History persistence and the `un*` commands split into R79 below.
 ## R75: the heavier compose-menu functions
 
 Goal: the compose-menu work R71 left, which needs a picker or new
-draft plumbing.
+draft plumbing. The compose-menu keys are in the 2.0 cut; the
+envelope odds moved to R89 (post-2.0).
 
 - [ ] `A` attach-message: attach another message from the open
       mailbox as message/rfc822 (a tagged-message picker); the rest
       of the compose-menu functions: rename-attachment, toggle-unlink,
       toggle-disposition, new-mime, move-up/down, write-fcc,
       view-text/view-mailcap, ispell
-- [ ] Envelope odds: `$use_envelope_from` / `$envelope_from_address`,
-      `$dsn_notify` / `$dsn_return`, `$reply_self`, `$fcc_attach` /
-      `$fcc_clear`, `$forward_edit`, `$mime_forward_rest`
 
-## R76: the PGP odds
+## R76: the PGP odds (post-2.0)
 
 Goal: the crypto pieces R72 deferred — each needs gpg fixtures or a
-new encoding path.
+new encoding path. Not a 2.0 blocker.
 
 - [ ] `$crypt_opportunistic_encrypt` (encrypt when every recipient
       has a key), `$pgp_replyinline` / `$pgp_autoinline` (inline PGP
@@ -2065,6 +2064,45 @@ where the tests are.
 - [ ] Left for a follow-up: the same for `PagerAction` (44 more
       functions, 326 lines), and `$recall` becoming an `Ask` instead
       of the front end's own quadoption branch
+## R89: the envelope odds (post-2.0)
+
+Goal: the send-side options split out of R75 so 2.0 does not wait on
+them. Real, but nobody's first-week complaint.
+
+- [ ] `$use_envelope_from` / `$envelope_from_address`, `$dsn_notify` /
+      `$dsn_return`, `$reply_self`, `$fcc_attach` / `$fcc_clear`,
+      `$forward_edit`, `$mime_forward_rest`
+
+## The 2.0 cut (decided 2026-08-27)
+
+2.0 means: mutt parity is finished for the transports and folders this
+machine uses (maildir, mbox, IMAP/SMTP over TLS). Every default key a
+mutt user presses does something, an existing muttrc loads without
+errors, and the crates are installable. No breaking change is pending;
+the major bump marks the roadmap finishing, not an incompatibility.
+
+Blocking, in order:
+
+- [ ] R85: the mark/thread knobs on the delete/sync path and the last
+      layout knobs. These go *before* the tag because they are where
+      muscle memory can lose mail
+- [ ] R86: the last keys
+- [ ] R87: the browser sort and the `un*` / `reset` commands (muttrc
+      compatibility)
+- [ ] R75: the compose-menu functions (the envelope odds moved to R89)
+- [ ] R22 leftover: publish rmut-core, rmut-session and rmut-tui to
+      crates.io. Crate names are permanent there: settle them first
+- [ ] Docs: `docs/rmut.1` version line (stuck at 1.62.0), a README
+      opening that describes 2.0 instead of listing rounds, and the
+      2.0 entry in this file
+
+Then tag v2.0.0 and bump Cargo.toml.
+
+Explicitly not blocking (2.x): R70 (tunnel, TOFU on unknown certs —
+security work is not rushed for a version number), R76 (PGP odds,
+needs gpg fixtures), R89 (envelope odds), the R42 next/previous-marked
+motion and the R55 remaining blocking calls (quality, not parity), and
+the whole "Beyond mutt" list, which stays frozen.
 
 ## Still open inside rounds marked done
 
