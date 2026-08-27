@@ -610,6 +610,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmut"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "ratatui",
+ "regex-lite",
+ "rmut-core",
+ "rmut-session",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "rmut-core"
 version = "2.0.0"
 dependencies = [
@@ -635,20 +649,6 @@ dependencies = [
  "regex-lite",
  "rmut-core",
  "tempfile",
-]
-
-[[package]]
-name = "rmut-tui"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "libc",
- "ratatui",
- "regex-lite",
- "rmut-core",
- "rmut-session",
- "tempfile",
- "toml",
 ]
 
 [[package]]

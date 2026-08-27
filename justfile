@@ -1,7 +1,7 @@
 default: run
 
 run *ARGS:
-    cargo run -p rmut-tui -- {{ARGS}}
+    cargo run -p rmut -- {{ARGS}}
 
 test:
     cargo test --workspace
@@ -23,4 +23,4 @@ check: test lint e2e
 publish:
     cargo publish -p rmut-core
     cargo publish -p rmut-session
-    cargo publish -p rmut-tui
+    cargo publish -p rmut

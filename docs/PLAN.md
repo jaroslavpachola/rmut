@@ -14,7 +14,7 @@ post-1.0.
 ## R1: read-only browser (done, 0.1)
 
 - [x] Workspace: `rmut-core` (maildir scan, message parsing via
-      mailparse) + `rmut-tui` (ratatui binary `rmut`)
+      mailparse) + `rmut` (the ratatui binary crate; `rmut-tui` until 2.0)
 - [x] Maildir `new/` + `cur/` scan with filename flag parsing (S/R/F/T/D)
 - [x] Index: mutt-style line (number, status char, date, from, subject),
       date sort, j/k/PgUp/PgDn/=/* navigation, bold new/unseen
@@ -347,8 +347,8 @@ Make it installable without a checkout.
 
 - [x] CI: GitHub Actions running `just check` (fmt, clippy -D,
       tests, e2e) on push/PR
-- [ ] Publish rmut-core, rmut-session and rmut-tui to crates.io
-      (`cargo install rmut-tui`): metadata ready and
+- [ ] Publish rmut-core, rmut-session and rmut to crates.io
+      (`cargo install rmut`): metadata ready and
       `cargo package` verified; `just publish` after `cargo login`,
       in dependency order (core, session, tui)
 - [x] A man page (rmut.1, hand-rolled) covering keys, config,
@@ -2197,14 +2197,17 @@ Blocking, in order:
       compatibility) (1.85)
 - [x] R75: the compose-menu functions (the envelope odds moved to R89)
       (1.86)
-- [ ] R22 leftover: publish rmut-core, rmut-session and rmut-tui to
+- [ ] R22 leftover: publish rmut-core, rmut-session and rmut to
       crates.io. Prepared 2026-08-27: the metadata packages clean
-      (`cargo publish --dry-run -p rmut-core`), all four names
-      (`rmut`, `rmut-core`, `rmut-session`, `rmut-tui`) are free.
-      Waiting on a `cargo login` and on the name question: the binary
-      crate is `rmut-tui` (`cargo install rmut-tui`) while plain
-      `rmut` is free and is what a user would type. Crate names are
-      permanent there: settle them first, then `just publish`
+      (`cargo publish --dry-run -p rmut-core`), the names are free.
+      Names settled the same day, after a look at czkawka
+      (czkawka_core / czkawka_cli / czkawka_gui / krokiet, bare
+      `czkawka` never claimed) and at crates.io's squatting rule (a
+      crate that "exists only to reserve a name" may be removed): the
+      binary crate is `rmut` itself, ripgrep's shape, so
+      `cargo install rmut` is the real thing and no placeholder holds
+      the name; a GUI would be `rmut-gui`, or a name of its own as
+      krokiet is. Waiting on a `cargo login`, then `just publish`
 - [x] Docs: `docs/rmut.1` version line, a README opening that
       describes 2.0 instead of listing rounds, and this entry
 

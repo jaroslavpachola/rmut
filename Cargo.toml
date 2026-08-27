@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rmut-core", "crates/rmut-session", "crates/rmut-tui"]
+members = ["crates/rmut-core", "crates/rmut-session", "crates/rmut"]
 
 [workspace.package]
 version = "2.0.0"

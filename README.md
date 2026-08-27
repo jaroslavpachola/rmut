@@ -44,11 +44,11 @@ stub gpg) lives in `tests/e2e/`.
 ## Install & run
 
 ```sh
-cargo install rmut-tui                 # installs the `rmut` binary
+cargo install rmut                     # the `rmut` binary
 # or from a checkout:
-cargo install --path crates/rmut-tui
+cargo install --path crates/rmut
 # or during development:
-cargo run -p rmut-tui -- ~/Maildir     # or: just run ~/Maildir
+cargo run -p rmut -- ~/Maildir         # or: just run ~/Maildir
 ```
 
 Tagged releases on GitHub carry a prebuilt x86_64-linux binary with
@@ -1082,7 +1082,7 @@ SMTP, compose, PGP, patterns, threading, the importer. `rmut-session`
 is an open mailbox and everything that can be done to it, with no
 screen attached: what is in it, what is selected, marks, sync, save
 and copy, the undo stack, the outbox, the hooks, and the named
-functions a keymap binds. `rmut-tui` owns the menus, the keys, the
+functions a keymap binds. `rmut` (the binary crate) owns the menus, the keys, the
 theme and the drawing, and drives a session.
 
 An operation reports what it did as a `notice::Notice` rather than

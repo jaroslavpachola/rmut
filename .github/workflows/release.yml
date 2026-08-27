@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked -p rmut-tui
+      - run: cargo build --release --locked -p rmut
       - name: Package
         run: |
           version="${GITHUB_REF_NAME#v}"
