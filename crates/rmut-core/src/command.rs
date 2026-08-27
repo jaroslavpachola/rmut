@@ -70,6 +70,20 @@ pub enum Command {
     },
     Ignore(Vec<String>),
     Unignore(Vec<String>),
+    /// mutt's uncolor / unmono: drop what a color line put in. `*`
+    /// as the pattern drops every rule of the object.
+    Uncolor {
+        object: String,
+        pattern: Option<String>,
+    },
+    /// mutt's unhook: drop every hook of a type, or all of them (`*`).
+    Unhook(String),
+    /// mutt's unmailboxes: forget watched mailboxes, or all (`*`).
+    Unmailboxes(Vec<String>),
+    /// mutt's unalias: drop aliases from the alias file, or all (`*`).
+    Unalias(Vec<String>),
+    /// mutt's reset: a setting back to its default.
+    Reset(String),
     /// mutt's `alternates` / `unalternates`: regexes for my other
     /// addresses (`*` un-does the lot).
     Alternates(Vec<String>),
@@ -117,12 +131,57 @@ pub fn parse(line: &str) -> Result<Vec<Command>, String> {
             }
             Ok(assignments(args).into_iter().map(one_set).collect())
         }
-        "unset" | "reset" => want(args, "unset what?").map(|names| {
+        "unset" => want(args, "unset what?").map(|names| {
             names
                 .iter()
                 .map(|n| Command::Unset(n.to_string()))
                 .collect()
         }),
+        "reset" => want(args, "reset what?").map(|names| {
+            names
+                .iter()
+                .map(|n| Command::Reset(n.to_string()))
+                .collect()
+        }),
+        "uncolor" | "unmono" => {
+            let Some(object) = args.first() else {
+                return Err(format!("{cmd} OBJECT [PATTERN|*]"));
+            };
+            Ok(vec![Command::Uncolor {
+                object: object.clone(),
+                pattern: (args.len() > 1).then(|| args[1..].join(" ")),
+            }])
+        }
+        "mono" => {
+            // mutt's mono: an attribute where color has a colour pair.
+            // Index and body rules carry it; the rest of the objects
+            // have nowhere to keep one.
+            let (Some(object), Some(attr)) = (args.first(), args.get(1)) else {
+                return Err("mono OBJECT ATTRIBUTE [PATTERN]".into());
+            };
+            if !matches!(
+                attr.as_str(),
+                "none" | "bold" | "underline" | "reverse" | "standout"
+            ) {
+                return Err(format!("mono: no such attribute {attr:?}"));
+            }
+            Ok(vec![Command::Color {
+                object: object.clone(),
+                fg: attr.clone(),
+                bg: "default".into(),
+                pattern: (args.len() > 2).then(|| args[2..].join(" ")),
+            }])
+        }
+        "unhook" => want(args, "unhook TYPE|*").map(|types| {
+            types
+                .iter()
+                .map(|t| Command::Unhook(t.to_string()))
+                .collect()
+        }),
+        "unmailboxes" => {
+            want(args, "unmailboxes MAILBOX...|*").map(|m| vec![Command::Unmailboxes(m)])
+        }
+        "unalias" => want(args, "unalias NICK...|*").map(|n| vec![Command::Unalias(n)]),
         "toggle" => want(args, "toggle what?").map(|names| {
             names
                 .iter()
@@ -342,6 +401,10 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "menu_move_off" => FlagOpt(&mut cfg.ui.menu_move_off),
         "help" => FlagOpt(&mut cfg.ui.help),
         "error_history" => NumUsize(&mut cfg.ui.error_history),
+        "sort_browser" => Text(&mut cfg.ui.sort_browser),
+        "sort_alias" => Text(&mut cfg.mail.sort_alias),
+        "shell" => Text(&mut cfg.mail.shell),
+        "tmpdir" => Text(&mut cfg.mail.tmpdir),
         "print" => Text(&mut cfg.mail.print_confirm),
         "reverse_realname" => FlagOpt(&mut cfg.identity.reverse_realname),
         "tilde" => Flag(&mut cfg.pager.tilde),
@@ -390,6 +453,22 @@ pub fn apply(cfg: &mut Config, cmd: &Command) -> Result<Option<String>, String> 
     match cmd {
         Command::Set { name, value } => set(cfg, name, value).map(|()| None),
         Command::Unset(name) => unset(cfg, name).map(|()| None),
+        Command::Reset(name) => reset(cfg, name).map(|()| None),
+        Command::Uncolor { object, pattern } => {
+            uncolor(cfg, object, pattern.as_deref()).map(|()| None)
+        }
+        Command::Unhook(kind) => unhook(cfg, kind).map(|()| None),
+        Command::Unmailboxes(specs) => {
+            if specs.iter().any(|s| s == "*") {
+                cfg.mail.mailboxes.clear();
+            } else {
+                cfg.mail
+                    .mailboxes
+                    .retain(|m| !specs.iter().any(|s| same_mailbox(s, m)));
+            }
+            Ok(None)
+        }
+
         Command::Toggle(name) => toggle(cfg, name).map(|()| None),
         Command::Query(name) => query(cfg, name).map(Some),
         Command::Color {
@@ -486,6 +565,7 @@ pub fn apply(cfg: &mut Config, cmd: &Command) -> Result<Option<String>, String> 
         Command::Bind { .. }
         | Command::Macro { .. }
         | Command::Alias { .. }
+        | Command::Unalias(_)
         | Command::Push(_)
         | Command::Exec(_) => Ok(None),
     }
@@ -567,6 +647,123 @@ fn unset(cfg: &mut Config, name: &str) -> Result<(), String> {
         Slot::NumI64Opt(field) => *field = None,
     }
     Ok(())
+}
+
+/// mutt's reset: the setting as a fresh Config has it.
+fn reset(cfg: &mut Config, name: &str) -> Result<(), String> {
+    if name == "all" {
+        return Err("reset all: reload the config instead".into());
+    }
+    if name == "from" {
+        cfg.identity.email = None;
+        return Ok(());
+    }
+    let mut fresh = Config::default();
+    // Read the default out first: two slots into two configs, one at
+    // a time, so neither borrow outlives its use.
+    enum Val {
+        Text(Option<String>),
+        Flag(bool),
+        FlagOpt(Option<bool>),
+        N16(u16),
+        NUsize(usize),
+        NU64(u64),
+        NU64Opt(Option<u64>),
+        NI64Opt(Option<i64>),
+    }
+    let value = match slot(&mut fresh, name).ok_or_else(|| unknown(name))? {
+        Slot::Text(f) => Val::Text(f.clone()),
+        Slot::Flag(f) => Val::Flag(*f),
+        Slot::FlagOpt(f) => Val::FlagOpt(*f),
+        Slot::Num16(f) => Val::N16(*f),
+        Slot::NumUsize(f) => Val::NUsize(*f),
+        Slot::NumU64(f) => Val::NU64(*f),
+        Slot::NumU64Opt(f) => Val::NU64Opt(*f),
+        Slot::NumI64Opt(f) => Val::NI64Opt(*f),
+    };
+    match (slot(cfg, name).ok_or_else(|| unknown(name))?, value) {
+        (Slot::Text(f), Val::Text(v)) => *f = v,
+        (Slot::Flag(f), Val::Flag(v)) => *f = v,
+        (Slot::FlagOpt(f), Val::FlagOpt(v)) => *f = v,
+        (Slot::Num16(f), Val::N16(v)) => *f = v,
+        (Slot::NumUsize(f), Val::NUsize(v)) => *f = v,
+        (Slot::NumU64(f), Val::NU64(v)) => *f = v,
+        (Slot::NumU64Opt(f), Val::NU64Opt(v)) => *f = v,
+        (Slot::NumI64Opt(f), Val::NI64Opt(v)) => *f = v,
+        _ => unreachable!("the same name names the same slot"),
+    }
+    Ok(())
+}
+
+/// mutt's uncolor / unmono, undoing what [`color`] did with the same
+/// object: rules by pattern (or all of them with `*`), the named
+/// slots outright.
+fn uncolor(cfg: &mut Config, object: &str, pattern: Option<&str>) -> Result<(), String> {
+    let mut drop = |keys: &[&str]| {
+        for key in keys {
+            cfg.colors.remove(*key);
+        }
+    };
+    if let Some(n) = object.strip_prefix("quoted")
+        && (n.is_empty() || n.parse::<usize>().is_ok())
+    {
+        let key = if n.is_empty() {
+            "quoted".to_string()
+        } else {
+            format!("quoted{n}")
+        };
+        cfg.colors.remove(&key);
+        return Ok(());
+    }
+    match (object, pattern) {
+        ("status", _) => drop(&["status_fg", "status_bg"]),
+        ("search", _) => drop(&["search_fg", "search_bg"]),
+        ("header" | "hdrdefault", _) => drop(&["header"]),
+        ("error", _) => drop(&["error"]),
+        ("index", Some("*")) => {
+            drop(&["deleted", "flagged", "tagged"]);
+            cfg.color_index.clear();
+        }
+        ("index", Some("~D")) => drop(&["deleted"]),
+        ("index", Some("~F")) => drop(&["flagged"]),
+        ("index", Some("~T")) => drop(&["tagged"]),
+        ("index", Some(pattern)) => cfg.color_index.retain(|r| r.pattern != pattern),
+        ("body", Some("*")) => cfg.color_body.clear(),
+        ("body", Some(pattern)) => cfg.color_body.retain(|r| r.pattern != pattern),
+        ("index" | "body", None) => return Err(format!("uncolor {object} needs a pattern or *")),
+        _ => return Err(format!("no rmut color slot for {object:?}")),
+    }
+    Ok(())
+}
+
+/// mutt's unhook: every hook of one type, or all of them.
+fn unhook(cfg: &mut Config, kind: &str) -> Result<(), String> {
+    match kind {
+        "*" => {
+            cfg.folder_hooks.clear();
+            cfg.message_hooks.clear();
+            cfg.reply_hooks.clear();
+            cfg.fcc_hooks.clear();
+            cfg.crypt_hooks.clear();
+        }
+        "folder-hook" => cfg.folder_hooks.clear(),
+        "message-hook" => cfg.message_hooks.clear(),
+        "reply-hook" => cfg.reply_hooks.clear(),
+        "fcc-hook" => cfg.fcc_hooks.clear(),
+        "crypt-hook" => cfg.crypt_hooks.clear(),
+        other => {
+            return Err(format!(
+                "unhook: unknown hook type: {other} (folder-hook, message-hook, reply-hook, fcc-hook, crypt-hook, *)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether two mailbox spellings name the same mailbox: as written,
+/// or with a trailing slash more or less.
+fn same_mailbox(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
 }
 
 fn toggle(cfg: &mut Config, name: &str) -> Result<(), String> {
@@ -931,5 +1128,89 @@ mod tests {
         // The config half leaves them alone.
         let mut cfg = Config::default();
         assert_eq!(apply(&mut cfg, &one("exec sync")).unwrap(), None);
+    }
+
+    #[test]
+    fn reset_restores_the_default_where_unset_zeroes() {
+        let mut cfg = Config::default();
+        for line in ["set pager_context=7", "set nobeep", "set editor=vim"] {
+            apply(&mut cfg, &one(line)).unwrap();
+        }
+        assert_eq!(cfg.pager.context, 7);
+        for cmd in parse("reset pager_context beep editor").unwrap() {
+            apply(&mut cfg, &cmd).unwrap();
+        }
+        let fresh = Config::default();
+        assert_eq!(cfg.pager.context, fresh.pager.context);
+        assert_eq!(cfg.ui.beep, fresh.ui.beep, "back on, not off");
+        assert_eq!(cfg.mail.editor, fresh.mail.editor);
+        assert!(apply(&mut cfg, &one("reset all")).is_err());
+        assert!(parse("reset").is_err(), "reset wants a name");
+    }
+
+    #[test]
+    fn uncolor_takes_rules_and_slots_back_out() {
+        let mut cfg = Config::default();
+        for line in [
+            "color index brightyellow default ~F",
+            "color index red default ~f jane",
+            "color index blue default ~s urgent",
+            "color body green default ^Signed",
+            "color status white blue",
+            "color quoted1 cyan default",
+        ] {
+            apply(&mut cfg, &one(line)).unwrap();
+        }
+        assert_eq!(cfg.color_index.len(), 2, "~F went to the flagged slot");
+        apply(&mut cfg, &one("uncolor index ~f jane")).unwrap();
+        assert_eq!(cfg.color_index.len(), 1);
+        assert_eq!(cfg.color_index[0].pattern, "~s urgent");
+        apply(&mut cfg, &one("uncolor index ~F")).unwrap();
+        assert!(!cfg.colors.contains_key("flagged"));
+        apply(&mut cfg, &one("uncolor index *")).unwrap();
+        assert!(cfg.color_index.is_empty());
+        apply(&mut cfg, &one("unmono body ^Signed")).unwrap();
+        assert!(cfg.color_body.is_empty());
+        apply(&mut cfg, &one("uncolor status")).unwrap();
+        assert!(!cfg.colors.contains_key("status_fg"));
+        apply(&mut cfg, &one("uncolor quoted1")).unwrap();
+        assert!(!cfg.colors.contains_key("quoted1"));
+        assert!(
+            apply(&mut cfg, &one("uncolor index")).is_err(),
+            "a pattern or *"
+        );
+    }
+
+    #[test]
+    fn mono_is_a_color_line_carrying_an_attribute() {
+        let mut cfg = Config::default();
+        apply(&mut cfg, &one("mono index bold ~N")).unwrap();
+        assert_eq!(cfg.color_index[0].fg.as_deref(), Some("bold"));
+        assert_eq!(cfg.color_index[0].bg, None);
+        assert!(parse("mono index shiny ~N").is_err(), "no such attribute");
+    }
+
+    #[test]
+    fn unhook_and_unmailboxes_clear_by_name_or_star() {
+        let mut cfg = Config::default();
+        cfg.folder_hooks.push(Default::default());
+        cfg.message_hooks.push(Default::default());
+        cfg.mail.mailboxes = vec!["~/Mail/a".into(), "~/Mail/b/".into(), "imap:w/INBOX".into()];
+        apply(&mut cfg, &one("unhook folder-hook")).unwrap();
+        assert!(cfg.folder_hooks.is_empty() && !cfg.message_hooks.is_empty());
+        assert!(
+            apply(&mut cfg, &one("unhook send-hook")).is_err(),
+            "not a type rmut has"
+        );
+        apply(&mut cfg, &one("unhook *")).unwrap();
+        assert!(cfg.message_hooks.is_empty());
+        apply(&mut cfg, &one("unmailboxes ~/Mail/b")).unwrap();
+        assert_eq!(
+            cfg.mail.mailboxes,
+            ["~/Mail/a", "imap:w/INBOX"],
+            "a slash is no difference"
+        );
+        apply(&mut cfg, &one("unmailboxes *")).unwrap();
+        assert!(cfg.mail.mailboxes.is_empty());
     }
 }

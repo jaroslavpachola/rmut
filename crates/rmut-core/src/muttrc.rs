@@ -155,6 +155,11 @@ struct State {
     menu_context: Option<usize>,
     no_menu_move_off: bool,
     no_help: bool,
+    /// R87: the browser and alias orders, $shell and $tmpdir.
+    sort_browser: Option<String>,
+    sort_alias: Option<String>,
+    shell: Option<String>,
+    tmpdir: Option<String>,
     /// mutt's $print quadoption, when it is not rmut's ask-no.
     print_confirm: Option<String>,
     /// mutt's leaving and filing habits.
@@ -990,6 +995,16 @@ impl State {
                     self.no_help = true;
                 }
             }
+            "sort_browser" => match v.as_str() {
+                "alpha" => self.satisfy(line, "the browser sorts by name by default"),
+                _ => self.sort_browser = Some(v.clone()),
+            },
+            "sort_alias" => match v.as_str() {
+                "address" => self.satisfy(line, "completion sorts by address by default"),
+                _ => self.sort_alias = Some(v.clone()),
+            },
+            "shell" => self.shell = Some(v.clone()),
+            "tmpdir" => self.tmpdir = Some(v.clone()),
             "sleep_time" => {
                 self.differently(line, "rmut never pauses on a message; it stays until the next key");
             }
@@ -1779,6 +1794,9 @@ impl State {
             || self.maildir_trash
             || self.no_mail_check_recent
             || self.no_check_new
+            || self.sort_alias.is_some()
+            || self.shell.is_some()
+            || self.tmpdir.is_some()
             || self.print_confirm.is_some()
             || self.forward_quote
             || self.signature.is_some()
@@ -1921,6 +1939,15 @@ impl State {
             }
             if self.no_check_new {
                 out += "check_new = false\n";
+            }
+            if let Some(v) = &self.sort_alias {
+                out += &format!("sort_alias = {}\n", quote(v));
+            }
+            if let Some(v) = &self.shell {
+                out += &format!("shell = {}\n", quote(v));
+            }
+            if let Some(v) = &self.tmpdir {
+                out += &format!("tmpdir = {}\n", quote(v));
             }
             if let Some(v) = &self.print_confirm {
                 out += &format!("print_confirm = {}\n", quote(v));
@@ -2140,6 +2167,7 @@ impl State {
             || self.menu_context.is_some()
             || self.no_menu_move_off
             || self.no_help
+            || self.sort_browser.is_some()
             || self.status_chars.is_some()
             || self.set_title
             || self.no_beep
@@ -2175,6 +2203,9 @@ impl State {
             }
             if self.no_help {
                 out += "help = false\n";
+            }
+            if let Some(v) = &self.sort_browser {
+                out += &format!("sort_browser = {}\n", quote(v));
             }
             if let Some(v) = &self.status_chars {
                 out += &format!("status_chars = {}\n", quote(v));
@@ -3271,6 +3302,24 @@ mod tests {
         );
         assert!(!toml.contains("not imported"), "{toml}");
         assert!(toml.contains("no $move"), "{toml}");
+    }
+
+    #[test]
+    fn browser_alias_shell_tmpdir_carry_over() {
+        let (cfg, toml) = to_config(
+            "set sort_browser = reverse-date\nset sort_alias = alias\nset shell = /bin/zsh\n\
+             set tmpdir = ~/tmp\n",
+        );
+        assert_eq!(
+            cfg.ui.sort_browser.as_deref(),
+            Some("reverse-date"),
+            "{toml}"
+        );
+        assert_eq!(cfg.mail.sort_alias.as_deref(), Some("alias"));
+        assert_eq!(cfg.mail.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(cfg.mail.tmpdir.as_deref(), Some("~/tmp"));
+        let (_, toml) = to_config("set sort_browser = alpha\nset sort_alias = address\n");
+        assert!(!toml.contains("not imported"), "{toml}");
     }
 
     #[test]

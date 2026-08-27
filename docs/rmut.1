@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 1.84.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 1.85.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -605,7 +605,13 @@ written back to the configuration file.
   :set sort?           # report a value instead of setting it
   :bind index \\Cd delete-message
   :macro pager S "s=archive<enter>"
+  :reset pager_context     # back to the default; unset goes to nothing
   :color index brightyellow default ~F
+  :uncolor index ~F        # or uncolor index *, uncolor status, ...
+  :mono index bold ~N      # an attribute for a colour pair; unmono undoes
+  :unhook folder-hook      # drop a hook type, or unhook *
+  :unmailboxes ~/Mail/old  # stop watching one, or unmailboxes *
+  :unalias bob             # out of the alias file, or unalias *
   :ignore x-spam-score     # and unignore, to bring one back
   :alternates 'jane@old\.example\.com'  # unalternates removes
   :my_hdr Organization: Acme   # unmy_hdr Organization removes
@@ -627,7 +633,8 @@ force_name, forward_quote, signature, sig_dashes, abort_nosubject,
 abort_unmodified, mark_old, print, beep_new, wait_key,
 reverse_realname, delete_untag, flag_safe, maildir_trash,
 mail_check_recent, check_new, uncollapse_new, menu_scroll,
-menu_context, menu_move_off, help, error_history,
+menu_context, menu_move_off, help, error_history, sort_browser,
+sort_alias, shell, tmpdir,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
@@ -1136,6 +1143,22 @@ holding new mail, once, until it empties.
 mutt's $check_new: look for mail delivered to the open maildir while
 it is open (on by default). Off stops the rescan; IMAP is unaffected.
 .TP
+.B sort_alias
+mutt's $sort_alias: the order address completion offers alias
+expansions in \(em address (by the expansion, the default) or alias
+(by nick; unsorted reads the same, the file being a map). A reverse\-
+prefix flips it.
+.TP
+.B shell
+mutt's $shell: what a bare ! (an empty shell command) runs
+interactively. $SHELL, then sh, when unset. Anything typed runs
+under sh \-c, as mutt's does.
+.TP
+.B tmpdir
+mutt's $tmpdir: where temporary files go (a draft on its way to the
+editor, a part on its way to a viewer). $TMPDIR, then /tmp, when
+unset.
+.TP
 .B print_confirm
 mutt's $print, the question before
 .B p
@@ -1234,6 +1257,12 @@ The key\-help bar on the top line (mutt's $help, on).
 .B error_history
 How many past errors error\-history shows (mutt's $error_history,
 30). 0 disables it.
+.TP
+.B sort_browser
+mutt's $sort_browser: the folder browser's order \(em alpha (the
+default), count or unread (by new\-mail count), date (by the
+maildir's change time), unsorted (as configured, then as found). A
+reverse\- prefix flips it. size reads as alpha.
 .TP
 .B status_chars
 mutt's $status_chars: the characters

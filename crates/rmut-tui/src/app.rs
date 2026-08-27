@@ -396,16 +396,7 @@ impl Derived {
                     continue;
                 }
             };
-            let mut style = ratatui::style::Style::new();
-            for (name, is_fg) in [(&rule.fg, true), (&rule.bg, false)] {
-                if let Some(name) = name {
-                    match crate::theme::parse_color(name) {
-                        Some(color) if is_fg => style = style.fg(color),
-                        Some(color) => style = style.bg(color),
-                        None => warnings.push(format!("unknown color_index color {name:?}")),
-                    }
-                }
-            }
+            let style = rule_style(rule, "color_index", &mut warnings);
             index_rules.push((patterns, style));
         }
         // Compile [[color_body]] rules (plain regexes) the same way.
@@ -418,16 +409,7 @@ impl Derived {
                     continue;
                 }
             };
-            let mut style = ratatui::style::Style::new();
-            for (name, is_fg) in [(&rule.fg, true), (&rule.bg, false)] {
-                if let Some(name) = name {
-                    match crate::theme::parse_color(name) {
-                        Some(color) if is_fg => style = style.fg(color),
-                        Some(color) => style = style.bg(color),
-                        None => warnings.push(format!("unknown color_body color {name:?}")),
-                    }
-                }
-            }
+            let style = rule_style(rule, "color_body", &mut warnings);
             body_rules.push((re, style));
         }
         (
@@ -1194,6 +1176,7 @@ impl App {
                 &word,
                 &alias::load(self.session.config.mail.alias_file.as_deref()),
                 self.session.config.mail.query_command.as_deref(),
+                self.session.config.mail.sort_alias.as_deref(),
             )
         } else {
             let specs = match self.session.folder_candidates() {
@@ -2914,7 +2897,21 @@ impl App {
     /// terminal, and wait before painting over whatever it printed.
     fn run_shell(&mut self, terminal: &mut DefaultTerminal, command: &str) {
         ratatui::restore();
-        let status = Command::new("sh").arg("-c").arg(command).status();
+        // mutt's bare `!`: an interactive $shell ($SHELL, then sh);
+        // anything typed runs under sh -c, as mutt_system does.
+        let status = if command.trim().is_empty() {
+            let shell = self
+                .session
+                .config
+                .mail
+                .shell
+                .clone()
+                .or_else(|| std::env::var("SHELL").ok())
+                .unwrap_or_else(|| "sh".into());
+            Command::new(shell).status()
+        } else {
+            Command::new("sh").arg("-c").arg(command).status()
+        };
         // mutt's $wait_key: what the command printed is worth reading,
         // so the index waits before painting over it. Off, the screen
         // comes straight back.
@@ -3042,6 +3039,35 @@ impl App {
         self.session.open_message();
         self.run_requests_quietly();
     }
+}
+
+/// The style of one colour rule: its fg and bg as colours, or, from
+/// mutt's `mono`, an attribute in the fg slot (bold, underline,
+/// reverse, standout; none clears).
+fn rule_style(
+    rule: &rmut_core::config::ColorRule,
+    what: &str,
+    warnings: &mut Vec<String>,
+) -> ratatui::style::Style {
+    use ratatui::style::{Modifier, Style};
+    let mut style = Style::new();
+    for (name, is_fg) in [(&rule.fg, true), (&rule.bg, false)] {
+        let Some(name) = name else { continue };
+        let attr = match name.as_str() {
+            "bold" => Some(Modifier::BOLD),
+            "underline" => Some(Modifier::UNDERLINED),
+            "reverse" | "standout" => Some(Modifier::REVERSED),
+            "none" => Some(Modifier::empty()),
+            _ => None,
+        };
+        match (attr, crate::theme::parse_color(name)) {
+            (Some(m), _) => style = style.add_modifier(m),
+            (None, Some(color)) if is_fg => style = style.fg(color),
+            (None, Some(color)) => style = style.bg(color),
+            (None, None) => warnings.push(format!("unknown {what} color {name:?}")),
+        }
+    }
+    style
 }
 
 fn is_ctrl(key: &KeyEvent) -> bool {

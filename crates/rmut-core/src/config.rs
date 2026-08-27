@@ -291,6 +291,18 @@ pub struct Mail {
     /// grown since the last look. False announces any mailbox holding
     /// new mail, once, until it empties. True unless set otherwise.
     pub mail_check_recent: Option<bool>,
+    /// mutt's $sort_alias: the order address completion offers alias
+    /// expansions in: "address" (by the expansion, the default here),
+    /// "alias" (by nick). "unsorted" reads as "alias": the alias file
+    /// is a map. A "reverse-" prefix flips it.
+    pub sort_alias: Option<String>,
+    /// mutt's $shell: what a bare `!` (an empty shell command) runs
+    /// interactively. $SHELL, then sh, when unset.
+    pub shell: Option<String>,
+    /// mutt's $tmpdir: where temporary files go (drafts on their way
+    /// to the editor, parts on their way to a viewer). $TMPDIR, then
+    /// /tmp, when unset.
+    pub tmpdir: Option<String>,
     /// mutt's $check_new: look for mail delivered to the open maildir
     /// while it is open. False stops the rescan (IMAP is unaffected,
     /// as in mutt). True unless set otherwise.
@@ -586,6 +598,11 @@ pub struct Ui {
     /// mutt's $help: the key-help bar on the top line. True unless
     /// set otherwise.
     pub help: Option<bool>,
+    /// mutt's $sort_browser: the folder browser's order: "alpha" (the
+    /// default), "count" / "unread" (by new-mail count), "date" (by
+    /// the maildir's change time), "unsorted" (as configured, then as
+    /// found). A "reverse-" prefix flips it. "size" reads as alpha.
+    pub sort_browser: Option<String>,
     /// mutt's $error_history: how many past errors error-history
     /// shows. 0 disables it. 30 by default, as in mutt.
     pub error_history: usize,
@@ -616,6 +633,7 @@ impl Default for Ui {
             menu_context: 0,
             menu_move_off: None,
             help: None,
+            sort_browser: None,
             error_history: 30,
             status_chars: None,
         }

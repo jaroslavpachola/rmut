@@ -78,21 +78,67 @@ pub fn append_to(configured: Option<&str>, nick: &str, expansion: &str) -> anyho
     Ok(path)
 }
 
+/// mutt's unalias: drop these nicks (or every alias, for `*`) from
+/// the alias file, rewriting it without them. How many lines went.
+pub fn remove_from(configured: Option<&str>, nicks: &[String]) -> anyhow::Result<usize> {
+    use anyhow::Context;
+    let path = path_for(configured).context("no alias file path ($HOME unset)")?;
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(0);
+    };
+    let all = nicks.iter().any(|n| n == "*");
+    let mut removed = 0;
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            let nick = line
+                .trim()
+                .strip_prefix("alias ")
+                .and_then(|rest| rest.split_whitespace().next());
+            let goes = nick.is_some_and(|n| all || nicks.iter().any(|w| w == n));
+            removed += usize::from(goes);
+            !goes
+        })
+        .collect();
+    if removed > 0 {
+        let mut out = kept.join("\n");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        std::fs::write(&path, out).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(removed)
+}
+
 /// Completion candidates for a partial address: expansions of every
 /// alias whose nick starts with `word` (case-insensitive), then
-/// query_command results, sorted and deduplicated.
+/// query_command results, sorted and deduplicated. `sort` is mutt's
+/// $sort_alias: "address" (by the expansion; the default), "alias"
+/// (by nick; "unsorted" reads the same, the file being a map), with
+/// "reverse-" flipping either.
 pub fn complete(
     word: &str,
     aliases: &HashMap<String, String>,
     query_command: Option<&str>,
+    sort: Option<&str>,
 ) -> Vec<String> {
     let lower = word.to_lowercase();
-    let mut out: Vec<String> = aliases
+    let mut hits: Vec<(&String, &String)> = aliases
         .iter()
         .filter(|(nick, _)| nick.to_lowercase().starts_with(&lower))
-        .map(|(_, expansion)| expansion.clone())
         .collect();
-    out.sort();
+    let (reverse, key) = match sort.unwrap_or("address").strip_prefix("reverse-") {
+        Some(key) => (true, key),
+        None => (false, sort.unwrap_or("address")),
+    };
+    match key {
+        "alias" | "unsorted" => hits.sort_by(|a, b| a.0.cmp(b.0)),
+        _ => hits.sort_by(|a, b| a.1.cmp(b.1)),
+    }
+    if reverse {
+        hits.reverse();
+    }
+    let mut out: Vec<String> = hits.into_iter().map(|(_, e)| e.clone()).collect();
     if let Some(command) = query_command {
         out.extend(query(command, word));
     }
@@ -160,14 +206,14 @@ mod tests {
             "alias petr Petr Novak <petr@example.com>\nalias pete pete@example.org\nalias jane jane@example.com\n",
         );
         assert_eq!(
-            complete("PE", &map, None),
+            complete("PE", &map, None, None),
             vec![
                 "Petr Novak <petr@example.com>".to_string(),
                 "pete@example.org".into(),
             ]
         );
-        assert_eq!(complete("jane", &map, None).len(), 1);
-        assert!(complete("zz", &map, None).is_empty());
+        assert_eq!(complete("jane", &map, None, None).len(), 1);
+        assert!(complete("zz", &map, None, None).is_empty());
     }
 
     #[test]
@@ -191,6 +237,7 @@ mod tests {
             "zd",
             &map,
             Some("printf 'found\\nzdenka@example.com\\tZdenka Q\\n'"),
+            None,
         );
         assert_eq!(
             all,
@@ -213,5 +260,51 @@ mod tests {
         );
         assert_eq!(expand("team", &map), "a@x, b@y");
         assert_eq!(expand("nobody", &HashMap::new()), "nobody");
+    }
+
+    #[test]
+    fn unalias_rewrites_the_file_without_the_nicks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aliases");
+        std::fs::write(
+            &path,
+            "# mine\nalias jane Jane <jane@example.com>\nalias bob bob@example.com\nalias al Al <al@example.com>\n",
+        )
+        .unwrap();
+        let configured = path.to_string_lossy().to_string();
+        assert_eq!(
+            remove_from(Some(&configured), &["bob".to_string()]).unwrap(),
+            1
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("bob") && text.contains("jane") && text.starts_with("# mine"));
+        assert_eq!(
+            remove_from(Some(&configured), &["nobody".to_string()]).unwrap(),
+            0
+        );
+        assert_eq!(
+            remove_from(Some(&configured), &["*".to_string()]).unwrap(),
+            2
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
+    }
+
+    #[test]
+    fn completion_order_follows_sort_alias() {
+        let aliases: HashMap<String, String> = [
+            ("zed".to_string(), "Aaron <aaron@example.com>".to_string()),
+            ("amy".to_string(), "Zoe <zoe@example.com>".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let by_address = complete("", &aliases, None, None);
+        assert!(by_address[0].starts_with("Aaron"), "{by_address:?}");
+        let by_alias = complete("", &aliases, None, Some("alias"));
+        assert!(
+            by_alias[0].starts_with("Zoe"),
+            "amy before zed: {by_alias:?}"
+        );
+        let reversed = complete("", &aliases, None, Some("reverse-alias"));
+        assert!(reversed[0].starts_with("Aaron"), "{reversed:?}");
     }
 }

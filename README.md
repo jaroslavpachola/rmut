@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**1.84**: everything from the 1.0 roadmap plus R5–R17, hardening
+**1.85**: everything from the 1.0 roadmap plus R5–R17, hardening
 (R19), flow niceties (R20), and display customization (R21):
 mutt-style index
 with delete/flag/read toggles and real maildir sync, sort orders,
@@ -400,12 +400,19 @@ a place to try a setting before keeping it.
 ```
 :set index_format="%4C %Z %{%b %d} %-15.15L (%?l?%4l&%4c?) %s"
 :set nobeep                 # also: set beep, unset beep, toggle beep
+:reset pager_context        # back to the default (unset goes to nothing)
 :set invtilde               # mutt's inv prefix toggles
 :set pager_index_lines=6 pager_context=2
 :set sort?                  # report a value instead of setting it
 :bind index \Cd delete-message      # mutt keys and function names
 :macro pager S "s=archive<enter>"
 :color index brightyellow default ~F
+:uncolor index ~F           # and uncolor index *, uncolor status, ...
+:mono index bold ~N         # an attribute instead of a colour pair;
+                            # unmono takes it back
+:unhook folder-hook         # drop every hook of a type, or unhook *
+:unmailboxes ~/Mail/old     # stop watching one, or unmailboxes *
+:unalias bob                # out of the alias file, or unalias *
 :ignore x-spam-score        # and unignore, to bring one back
 :alternates 'jane@old\.example\.com'   # and unalternates (* clears)
 :my_hdr Organization: Acme  # and unmy_hdr Organization (* clears)
@@ -429,7 +436,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `mark_old`, `print`, `beep_new`, `wait_key`, `reverse_realname`,
 `delete_untag`, `flag_safe`, `maildir_trash`, `mail_check_recent`,
 `check_new`, `uncollapse_new`, `menu_scroll`, `menu_context`,
-`menu_move_off`, `help`, `error_history`,
+`menu_move_off`, `help`, `error_history`, `sort_browser`,
+`sort_alias`, `shell`, `tmpdir`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
 An unknown option, a bad number, an unbindable key, or an unknown
@@ -894,6 +902,10 @@ maildir_trash = false        # true: a purge writes the maildir T flag
 mail_check_recent = true     # false announces any mailbox holding new
                              # mail, once, not only one that grew
 check_new = true             # false stops rescanning the open maildir
+sort_alias = "address"       # address completion order: address (the
+                             # default), alias (by nick); reverse-
+shell = "/bin/zsh"           # what a bare ! runs ($SHELL, then sh)
+tmpdir = "~/tmp"             # where temporary files go ($TMPDIR, /tmp)
 print_confirm = "ask-no"     # mutt's $print: "ask-yes" makes Enter
                              # print, "yes" never asks, "no" refuses
 
@@ -970,6 +982,8 @@ menu_move_off = true         # false keeps the last message on the
                              # bottom row once the index fills
 help = true                  # false drops the key-help top line
 error_history = 30           # what error-history shows; 0 disables
+sort_browser = "alpha"       # folder browser order: alpha, count,
+                             # unread, date, unsorted; reverse- flips
 status_chars = "-*%"         # mutt's $status_chars: %r marker for
                              # unchanged/changed/read-only (unset keeps
                              # rmut's nothing/*/%)

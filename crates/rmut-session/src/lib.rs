@@ -2618,7 +2618,23 @@ impl Session {
                     .map(|p| (p.display().to_string(), maildir::new_count(p))),
             ),
         }
-        dirs.sort();
+        // One entry per name, the first spelling kept, the counts
+        // merged; then mutt's $sort_browser over the lot.
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut unique: Vec<(String, usize)> = Vec::new();
+        for (name, count) in dirs {
+            match seen.get(&name) {
+                Some(&at) => unique[at].1 = unique[at].1.max(count),
+                None => {
+                    seen.insert(name.clone(), unique.len());
+                    unique.push((name, count));
+                }
+            }
+        }
+        let mut dirs = unique;
+        sort_browser(&mut dirs, self.config.ui.sort_browser.as_deref());
+        // Kept for the shape the old sort+dedup had: nothing to merge
+        // now, so this is a no-op that keeps the borrow simple.
         dirs.dedup_by(|a, b| {
             if a.0 == b.0 {
                 b.1 = b.1.max(a.1);
@@ -4286,6 +4302,39 @@ pub fn wrap_order(n: usize, sel: usize, forward: bool) -> Vec<(usize, bool)> {
 
 /// A path with a leading `~` expanded, as mutt does everywhere it
 /// takes one.
+/// mutt's $sort_browser over browser entries of (spec, new count):
+/// alpha (the default), count / unread (by the count), date (by the
+/// maildir's change time; IMAP folders have none and sort first),
+/// unsorted (as given), with a "reverse-" prefix flipping any. size
+/// reads as alpha: a maildir's size is not worth a walk.
+pub fn sort_browser(dirs: &mut [(String, usize)], how: Option<&str>) {
+    let how = how.unwrap_or("alpha");
+    let (reverse, key) = match how.strip_prefix("reverse-") {
+        Some(key) => (true, key),
+        None => (false, how),
+    };
+    match key {
+        "unsorted" => {}
+        "count" | "unread" => dirs.sort_by_key(|(_, count)| *count),
+        "date" => dirs.sort_by_cached_key(|(spec, _)| {
+            if spec.starts_with("imap:") {
+                return std::time::SystemTime::UNIX_EPOCH;
+            }
+            let dir = expand_tilde(spec);
+            ["new", "cur"]
+                .iter()
+                .filter_map(|sub| std::fs::metadata(dir.join(sub)).ok())
+                .filter_map(|m| m.modified().ok())
+                .max()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        }),
+        _ => dirs.sort_by(|a, b| a.0.cmp(&b.0)),
+    }
+    if reverse {
+        dirs.reverse();
+    }
+}
+
 pub fn expand_tilde(input: &str) -> PathBuf {
     if let Some(rest) = input.strip_prefix("~/")
         && let Ok(home) = std::env::var("HOME")

@@ -1,4 +1,4 @@
-# The muttrc the parity passes are measured against: 103 settings, the
+# The muttrc the parity passes are measured against: 105 settings, the
 # ones that turn up in every dotfiles repo. What --import-muttrc still
 # calls "no rmut equivalent" here is the list the roadmap works down.
 set realname = "Jane Doe"
@@ -63,6 +63,8 @@ set flag_safe = no
 set uncollapse_new = yes
 set sleep_time = 0
 set read_inc = 100
+set sort_browser = alpha
+set sort_alias = alias
 set markers = no
 set smart_wrap = yes
 set tilde = yes

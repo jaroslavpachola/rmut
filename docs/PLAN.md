@@ -2079,13 +2079,32 @@ Goal: the keys R80 left, each needing more than a binding.
 - [x] Five session tests, a core test for the header parse, a pty
       scenario over what-key, error-history and `~`. 69/69 scenarios
 
-## R87: the browser sort and the un* commands
+## R87: the browser sort and the un* commands (done, 1.85)
 
-Goal: what R83 left.
+Goal: what R83 left. The last parity round of the 2.0 cut.
 
-- [ ] `$sort_browser`, `$sort_alias`
-- [ ] Commands: `uncolor`, `mono`/`unmono`, `unhook`, `unmailboxes`,
-      `unalias`, `reset`; `$shell`, `$tmpdir`
+- [x] `$sort_browser` (`sort_browser` in the session: alpha, count /
+      unread, date by the maildir's change time, unsorted, reverse-)
+      over the browser and mailbox-completion candidates, which now
+      dedupe in order instead of by sorting. size reads as alpha
+- [x] `$sort_alias` (address, alias, unsorted-as-alias, reverse-)
+      over address completion
+- [x] `reset NAME`: the setting as a fresh Config has it, where
+      `unset` zeroes; `reset all` refuses and says to reload
+- [x] `uncolor` / `unmono`: rules by pattern or `*`, the named slots
+      outright, undoing exactly what `color` put in; `mono OBJECT
+      ATTR [PATTERN]` is a color line carrying bold / underline /
+      reverse / standout / none in the fg slot, which the rule
+      compiler reads as a modifier
+- [x] `unhook TYPE|*`, `unmailboxes SPEC...|*` (a trailing slash is
+      no difference; the sidebar is told), `unalias NICK...|*`
+      rewrites the alias file without them
+- [x] `$shell`: a bare `!` runs it interactively ($SHELL, then sh);
+      `$tmpdir` sets $TMPDIR once at startup, which is what every
+      temporary file asks
+- [x] Settable at :, imported, importer test, four command tests,
+      two alias tests, two session tests, the parity fixture grew two
+      lines. 69/69 scenarios
 
 ## R88: functions where the logic is (done, 1.82)
 
@@ -2150,8 +2169,8 @@ Blocking, in order:
       layout knobs. These go *before* the tag because they are where
       muscle memory can lose mail (1.83)
 - [x] R86: the last keys (1.84)
-- [ ] R87: the browser sort and the `un*` / `reset` commands (muttrc
-      compatibility)
+- [x] R87: the browser sort and the `un*` / `reset` commands (muttrc
+      compatibility) (1.85)
 - [ ] R75: the compose-menu functions (the envelope odds moved to R89)
 - [ ] R22 leftover: publish rmut-core, rmut-session and rmut-tui to
       crates.io. Crate names are permanent there: settle them first

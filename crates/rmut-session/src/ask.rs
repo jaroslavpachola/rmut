@@ -819,7 +819,8 @@ impl Session {
                 None
             }
             (AskKind::Shell, Answer::Line(command)) => {
-                if !command.is_empty() {
+                // Empty is mutt's bare `!`: an interactive $shell.
+                {
                     self.requests.push(Request::Shell(command.to_string()));
                 }
                 None

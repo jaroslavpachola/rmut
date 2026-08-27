@@ -2474,3 +2474,60 @@ fn list_action_composes_to_the_mailto_and_refuses_the_rest() {
         "No list actions available for this message."
     );
 }
+
+// ---- R87: the browser sort and the un* commands
+
+#[test]
+fn sort_browser_orders_the_candidates() {
+    let mut dirs = vec![
+        ("b".to_string(), 2usize),
+        ("a".to_string(), 0usize),
+        ("c".to_string(), 1usize),
+    ];
+    crate::sort_browser(&mut dirs, None);
+    assert_eq!(
+        dirs.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+        ["a", "b", "c"]
+    );
+    crate::sort_browser(&mut dirs, Some("reverse-count"));
+    assert_eq!(
+        dirs.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+        ["b", "c", "a"]
+    );
+    let mut given = vec![("z".to_string(), 0usize), ("y".to_string(), 0usize)];
+    crate::sort_browser(&mut given, Some("unsorted"));
+    assert_eq!(given[0].0, "z", "as configured");
+}
+
+#[test]
+fn unalias_and_unmailboxes_at_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let aliases = dir.path().join("aliases");
+    fs::write(
+        &aliases,
+        "alias jane Jane <jane@example.com>\nalias bob bob@example.com\n",
+    )
+    .unwrap();
+    let mut config = Config::default();
+    config.mail.alias_file = Some(aliases.to_string_lossy().to_string());
+    config.mail.mailboxes = vec!["~/Mail/a".into(), "~/Mail/b".into()];
+    let mut f = Fixture::with_config(&["one"], config);
+    let run = f.session.run_command_line("unalias bob");
+    assert_eq!(run.reports, ["removed 1 alias(es)"]);
+    assert!(!fs::read_to_string(&aliases).unwrap().contains("bob"));
+    f.session.run_command_line("unmailboxes ~/Mail/a");
+    assert_eq!(f.session.config.mail.mailboxes, ["~/Mail/b"]);
+    // The sidebar is told.
+    let mut told = false;
+    while let Some(request) = f.session.take_request() {
+        told |= matches!(request, crate::Request::MailboxesChanged);
+    }
+    assert!(told);
+    // reset goes back to the default, where unset goes to nothing.
+    f.session.run_command_line("set pager_context=5");
+    f.session.run_command_line("reset pager_context");
+    assert_eq!(
+        f.session.config.pager.context,
+        Config::default().pager.context
+    );
+}

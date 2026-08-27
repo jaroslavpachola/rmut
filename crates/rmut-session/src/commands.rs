@@ -56,6 +56,13 @@ impl Session {
                     continue;
                 }
                 command::Command::Alias { nick, expansion } => self.alias_command(nick, expansion),
+                command::Command::Unalias(nicks) => self.unalias_command(nicks),
+                command::Command::Unmailboxes(_) => {
+                    let outcome = command::apply(&mut self.config, &cmd);
+                    // Whatever shows the watched mailboxes redraws.
+                    self.requests.push(Request::MailboxesChanged);
+                    outcome
+                }
                 config_command => command::apply(&mut self.config, config_command),
             };
             match outcome {
@@ -97,6 +104,15 @@ impl Session {
         match rmut_core::alias::append_to(self.config.mail.alias_file.as_deref(), nick, expansion) {
             Ok(_) => Ok(Some(format!("added: alias {nick} {expansion}"))),
             Err(err) => Err(format!("cannot save the alias: {err:#}")),
+        }
+    }
+
+    /// mutt's unalias: out of the alias file, so it stays gone.
+    fn unalias_command(&mut self, nicks: &[String]) -> Result<Option<String>, String> {
+        match rmut_core::alias::remove_from(self.config.mail.alias_file.as_deref(), nicks) {
+            Ok(0) => Ok(Some("no such alias".into())),
+            Ok(n) => Ok(Some(format!("removed {n} alias(es)"))),
+            Err(err) => Err(format!("cannot rewrite the alias file: {err:#}")),
         }
     }
 

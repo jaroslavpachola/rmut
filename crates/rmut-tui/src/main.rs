@@ -178,6 +178,15 @@ fn run() -> Result<ExitCode> {
     // +x / =x in any configured mailbox becomes a real name once,
     // here, so nothing downstream has to know about $folder.
     config.expand_folders();
+    // mutt's $tmpdir: everything that makes a temporary file asks the
+    // standard library, which reads $TMPDIR. Set once, before any
+    // thread exists, which is what makes the write sound.
+    if let Some(tmpdir) = &config.mail.tmpdir {
+        let dir = rmut_session::expand_tilde(tmpdir);
+        // SAFETY: single-threaded this early; no other thread reads
+        // the environment while it is written.
+        unsafe { std::env::set_var("TMPDIR", &dir) };
+    }
     if cli.send_mode {
         return send_batch(&mut config, &cli);
     }
