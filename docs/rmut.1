@@ -1,4 +1,4 @@
-.TH RMUT 1 "August 2026" "rmut 2.0.0" "User Commands"
+.TH RMUT 1 "August 2026" "rmut 2.0.2" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -346,7 +346,13 @@ jump to the parent message (root\-message is an action too, unbound)
 .TP
 .B #
 break\-thread: take the In\-Reply\-To and References off the message
-under the cursor, so it and its replies become a thread of their own
+under the cursor, so it and its replies become a thread of their own.
+A message that was grouped by its subject alone (see
+.B strict_threads
+below) is marked with an
+.B "X-Rmut-Thread: broken"
+header instead, so the grouping leaves it alone from then on; mutt,
+having nowhere to record that, hangs such a message straight back
 .TP
 .B &
 link\-threads: make the tagged messages replies to the one under the
@@ -1238,6 +1244,20 @@ has it on, so rmut's look is unchanged until asked.
 .B uncollapse_new
 A folded thread that receives a new message unfolds (mutt's
 $uncollapse_new, on). Off, it stays folded and the count grows.
+.TP
+.B strict_threads
+Thread by In\-Reply\-To and References only (mutt's $strict_threads,
+off). Left off, as in mutt, a thread root whose subject repeats one
+already in the mailbox is hung under the message that named it, which
+is what threads mail sent with no threading headers at all: a
+notification robot, or a list that strips them. Where the subject,
+not a reference, decided the place, the tree ends in a star instead of
+an arrow, as mutt's does.
+.TP
+.B sort_re
+Only a root whose subject carries the $reply_regexp prefix ("Re:") is
+grouped that way (mutt's $sort_re, on). Off, any equal subject is
+grouped, unrelated mail sharing a subject like "hi" included.
 .SS [ui]
 .TP
 .B theme

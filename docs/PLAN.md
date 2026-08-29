@@ -347,10 +347,12 @@ Make it installable without a checkout.
 
 - [x] CI: GitHub Actions running `just check` (fmt, clippy -D,
       tests, e2e) on push/PR
-- [ ] Publish rmut-core, rmut-session and rmut to crates.io
-      (`cargo install rmut`): metadata ready and
-      `cargo package` verified; `just publish` after `cargo login`,
-      in dependency order (core, session, tui)
+- [x] Publish rmut-core, rmut-session and rmut to crates.io
+      (`cargo install rmut`): `just publish` after `cargo login`, in
+      dependency order (core, session, tui). 2.0.0 went up on
+      2026-08-27. 2.0.1 went up from a checkout that was 14 commits
+      behind, so it is missing the 2.0 cut; 2.0.2 supersedes it and
+      the stale version can be yanked
 - [x] A man page (rmut.1, hand-rolled) covering keys, config,
       patterns, formats, and the muttrc importer; `--help` stays the
       short form
@@ -2197,7 +2199,7 @@ Blocking, in order:
       compatibility) (1.85)
 - [x] R75: the compose-menu functions (the envelope odds moved to R89)
       (1.86)
-- [ ] R22 leftover: publish rmut-core, rmut-session and rmut to
+- [x] R22 leftover: publish rmut-core, rmut-session and rmut to
       crates.io. Prepared 2026-08-27: the metadata packages clean
       (`cargo publish --dry-run -p rmut-core`), the names are free.
       Names settled the same day, after a look at czkawka
@@ -2207,12 +2209,14 @@ Blocking, in order:
       binary crate is `rmut` itself, ripgrep's shape, so
       `cargo install rmut` is the real thing and no placeholder holds
       the name; a GUI would be `rmut-gui`, or a name of its own as
-      krokiet is. Waiting on a `cargo login`, then `just publish`
+      krokiet is. Published the same day at 2.0.0
 - [x] Docs: `docs/rmut.1` version line, a README opening that
       describes 2.0 instead of listing rounds, and this entry
 
-**2.0.0 tagged** (2026-08-27) after R75, with the publish the one
-item left outside the repo.
+**2.0.0 tagged** (2026-08-27) after R75, and published the same day.
+2.0.1 went up from a checkout 14 commits behind this line, so it is
+missing the 2.0 cut: yank it, and take 2.0.2 (R90) as the version
+after 2.0.0.
 
 Explicitly not blocking (2.x): R70 (tunnel, TOFU on unknown certs —
 security work is not rushed for a version number), R76 (PGP odds,
@@ -2220,12 +2224,55 @@ needs gpg fixtures), R89 (envelope odds), the R42 next/previous-marked
 motion and the R55 remaining blocking calls (quality, not parity), and
 the whole "Beyond mutt" list, which stays frozen.
 
+## R90: threading by subject (done, 2.0.2)
+
+Goal: the hole R60 found and named. mutt threads a message that has
+no In-Reply-To and no References by its subject, and for some mail
+that is the only thing there is: a notification robot mints a fresh
+Message-ID every time and repeats one subject, so rmut read six
+messages about one merge request as six threads while mutt, two
+panes over, showed one. Found in daily use, which is what outranks
+everything else here.
+
+- [x] `core::thread::thread_with` takes a `SubjectFallback` and runs
+      mutt's `pseudo_threads` after the reference pass: a thread root
+      whose subject, with $reply_regexp taken off, repeats one
+      already in the mailbox hangs under the message that named it.
+      The rules were read off mutt 2.2.12 driven in a pty, not off
+      the manual: the parent may be any message whose own subject
+      differs from its parent's (mutt's subject_changed), never one
+      placed this way itself, never one sent later, never one inside
+      the root's own thread. What falls out is the shape mutt draws,
+      the oldest message a root with a flat fan under it, and a
+      subject child brings its own replies with it
+- [x] `$strict_threads` turns the pass off, `$sort_re` narrows it to
+      subjects that carry the reply prefix: `[index]` settings, live
+      at `:` (the index re-sorts on the spot, as it does for $sort),
+      and imported. R60 refused both values of both, having no pass
+      to point them at; the importer now satisfies mutt's defaults
+      and carries the other two
+- [x] The index stars the tree where the subject, not a reference,
+      decided the place (mutt's fake_thread mark):
+      `ThreadedItem.pseudo` → `Session::subject_threaded` → `└*`
+- [x] break-thread sticks, which in mutt it does not. `#` on a
+      message the subject grouped has no headers to clear, so it
+      writes `X-Rmut-Thread: broken` into the file; the pass skips
+      what carries it, undo takes it off, and link-threads clears it.
+      The one deliberate deviation in the round: mutt has nowhere to
+      record a break, so its own subject pass hangs the message
+      straight back and the manual's answer is $strict_threads. `#`
+      also stops answering "already a thread of its own" when what
+      holds the message is a subject group
+- [x] Five core tests (the robot shape, both $sort_re answers, a
+      renamed reply as the parent for its own subject, a subject
+      child bringing its replies, no loops), two session tests
+      (the grouping and both knobs; break-thread out of a group and
+      back), an importer test, and e2e scenario_subject_threading
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
 
-- R22: publish to crates.io (prepared at 2.0; awaits a login and the
-  crate-name decision, see "The 2.0 cut")
 - R42: a real next/previous-marked motion, if the macros do not carry
   it
 - R55: opening and switching a mailbox, the browser's LIST, a

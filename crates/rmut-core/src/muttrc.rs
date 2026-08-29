@@ -178,6 +178,10 @@ struct State {
     collapse_unread_off: bool,
     uncollapse_jump: bool,
     hide_thread_subject: bool,
+    /// mutt's threading knobs: $strict_threads turns the subject
+    /// grouping off, $sort_re widens it.
+    strict_threads: bool,
+    sort_re_off: bool,
     /// mutt's $attribution, $indent_string and $forward_format, which
     /// rmut takes as they are: the specifiers are the same.
     attribution: Option<String>,
@@ -1039,9 +1043,12 @@ impl State {
             ),
             "strict_threads" => {
                 if is_yes(value) {
-                    self.satisfy(line, "rmut threads by References only, never by subject");
+                    self.strict_threads = true;
                 } else {
-                    self.skip(line, "rmut cannot be told to thread by subject");
+                    self.satisfy(
+                        line,
+                        "rmut groups what carries no References by subject, as mutt does",
+                    );
                 }
             }
             "duplicate_threads" => {
@@ -1225,9 +1232,9 @@ impl State {
             }
             "sort_re" => {
                 if is_yes(value) {
-                    self.satisfy(line, "rmut never threads by subject, so this is moot");
+                    self.satisfy(line, "only a Re: subject is grouped, as mutt has it");
                 } else {
-                    self.skip(line, "rmut cannot be told to thread by subject");
+                    self.sort_re_off = true;
                 }
             }
             "forward_format" => self.forward_format = Some(v),
@@ -2012,6 +2019,8 @@ impl State {
             || self.uncollapse_jump
             || self.hide_thread_subject
             || self.no_uncollapse_new
+            || self.strict_threads
+            || self.sort_re_off
         {
             out += "\n[index]\n";
             if let Some(f) = &self.index_format {
@@ -2038,6 +2047,12 @@ impl State {
             }
             if self.no_uncollapse_new {
                 out += "uncollapse_new = false\n";
+            }
+            if self.strict_threads {
+                out += "strict_threads = true\n";
+            }
+            if self.sort_re_off {
+                out += "sort_re = false\n";
             }
         }
         if self.pager_index_lines.is_some()
@@ -3330,6 +3345,19 @@ mod tests {
         let (cfg, _) = to_config("set ispell = \"aspell -c\"\n");
         assert_eq!(cfg.mail.ispell.as_deref(), Some("aspell -c"));
         let (_, toml) = to_config("set sort_browser = alpha\nset sort_alias = address\n");
+        assert!(!toml.contains("not imported"), "{toml}");
+    }
+
+    #[test]
+    fn the_threading_knobs_carry_over() {
+        let (cfg, toml) = to_config("set strict_threads = yes\nset nosort_re\n");
+        assert_eq!(cfg.index.strict_threads, Some(true), "{toml}");
+        assert_eq!(cfg.index.sort_re, Some(false), "{toml}");
+        // Their defaults are rmut's too, so they are satisfied rather
+        // than written out.
+        let (cfg, toml) = to_config("set nostrict_threads\nset sort_re = yes\n");
+        assert_eq!(cfg.index.strict_threads, None, "{toml}");
+        assert_eq!(cfg.index.sort_re, None, "{toml}");
         assert!(!toml.contains("not imported"), "{toml}");
     }
 

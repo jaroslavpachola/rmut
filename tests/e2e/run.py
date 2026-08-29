@@ -3700,6 +3700,61 @@ def scenario_search_context(tmp):
     r.close()
 
 
+def scenario_subject_threading(tmp):
+    """R90: mail that carries no References at all still reads as one
+    thread, the way mutt's pseudo-threading has it; $strict_threads
+    turns it off, and # takes one message out of the group for good."""
+    md = make_maildir(tmp, "md-subject")
+    # A notification robot: a fresh Message-ID every time, no
+    # References anywhere, one subject.
+    subject = "epog-devel | mediator error logging (!1661)"
+    for i, hour in enumerate((10, 11, 12)):
+        prefix = "" if i == 0 else "Re: "
+        with open(os.path.join(md, "cur", f"175179000{i}.{i}.host:2,S"), "w") as f:
+            f.write(f"From: gitlab@example.com\r\nTo: jarda@example.com\r\n"
+                    f"Subject: {prefix}{subject}\r\n"
+                    f"Date: Mon, 6 Jul 2026 {hour}:00:00 +0200\r\n"
+                    f"Message-ID: <note{i}@example.com>\r\n\r\nnote {i}\r\n")
+    with open(os.path.join(md, "cur", "1751790009.9.host:2,S"), "w") as f:
+        f.write("From: jane@example.com\r\nSubject: lunch?\r\n"
+                "Date: Mon, 6 Jul 2026 13:00:00 +0200\r\n"
+                "Message-ID: <lunch@example.com>\r\n\r\nfree friday?\r\n")
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:4")
+    r.keys(b"ot")
+    r.expect("sorted by threads")
+    # The two replies hang under the first, and the tree stars them:
+    # mutt's mark for a message placed by its subject.
+    r.expect("└*")
+    r.keys(b"=\x1bv")           # Alt+v folds the thread at the cursor
+    r.expect("(2 hidden)")
+    r.keys(b"\x1bv")
+
+    # $strict_threads takes the grouping away again. The buffer is
+    # cumulative, so drop what is in it before asking for a screen
+    # without the star on it.
+    r.keys(b":set strict_threads=yes\r")
+    r.repaint()
+    r.buf = ""
+    r.repaint()
+    r.expect("lunch?", absent=("└*",))
+    r.keys(b":set strict_threads=no\r")
+    r.repaint()
+    r.expect("└*")
+
+    # # on a grouped message takes it out and keeps it out: the file
+    # says so, which is how it survives a restart.
+    r.keys(b"=j#")
+    r.expect("thread broken")
+    r.settle()
+    text = open(os.path.join(md, "cur", "1751790001.1.host:2,S")).read()
+    assert "X-Rmut-Thread: broken" in text, text
+    r.keys(b"z")
+    r.expect("undone: break thread (1 message(s))")
+    r.keys(b"x")
+    r.close()
+
+
 def scenario_folder_shorthand(tmp):
     """R43: =x and +x name a mailbox under [mail] folder, whether
     typed at a prompt, replayed from a macro, or written in the
@@ -4439,6 +4494,7 @@ SCENARIOS = [
     scenario_help_bar_off,
     scenario_last_keys,
     scenario_compose_functions,
+    scenario_subject_threading,
 ]
 
 

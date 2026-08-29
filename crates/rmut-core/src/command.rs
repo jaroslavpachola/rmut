@@ -414,6 +414,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "smart_wrap" => FlagOpt(&mut cfg.pager.smart_wrap),
         "collapse_unread" => FlagOpt(&mut cfg.index.collapse_unread),
         "hide_thread_subject" => FlagOpt(&mut cfg.index.hide_thread_subject),
+        "strict_threads" => FlagOpt(&mut cfg.index.strict_threads),
+        "sort_re" => FlagOpt(&mut cfg.index.sort_re),
         "uncollapse_jump" => Flag(&mut cfg.index.uncollapse_jump),
         "reverse_name" => Flag(&mut cfg.identity.reverse_name),
         "metoo" => Flag(&mut cfg.mail.metoo),

@@ -34,6 +34,11 @@ struct Entry {
     /// the file is re-parsed.
     #[serde(default)]
     label: Option<String>,
+    /// Absent in pre-1.83 caches; those entries lose the break-thread
+    /// marker until the file is re-parsed, which a rewrite forces
+    /// anyway (the key carries the length).
+    #[serde(default)]
+    broken: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -61,6 +66,7 @@ impl Entry {
             lines: env.lines,
             list: env.list.clone(),
             label: env.label.clone(),
+            broken: env.broken,
         }
     }
 
@@ -83,6 +89,7 @@ impl Entry {
             lines: self.lines,
             list: self.list.as_deref().map(message::one_line),
             label: self.label.as_deref().map(message::one_line),
+            broken: self.broken,
         }
     }
 }

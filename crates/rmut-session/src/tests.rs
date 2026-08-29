@@ -1379,6 +1379,113 @@ fn break_thread_rewrites_the_message_and_undo_puts_it_back() {
     assert_eq!(depths(&f)[2], ("again".to_string(), 2));
 }
 
+/// Four messages, three of them one subject and not a References
+/// header between them: the shape a notification robot sends.
+fn subject_only() -> Fixture {
+    let mut f = Fixture::new(&[]);
+    let dir = f._dir.path().to_path_buf();
+    write_message(&dir, 0, "proj | a change (!1661)", None);
+    write_message(&dir, 1, "Re: proj | a change (!1661)", None);
+    write_message(&dir, 2, "Re: proj | a change (!1661)", None);
+    write_message(&dir, 3, "something else", None);
+    f.session.rescan();
+    f.session.sort = SortKey::Threads;
+    f.session.apply_sort();
+    f
+}
+
+#[test]
+fn mail_carrying_no_references_threads_by_subject() {
+    let mut f = subject_only();
+    let shape = |f: &Fixture| -> Vec<(String, usize, bool)> {
+        f.session
+            .visible
+            .iter()
+            .map(|&i| {
+                (
+                    f.session.msgs[i].env.subject.clone(),
+                    f.session.thread_depth[i],
+                    f.session.subject_threaded(i),
+                )
+            })
+            .collect()
+    };
+    // mutt's shape: the oldest is the root, the later ones a flat fan
+    // under it, each marked as put there by its subject.
+    assert_eq!(
+        shape(&f),
+        [
+            ("proj | a change (!1661)", 0, false),
+            ("Re: proj | a change (!1661)", 1, true),
+            ("Re: proj | a change (!1661)", 1, true),
+            ("something else", 0, false),
+        ]
+        .map(|(s, d, p)| (s.to_string(), d, p))
+    );
+
+    // $strict_threads: four threads again, and the index says so at
+    // once, without a re-sort by hand.
+    f.session.run_command_line("set strict_threads=yes");
+    assert!(shape(&f).iter().all(|(_, depth, _)| *depth == 0));
+    f.session.run_command_line("set strict_threads=no");
+    assert_eq!(shape(&f)[1].1, 1);
+
+    // $sort_re: set (mutt's default), only a Re: subject joins, so a
+    // second message merely repeating the subject stands alone.
+    write_message(f._dir.path(), 4, "proj | a change (!1661)", None);
+    touch_dirs(f._dir.path());
+    f.session.rescan();
+    f.session.apply_sort();
+    assert_eq!(
+        shape(&f)[4],
+        ("proj | a change (!1661)".to_string(), 0, false)
+    );
+    // Unset, any equal subject joins.
+    f.session.run_command_line("set sort_re=no");
+    assert_eq!(
+        shape(&f)[3],
+        ("proj | a change (!1661)".to_string(), 1, true)
+    );
+}
+
+#[test]
+fn break_thread_takes_a_message_out_of_a_subject_group_for_good() {
+    let mut f = subject_only();
+    f.session.select(1);
+    let path = f.session.msgs[f.session.visible[1]].env.file.path.clone();
+    let before = fs::read(&path).unwrap();
+
+    // mutt cannot do this: with no headers to clear, its subject
+    // grouping hangs the message straight back. rmut marks the file.
+    f.session.break_thread();
+    assert_eq!(f.log.last_text(), "thread broken");
+    let depths: Vec<usize> = f
+        .session
+        .visible
+        .iter()
+        .map(|&i| f.session.thread_depth[i])
+        .collect();
+    assert_eq!(depths, [0, 0, 1, 0], "the broken one stands on its own");
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(after.contains("X-Rmut-Thread: broken"), "{after}");
+
+    // And there is nothing left to break.
+    f.session.select(1);
+    f.session.break_thread();
+    assert_eq!(f.log.last_text(), "already a thread of its own");
+
+    // Undo puts the file, and the grouping, back.
+    f.session.undo_last();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let depths: Vec<usize> = f
+        .session
+        .visible
+        .iter()
+        .map(|&i| f.session.thread_depth[i])
+        .collect();
+    assert_eq!(depths, [0, 1, 1, 0]);
+}
+
 #[test]
 fn link_threads_hangs_the_tagged_messages_under_the_cursor() {
     let mut f = threaded();

@@ -345,6 +345,9 @@ pub struct Session {
     /// when not sorted by threads).
     pub thread_depth: Vec<usize>,
     pub thread_root: Vec<usize>,
+    /// Which messages the subject fallback placed rather than their
+    /// own References (mutt's fake_thread): the index stars them.
+    pub thread_pseudo: Vec<bool>,
     /// The thread as a tree, from the depth-first layout: each
     /// message's parent and children, and every root's members. For
     /// the `~(`, `~<`, `~>` patterns, parent-message, and read-thread.
@@ -535,6 +538,7 @@ impl Session {
             search_rev: false,
             thread_depth: vec![0; count],
             thread_root: (0..count).collect(),
+            thread_pseudo: vec![false; count],
             thread_parent: vec![None; count],
             thread_children: vec![Vec::new(); count],
             thread_members: (0..count).map(|i| vec![i]).collect(),
@@ -1663,9 +1667,19 @@ impl Session {
                 .as_deref()
                 .map(thread::ThreadOrder::parse)
                 .unwrap_or_default();
+            // mutt's $strict_threads / $sort_re: unless told otherwise,
+            // a root whose subject repeats one already here joins it,
+            // which is the only thing that threads mail sent without
+            // References at all.
             let items = {
+                let fallback = (!self.config.index.strict_threads.unwrap_or(false)).then(|| {
+                    thread::SubjectFallback {
+                        reply_re: &self.reply_re,
+                        sort_re: self.config.index.sort_re.unwrap_or(true),
+                    }
+                });
                 let envs: Vec<&Envelope> = self.msgs.iter().map(|m| &m.env).collect();
-                thread::thread_by(&envs, order)
+                thread::thread_with(&envs, order, fallback.as_ref())
             };
             let mut old: Vec<Option<Msg>> = self.msgs.drain(..).map(Some).collect();
             let mut new_pos = vec![0usize; old.len()];
@@ -1682,6 +1696,7 @@ impl Session {
                 .collect();
             self.thread_depth = items.iter().map(|item| item.depth).collect();
             self.thread_root = items.iter().map(|item| new_pos[item.root]).collect();
+            self.thread_pseudo = items.iter().map(|item| item.pseudo).collect();
             self.sort_rev = false;
             self.index_threads();
         } else {
@@ -1719,6 +1734,7 @@ impl Session {
             });
             self.thread_depth = vec![0; self.msgs.len()];
             self.thread_root = (0..self.msgs.len()).collect();
+            self.thread_pseudo = vec![false; self.msgs.len()];
             self.index_threads();
         }
         self.rebuild_visible(keep);
@@ -1953,17 +1969,20 @@ impl Session {
     }
 
     /// Write the message back with these threading headers, and read
-    /// it again so the index sees the change. Returns the bytes it
-    /// held before, for the undo.
+    /// it again so the index sees the change. `broken` leaves
+    /// rmut's break marker on the message, so the subject grouping
+    /// keeps its hands off it. Returns the bytes it held before, for
+    /// the undo.
     fn rewrite_thread(
         &mut self,
         i: usize,
         in_reply_to: Option<&str>,
         references: &[String],
+        broken: bool,
     ) -> Result<Vec<u8>> {
         let path = self.msgs[i].env.file.path.clone();
         let old = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        let new = message::with_thread_headers(&old, in_reply_to, references);
+        let new = message::with_thread_headers(&old, in_reply_to, references, broken);
         std::fs::write(&path, &new).with_context(|| format!("writing {}", path.display()))?;
         self.reread(i, new.len() as u64)?;
         Ok(old)
@@ -1992,7 +2011,10 @@ impl Session {
         if !self.can_rewrite() {
             return;
         }
-        if self.msgs[mi].env.references.is_empty() {
+        // Nothing to break only when nothing holds it: a message the
+        // subject grouping placed carries no References either, and
+        // `#` is how it is taken out of that thread.
+        if self.msgs[mi].env.references.is_empty() && !self.subject_threaded(mi) {
             self.note("already a thread of its own");
             return;
         }
@@ -2005,7 +2027,7 @@ impl Session {
             note: None,
             rewritten: Vec::new(),
         };
-        match self.rewrite_thread(mi, None, &[]) {
+        match self.rewrite_thread(mi, None, &[], true) {
             Ok(old) => {
                 step.rewritten.push((path.clone(), old));
                 self.push_undo_step(step);
@@ -2050,7 +2072,7 @@ impl Session {
         let mut linked = 0usize;
         for &i in &kids {
             let path = self.msgs[i].env.file.path.clone();
-            match self.rewrite_thread(i, Some(&parent_id), &[]) {
+            match self.rewrite_thread(i, Some(&parent_id), &[], false) {
                 Ok(old) => {
                     step.rewritten.push((path, old));
                     self.msgs[i].env.tagged = false;
@@ -2129,6 +2151,13 @@ impl Session {
             return false;
         }
         true
+    }
+
+    /// True when the subject fallback, not a References chain, put
+    /// this message under its parent: mutt draws a star in the tree
+    /// where the arrow would be, and so does rmut.
+    pub fn subject_threaded(&self, mi: usize) -> bool {
+        self.thread_pseudo.get(mi).copied().unwrap_or(false)
     }
 
     /// mutt's $hide_thread_subject: true when this message is a thread

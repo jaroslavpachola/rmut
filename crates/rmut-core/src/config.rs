@@ -468,6 +468,16 @@ pub struct Index {
     /// mutt's $uncollapse_new: a collapsed thread that receives a new
     /// message unfolds. True unless set otherwise, as in mutt.
     pub uncollapse_new: Option<bool>,
+    /// mutt's $strict_threads: thread by In-Reply-To and References
+    /// only. False (the default, as in mutt) also groups a root whose
+    /// subject repeats one already in the mailbox, which is what
+    /// threads mail that arrives without those headers at all.
+    pub strict_threads: Option<bool>,
+    /// mutt's $sort_re: the subject grouping only takes a root whose
+    /// subject carries the $reply_regexp prefix. True by default, as
+    /// in mutt; false groups any equal subject, unrelated "hi" mail
+    /// included.
+    pub sort_re: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

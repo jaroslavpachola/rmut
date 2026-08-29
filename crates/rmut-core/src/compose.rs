@@ -796,6 +796,7 @@ pub fn draft_envelope(text: &str, path: &Path) -> crate::message::Envelope {
         lines: Some(body.lines().count()),
         list: None,
         label: None,
+        broken: false,
     }
 }
 

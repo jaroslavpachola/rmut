@@ -299,7 +299,14 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
             subject += &format!(" ({n} hidden)");
         }
         if depth > 0 {
-            subject = format!("{}└>{subject}", "  ".repeat(depth - 1));
+            // mutt stars the arrow of a message the subject fallback
+            // placed, so a thread says which of it the senders meant.
+            let arrow = if app.session.subject_threaded(mi) {
+                "└*"
+            } else {
+                "└>"
+            };
+            subject = format!("{}{arrow}{subject}", "  ".repeat(depth - 1));
         }
         let text = format::render(
             fmt,

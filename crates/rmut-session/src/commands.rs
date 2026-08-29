@@ -41,9 +41,14 @@ impl Session {
         if commands.is_empty() {
             return run;
         }
+        // What decides the order messages sit in: $sort and $sort_aux,
+        // and the three that decide what a thread is.
         let sort_before = (
             self.config.index.sort.clone(),
             self.config.index.sort_aux.clone(),
+            self.config.index.strict_threads,
+            self.config.index.sort_re,
+            self.config.mail.reply_regexp.clone(),
         );
         for cmd in commands {
             let outcome = match &cmd {
@@ -82,6 +87,9 @@ impl Session {
             != (
                 self.config.index.sort.clone(),
                 self.config.index.sort_aux.clone(),
+                self.config.index.strict_threads,
+                self.config.index.sort_re,
+                self.config.mail.reply_regexp.clone(),
             )
         {
             if let Some(spec) = self.config.index.sort.clone()

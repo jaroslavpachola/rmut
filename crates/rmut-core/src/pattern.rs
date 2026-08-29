@@ -949,6 +949,7 @@ mod tests {
             lines: Some(0),
             list: None,
             label: None,
+            broken: false,
         }
     }
 

@@ -37,7 +37,18 @@ pub struct Envelope {
     pub list: Option<String>,
     /// mutt's X-Label header, for `%y`, `~y`, and sort by label.
     pub label: Option<String>,
+    /// The user broke this message out of its thread: rmut's own
+    /// `X-Rmut-Thread: broken`, written by break-thread. mutt has
+    /// nothing like it and its subject grouping hangs a broken
+    /// message straight back where it was; rmut's break-thread
+    /// sticks instead, and this is the header that makes it.
+    pub broken: bool,
 }
+
+/// The header break-thread leaves behind, so that the subject
+/// grouping knows to leave the message alone.
+pub const BROKEN_HEADER: &str = "X-Rmut-Thread";
+const BROKEN_VALUE: &str = "broken";
 
 /// Header text on its way to a one-line slot in the display. A tab
 /// or a stray control character would be written to the terminal as
@@ -147,6 +158,9 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         .get_first_value("X-Label")
         .map(|v| one_line(&v))
         .filter(|v| !v.trim().is_empty());
+    let broken = headers
+        .get_first_value(BROKEN_HEADER)
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case(BROKEN_VALUE));
     Ok(Envelope {
         file,
         from,
@@ -161,6 +175,7 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
         lines,
         list,
         label,
+        broken,
     })
 }
 
@@ -746,6 +761,7 @@ pub fn with_thread_headers(
     raw: &[u8],
     in_reply_to: Option<&str>,
     references: &[String],
+    broken: bool,
 ) -> Vec<u8> {
     let (head, body) = match raw.windows(4).position(|w| w == b"\r\n\r\n") {
         Some(at) => (&raw[..at + 2], &raw[at + 2..]),
@@ -764,7 +780,9 @@ pub fn with_thread_headers(
             continue;
         }
         let lower: Vec<u8> = line.iter().take(14).map(u8::to_ascii_lowercase).collect();
-        skipping = lower.starts_with(b"in-reply-to:") || lower.starts_with(b"references:");
+        skipping = lower.starts_with(b"in-reply-to:")
+            || lower.starts_with(b"references:")
+            || lower.starts_with(b"x-rmut-thread:");
         if !skipping {
             out.extend_from_slice(line);
         }
@@ -777,6 +795,10 @@ pub fn with_thread_headers(
     if !references.is_empty() {
         out.extend_from_slice(b"References: ");
         out.extend_from_slice(references.join(" ").as_bytes());
+        out.extend_from_slice(eol);
+    }
+    if broken {
+        out.extend_from_slice(format!("{BROKEN_HEADER}: {BROKEN_VALUE}").as_bytes());
         out.extend_from_slice(eol);
     }
     out.extend_from_slice(body);
@@ -1345,15 +1367,27 @@ mod tests {
     #[test]
     fn thread_headers_are_replaced_whole() {
         let raw = b"From: a@x\r\nReferences: <a@x>\r\n <b@x>\r\nSubject: s\r\nIn-Reply-To: <b@x>\r\n\r\nbody\r\n";
-        let out = with_thread_headers(raw, None, &[]);
+        let out = with_thread_headers(raw, None, &[], false);
         assert_eq!(out, b"From: a@x\r\nSubject: s\r\n\r\nbody\r\n");
-        let out = with_thread_headers(&out, Some("<p@x>"), &["<r@x>".into(), "<p@x>".into()]);
+        // break-thread's marker goes on, and comes off again when the
+        // message is linked back under a parent.
+        let broken = with_thread_headers(raw, None, &[], true);
+        assert_eq!(
+            broken,
+            b"From: a@x\r\nSubject: s\r\nX-Rmut-Thread: broken\r\n\r\nbody\r\n"
+        );
+        let out = with_thread_headers(
+            &broken,
+            Some("<p@x>"),
+            &["<r@x>".into(), "<p@x>".into()],
+            false,
+        );
         assert_eq!(
             out,
             b"From: a@x\r\nSubject: s\r\nIn-Reply-To: <p@x>\r\nReferences: <r@x> <p@x>\r\n\r\nbody\r\n"
         );
         // LF mail stays LF, and a message with no body is fine.
-        let out = with_thread_headers(b"From: a@x\nSubject: s\n", Some("<p@x>"), &[]);
+        let out = with_thread_headers(b"From: a@x\nSubject: s\n", Some("<p@x>"), &[], false);
         assert_eq!(out, b"From: a@x\nSubject: s\nIn-Reply-To: <p@x>\n");
     }
 

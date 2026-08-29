@@ -17,7 +17,8 @@ instead. The config format did not change; a 1.x config is a 2.0
 config.
 
 What is there, briefly: an index with threads (References and
-In-Reply-To, folding, thread operations), mutt's patterns for limit,
+In-Reply-To, plus mutt's grouping by subject for mail that carries
+neither, folding, thread operations), mutt's patterns for limit,
 search, tag and delete, sort orders, `%`-format strings for the
 index, status and pager lines, colours by pattern and by depth of
 quoting, a sidebar and a folder browser with new-mail counts, a
@@ -626,11 +627,28 @@ Ctrl+R and Alt+r (mutt's `Ctrl+R`, `Esc r`) mark the thread or the
 subthread read, `P` jumps to the parent message (root-message is
 there too, unbound), and tag-subthread is an action for `:bind`.
 
+Some mail arrives with no In-Reply-To and no References at all: a
+notification robot that mints a fresh Message-ID every time, a list
+that strips the headers. Nothing but the subject holds those
+together, so, like mutt, rmut hangs a thread root whose subject
+repeats one already in the mailbox under the message that named it.
+The oldest becomes the root, the rest a fan under it, and the tree
+ends in a star instead of an arrow where the subject decided the
+place. `[index] strict_threads = true` (mutt's `$strict_threads`)
+turns it off; `sort_re = false` (mutt's `$sort_re`) widens it from
+"Re:" subjects to any equal subject, which groups unrelated mail
+sharing a subject like "hi".
+
 Two keys edit the threading itself, since misconfigured mailers
 leave replies dangling or bolt a new discussion onto an old one.
 `#` (break-thread) takes the In-Reply-To and References off the
 message under the cursor, so it and its replies become a thread of
-their own; `&` (link-threads) makes the tagged messages replies to
+their own; on a message the subject grouping placed, where there are
+no headers to take off, it writes an `X-Rmut-Thread: broken` header
+that the grouping honours from then on. That last part is rmut's
+own: mutt has nowhere to record the break, so its subject pass hangs
+the message straight back and the manual's answer is
+`$strict_threads`. `&` (link-threads) makes the tagged messages replies to
 the one under the cursor, as mutt does, by giving each an In-Reply-To
 naming it (and untagging it). Both rewrite the message file in place
 and are one undo step each: `z` writes the old headers back. They

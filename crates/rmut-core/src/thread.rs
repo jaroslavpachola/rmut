@@ -2,7 +2,8 @@
 //! (<https://www.jwz.org/doc/threading.html>): containers per message-id,
 //! reference chains linked parent→child with loop protection, empty
 //! containers pruned by promoting their children. Threads and siblings
-//! are ordered by date. Subject grouping (JWZ step 5) is not done.
+//! are ordered by date. JWZ step 5, grouping what is left by subject,
+//! is mutt's `pseudo_threads` here: see [`SubjectFallback`].
 
 use std::collections::HashMap;
 
@@ -17,12 +18,17 @@ pub struct ThreadedItem {
     pub depth: usize,
     /// Input index of this thread's first (root) message.
     pub root: usize,
+    /// The subject fallback put this message here, not its own
+    /// References: mutt's fake_thread, which its tree stars.
+    pub pseudo: bool,
 }
 
 struct Container {
     message: Option<usize>,
     parent: Option<usize>,
     children: Vec<usize>,
+    /// Attached by subject rather than by a reference chain.
+    pseudo: bool,
 }
 
 fn get_or_create(
@@ -37,6 +43,7 @@ fn get_or_create(
         message: None,
         parent: None,
         children: Vec::new(),
+        pseudo: false,
     });
     let idx = arena.len() - 1;
     by_id.insert(id.to_string(), idx);
@@ -110,7 +117,12 @@ fn emit(
     out: &mut Vec<ThreadedItem>,
 ) {
     let index = arena[node].message.expect("emit called on empty container");
-    out.push(ThreadedItem { index, depth, root });
+    out.push(ThreadedItem {
+        index,
+        depth,
+        root,
+        pseudo: arena[node].pseudo,
+    });
     let mut kids = Vec::new();
     real_children(arena, node, &mut kids);
     kids.sort_by_key(|&k| subtree_date(arena, envs, k, newest));
@@ -153,7 +165,141 @@ impl ThreadOrder {
     }
 }
 
+/// mutt's subject fallback, which runs unless `$strict_threads`: a
+/// thread root whose subject repeats one already in the mailbox
+/// hangs under the message carrying it. It is what keeps mail that
+/// arrives with no References at all (a notification robot, a list
+/// that strips the headers) reading as one thread.
+#[derive(Clone, Copy)]
+pub struct SubjectFallback<'a> {
+    /// Compiled $reply_regexp: what marks a subject as a reply, and
+    /// what is taken off it to compare with (mutt's real_subj).
+    pub reply_re: &'a regex_lite::Regex,
+    /// mutt's $sort_re: only a root whose subject carries the reply
+    /// prefix is attached. Unset, any equal subject is, which groups
+    /// unrelated mail sharing a subject like "hi".
+    pub sort_re: bool,
+}
+
+/// mutt's real_subj: the subject with one $reply_regexp match taken
+/// off the front, and whether it was there at all. Both ends are
+/// trimmed, where mutt compares the raw remainder, so a stray
+/// trailing space does not split a thread.
+fn real_subject<'a>(re: &regex_lite::Regex, subject: &'a str) -> (&'a str, bool) {
+    match re.find(subject) {
+        Some(m) if m.start() == 0 => (subject[m.end()..].trim(), true),
+        _ => (subject.trim(), false),
+    }
+}
+
+/// The nearest ancestor carrying a message, looking through the
+/// empty containers a missing parent leaves behind.
+fn message_ancestor(arena: &[Container], node: usize) -> Option<usize> {
+    let mut at = arena[node].parent;
+    while let Some(p) = at {
+        if arena[p].message.is_some() {
+            return Some(p);
+        }
+        at = arena[p].parent;
+    }
+    None
+}
+
+/// mutt's pseudo_threads: every thread root whose subject repeats a
+/// subject already in the mailbox is hung under the message that
+/// carries it, roots taken oldest first. The parent may sit anywhere
+/// in a thread, not only at its root, but it must be a message whose
+/// own subject differs from its parent's (mutt's subject_changed) and
+/// not one that was itself attached this way, so a stray answers the
+/// message that named the subject rather than the last one to repeat
+/// it: the shape mutt draws is one root with a flat fan under it.
+fn group_by_subject(
+    arena: &mut [Container],
+    envs: &[&Envelope],
+    top: &mut Vec<usize>,
+    sub: &SubjectFallback,
+) {
+    // Who may be a parent, by the subject they named. A reply
+    // repeating its parent's subject is not in here, so a long thread
+    // does not offer every message in it as a place to hang strays.
+    let mut candidates: HashMap<&str, Vec<usize>> = HashMap::new();
+    for node in 0..arena.len() {
+        let Some(m) = arena[node].message else {
+            continue;
+        };
+        let subj = real_subject(sub.reply_re, &envs[m].subject).0;
+        let changed = match message_ancestor(arena, node) {
+            Some(p) => {
+                let pm = arena[p]
+                    .message
+                    .expect("message_ancestor carries a message");
+                real_subject(sub.reply_re, &envs[pm].subject).0 != subj
+            }
+            None => true,
+        };
+        if changed {
+            candidates.entry(subj).or_default().push(node);
+        }
+    }
+
+    // Oldest first, so the message that opened the subject is the one
+    // still standing as a root when the later ones look for a parent.
+    let mut roots: Vec<usize> = top.clone();
+    roots.sort_by_key(|&r| {
+        let m = arena[r].message.expect("a thread root carries a message");
+        (envs[m].date, m)
+    });
+
+    for cur in roots {
+        let m = arena[cur].message.expect("a thread root carries a message");
+        // What break-thread marked stays where the user put it. mutt
+        // has nowhere to record that and hangs a broken message
+        // straight back under its old subject; rmut's `#` sticks.
+        if envs[m].broken {
+            continue;
+        }
+        let (subj, is_reply) = real_subject(sub.reply_re, &envs[m].subject);
+        if sub.sort_re && !is_reply {
+            continue;
+        }
+        let here = (envs[m].date, m);
+        let mut best: Option<((i64, usize), usize)> = None;
+        for &t in candidates.get(subj).map(Vec::as_slice).unwrap_or_default() {
+            if t == cur || arena[t].pseudo {
+                continue;
+            }
+            let tm = arena[t].message.expect("a candidate carries a message");
+            let there = (envs[tm].date, tm);
+            // Only a message already sent, and never one from inside
+            // this root's own thread: that would be a loop.
+            if there >= here || is_ancestor(arena, cur, t) {
+                continue;
+            }
+            if best.is_none_or(|(seen, _)| seen < there) {
+                best = Some((there, t));
+            }
+        }
+        if let Some((_, parent)) = best {
+            arena[cur].parent = Some(parent);
+            arena[parent].children.push(cur);
+            arena[cur].pseudo = true;
+        }
+    }
+    top.retain(|&t| arena[t].parent.is_none());
+}
+
 pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
+    thread_with(envs, order, None)
+}
+
+/// Threading proper: reference chains, and then, with a
+/// [`SubjectFallback`], what mutt does for the messages whose
+/// senders left no chain behind.
+pub fn thread_with(
+    envs: &[&Envelope],
+    order: ThreadOrder,
+    subject: Option<&SubjectFallback>,
+) -> Vec<ThreadedItem> {
     let newest = order.newest;
     let mut arena: Vec<Container> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
@@ -174,6 +320,7 @@ pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
                 message: None,
                 parent: None,
                 children: Vec::new(),
+                pseudo: false,
             });
             container = arena.len() - 1;
         }
@@ -216,6 +363,9 @@ pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
             }
         }
     }
+    if let Some(sub) = subject {
+        group_by_subject(&mut arena, envs, &mut top, sub);
+    }
     let envs_ref = envs;
     top.sort_by_key(|&t| subtree_date(&arena, envs_ref, t, newest));
     if order.reverse {
@@ -257,7 +407,30 @@ mod tests {
             lines: Some(0),
             list: None,
             label: None,
+            broken: false,
         }
+    }
+
+    /// Like `env`, with a subject of its own: what the subject
+    /// fallback works from.
+    fn subj(id: &str, subject: &str, refs: &[&str], date: i64) -> Envelope {
+        Envelope {
+            subject: subject.into(),
+            ..env(id, refs, date)
+        }
+    }
+
+    fn run_subject(envs: &[Envelope], sort_re: bool) -> Vec<(usize, usize, bool)> {
+        let re = crate::compose::default_reply_regexp();
+        let fallback = SubjectFallback {
+            reply_re: &re,
+            sort_re,
+        };
+        let refs: Vec<&Envelope> = envs.iter().collect();
+        thread_with(&refs, ThreadOrder::default(), Some(&fallback))
+            .iter()
+            .map(|i| (i.index, i.depth, i.pseudo))
+            .collect()
     }
 
     fn run(envs: &[Envelope]) -> Vec<(usize, usize)> {
@@ -397,5 +570,94 @@ mod tests {
         assert_eq!(run(&envs), vec![(0, 0), (1, 1), (2, 2)]);
         let envs = [env("p", &[], 1), env("c", &["gone", "p"], 2)];
         assert_eq!(run(&envs), vec![(0, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn subject_groups_mail_that_carries_no_references() {
+        // The gitlab-notification shape: every message a fresh
+        // Message-ID, no References anywhere, one subject. mutt hangs
+        // the later ones off the first as a flat fan; without the
+        // fallback they are seven threads.
+        let envs = [
+            subj("a", "Re: proj | a change (!1661)", &[], 10),
+            subj("b", "Re: proj | a change (!1661)", &[], 20),
+            subj("c", "Re: proj | a change (!1661)", &[], 30),
+        ];
+        assert_eq!(
+            run_subject(&envs, true),
+            vec![(0, 0, false), (1, 1, true), (2, 1, true)]
+        );
+        // Without it, three roots, which is what rmut did before.
+        assert_eq!(run(&envs), vec![(0, 0), (1, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn sort_re_decides_whether_a_plain_subject_joins() {
+        // "hi", then a reply to it, then another unrelated "hi".
+        let envs = [
+            subj("a", "hi", &[], 10),
+            subj("b", "Re: hi", &[], 20),
+            subj("c", "hi", &[], 30),
+            subj("d", "Re: other", &[], 40),
+        ];
+        // $sort_re set (mutt's default): only the "Re:" one joins.
+        assert_eq!(
+            run_subject(&envs, true),
+            vec![(0, 0, false), (1, 1, true), (2, 0, false), (3, 0, false)]
+        );
+        // Unset: any equal subject joins, which is what makes a
+        // mailbox full of "hi" one thread.
+        assert_eq!(
+            run_subject(&envs, false),
+            vec![(0, 0, false), (1, 1, true), (2, 1, true), (3, 0, false)]
+        );
+    }
+
+    #[test]
+    fn a_renamed_reply_is_the_parent_for_its_own_subject() {
+        // b keeps a's subject, m renames the thread. A stray "Re:
+        // newtopic" belongs under m, not under the root: mutt's
+        // subject_changed, which keeps every message in a long thread
+        // from offering itself as a parent.
+        let envs = [
+            subj("a", "hi", &[], 10),
+            subj("b", "Re: hi", &["a"], 20),
+            subj("m", "Re: newtopic", &["a", "b"], 30),
+            subj("n", "Re: newtopic", &[], 40),
+        ];
+        assert_eq!(
+            run_subject(&envs, true),
+            vec![(0, 0, false), (1, 1, false), (2, 2, false), (3, 3, true)]
+        );
+    }
+
+    #[test]
+    fn a_subject_child_brings_its_own_replies_with_it() {
+        // c answered b by References; b, which carries none of its
+        // own, joins a by subject and c goes along, a level deeper.
+        let envs = [
+            subj("a", "hi", &[], 10),
+            subj("b", "Re: hi", &[], 20),
+            subj("c", "Re: hi", &["b"], 30),
+        ];
+        assert_eq!(
+            run_subject(&envs, true),
+            vec![(0, 0, false), (1, 1, true), (2, 2, false)]
+        );
+    }
+
+    #[test]
+    fn the_subject_pass_never_loops_or_reparents_a_real_child() {
+        // A message already placed by its chain stays there, and the
+        // oldest root of a subject is nobody's child.
+        let envs = [
+            subj("a", "Re: same", &[], 30),
+            subj("b", "Re: same", &["a"], 10),
+        ];
+        let out = run_subject(&envs, true);
+        assert_eq!(out.len(), 2);
+        // b hangs off a by reference; a, though later, cannot then
+        // hang off b.
+        assert_eq!(out, vec![(0, 0, false), (1, 1, false)]);
     }
 }
