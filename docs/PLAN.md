@@ -2417,6 +2417,30 @@ the same keys.
       `Gui::frame`, split from the eframe shell for exactly that.
       Snapshot scenarios can come with the wgpu feature if wanted
 
+### G2p: the pointer (still read-only)
+
+The aim, said 2026-08-31, re-ordering the rounds: a clickable
+interface - menus, context menus, the mailbox stripe - ahead of
+images and typography. All of it fits inside the read-only gate, and
+all of it obeys one rule: a click fires the same `Function` or
+keystroke path the keyboard uses (mostly by queueing the bound keys),
+so the clickable layer cannot drift from the keymap.
+
+- [ ] The menu bar: Mailbox / Message / Thread / Sort / Help, every
+      item labelled with its bound key (`Button::shortcut_text`),
+      firing by queueing those keys
+- [ ] Index rows clickable: click selects, double-click opens,
+      right-click is a context menu of the message operations
+- [ ] The mailbox stripe: the sidebar entries clickable (click
+      opens), counts as today, hover highlight
+- [ ] Wheel scrolling in the index, pager, help and folder screens;
+      key motion keeps mutt's recentering, the wheel moves the view
+      without dragging the cursor
+- [ ] The look of a list: hover highlight and a faint zebra stripe
+      under the index and the stripe, the selection full-strength
+- [ ] Tests where logic allows (the menu items queue the right keys);
+      the pointer itself is the user's to judge
+
 ### G3: a window that changes mail
 
 - [ ] Drop the forced read-only; sync, delete/undelete, flags, tags,
