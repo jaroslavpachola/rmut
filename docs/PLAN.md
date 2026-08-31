@@ -2376,7 +2376,7 @@ to do with ratatui, moved under it so both front ends share it.
       `#[deny(clippy::wildcard_enum_match_arm)]` - a new variant
       fails the build until the front end says what it does with it.
       The GUI's dispatch gets the same lint
-- [x] `app.rs` shrank by what left (3.3k to 2.9k); nothing else in
+- [x] `app.rs` shrank by what left (3339 to 3177 lines); nothing else in
       it changed. 71/71 scenarios, unit tests followed their code
 
 ### G2: a window that reads mail
