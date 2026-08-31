@@ -2384,31 +2384,38 @@ to do with ratatui, moved under it so both front ends share it.
 The smallest GUI that is honestly usable: read-only, keyboard-driven,
 the same keys.
 
-- [ ] `crates/rmut-egui`, workspace member, binary `rmut-egui`; the
-      same `parse_args` (moved to `rmut-front`) so `-f`, `-R`, `-e`
-      mean what they mean; `-s` and `-z`/`-Z` are refused with a
-      pointer to `rmut`
-- [ ] Index: `session.visible` through `format::IndexFields` and the
-      shared `$index_format` expander, monospace by default, the
-      index color rules applied. Thread depth, collapse, the sidebar
-- [ ] Pager: `pager_rows` over the same `MessageView`, quote colors,
-      body color rules, `$pager_index_lines`, search highlight
-- [ ] Status bar and message line from the shared expander; notices
-      through a `NoticeSink` that also calls `request_repaint`
-- [ ] Repaint discipline: the window idles. Worker `Done` messages
-      and IDLE wakeups request a repaint; `poll_network` and
-      `check_new_mail` run from a `request_repaint_after` tick at the
-      session's own intervals, never per frame
-- [ ] `Ask::Line` and `Ask::Key` as a bottom line, driven by the
-      shared line editor, history and completion included
-- [ ] `FrontOp`s handled: Exit, OpenSelected, Help, Redraw, PageMove,
+- [x] `crates/rmut-egui`, workspace member, binary `rmut-egui`
+      (egui 0.36: the unified `Panel` API, `App::ui`). Args are its
+      own small set for now (`-R`, `-y`, a mailbox); `-s`/`--` are
+      refused with a pointer at `rmut`, the rest of the TUI's flags
+      say "not in the GUI yet" - sharing `parse_args` through
+      `rmut-front` is still owed
+- [x] Index: the shared `rmut-front::index` row builder (text and
+      style from one place; the TUI now draws from it too), monospace
+      LayoutJob rows, thread depth, collapse, the sidebar
+- [x] Pager: `pager_rows` over the same `MessageView`, quote colors,
+      body color rules. Still owed: `$pager_index_lines`, the pager
+      search (and its highlight)
+- [x] Status bar and message line from the shared `rmut-front::status`
+      expanders; notices through the same one-line `NoticeSink`
+- [x] Repaint discipline: the window idles. `request_repaint_after`
+      at the poll interval, 30ms while the connection owes an answer;
+      `poll_network` / `check_new_mail` run between frames the way
+      the TUI runs them between keys
+- [x] `Ask::Line` and `Ask::Key` as a bottom line, driven by the
+      shared line editor with history; Tab completion still owed
+- [x] `FrontOp`s handled: Exit, OpenSelected, Help, Redraw, PageMove,
       Sidebar, ErrorHistory, OpenMailbox, ChangeMailbox, Folders,
-      WhatKey, CommandPrompt. Everything that writes or spawns is a
-      said-once notice, and `read_only_session` is forced
-- [ ] Tests without a pty: `egui_kittest` (check the version pairs
-      with the egui in use) drives keys and reads the accessibility
-      tree; a `scenario_gui_index` and `scenario_gui_pager` cover
-      what the pty scenarios cover for the TUI's first two screens
+      WhatKey, CommandPrompt, TagPrefix; macros replay through the
+      same queue; `:` commands run (bind/macro from `:` still owed).
+      Everything that writes or spawns is a said-once notice, and
+      `read_only_session` is forced
+- [x] Tests without a pty: the key logic drives `Gui::handle_keys`
+      directly over a maildir fixture (motion, pager, limit, screens,
+      the read-only guarantee, the said-once refusals), and
+      `egui_kittest` 0.36 runs the layout headless through
+      `Gui::frame`, split from the eframe shell for exactly that.
+      Snapshot scenarios can come with the wgpu feature if wanted
 
 ### G3: a window that changes mail
 
