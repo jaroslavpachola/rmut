@@ -3,7 +3,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use rmut_core::format;
 use rmut_core::message::Part;
 
 use rmut_front::pager::{Menu, PagerStyle, Row, RowKind, humanize_size, pager_rows, recenter};
