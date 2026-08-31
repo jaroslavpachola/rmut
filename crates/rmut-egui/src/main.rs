@@ -5,6 +5,8 @@
 mod app;
 mod input;
 mod paint;
+#[cfg(test)]
+mod tests;
 
 use anyhow::{Result, bail};
 

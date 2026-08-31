@@ -788,8 +788,11 @@ impl Gui {
     }
 }
 
-impl eframe::App for Gui {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl Gui {
+    /// One frame: the session's background work, this frame's keys,
+    /// the painting, and the next wake-up. Everything but the window
+    /// itself, so a test harness can drive it without one.
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // The connection's finished work lands between frames, the
         // way the TUI does it between keys.
@@ -809,9 +812,6 @@ impl eframe::App for Gui {
             self.handle_keys(keys);
         }
         crate::paint::draw(self, ui);
-        if self.quit {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
         // Idle by default: wake for the poll interval, or quickly
         // while the connection owes an answer.
         ctx.request_repaint_after(if self.session.busy().is_some() {
@@ -819,5 +819,14 @@ impl eframe::App for Gui {
         } else {
             poll_every
         });
+    }
+}
+
+impl eframe::App for Gui {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+        if self.quit {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
