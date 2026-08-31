@@ -2426,20 +2426,23 @@ all of it obeys one rule: a click fires the same `Function` or
 keystroke path the keyboard uses (mostly by queueing the bound keys),
 so the clickable layer cannot drift from the keymap.
 
-- [ ] The menu bar: Mailbox / Message / Thread / Sort / Help, every
+- [x] The menu bar: Mailbox / Message / Thread / Sort / Help, every
       item labelled with its bound key (`Button::shortcut_text`),
-      firing by queueing those keys
-- [ ] Index rows clickable: click selects, double-click opens,
-      right-click is a context menu of the message operations
-- [ ] The mailbox stripe: the sidebar entries clickable (click
-      opens), counts as today, hover highlight
-- [ ] Wheel scrolling in the index, pager, help and folder screens;
-      key motion keeps mutt's recentering, the wheel moves the view
-      without dragging the cursor
-- [ ] The look of a list: hover highlight and a faint zebra stripe
-      under the index and the stripe, the selection full-strength
+      firing by queueing those keys at the top of the next frame
+- [x] Index rows clickable: click selects, double-click opens,
+      right-click selects and is a context menu of the message
+      operations, every item the keys it stands for
+- [x] The mailbox stripe: the sidebar entries clickable (click
+      opens), counts as today, hover highlight; the folder browser
+      rows click open too
+- [x] Wheel scrolling in the index, pager and help screens; key
+      motion keeps mutt's recentering (it now runs only on key
+      frames), the wheel moves the view without dragging the cursor
+- [x] The look of a list: a translucent hover wash and a faint zebra
+      stripe under the index, the selection full-strength reverse
 - [ ] Tests where logic allows (the menu items queue the right keys);
-      the pointer itself is the user's to judge
+      the pointer itself is the user's to judge. Still owed, with the
+      round judged in daily use first
 
 ### G3: a window that changes mail
 
