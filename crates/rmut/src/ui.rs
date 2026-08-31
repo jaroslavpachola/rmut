@@ -3,12 +3,10 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use rmut_core::format::{self, IndexFields};
-use rmut_core::message::{self, Part};
+use rmut_core::format;
+use rmut_core::message::Part;
 
-use rmut_front::pager::{
-    Menu, PagerStyle, Row, RowKind, humanize_size, pager_line_count, pager_rows, recenter,
-};
+use rmut_front::pager::{Menu, PagerStyle, Row, RowKind, humanize_size, pager_rows, recenter};
 use rmut_front::status;
 
 use crate::app::{App, Mode, Pager, Prompt};
@@ -236,14 +234,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
     );
     let width = area.width as usize;
     let mut lines = Vec::with_capacity(rows);
-    // `~m` / `~=` in a [[color_index]] rule need the numbering on
-    // screen and the repeated Message-IDs, counted once per draw.
-    let mut id_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for m in &app.session.msgs {
-        if let Some(id) = m.env.msg_id.as_deref() {
-            *id_counts.entry(id).or_default() += 1;
-        }
-    }
+    let id_counts = rmut_front::index::id_counts(&app.session);
     for (vi, &mi) in app
         .session
         .visible
@@ -252,119 +243,16 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
         .skip(app.index_offset)
         .take(rows)
     {
-        let msg = &app.session.msgs[mi];
-        let env = &msg.env;
-        let status = env.file.flags.status_char(env.file.is_new);
-        let flagged = if env.file.flags.flagged { '!' } else { ' ' };
-        // Third %Z slot, mutt-style: tag mark, or mutt's $to_chars
-        // (" +TCFL") for how the mail relates to me. Precedence is
-        // mutt's: sent by me, then To (alone, or among others), then
-        // Cc, then a subscribed list.
-        let me = app.session.me();
-        let mark = if env.tagged {
-            '*'
-        } else if me.wrote(&env.from_full) {
-            'F'
-        } else if me.any(&env.to) {
-            // mutt's '+' means sole recipient: one To and no Cc.
-            if env.to.len() == 1 && env.cc.is_empty() {
-                '+'
-            } else {
-                'T'
-            }
-        } else if me.any(&env.cc) {
-            'C'
-        } else if env
-            .to
-            .iter()
-            .chain(&env.cc)
-            .any(|a| app.session.subscribed.iter().any(|m| m.is_match(a)))
-        {
-            'L'
-        } else {
-            ' '
-        };
-        let (depth, hidden) = app.session.thread_info(mi);
-        let fmt = app
-            .session
-            .config
-            .index
-            .format
-            .as_deref()
-            .unwrap_or(format::DEFAULT_FORMAT);
-        // mutt's $hide_thread_subject: a reply repeating its parent's
-        // subject shows only the tree arrow.
-        let mut subject = if app.session.subject_hidden(mi) {
-            String::new()
-        } else {
-            env.subject.clone()
-        };
-        // The hidden count rides on the subject unless the format
-        // places it itself with %M.
-        if let Some(n) = hidden
-            && !fmt.contains("%M")
-            && !fmt.contains("?M?")
-        {
-            subject += &format!(" ({n} hidden)");
-        }
-        if depth > 0 {
-            // mutt stars the arrow of a message the subject fallback
-            // placed, so a thread says which of it the senders meant.
-            let arrow = if app.session.subject_threaded(mi) {
-                "└*"
-            } else {
-                "└>"
-            };
-            subject = format!("{}{arrow}{subject}", "  ".repeat(depth - 1));
-        }
-        let text = format::render(
-            fmt,
-            &IndexFields {
-                number: vi + 1,
-                status,
-                flag: flagged,
-                mark,
-                date: &message::format_index_date_with(
-                    env.date,
-                    app.session.config.index.date_format.as_deref(),
-                ),
-                from: &env.from,
-                size: &humanize_size(env.file.size),
-                lines: env.lines,
-                list: env.list.as_deref(),
-                label: env.label.as_deref(),
-                hidden,
-                subject: &subject,
-            },
+        let (text, style) = rmut_front::index::row(
+            &app.session,
+            &app.theme,
+            &app.index_rules,
+            &id_counts,
+            vi,
+            mi,
         );
         let text = format!("{text:<width$}");
-        let mut style = Style::new();
-        if status == 'N' || status == 'O' {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        if status == 'D' {
-            style = style.fg(theme::color(app.theme.deleted));
-        } else if env.tagged {
-            style = style.fg(theme::color(app.theme.tagged));
-        } else if env.file.flags.flagged {
-            style = style.fg(theme::color(app.theme.flagged));
-        }
-        // The first matching [[color_index]] rule wins over the
-        // built-in slot colors.
-        let pos = rmut_core::pattern::Position {
-            number: vi + 1,
-            current: app.session.sel + 1,
-            last: app.session.visible.len(),
-            duplicate: env
-                .msg_id
-                .as_deref()
-                .is_some_and(|id| id_counts.get(id).copied().unwrap_or(0) > 1),
-        };
-        if let Some((_, rule)) = app.index_rules.iter().find(|(patterns, _)| {
-            rmut_core::pattern::matches_in(patterns, env, app.session.scope(pos), None)
-        }) {
-            style = style.patch(theme::style(*rule));
-        }
+        let mut style = theme::style(style);
         // mutt's $arrow_cursor: an arrow marks the selection instead
         // of reverse video.
         let text = if arrow {
