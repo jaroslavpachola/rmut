@@ -74,6 +74,10 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(size))) + 2.0;
     let bar_style = gui.theme.bar_style();
 
+    egui::Panel::top("menubar").show(root, |ui| {
+        menu_bar(gui, ui);
+    });
+
     // The help bar (mutt's $help) across the top.
     if gui.session.config.ui.help.unwrap_or(true) {
         egui::Panel::top("help").show(root, |ui| {
@@ -142,7 +146,8 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
             .resizable(false)
             .show(root, |ui| {
                 ui.set_width(char_w * gui.session.config.sidebar.width.clamp(10, 40) as f32);
-                let mut job = LayoutJob::default();
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut open = None;
                 for (i, (spec, count)) in gui.sidebar.iter().enumerate() {
                     let marker = if Some(i) == gui.sidebar_open {
                         ">"
@@ -160,9 +165,21 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     } else {
                         Style::new()
                     };
-                    mono_line(&mut job, &text, style, size);
+                    let mut job = LayoutJob::default();
+                    job.append(&text, 0.0, format(style, size));
+                    let response =
+                        ui.add(egui::Label::new(job).truncate().sense(egui::Sense::click()));
+                    hover(ui, &response);
+                    if response.clicked() {
+                        open = Some((i, spec.clone()));
+                    }
                 }
-                ui.add(egui::Label::new(job).truncate());
+                // The stripe opens what it names, the way every mail
+                // window's folder list does.
+                if let Some((i, spec)) = open {
+                    gui.sidebar_sel = i;
+                    gui.open_mailbox_spec(&spec);
+                }
             });
     }
 
@@ -175,24 +192,48 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
             match &gui.mode {
                 Mode::Index => draw_index(gui, ui, rows, width, size),
                 Mode::Pager(_) => draw_pager(gui, ui, rows, width, size),
-                Mode::Help { lines, scroll } => {
+                Mode::Help { .. } => {
+                    let wheel = wheel_rows(gui, ui, size);
+                    let Mode::Help { lines, scroll } = &mut gui.mode else {
+                        return;
+                    };
+                    let max = lines.len().saturating_sub(rows);
+                    *scroll = (*scroll as i64 + wheel).clamp(0, max as i64) as usize;
                     let mut job = LayoutJob::default();
                     for line in lines.iter().skip(*scroll).take(rows) {
                         mono_line(&mut job, line, Style::new(), size);
                     }
                     ui.add(egui::Label::new(job).extend());
                 }
-                Mode::Folders { dirs, sel } => {
-                    let mut job = LayoutJob::default();
+                Mode::Folders { .. } => {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let Mode::Folders { dirs, sel } = &gui.mode else {
+                        return;
+                    };
+                    let (dirs, sel) = (dirs.clone(), *sel);
+                    let mut open = None;
                     for (i, (spec, count)) in dirs.iter().enumerate().take(rows) {
-                        let style = if i == *sel {
+                        let style = if i == sel {
                             Style::new().reversed()
                         } else {
                             Style::new()
                         };
-                        mono_line(&mut job, &format!("{spec:<40} {count:>5} new"), style, size);
+                        let mut job = LayoutJob::default();
+                        job.append(
+                            &format!("{spec:<40} {count:>5} new"),
+                            0.0,
+                            format(style, size),
+                        );
+                        let response =
+                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        hover(ui, &response);
+                        if response.clicked() {
+                            open = Some(spec.clone());
+                        }
                     }
-                    ui.add(egui::Label::new(job).extend());
+                    if let Some(spec) = open {
+                        gui.open_mailbox_spec(&spec);
+                    }
                 }
             }
         });
@@ -216,19 +257,28 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         return;
     }
     let cfg = &gui.session.config.ui;
-    gui.index_offset = recenter(
-        gui.index_offset,
-        gui.session.sel,
-        rows,
-        gui.session.visible.len(),
-        Menu {
-            scroll: cfg.menu_scroll.unwrap_or(true),
-            context: cfg.menu_context,
-            move_off: cfg.menu_move_off.unwrap_or(true),
-        },
-    );
+    // Key motion keeps mutt's recentering; the wheel moves the view
+    // without dragging the cursor.
+    if gui.keys_this_frame {
+        gui.index_offset = recenter(
+            gui.index_offset,
+            gui.session.sel,
+            rows,
+            gui.session.visible.len(),
+            Menu {
+                scroll: cfg.menu_scroll.unwrap_or(true),
+                context: cfg.menu_context,
+                move_off: cfg.menu_move_off.unwrap_or(true),
+            },
+        );
+    }
+    let max_offset = gui.session.visible.len().saturating_sub(rows);
+    gui.index_offset =
+        (gui.index_offset as i64 + wheel_rows(gui, ui, size)).clamp(0, max_offset as i64) as usize;
     let id_counts = rmut_front::index::id_counts(&gui.session);
-    let mut job = LayoutJob::default();
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut clicked: Option<(usize, bool)> = None;
+    let mut ctx_fire: Option<(usize, &str)> = None;
     for (vi, &mi) in gui
         .session
         .visible
@@ -236,6 +286,7 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         .enumerate()
         .skip(gui.index_offset)
         .take(rows)
+        .collect::<Vec<_>>()
     {
         let (text, mut style) = rmut_front::index::row(
             &gui.session,
@@ -248,12 +299,153 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         if vi == gui.session.sel {
             style = style.reversed();
         }
-        mono_line(&mut job, &format!("{text:<width$}"), style, size);
+        let mut fmt = format(style, size);
+        // A faint zebra under the unselected rows, so the list reads
+        // as rows even where the columns run together.
+        if vi % 2 == 1 && fmt.background == Color32::TRANSPARENT {
+            fmt.background = Color32::from_gray(0x1a);
+        }
+        let mut job = LayoutJob::default();
+        job.append(&format!("{text:<width$}"), 0.0, fmt);
+        let response = ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+        hover(ui, &response);
+        if response.clicked() || response.secondary_clicked() {
+            clicked = Some((vi, response.double_clicked()));
+        }
+        response.context_menu(|ui| {
+            for (label, keys) in CONTEXT_ITEMS {
+                if menu_item(ui, label, keys) {
+                    ctx_fire = Some((vi, keys));
+                }
+            }
+        });
     }
-    ui.add(egui::Label::new(job).extend());
+    if let Some((vi, open)) = clicked {
+        gui.click_row(vi);
+        if open {
+            gui.click("<enter>");
+        }
+    }
+    if let Some((vi, keys)) = ctx_fire {
+        gui.click_row(vi);
+        gui.click(keys);
+    }
 }
 
-fn draw_pager(gui: &Gui, ui: &mut egui::Ui, rows: usize, width: usize, size: f32) {
+/// The row's operations, each item firing the keys it stands for.
+const CONTEXT_ITEMS: &[(&str, &str)] = &[
+    ("Open", "<enter>"),
+    ("Reply", "r"),
+    ("Reply to all", "g"),
+    ("Forward", "f"),
+    ("Tag", "t"),
+    ("Flag", "F"),
+    ("Delete", "d"),
+    ("Undelete", "u"),
+    ("Save…", "s"),
+    ("Collapse thread", "<alt+v>"),
+];
+
+/// Wheel motion as whole rows, the remainder kept for next frame.
+fn wheel_rows(gui: &mut Gui, ui: &egui::Ui, size: f32) -> i64 {
+    let row_h = ui
+        .ctx()
+        .fonts_mut(|f| f.row_height(&FontId::monospace(size)))
+        + 2.0;
+    let delta = ui.input(|i| i.smooth_scroll_delta.y);
+    gui.scroll_px += delta;
+    let rows = (gui.scroll_px / row_h) as i64;
+    gui.scroll_px -= rows as f32 * row_h;
+    // Scrolling up (positive delta) moves the view up the list.
+    -rows
+}
+
+/// A button labelled with the key it queues, so the pointer and the
+/// keyboard can never disagree.
+fn menu_item(ui: &mut egui::Ui, label: &str, keys: &str) -> bool {
+    let shortcut = match keys.strip_prefix('<').and_then(|k| k.strip_suffix('>')) {
+        Some(name) => rmut_front::parse_key(name)
+            .map(|p| p.display())
+            .unwrap_or_default(),
+        None => keys.to_string(),
+    };
+    ui.add(egui::Button::new(label).shortcut_text(shortcut))
+        .clicked()
+}
+
+/// The menu bar: every item fires by queueing its bound keys, so the
+/// menus are the keymap made clickable, never a second list of what
+/// rmut can do.
+fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
+    let mut fire: Option<&'static str> = None;
+    let item = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys| {
+        if menu_item(ui, label, keys) {
+            *target = Some(keys);
+        }
+    };
+    egui::MenuBar::new().ui(ui, |ui| {
+        ui.menu_button("Mailbox", |ui| {
+            item(&mut fire, ui, "Open…", "c");
+            item(&mut fire, ui, "Browse folders", "y");
+            item(&mut fire, ui, "Limit…", "l");
+            ui.separator();
+            item(&mut fire, ui, "Quit", "q");
+        });
+        ui.menu_button("Message", |ui| {
+            item(&mut fire, ui, "Open", "<enter>");
+            item(&mut fire, ui, "Reply", "r");
+            item(&mut fire, ui, "Reply to all", "g");
+            item(&mut fire, ui, "Forward", "f");
+            ui.separator();
+            item(&mut fire, ui, "Tag", "t");
+            item(&mut fire, ui, "Flag", "F");
+            item(&mut fire, ui, "Delete", "d");
+            item(&mut fire, ui, "Undelete", "u");
+            item(&mut fire, ui, "Save…", "s");
+        });
+        ui.menu_button("Thread", |ui| {
+            item(&mut fire, ui, "Collapse", "<alt+v>");
+            item(&mut fire, ui, "Collapse all", "<alt+V>");
+            item(&mut fire, ui, "Next", "<alt+n>");
+            item(&mut fire, ui, "Previous", "<alt+p>");
+            item(&mut fire, ui, "Parent message", "P");
+        });
+        ui.menu_button("Sort", |ui| {
+            item(&mut fire, ui, "Date", "od");
+            item(&mut fire, ui, "From", "of");
+            item(&mut fire, ui, "Subject", "os");
+            item(&mut fire, ui, "Size", "oz");
+            item(&mut fire, ui, "Threads", "ot");
+            item(&mut fire, ui, "Label", "oy");
+            ui.separator();
+            item(&mut fire, ui, "Reverse date", "oD");
+        });
+        ui.menu_button("Help", |ui| {
+            item(&mut fire, ui, "Keys", "?");
+            item(&mut fire, ui, "Version", "V");
+        });
+    });
+    if let Some(keys) = fire {
+        gui.click(keys);
+    }
+}
+
+/// A translucent wash over a hovered row: the pointer's own
+/// highlight, under the selection's full-strength reverse.
+fn hover(ui: &egui::Ui, response: &egui::Response) {
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(response.rect, 0.0, Color32::from_white_alpha(10));
+    }
+}
+
+fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size: f32) {
+    let wheel = wheel_rows(gui, ui, size);
+    let total = gui.pager_line_total(width);
+    if let Mode::Pager(pager) = &mut gui.mode {
+        let max = total.saturating_sub(rows);
+        pager.scroll = (pager.scroll as i64 + wheel).clamp(0, max as i64) as usize;
+    }
     let Mode::Pager(pager) = &gui.mode else {
         return;
     };

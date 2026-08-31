@@ -14,7 +14,7 @@ use rmut_front::editor::{Edit, History, LineEdit};
 use rmut_front::pager::{PagerStyle, pager_line_count};
 use rmut_front::style::{Style, rule_style};
 use rmut_front::theme::Theme;
-use rmut_front::{KeyCode, KeyEvent, Keymap, PagerAction};
+use rmut_front::{KeyCode, KeyEvent, Keymap, PagerAction, parse_sequence};
 use rmut_session::{
     Answer, Ask, AskKind, FrontOp, Function, Key, Outcome, PageSpot, Request, Session, SidebarOp,
     Wants,
@@ -126,6 +126,11 @@ pub struct Gui {
     what_key: bool,
     /// The "not in the GUI yet" notices already said once.
     said: std::collections::HashSet<&'static str>,
+    /// Keys were handled this frame, so the index recenters on the
+    /// cursor; wheel scrolling moves the view without it.
+    pub keys_this_frame: bool,
+    /// Wheel remainder, in points, until a whole row is crossed.
+    pub scroll_px: f32,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -178,6 +183,8 @@ impl Gui {
             tag_next: false,
             what_key: false,
             said: Default::default(),
+            keys_this_frame: false,
+            scroll_px: 0.0,
             last_poll: Instant::now(),
             quit: false,
         };
@@ -358,6 +365,20 @@ impl Gui {
             self.session.clear_notice();
             self.handle_key(key);
         }
+    }
+
+    /// A click, spelled as the keys it stands for (`"r"`,
+    /// `"<alt+v>"`): queued for the top of the next frame, so a menu
+    /// item can never do anything the keyboard cannot.
+    pub fn click(&mut self, keys: &str) {
+        if let Some(seq) = parse_sequence(keys) {
+            self.pending_keys.extend(seq);
+        }
+    }
+
+    /// Select by index-row position (a click on the row).
+    pub fn click_row(&mut self, vi: usize) {
+        self.session.select(vi);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -595,7 +616,7 @@ impl Gui {
         self.run_requests();
     }
 
-    fn open_mailbox_spec(&mut self, spec: &str) {
+    pub fn open_mailbox_spec(&mut self, spec: &str) {
         if !self.session.ready_to_leave() {
             self.run_requests();
             return;
@@ -644,6 +665,21 @@ impl Gui {
             return;
         };
         self.run_pager_action(action);
+    }
+
+    /// Total pager display lines at this width, for the wheel.
+    pub fn pager_line_total(&self, width: usize) -> usize {
+        let Mode::Pager(pager) = &self.mode else {
+            return 0;
+        };
+        let wrap = rmut_front::status::pager_wrap(&self.session.config, width);
+        pager_line_count(
+            &pager.view,
+            wrap,
+            pager.full_headers,
+            &PagerStyle::of(&self.session.config, &self.session.quote_re),
+            pager.hide_quoted,
+        )
     }
 
     fn pager_lines(&self) -> usize {
@@ -794,6 +830,11 @@ impl Gui {
     /// itself, so a test harness can drive it without one.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Keys a menu or context item queued during the last paint.
+        if !self.pending_keys.is_empty() {
+            self.handle_keys(Vec::new());
+            self.keys_this_frame = true;
+        }
         // The connection's finished work lands between frames, the
         // way the TUI does it between keys.
         self.session.sync_message_hooks();
@@ -809,9 +850,11 @@ impl Gui {
         }
         let keys = ctx.input(|i| crate::input::keys(&i.events));
         if !keys.is_empty() {
+            self.keys_this_frame = true;
             self.handle_keys(keys);
         }
         crate::paint::draw(self, ui);
+        self.keys_this_frame = false;
         // Idle by default: wake for the poll interval, or quickly
         // while the connection owes an answer.
         ctx.request_repaint_after(if self.session.busy().is_some() {
