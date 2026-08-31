@@ -1,0 +1,328 @@
+//! The window, painted: mutt's four regions in a monospace grid.
+//! Everything shown comes from `rmut-front`; this file only turns
+//! its rows and styles into egui text.
+
+use eframe::egui::{self, Color32, FontId, RichText, TextFormat, text::LayoutJob};
+use rmut_front::pager::{Menu, PagerStyle, RowKind, pager_rows, recenter};
+use rmut_front::status;
+use rmut_front::style::{Color, Style};
+
+use crate::app::{Gui, Mode, Prompt};
+
+/// The terminal palette on a dark window, xterm's shades.
+fn color32(c: Color, fallback: Color32) -> Color32 {
+    match c {
+        Color::Reset => fallback,
+        Color::Black => Color32::from_rgb(0x00, 0x00, 0x00),
+        Color::Red => Color32::from_rgb(0xcd, 0x00, 0x00),
+        Color::Green => Color32::from_rgb(0x00, 0xcd, 0x00),
+        Color::Yellow => Color32::from_rgb(0xcd, 0xcd, 0x00),
+        Color::Blue => Color32::from_rgb(0x4c, 0x6c, 0xff),
+        Color::Magenta => Color32::from_rgb(0xcd, 0x00, 0xcd),
+        Color::Cyan => Color32::from_rgb(0x00, 0xcd, 0xcd),
+        Color::White => Color32::from_rgb(0xe5, 0xe5, 0xe5),
+        Color::DarkGray => Color32::from_rgb(0x7f, 0x7f, 0x7f),
+        Color::LightRed => Color32::from_rgb(0xff, 0x5c, 0x5c),
+        Color::LightGreen => Color32::from_rgb(0x5c, 0xff, 0x5c),
+        Color::LightYellow => Color32::from_rgb(0xff, 0xff, 0x5c),
+        Color::LightBlue => Color32::from_rgb(0x8c, 0xa8, 0xff),
+        Color::LightMagenta => Color32::from_rgb(0xff, 0x5c, 0xff),
+        Color::LightCyan => Color32::from_rgb(0x5c, 0xff, 0xff),
+    }
+}
+
+const FG: Color32 = Color32::from_rgb(0xd8, 0xd8, 0xd8);
+const BG: Color32 = Color32::from_rgb(0x10, 0x10, 0x10);
+
+/// A front-end style as egui text: bold is left to the color (egui
+/// has no monospace bold face by default), reverse swaps the pair.
+fn format(style: Style, size: f32) -> TextFormat {
+    let mut fg = color32(style.fg.unwrap_or(Color::Reset), FG);
+    let mut bg = style
+        .bg
+        .map(|c| color32(c, BG))
+        .unwrap_or(Color32::TRANSPARENT);
+    if style.reversed {
+        let solid_bg = if bg == Color32::TRANSPARENT { BG } else { bg };
+        (fg, bg) = (solid_bg, fg);
+    }
+    if style.bold {
+        fg = Color32::WHITE.lerp_to_gamma(fg, 0.4);
+    }
+    TextFormat {
+        font_id: FontId::monospace(size),
+        color: fg,
+        background: bg,
+        underline: if style.underline {
+            egui::Stroke::new(1.0, fg)
+        } else {
+            egui::Stroke::NONE
+        },
+        ..Default::default()
+    }
+}
+
+fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
+    job.append(text, 0.0, format(style, size));
+    job.append("\n", 0.0, format(Style::new(), size));
+}
+
+pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
+    let size = 14.0;
+    let ctx = root.ctx().clone();
+    let char_w = ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(size), ' '));
+    let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(size))) + 2.0;
+    let bar_style = gui.theme.bar_style();
+
+    // The help bar (mutt's $help) across the top.
+    if gui.session.config.ui.help.unwrap_or(true) {
+        egui::Panel::top("help").show(root, |ui| {
+            let help = match gui.mode {
+                Mode::Index => crate::paint::INDEX_HELP,
+                Mode::Pager(_) => PAGER_HELP,
+                Mode::Help { .. } => HELP_HELP,
+                Mode::Folders { .. } => FOLDERS_HELP,
+            };
+            let mut job = LayoutJob::default();
+            job.append(help, 0.0, format(bar_style, size));
+            ui.add(egui::Label::new(job).truncate());
+        });
+    }
+
+    // The message line at the very bottom, the status bar above it.
+    egui::Panel::bottom("message").show(root, |ui| {
+        let text = match &gui.prompt {
+            Some(Prompt::Line { label, edit, .. }) => {
+                let i = rmut_front::editor::byte_at(&edit.buf, edit.cursor);
+                format!("{label}{}\u{2581}{}", &edit.buf[..i], &edit.buf[i..])
+            }
+            Some(Prompt::Key { label, .. }) => label.clone(),
+            None => gui
+                .notice()
+                .map(|n| n.text().to_string())
+                .unwrap_or_default(),
+        };
+        let style = match gui.notice() {
+            Some(n) if n.is_error() && gui.prompt.is_none() => gui.theme.error,
+            _ => Style::new(),
+        };
+        let mut job = LayoutJob::default();
+        job.append(
+            if text.is_empty() { " " } else { &text },
+            0.0,
+            format(style, size),
+        );
+        ui.add(egui::Label::new(job).truncate());
+    });
+    egui::Panel::bottom("status").show(root, |ui| {
+        let width = (ui.available_width() / char_w) as usize;
+        let rows = gui.view_size.0;
+        let text = match &gui.mode {
+            Mode::Pager(pager) => status::pager_status(
+                &gui.session,
+                &status::PagerView {
+                    view: &pager.view,
+                    scroll: pager.scroll,
+                    full_headers: pager.full_headers,
+                    hide_quoted: pager.hide_quoted,
+                },
+                rows,
+                width,
+            ),
+            _ => status::index_status(&gui.session, gui.index_offset, width, rows),
+        };
+        let mut job = LayoutJob::default();
+        job.append(&text, 0.0, format(bar_style, size));
+        ui.add(egui::Label::new(job).truncate());
+    });
+
+    // The sidebar, a left slice of the index view.
+    if matches!(gui.mode, Mode::Index) && gui.sidebar_visible {
+        egui::Panel::left("sidebar")
+            .resizable(false)
+            .show(root, |ui| {
+                ui.set_width(char_w * gui.session.config.sidebar.width.clamp(10, 40) as f32);
+                let mut job = LayoutJob::default();
+                for (i, (spec, count)) in gui.sidebar.iter().enumerate() {
+                    let marker = if Some(i) == gui.sidebar_open {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    let label = status_label(spec);
+                    let text = if *count > 0 {
+                        format!("{marker}{label} ({count})")
+                    } else {
+                        format!("{marker}{label}")
+                    };
+                    let style = if i == gui.sidebar_sel {
+                        Style::new().reversed()
+                    } else {
+                        Style::new()
+                    };
+                    mono_line(&mut job, &text, style, size);
+                }
+                ui.add(egui::Label::new(job).truncate());
+            });
+    }
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE.fill(BG))
+        .show(root, |ui| {
+            let rows = (ui.available_height() / row_h).max(1.0) as usize;
+            let width = ((ui.available_width() / char_w) as usize).max(20);
+            gui.view_size = (rows, width);
+            match &gui.mode {
+                Mode::Index => draw_index(gui, ui, rows, width, size),
+                Mode::Pager(_) => draw_pager(gui, ui, rows, width, size),
+                Mode::Help { lines, scroll } => {
+                    let mut job = LayoutJob::default();
+                    for line in lines.iter().skip(*scroll).take(rows) {
+                        mono_line(&mut job, line, Style::new(), size);
+                    }
+                    ui.add(egui::Label::new(job).extend());
+                }
+                Mode::Folders { dirs, sel } => {
+                    let mut job = LayoutJob::default();
+                    for (i, (spec, count)) in dirs.iter().enumerate().take(rows) {
+                        let style = if i == *sel {
+                            Style::new().reversed()
+                        } else {
+                            Style::new()
+                        };
+                        mono_line(&mut job, &format!("{spec:<40} {count:>5} new"), style, size);
+                    }
+                    ui.add(egui::Label::new(job).extend());
+                }
+            }
+        });
+}
+
+fn status_label(spec: &str) -> &str {
+    spec.rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(spec)
+}
+
+fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size: f32) {
+    if gui.session.visible.is_empty() {
+        let text = if gui.session.limit.is_some() {
+            "No messages match the limit (l clears it)."
+        } else {
+            "No mail in mailbox."
+        };
+        ui.label(RichText::new(text).monospace().color(FG));
+        return;
+    }
+    let cfg = &gui.session.config.ui;
+    gui.index_offset = recenter(
+        gui.index_offset,
+        gui.session.sel,
+        rows,
+        gui.session.visible.len(),
+        Menu {
+            scroll: cfg.menu_scroll.unwrap_or(true),
+            context: cfg.menu_context,
+            move_off: cfg.menu_move_off.unwrap_or(true),
+        },
+    );
+    let id_counts = rmut_front::index::id_counts(&gui.session);
+    let mut job = LayoutJob::default();
+    for (vi, &mi) in gui
+        .session
+        .visible
+        .iter()
+        .enumerate()
+        .skip(gui.index_offset)
+        .take(rows)
+    {
+        let (text, mut style) = rmut_front::index::row(
+            &gui.session,
+            &gui.theme,
+            &gui.index_rules,
+            &id_counts,
+            vi,
+            mi,
+        );
+        if vi == gui.session.sel {
+            style = style.reversed();
+        }
+        mono_line(&mut job, &format!("{text:<width$}"), style, size);
+    }
+    ui.add(egui::Label::new(job).extend());
+}
+
+fn draw_pager(gui: &Gui, ui: &mut egui::Ui, rows: usize, width: usize, size: f32) {
+    let Mode::Pager(pager) = &gui.mode else {
+        return;
+    };
+    let wrap = status::pager_wrap(&gui.session.config, width);
+    let all = pager_rows(
+        &pager.view,
+        wrap,
+        pager.full_headers,
+        &PagerStyle::of(&gui.session.config, &gui.session.quote_re),
+        pager.hide_quoted,
+    );
+    let header_style = Style::new().fg(gui.theme.header).bold();
+    let mut job = LayoutJob::default();
+    for row in all.iter().skip(pager.scroll).take(rows) {
+        match row.kind {
+            RowKind::Header => match row.text.split_once(": ") {
+                Some((name, value)) => {
+                    job.append(&format!("{name}: "), 0.0, format(header_style, size));
+                    job.append(value, 0.0, format(Style::new(), size));
+                    job.append("\n", 0.0, format(Style::new(), size));
+                }
+                None => mono_line(&mut job, &row.text, header_style, size),
+            },
+            RowKind::Marker => mono_line(&mut job, &row.text, header_style, size),
+            RowKind::Quoted(depth) => {
+                let style = match gui.theme.quoted.len() {
+                    0 => Style::new(),
+                    n => Style::new().fg(gui.theme.quoted[(depth - 1) % n]),
+                };
+                body_line(gui, &mut job, &row.text, style, size);
+            }
+            RowKind::Text => body_line(gui, &mut job, &row.text, Style::new(), size),
+        }
+    }
+    ui.add(egui::Label::new(job).extend());
+}
+
+/// [[color_body]] spans laid over the line, the TUI's `body_line`.
+fn body_line(gui: &Gui, job: &mut LayoutJob, text: &str, base: Style, size: f32) {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    if chars.is_empty() {
+        job.append("\n", 0.0, format(base, size));
+        return;
+    }
+    let mut styles = vec![base; chars.len()];
+    for (re, style) in &gui.body_rules {
+        for m in re.find_iter(text) {
+            for (i, (off, _)) in chars.iter().enumerate() {
+                if *off >= m.start() && *off < m.end() {
+                    styles[i] = styles[i].patch(*style);
+                }
+            }
+        }
+    }
+    let mut cur = String::new();
+    let mut cur_style = styles[0];
+    for (i, (_, c)) in chars.iter().enumerate() {
+        if styles[i] != cur_style {
+            job.append(&cur, 0.0, format(cur_style, size));
+            cur.clear();
+            cur_style = styles[i];
+        }
+        cur.push(*c);
+    }
+    cur.push('\n');
+    job.append(&cur, 0.0, format(cur_style, size));
+}
+
+pub const INDEX_HELP: &str = "q:Quit Enter:View m:New r:Reply f:Fwd t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs ?:Help";
+const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev h:Headers T:Quoted";
+const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
+const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";

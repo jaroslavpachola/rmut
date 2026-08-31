@@ -1,0 +1,22 @@
+[package]
+name = "rmut-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "rmut in a window: the egui front end over rmut-session"
+keywords = ["mail", "maildir", "mbox", "imap", "mutt"]
+categories = ["email"]
+
+[dependencies]
+anyhow = { workspace = true }
+eframe = { workspace = true }
+regex-lite = { workspace = true }
+rmut-core = { workspace = true }
+rmut-front = { workspace = true }
+rmut-session = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe"] }
+tempfile = "3"
