@@ -2355,21 +2355,29 @@ to do with ratatui, moved under it so both front ends share it.
       like crossterm's so the move was an import swap); the TUI maps
       crossterm's event to it at its one read site (`front_key`).
       `just publish` gained the crate in order. 70/70
-- [ ] The pure `ui.rs` functions move: `pager_rows`, `wrap_line_with`,
-      `quote_depth`, `recenter`, `humanize_size`, `index_title` and
-      the `$status_format` expander, `Row` / `RowKind`. `Style` becomes
-      a toolkit-free description (fg, bg, bold, underline, reverse)
-      that `theme.rs` and the GUI each map from; the color rule
-      compiler moves with it
-- [ ] The line editor: the `Prompt` editing keys, per-class history,
-      Tab completion (`Complete`) and the `Wants`-driven candidate
-      lists, out of `app.rs` into `rmut-front`. This is the one
-      piece where a wrong split would show in the TUI's feel, so it
-      goes last in the round, behind the pty scenarios
-- [ ] The `FrontOp` / `AskKind` coverage registry described above,
-      with the TUI as its first user (which handles all of them)
-- [ ] `app.rs` shrinks by what left; nothing else in it changes.
-      69/69 scenarios, unit tests follow their code
+- [x] The pure `ui.rs` functions moved: `pager_rows`,
+      `wrap_line_with`, `quote_depth`, `recenter`, `humanize_size`,
+      `Row` / `RowKind` (`pager`); `index_title`, the
+      `$status_format` / `$pager_format` expanders and `pager_wrap`
+      (`status`, over `&Session`). `Style` became the toolkit-free
+      description (fg, bg, bold, underline, reverse) in `style`,
+      `Theme` and the color-rule compiler moved over it, and the
+      TUI's `theme.rs` is now the mapping onto ratatui
+- [x] The line editor: `editor::LineEdit` (the mutt/readline keys,
+      history stepping), `editor::History` (buckets, the history
+      file) and `editor::Complete` (token, first match, Tab cycling),
+      out of `app.rs`; the prompt's meaning (`LineKind`, what a
+      submit does, which candidates) stayed in the front end
+- [x] The coverage check, simpler than the registry sketched above
+      once counted: `AskKind` needs none (a front end never matches
+      on it; it carries the question back to `Session::answer`
+      untouched, so every kind is handled by construction), and for
+      `FrontOp` the dispatch is an exhaustive match under
+      `#[deny(clippy::wildcard_enum_match_arm)]` - a new variant
+      fails the build until the front end says what it does with it.
+      The GUI's dispatch gets the same lint
+- [x] `app.rs` shrank by what left (3.3k to 2.9k); nothing else in
+      it changed. 71/71 scenarios, unit tests followed their code
 
 ### G2: a window that reads mail
 

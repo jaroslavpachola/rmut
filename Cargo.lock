@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-front"
-version = "2.0.0"
+version = "2.0.2"
 dependencies = [
  "regex-lite",
  "rmut-core",

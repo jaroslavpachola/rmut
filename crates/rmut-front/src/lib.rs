@@ -7,6 +7,7 @@ pub mod editor;
 pub mod key;
 pub mod keymap;
 pub mod pager;
+pub mod status;
 pub mod style;
 pub mod theme;
 

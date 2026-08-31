@@ -309,11 +309,7 @@ impl App {
     /// mutt's $wrap: the effective text width inside `width` columns
     /// (positive = wrap there, negative = a right margin).
     pub(crate) fn pager_wrap(&self, width: usize) -> usize {
-        match self.session.config.pager.wrap {
-            Some(n) if n > 0 => (n as usize).min(width),
-            Some(n) if n < 0 => width.saturating_sub(n.unsigned_abs() as usize).max(20),
-            _ => width,
-        }
+        rmut_front::status::pager_wrap(&self.session.config, width)
     }
 }
 
@@ -581,7 +577,7 @@ impl App {
         if !self.session.config.ui.set_title.unwrap_or(false) {
             return;
         }
-        let title = crate::ui::index_title(self, rows);
+        let title = rmut_front::status::index_title(&self.session, self.index_offset, rows);
         if title == self.last_title {
             return;
         }
@@ -1157,6 +1153,10 @@ impl App {
     }
 
     /// The half of an index function that needs a screen.
+    /// Every `FrontOp` has an arm here, and the lint keeps it so: a
+    /// new one fails this build until the front end says what it
+    /// does with it.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn run_front_op(&mut self, op: FrontOp, page: usize) {
         match op {
             FrontOp::Exit => self.quit = true,
