@@ -86,7 +86,13 @@ fn limit_asks_and_narrows() {
     press(&mut gui, "l~s beta");
     key(&mut gui, KeyCode::Enter);
     assert_eq!(gui.session.visible.len(), 1, "the limit narrowed");
+    // l prefills the standing limit, the way mutt does; Ctrl+U
+    // clears the line and an empty answer clears the limit.
     press(&mut gui, "l");
+    gui.handle_keys(vec![KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )]);
     key(&mut gui, KeyCode::Enter);
     assert_eq!(gui.session.visible.len(), 3, "an empty limit clears");
 }
