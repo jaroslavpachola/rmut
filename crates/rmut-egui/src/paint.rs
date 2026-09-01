@@ -68,7 +68,7 @@ fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
 }
 
 pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
-    let size = 14.0;
+    let size = gui.session.config.gui.size.unwrap_or(14.0).clamp(6.0, 40.0);
     let ctx = root.ctx().clone();
     let char_w = ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(size), ' '));
     let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(size))) + 2.0;

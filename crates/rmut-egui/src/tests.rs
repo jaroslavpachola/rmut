@@ -133,3 +133,16 @@ fn a_frame_lays_out_without_a_display() {
     harness.run();
     assert!(matches!(harness.state().mode, Mode::Pager(_)));
 }
+
+#[test]
+fn gui_config_parses_size_and_font() {
+    let config: Config =
+        toml::from_str("[gui]\nsize = 18.0\nfont = \"~/fonts/mono.ttf\"\n").unwrap();
+    assert_eq!(config.gui.size, Some(18.0));
+    assert_eq!(config.gui.font.as_deref(), Some("~/fonts/mono.ttf"));
+    let bare: Config = toml::from_str("").unwrap();
+    assert_eq!(
+        bare.gui.size, None,
+        "unset stays unset; the window defaults to 14"
+    );
+}

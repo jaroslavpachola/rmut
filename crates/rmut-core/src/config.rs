@@ -84,6 +84,7 @@ pub struct Config {
     pub index: Index,
     pub pager: Pager,
     pub ui: Ui,
+    pub gui: Gui,
     pub net: Net,
     pub sidebar: Sidebar,
     pub colors: HashMap<String, String>,
@@ -662,6 +663,19 @@ pub struct ColorRule {
     pub pattern: String,
     pub fg: Option<String>,
     pub bg: Option<String>,
+}
+
+/// The window front end (rmut-egui). The terminal front end never
+/// reads these.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Gui {
+    /// Text size in points (14 when unset). Ctrl+= / Ctrl+- / Ctrl+0
+    /// zoom the whole window at runtime on top of this.
+    pub size: Option<f32>,
+    /// Path to a .ttf/.otf file used as the window's monospace face
+    /// (egui's built-in face when unset).
+    pub font: Option<String>,
 }
 
 /// The optional left pane listing `mail.mailboxes` with new-mail

@@ -2698,6 +2698,7 @@ dependencies = [
  "rmut-front",
  "rmut-session",
  "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]

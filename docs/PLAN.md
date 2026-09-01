@@ -2476,7 +2476,11 @@ TUI.
 
 - [ ] Clickable URLs in the pager (`$url_browser`, then xdg-open)
 - [ ] Proportional font for the body, monospace for the index and
-      for `format=flowed` verbatim blocks; `gui.font`, `gui.size`
+      for `format=flowed` verbatim blocks. Done early (2026-09-01,
+      asked for): `[gui] size` (points, default 14) and `[gui] font`
+      (a .ttf/.otf path installed as the monospace face), plus
+      egui's Ctrl+= / Ctrl+- / Ctrl+0 whole-window zoom made sure
+      of; the proportional-body half stays open
 - [ ] Native new-mail notification (`notify-rust` or the D-Bus call
       directly) when the window is unfocused, gated by
       `$new_mail_command` being unset
