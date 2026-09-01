@@ -2313,6 +2313,23 @@ the release alone: view-mailcap honours nametemplate (matched
 against mutt's rfc1524.c), so a browser handed an html part renders
 it instead of sniffing an extensionless temp file into source view.
 
+## After 2.5.0
+
+- [x] The built-in html-to-text, asked for 2026-09-01: an html-only
+      message renders readably with no lynx or mailcap at all -
+      rmut's own ~400 lines in rmut-core::html, entities decoded,
+      block elements breaking lines, links kept as `text <url>` (the
+      window clicks them), blockquotes as `> ` so the quote colours
+      and T work on html mail, style/script/head dropped, broken
+      html never a panic. The default for a text/html part nothing
+      else claims (auto_view still consulted first); `[pager] html =
+      "raw"` restores mutt's literal view, and the window's
+      Preferences HTML checkbox switches it alone ([gui] html over
+      [pager] html). Replies quote the rendered text too, since
+      reply text comes from the same body. Still owed if daily use
+      asks: styled runs in the window (bold, headings) and cid:
+      images through the inline-image machinery
+
 ## After 2.2.1
 
 - [x] The built-in editor, asked for 2026-09-01: `[gui] editor =

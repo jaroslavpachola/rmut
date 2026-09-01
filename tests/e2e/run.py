@@ -2854,8 +2854,11 @@ def scenario_mime_polish(tmp):
                 "video/mpeg; mpv %s; needsterminal\n")
     cfg = os.path.join(tmp, "mime-config.toml")
     with open(cfg, "w") as f:
+        # html = "raw": this scenario is about alternative_order and
+        # auto_view mechanics, so mutt's literal source view is kept
+        # (the built-in renderer has scenario_html_text to itself).
         f.write('[identity]\nemail = "jarda@example.com"\n'
-                '[pager]\nalternative_order = ["text/html"]\n'
+                '[pager]\nalternative_order = ["text/html"]\nhtml = "raw"\n'
                 '[filters]\n"application/x-thing" = ""\n"video/mpeg" = ""\n')
     env = base_env(tmp, {"RMUT_CONFIG": cfg, "MAILCAPS": mailcap})
     r = Rmut(md, env)
@@ -2888,6 +2891,43 @@ def scenario_mime_polish(tmp):
     r.keys(b"k\r")
     r.expect("the thing payload", "video/mpeg is unsupported")
     r.keys(b"ix")
+    r.close()
+
+
+def scenario_html_text(tmp):
+    """The built-in html-to-text: an html-only message renders as
+    readable text by default (entities decoded, links keeping their
+    targets, blockquotes as > prefixes), no lynx or mailcap needed;
+    [pager] html = "raw" restores mutt's literal source view."""
+    md = make_maildir(tmp, "md-html")
+    with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
+        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: html only\r\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <ht1@example.com>\r\nMIME-Version: 1.0\r\n"
+                "Content-Type: text/html\r\n\r\n"
+                "<html><head><style>p{color:red}</style></head><body>"
+                "<p>Hello &amp; goodbye</p>"
+                "<p>see <a href=\"https://example.com/x\">the docs</a></p>"
+                "<blockquote>quoted words</blockquote>"
+                "</body></html>\r\n")
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:1")
+    r.keys(b"\r")
+    r.expect("Hello & goodbye", "the docs <https://example.com/x>",
+             "> quoted words", absent=("<p>", "color:red"))
+    r.keys(b"iq")
+    r.close()
+
+    cfg = os.path.join(tmp, "raw-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "jarda@example.com"\n'
+                '[pager]\nhtml = "raw"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    r.keys(b"\r")
+    r.expect("<p>Hello &amp; goodbye</p>")
+    r.keys(b"iq")
     r.close()
 
 
@@ -4536,6 +4576,7 @@ SCENARIOS = [
     scenario_hooks,
     scenario_format_flowed,
     scenario_mime_polish,
+    scenario_html_text,
     scenario_undo,
     scenario_undo_send,
     scenario_search_direction,

@@ -491,6 +491,11 @@ pub struct Pager {
     /// mutt's $search_context: lines of context kept above a pager
     /// search hit scrolled toward the top. Default 0.
     pub search_context: usize,
+    /// text/html with no auto_view filter renders through the
+    /// built-in html-to-text (not mutt's; links keep their targets,
+    /// blockquotes become `> `). `"raw"` restores mutt's literal
+    /// source view.
+    pub html: Option<String>,
     /// mutt's $quote_regexp: classifies quoted body lines (depth =
     /// quote characters in the match). Default `^([ \t]*[|>:}#])+`.
     pub quote_regexp: Option<String>,
@@ -692,6 +697,10 @@ pub struct Gui {
     /// image/* parts drawn in the message body under their
     /// `[-- Type: image/... --]` markers (on unless turned off).
     pub inline_images: Option<bool>,
+    /// The window's own say over `[pager] html` (the Preferences
+    /// checkbox writes it here), so the terminal can keep raw while
+    /// the window renders, or the other way around.
+    pub html: Option<String>,
     /// Window-only overrides of `[colors]`, same keys and values
     /// (plus `#rrggbb`): the window can wear its own palette while
     /// the terminal keeps the shared one.

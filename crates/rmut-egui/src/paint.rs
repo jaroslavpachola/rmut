@@ -167,6 +167,9 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.label("Images");
                     ui.checkbox(&mut prefs.inline_images, "image parts inline in the body");
                     ui.end_row();
+                    ui.label("HTML");
+                    ui.checkbox(&mut prefs.html_text, "render text/html as text");
+                    ui.end_row();
                     ui.label("Editor");
                     egui::ComboBox::from_id_salt("prefs-editor")
                         .selected_text(match prefs.editor {

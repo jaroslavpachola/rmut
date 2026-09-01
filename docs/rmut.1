@@ -437,7 +437,20 @@ marker lines, multipart/alternative collapsed to its best part
 (alternative_order first, then auto_view filters, then text/plain
 over text/html), embedded
 message/rfc822 shown as its headers plus body, and a one\-line stub
-for anything undisplayable.
+for anything undisplayable. One deliberate step past mutt: a
+text/html part that no [filters] or mailcap auto_view entry claims
+renders through a built\-in html\-to\-text (entities decoded, block
+elements breaking lines, links keeping their targets as
+.IR "text <url>" ,
+blockquotes becoming
+.B >
+prefixes so the quote colours and
+.B T
+work on html mail); set
+.B "[pager] html"
+to
+.B \(dqraw\(dq
+for mutt's literal source view.
 .TP 12
 .B q i Esc
 back to the index
@@ -1062,6 +1075,16 @@ width; a negative N leaves a right margin of |N|.
 .TP
 .B tilde
 mutt's $tilde: pad the rows below end-of-message with ~.
+.TP
+.B html
+.B \(dqraw\(dq
+shows a text/html part as literal source, as mutt does; unset (or
+anything else) renders it through the built\-in html\-to\-text
+described under
+.BR Pager .
+A [filters] or mailcap auto_view entry for text/html always wins,
+since it is consulted first. The window's Preferences dialog can
+override this for the window alone ([gui] html)
 .TP
 .B reflow_text
 mutt's $reflow_text (on by default): a

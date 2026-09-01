@@ -4907,6 +4907,7 @@ fn display_from_config(config: &Config) -> message::Display {
             .iter()
             .map(|t| t.to_lowercase())
             .collect(),
+        html_to_text: config.pager.html.as_deref() != Some("raw"),
     }
 }
 

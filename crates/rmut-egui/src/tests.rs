@@ -1009,3 +1009,27 @@ fn the_window_opens_before_the_session() {
     };
     assert_eq!(gui.session.visible.len(), 1);
 }
+
+/// Asked 2026-09-01: the html renderer is switchable in Preferences.
+/// The checkbox lands in the shared [pager] html (and the [gui]
+/// overlay for saving), and the display rebuilds at Apply.
+#[test]
+fn the_preferences_html_switch_reaches_the_display() {
+    let (_dir, mut gui) = fixture(&["one"]);
+    assert!(gui.session.display.html_to_text, "rendering is the default");
+    let mut prefs = crate::app::Prefs::from_config(&gui.session.config);
+    assert!(prefs.html_text);
+    prefs.html_text = false;
+    gui.prefs = Some(prefs);
+    gui.apply_prefs(&eframe::egui::Context::default());
+    assert!(
+        !gui.session.display.html_to_text,
+        "Apply reaches the display"
+    );
+    assert_eq!(gui.session.config.gui.html.as_deref(), Some("raw"));
+    if let Some(prefs) = gui.prefs.as_mut() {
+        prefs.html_text = true;
+    }
+    gui.apply_prefs(&eframe::egui::Context::default());
+    assert!(gui.session.display.html_to_text, "and back on");
+}

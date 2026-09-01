@@ -5,6 +5,7 @@ pub mod config;
 pub mod flowed;
 pub mod format;
 pub mod hdrcache;
+pub mod html;
 pub mod imap;
 pub mod mailcap;
 pub mod maildir;

@@ -299,6 +299,11 @@ fn run() -> Result<()> {
     config.expand_folders();
     // What the Preferences dialog saved, over the [gui] section.
     app::load_gui_overlay(&mut config);
+    // The window's own say over [pager] html, so the checkbox can
+    // differ from the terminal's setting.
+    if config.gui.html.is_some() {
+        config.pager.html = config.gui.html.clone();
+    }
     let spec = match cli.spec.clone() {
         Some(s) => s,
         None => default_mailbox(&config)?,

@@ -366,6 +366,10 @@ pub struct Display {
     /// wanted first, consulted before anything else in a
     /// multipart/alternative.
     pub alternative_order: Vec<String>,
+    /// text/html through [`crate::html::to_text`] when no auto_view
+    /// filter claims it ([pager] html; "raw" restores mutt's
+    /// literal source view). Not mutt's; on by default.
+    pub html_to_text: bool,
 }
 
 impl Default for Display {
@@ -375,6 +379,7 @@ impl Default for Display {
             rules: HeaderRules::default(),
             reflow: true,
             alternative_order: Vec::new(),
+            html_to_text: true,
         }
     }
 }
@@ -488,6 +493,13 @@ fn render(part: &ParsedMail, disp: &Display, out: &mut String) -> bool {
         && let Ok(text) = part.get_body()
     {
         gap(out);
+        if ty == "text/html" && disp.html_to_text {
+            // The built-in fallback: readable text instead of mutt's
+            // raw source, unless the config asked for raw.
+            out.push_str(&crate::html::to_text(&text));
+            ensure_newline(out);
+            return true;
+        }
         // RFC 3676: a flowed part goes back to one line per paragraph
         // so the pager wraps it at the display width, rather than
         // keeping whatever width the sender happened to use.
@@ -1249,10 +1261,19 @@ mod tests {
             alternative_order: types.iter().map(|t| t.to_string()).collect(),
             ..Display::default()
         };
-        // html asked for by name beats plain, which the ranking prefers.
+        // html asked for by name beats plain, which the ranking
+        // prefers - and it renders through the built-in html-to-text
+        // (raw source is a [pager] html = "raw" away).
         let body = load_with(&path, &order(&["text/html"])).unwrap().body;
-        assert!(body.contains("<b>html version</b>"), "{body}");
+        assert!(body.contains("html version"), "{body}");
+        assert!(!body.contains("<b>"), "{body}");
         assert!(!body.contains("plain version"), "{body}");
+        let raw = Display {
+            html_to_text: false,
+            ..order(&["text/html"])
+        };
+        let body = load_with(&path, &raw).unwrap().body;
+        assert!(body.contains("<b>html version</b>"), "{body}");
         // First entry that is actually there wins.
         let body = load_with(&path, &order(&["text/enriched", "text/plain"]))
             .unwrap()

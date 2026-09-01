@@ -2829,6 +2829,8 @@ pub struct Prefs {
     pub foreground: eframe::egui::Color32,
     pub proportional: bool,
     pub inline_images: bool,
+    /// text/html rendered as text (off: mutt's raw source view).
+    pub html_text: bool,
     pub editor: EditorMode,
 }
 
@@ -2854,6 +2856,7 @@ impl Prefs {
             foreground: color(&config.gui.foreground, (0xd8, 0xd8, 0xd8)),
             proportional: config.gui.proportional.unwrap_or(false),
             inline_images: config.gui.inline_images.unwrap_or(true),
+            html_text: config.pager.html.as_deref() != Some("raw"),
             editor: match config.gui.editor.as_deref() {
                 Some("builtin") => EditorMode::Builtin,
                 Some("nvim") => EditorMode::Nvim,
@@ -2879,6 +2882,8 @@ impl Gui {
         gui.terminal = (!prefs.terminal.trim().is_empty()).then(|| prefs.terminal.clone());
         gui.proportional = Some(prefs.proportional);
         gui.inline_images = Some(prefs.inline_images);
+        let html = if prefs.html_text { "text" } else { "raw" };
+        gui.html = Some(html.into());
         gui.editor = Some(
             match prefs.editor {
                 EditorMode::External => "external",
@@ -2896,6 +2901,13 @@ impl Gui {
             } else {
                 install_font(ctx, &font);
             }
+        }
+        // The html choice lives in the shared pager config; the
+        // display rebuilds so the next message opens the new way.
+        self.session.config.pager.html = Some(html.into());
+        let warnings = self.session.recompile();
+        if !warnings.is_empty() {
+            self.error(warnings.join("; "));
         }
     }
 
@@ -2920,6 +2932,7 @@ impl Gui {
             out += &format!("inline_images = {inline_images}\n");
         }
         for (key, value) in [
+            ("html", &gui.html),
             ("editor", &gui.editor),
             ("font", &gui.font),
             ("terminal", &gui.terminal),
@@ -2962,6 +2975,7 @@ pub fn load_gui_overlay(config: &mut rmut_core::config::Config) {
     };
     let gui = &mut config.gui;
     for (mine, theirs) in [
+        (&mut gui.html, saved.html),
         (&mut gui.editor, saved.editor),
         (&mut gui.font, saved.font),
         (&mut gui.terminal, saved.terminal),
