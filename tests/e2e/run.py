@@ -242,6 +242,28 @@ def scenario_pager_save_advances(tmp):
     r.close()
 
 
+def scenario_pager_save_last_exits(tmp):
+    # mutt's pager on a last-message save: next-undeleted finds
+    # nothing and falls out to the index (curs_main.c in_pager break)
+    # instead of keeping the saved message on screen.
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "petr", "ci"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:3")
+    r.keys(b"\r")  # newest (Petr) is the last message; open it
+    r.expect("sejdeme se zítra v 9:00")
+    r.keys(b"s")
+    r.expect("Save to")
+    r.keys(os.path.join(tmp, "archive").encode() + b"\r")
+    r.expect("saved to")
+    # Back on the index, not in the pager: judge the repainted screen
+    # alone, not the accumulated pty history.
+    r.buf = ""
+    r.expect("Msgs:3", "CI failed on main", absent=("Message 3/3",))
+    r.keys(b"x")
+    r.close()
+
+
 def scenario_sync_delete_flag_limit(tmp):
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane", "petr", "ci"])
@@ -4448,6 +4470,7 @@ def scenario_small_habits(tmp):
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
+    scenario_pager_save_last_exits,
     scenario_sync_delete_flag_limit,
     scenario_threads_and_fold,
     scenario_compose_send_postpone,

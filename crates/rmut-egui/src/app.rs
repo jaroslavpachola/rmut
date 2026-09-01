@@ -341,11 +341,19 @@ impl Gui {
         let before = self.session.selected_path();
         let next = self.session.answer(what, answer);
         self.open_ask(next);
-        if self.prompt.is_none()
-            && matches!(self.mode, Mode::Pager(_))
-            && self.session.selected_path() != before
-        {
-            self.open_selected();
+        if self.prompt.is_none() && matches!(self.mode, Mode::Pager(_)) {
+            if self.session.selected_path() != before {
+                self.open_selected();
+            } else if self
+                .session
+                .visible
+                .get(self.session.sel)
+                .is_some_and(|&i| self.session.msgs[i].env.file.flags.deleted)
+            {
+                // mutt's pager on a last-message save: next-undeleted
+                // finds nothing and falls out to the index.
+                self.mode = Mode::Index;
+            }
         }
     }
 

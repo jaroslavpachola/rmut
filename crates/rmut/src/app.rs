@@ -461,11 +461,21 @@ impl App {
         let before = self.session.selected_path();
         let next = self.session.answer(what, answer);
         self.open_ask(next);
-        if self.prompt.is_none()
-            && matches!(&self.mode, Mode::Pager(p) if p.back.is_none())
-            && self.session.selected_path() != before
-        {
-            self.open_selected();
+        if self.prompt.is_none() && matches!(&self.mode, Mode::Pager(p) if p.back.is_none()) {
+            if self.session.selected_path() != before {
+                self.open_selected();
+            } else if self
+                .session
+                .visible
+                .get(self.session.sel)
+                .is_some_and(|&i| self.session.msgs[i].env.file.flags.deleted)
+            {
+                // The save's advance had nowhere to go: mutt's pager
+                // fires next-undeleted, which on the last message
+                // falls out to the index (curs_main.c in_pager break),
+                // exactly as the pager's own delete already does.
+                self.mode = Mode::Index;
+            }
         }
     }
 
