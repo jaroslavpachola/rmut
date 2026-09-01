@@ -2,9 +2,7 @@
 //! keymap, with the modes a reader needs. Writing and sending are
 //! later rounds; what they would do says so instead of doing it.
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -199,11 +197,11 @@ struct LineState {
 }
 
 #[derive(Clone, Default)]
-struct MessageLine(Rc<RefCell<LineState>>);
+struct MessageLine(std::sync::Arc<std::sync::Mutex<LineState>>);
 
 impl NoticeSink for MessageLine {
     fn notice(&mut self, notice: Notice) {
-        self.0.borrow_mut().latest = Some(notice);
+        self.0.lock().unwrap().latest = Some(notice);
     }
 
     fn latest(&self) -> Option<&Notice> {
@@ -211,7 +209,7 @@ impl NoticeSink for MessageLine {
     }
 
     fn clear(&mut self) {
-        self.0.borrow_mut().latest = None;
+        self.0.lock().unwrap().latest = None;
     }
 }
 
@@ -373,7 +371,7 @@ impl Gui {
     }
 
     pub fn notice(&self) -> Option<Notice> {
-        self.notices.0.borrow().latest.clone()
+        self.notices.0.lock().unwrap().latest.clone()
     }
 
     /// A round-boundary: the function exists, this round does not do
@@ -2764,21 +2762,6 @@ impl Gui {
         } else {
             poll_every
         });
-    }
-}
-
-impl eframe::App for Gui {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.frame(ui);
-        if self.quit {
-            // Whatever is still inside its $undo_send window goes out
-            // now: quitting is not cancelling. The window is closing,
-            // so trouble lands on stderr, as the TUI's exit does.
-            for note in self.session.flush_outbox() {
-                eprintln!("rmut-egui: {note}");
-            }
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
     }
 }
 

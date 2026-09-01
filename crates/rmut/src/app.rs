@@ -1,9 +1,7 @@
-use std::cell::RefCell;
 use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -207,11 +205,11 @@ struct Line {
 /// A handle on it, so the app and the session it drives write to the
 /// same line.
 #[derive(Clone, Default)]
-struct MessageLine(Rc<RefCell<Line>>);
+struct MessageLine(std::sync::Arc<std::sync::Mutex<Line>>);
 
 impl NoticeSink for MessageLine {
     fn notice(&mut self, notice: Notice) {
-        let mut line = self.0.borrow_mut();
+        let mut line = self.0.lock().unwrap();
         // The bell belongs to the front end, not to the notice.
         if notice.is_error() && line.beep {
             use std::io::Write as _;
@@ -223,14 +221,14 @@ impl NoticeSink for MessageLine {
     }
 
     fn latest(&self) -> Option<&Notice> {
-        // A `RefCell` cannot hand out a plain reference; the app
-        // reads its own handle through `App::notice` instead, and the
+        // A lock cannot hand out a plain reference; the app reads
+        // its own handle through `App::notice` instead, and the
         // session only ever writes through this one.
         None
     }
 
     fn clear(&mut self) {
-        self.0.borrow_mut().latest = None;
+        self.0.lock().unwrap().latest = None;
     }
 }
 
@@ -408,7 +406,7 @@ impl App {
         all.append(&mut warnings);
         let sidebar_visible = session.config.sidebar.visible;
         let notices = MessageLine::default();
-        notices.0.borrow_mut().beep = session.config.ui.beep;
+        notices.0.lock().unwrap().beep = session.config.ui.beep;
         let mut app = App {
             session,
             index_offset: 0,
@@ -633,7 +631,7 @@ impl App {
     /// The last thing said, for the message line and for the callers
     /// that only speak up when nothing else has.
     pub(crate) fn notice(&self) -> Option<Notice> {
-        self.notices.0.borrow().latest.clone()
+        self.notices.0.lock().unwrap().latest.clone()
     }
 
     fn clear_notice(&mut self) {

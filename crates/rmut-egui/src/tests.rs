@@ -941,3 +941,53 @@ fn ctrl_and_shift_clicks_tag_rows() {
         assert!(!tagged(harness.state(), vi), "row {vi} untagged by undo");
     }
 }
+
+/// The real fix for the stderr logs (asked 2026-09-01): the window
+/// is up before the mailbox is - the boot frame draws with no
+/// session at all, shows the opening progress, and becomes rmut the
+/// moment the session lands from its thread.
+#[test]
+fn the_window_opens_before_the_session() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let boot = crate::Boot::Opening {
+        spec: "inbox".into(),
+        rx,
+        last: String::new(),
+        plan: crate::Plan {
+            read_only: false,
+            commands: Vec::new(),
+            postponed: false,
+            folders: false,
+            config_warning: None,
+        },
+        failed: Default::default(),
+        canvas: (eframe::egui::Color32::BLACK, eframe::egui::Color32::WHITE),
+    };
+    let mut harness =
+        egui_kittest::Harness::new_ui_state(|ui, boot: &mut crate::Boot| boot.frame(ui), boot);
+    // The spinner keeps asking for frames, so step rather than run.
+    harness.run_steps(2);
+    assert!(matches!(harness.state(), crate::Boot::Opening { .. }));
+    tx.send(crate::OpenEvent::Progress("connecting".into()))
+        .unwrap();
+    harness.run_steps(2);
+    let crate::Boot::Opening { last, .. } = harness.state() else {
+        panic!("still opening");
+    };
+    assert_eq!(last, "connecting", "progress shows in the window");
+    // The session lands; the window becomes rmut.
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let (session, warnings) = Session::open(dir.path(), Config::default()).unwrap();
+    tx.send(crate::OpenEvent::Done(Box::new(Ok((session, warnings)))))
+        .unwrap();
+    harness.run_steps(2);
+    harness.run();
+    let crate::Boot::Ready(gui) = harness.state() else {
+        panic!("the session's arrival made the window rmut");
+    };
+    assert_eq!(gui.session.visible.len(), 1);
+}

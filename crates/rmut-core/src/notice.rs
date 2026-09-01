@@ -53,7 +53,7 @@ impl Notice {
 
 /// Where notices go. The front end installs one and reads it back
 /// however it likes.
-pub trait NoticeSink {
+pub trait NoticeSink: Send {
     fn notice(&mut self, notice: Notice);
     /// The last notice, or nothing since the last `clear`.
     fn latest(&self) -> Option<&Notice>;
@@ -65,38 +65,47 @@ pub trait NoticeSink {
 /// the test can read what was said while whatever it is driving holds
 /// a handle of its own.
 #[derive(Debug, Clone, Default)]
-pub struct Log(std::rc::Rc<std::cell::RefCell<Vec<Notice>>>);
+pub struct Log(std::sync::Arc<std::sync::Mutex<Vec<Notice>>>);
 
 impl Log {
     /// Everything said since the last `clear`, oldest first.
     pub fn notices(&self) -> Vec<Notice> {
-        self.0.borrow().clone()
+        self.0.lock().unwrap().clone()
     }
 
     /// The prose of the last thing said, empty when nothing was.
     pub fn last_text(&self) -> String {
-        self.0.borrow().last().map(Notice::text).unwrap_or_default()
+        self.0
+            .lock()
+            .unwrap()
+            .last()
+            .map(Notice::text)
+            .unwrap_or_default()
     }
 
     /// Whether anything said matches; the usual test question.
     pub fn said(&self, needle: &str) -> bool {
-        self.0.borrow().iter().any(|n| n.text().contains(needle))
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n.text().contains(needle))
     }
 }
 
 impl NoticeSink for Log {
     fn notice(&mut self, notice: Notice) {
-        self.0.borrow_mut().push(notice);
+        self.0.lock().unwrap().push(notice);
     }
 
     fn latest(&self) -> Option<&Notice> {
-        // A `RefCell` cannot hand out a plain reference; a caller
-        // that wants the last notice asks for its text.
+        // A lock cannot hand out a plain reference; a caller that
+        // wants the last notice asks for its text.
         None
     }
 
     fn clear(&mut self) {
-        self.0.borrow_mut().clear();
+        self.0.lock().unwrap().clear();
     }
 }
 
