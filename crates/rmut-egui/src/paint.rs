@@ -594,9 +594,19 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         }
         let mut fmt = format(style, size);
         // A faint zebra under the unselected rows, so the list reads
-        // as rows even where the columns run together.
+        // as rows even where the columns run together: the canvas
+        // itself, nudged a few percent toward the other pole, so it
+        // shades whatever ground the config picked.
         if vi % 2 == 1 && fmt.background == Color32::TRANSPARENT {
-            fmt.background = Color32::from_gray(0x1a);
+            let (bg, _) = CANVAS.with(|c| c.get());
+            let bright =
+                0.299 * bg.r() as f32 + 0.587 * bg.g() as f32 + 0.114 * bg.b() as f32 > 140.0;
+            let pole = if bright {
+                Color32::BLACK
+            } else {
+                Color32::WHITE
+            };
+            fmt.background = pole.lerp_to_gamma(bg, 0.94);
         }
         let mut job = LayoutJob::default();
         job.append(&format!("{text:<width$}"), 0.0, fmt);
