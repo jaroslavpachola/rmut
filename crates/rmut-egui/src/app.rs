@@ -42,13 +42,8 @@ pub enum Mode {
 
 #[derive(Clone)]
 pub enum LineKind {
-    Ask {
-        what: AskKind,
-        wants: Wants,
-    },
-    /// The round is read-only throughout, so the mailbox opens the
-    /// only way it can.
-    ChangeDir,
+    Ask { what: AskKind, wants: Wants },
+    ChangeDir { read_only: bool },
     EnterCommand,
 }
 
@@ -62,7 +57,7 @@ impl LineKind {
                 Wants::Command => "command",
                 Wants::Other => "other",
             },
-            LineKind::ChangeDir => "mailbox",
+            LineKind::ChangeDir { .. } => "mailbox",
             LineKind::EnterCommand => "command",
         }
     }
@@ -136,7 +131,7 @@ pub struct Gui {
 }
 
 impl Gui {
-    pub fn new(session: Session, mut warnings: Vec<String>, _read_only_flag: bool) -> Gui {
+    pub fn new(session: Session, mut warnings: Vec<String>, read_only: bool) -> Gui {
         let config = &session.config;
         let (theme, mut all) = Theme::from_config(config);
         let (keymap, key_warnings) = Keymap::with_config(
@@ -188,9 +183,9 @@ impl Gui {
             last_poll: Instant::now(),
             quit: false,
         };
-        // The round is read-only: nothing this window does may write.
-        gui.session.read_only = true;
-        gui.session.read_only_session = true;
+        // -R: the whole session stays read-only, exactly the TUI's.
+        gui.session.read_only = read_only;
+        gui.session.read_only_session = read_only;
         gui.session.install_notices(Box::new(notices));
         if let Some(path) = gui.history_path() {
             gui.history.load(&path);
@@ -476,7 +471,7 @@ impl Gui {
     fn run_line_prompt(&mut self, kind: LineKind, input: &str) {
         let expanded;
         let input = match &kind {
-            LineKind::ChangeDir => {
+            LineKind::ChangeDir { .. } => {
                 expanded = rmut_core::config::expand_folder(
                     input,
                     self.session.config.mail.folder.as_deref(),
@@ -487,11 +482,16 @@ impl Gui {
         };
         match kind {
             LineKind::Ask { what, .. } => self.answer_ask(what, Answer::Line(input)),
-            LineKind::ChangeDir => {
+            LineKind::ChangeDir { read_only } => {
                 if input.is_empty() {
                     return;
                 }
                 self.open_mailbox_spec(input);
+                // mutt's Alt+c: this one mailbox opens read-only.
+                if read_only {
+                    self.session.read_only = true;
+                    self.note(format!("{} (read-only)", self.session.title));
+                }
             }
             LineKind::EnterCommand => {
                 if input.is_empty() {
@@ -572,11 +572,11 @@ impl Gui {
                 self.what_key = true;
                 self.note("describing keys (Ctrl+G ends it)");
             }
-            FrontOp::ChangeMailbox { read_only: _ } => {
+            FrontOp::ChangeMailbox { read_only } => {
                 self.prompt = Some(Prompt::Line {
                     label: "Open mailbox: ".into(),
                     edit: LineEdit::new(String::new()),
-                    kind: LineKind::ChangeDir,
+                    kind: LineKind::ChangeDir { read_only },
                 });
             }
             FrontOp::CommandPrompt => {
@@ -785,12 +785,64 @@ impl Gui {
             | PagerAction::SearchNext
             | PagerAction::SearchPrev
             | PagerAction::SearchToggle => self.not_yet("the pager search"),
-            PagerAction::Delete
-            | PagerAction::Undelete
-            | PagerAction::Flag
-            | PagerAction::ToggleNew
-            | PagerAction::Tag
-            | PagerAction::Undo => self.not_yet("changing mail"),
+            PagerAction::Delete => {
+                if self.session.deny_readonly() {
+                    return;
+                }
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("delete", &[i]);
+                    self.session.msgs[i].env.file.flags.deleted = true;
+                    self.session.msgs[i].dirty = true;
+                }
+                // mutt's $resolve: advance to the next undeleted, or
+                // fall out to the index from the last message.
+                match self.session.step_message(true, true) {
+                    Some(pos) => {
+                        self.session.sel = pos;
+                        self.open_selected();
+                    }
+                    None => self.mode = Mode::Index,
+                }
+            }
+            PagerAction::Undelete | PagerAction::Flag | PagerAction::ToggleNew => {
+                if self.session.deny_readonly() {
+                    return;
+                }
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    let what = match action {
+                        PagerAction::Undelete => "undelete",
+                        PagerAction::Flag => "flag",
+                        _ => "toggle read",
+                    };
+                    self.session.push_undo(what, &[i]);
+                    let file = &mut self.session.msgs[i].env.file;
+                    match action {
+                        PagerAction::Undelete => file.flags.deleted = false,
+                        PagerAction::Flag => file.flags.flagged = !file.flags.flagged,
+                        _ => {
+                            file.flags.seen = !file.flags.seen;
+                            file.is_new = false;
+                        }
+                    }
+                    self.session.msgs[i].dirty = true;
+                }
+            }
+            PagerAction::Tag => {
+                if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    self.session.push_undo("tag", &[i]);
+                    self.session.msgs[i].env.tagged = !self.session.msgs[i].env.tagged;
+                }
+            }
+            PagerAction::Undo => {
+                // A message still inside its $undo_send window is the
+                // most recent thing done, so it is what undo takes
+                // back first.
+                if self.session.cancel_send() {
+                    self.run_requests();
+                } else {
+                    self.session.undo_last();
+                }
+            }
             PagerAction::Suspend => self.not_yet("suspend"),
             PagerAction::Attachments => self.not_yet("the attachment menu"),
             PagerAction::Compose

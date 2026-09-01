@@ -35,7 +35,7 @@ fn fixture(subjects: &[&str]) -> (tempfile::TempDir, Gui) {
     }
     let (session, warnings) = Session::open(dir.path(), Config::default()).unwrap();
     assert_eq!(warnings, Vec::<String>::new(), "clean open");
-    (dir, Gui::new(session, Vec::new(), true))
+    (dir, Gui::new(session, Vec::new(), false))
 }
 
 fn press(gui: &mut Gui, keys: &str) {
@@ -72,12 +72,60 @@ fn index_keys_move_and_open_the_pager() {
 }
 
 #[test]
-fn the_window_never_writes() {
-    let (_dir, mut gui) = fixture(&["one"]);
+fn minus_r_never_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), true);
     assert!(gui.session.read_only && gui.session.read_only_session);
     press(&mut gui, "d");
     let notice = gui.notice().expect("d complains");
     assert!(notice.text().contains("read-only"), "{}", notice.text());
+}
+
+#[test]
+fn the_window_writes_now() {
+    let (_dir, mut gui) = fixture(&["one", "two", "three"]);
+    gui.session.sel = 0;
+    press(&mut gui, "d");
+    assert!(
+        gui.session.msgs[gui.session.visible[0]]
+            .env
+            .file
+            .flags
+            .deleted
+    );
+    assert_eq!(gui.session.sel, 1, "delete advanced");
+    press(&mut gui, "z");
+    assert!(
+        !gui.session.msgs[gui.session.visible[0]]
+            .env
+            .file
+            .flags
+            .deleted,
+        "undo took the mark back"
+    );
+    // The pager's own marks work too.
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "F");
+    let i = gui.session.visible[gui.session.sel];
+    assert!(
+        gui.session.msgs[i].env.file.flags.flagged,
+        "F in the pager flags"
+    );
+    press(&mut gui, "d");
+    assert!(gui.session.msgs[i].env.file.flags.deleted);
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("delete in the pager opened the next message");
+    };
+    assert!(
+        pager.view.body.contains("body of three"),
+        "{}",
+        pager.view.body
+    );
 }
 
 #[test]
