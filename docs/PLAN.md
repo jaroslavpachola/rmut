@@ -2278,6 +2278,14 @@ Since 2.0.2: G1, G2, G2p, G3 and the G2 leftovers as the sections
 above tell it, and on the shared side the save path's $resolve
 advance (index and pager), verified against mutt's source.
 
+## 2.2.1 (released 2026-09-01)
+
+The terminal hunt fixed hours after 2.2.0: it knew only foot,
+alacritty, kitty and xterm, so a stock GNOME desktop could not
+compose. It now also finds gnome-terminal (behind --wait, or its
+server "finishes" mid-edit), konsole, xfce4-terminal, terminator and
+x-terminal-emulator, each called its own way.
+
 ## 2.2.0 (released 2026-09-01)
 
 The window grown up, all at 2.2.0 on crates.io: G4 (the compose flow
