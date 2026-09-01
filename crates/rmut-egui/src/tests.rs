@@ -108,6 +108,7 @@ fn the_window_writes_now() {
             .deleted,
         "undo took the mark back"
     );
+    assert_eq!(gui.session.sel, 0, "undo restored the selection too");
     // The pager's own marks work too.
     key(&mut gui, KeyCode::Enter);
     press(&mut gui, "F");
@@ -122,7 +123,7 @@ fn the_window_writes_now() {
         panic!("delete in the pager opened the next message");
     };
     assert!(
-        pager.view.body.contains("body of three"),
+        pager.view.body.contains("body of two"),
         "{}",
         pager.view.body
     );
