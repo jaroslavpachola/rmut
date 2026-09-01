@@ -750,27 +750,37 @@ impl Gui {
             }
             return;
         }
-        let body = if is_text {
+        // An auto_view filter overrides even a text part (mutt's
+        // "we can display any text, overridable by auto_view").
+        let filter = self.session.display.filters.get(&mimetype).cloned();
+        let body = if let Some(command) = filter {
+            rmut_core::message::filter_part(&msg_path, index, &command)
+                .map_err(|err| format!("filter failed: {err:#}"))
+        } else if is_text {
+            // The part as the message pager would show it: html
+            // through the built-in renderer unless raw is asked for
+            // (T always shows the source).
             rmut_core::message::part_text(&msg_path, index)
+                .map(|text| {
+                    if mimetype == "text/html" && self.session.display.html_to_text {
+                        rmut_core::html::to_text(&text)
+                    } else {
+                        text
+                    }
+                })
                 .map_err(|err| format!("cannot decode part: {err:#}"))
         } else {
-            match self.session.display.filters.get(&mimetype).cloned() {
-                Some(command) => rmut_core::message::filter_part(&msg_path, index, &command)
-                    .map_err(|err| format!("filter failed: {err:#}")),
-                None => {
-                    // mutt's view-attach on a type that needs mailcap
-                    // goes through it; with no entry, mutt says so
-                    // and shows the bytes as text.
-                    let entries = rmut_core::mailcap::load();
-                    if rmut_core::mailcap::viewer_for(&entries, &mimetype).is_some() {
-                        self.view_part_mailcap();
-                    } else {
-                        self.error("no matching mailcap entry found, viewing as text");
-                        self.view_part_text();
-                    }
-                    return;
-                }
+            // mutt's view-attach on a type that needs mailcap goes
+            // through it; with no entry, mutt says so and shows the
+            // bytes as text.
+            let entries = rmut_core::mailcap::load();
+            if rmut_core::mailcap::viewer_for(&entries, &mimetype).is_some() {
+                self.view_part_mailcap();
+            } else {
+                self.error("no matching mailcap entry found, viewing as text");
+                self.view_part_text();
             }
+            return;
         };
         match body {
             Ok(body) => self.part_pager(mimetype, body),

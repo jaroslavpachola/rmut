@@ -1033,3 +1033,46 @@ fn the_preferences_html_switch_reaches_the_display() {
     gui.apply_prefs(&eframe::egui::Context::default());
     assert!(gui.session.display.html_to_text, "and back on");
 }
+
+/// Enter on a text/html attachment renders it the way the message
+/// pager would (auto_view filter first, then the built-in
+/// html-to-text); T keeps showing the raw source.
+#[test]
+fn enter_on_an_html_part_renders_it() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: page\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <h1@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nsee the page\n\
+         --b\nContent-Type: text/html; name=\"page.html\"\n\
+         Content-Disposition: attachment; filename=\"page.html\"\n\n\
+         <html><body><p>Hello &amp; goodbye</p></body></html>\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "vj");
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("Enter views the part");
+    };
+    assert!(
+        pager.view.body.contains("Hello & goodbye"),
+        "{}",
+        pager.view.body
+    );
+    assert!(!pager.view.body.contains("<p>"), "{}", pager.view.body);
+    press(&mut gui, "q");
+    // T: the source, whatever the renderer thinks.
+    press(&mut gui, "T");
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("T views the source");
+    };
+    assert!(
+        pager.view.body.contains("<p>Hello &amp; goodbye</p>"),
+        "{}",
+        pager.view.body
+    );
+}
