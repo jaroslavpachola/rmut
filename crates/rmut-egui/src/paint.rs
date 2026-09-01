@@ -164,6 +164,9 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.label("Body");
                     ui.checkbox(&mut prefs.proportional, "proportional face for prose");
                     ui.end_row();
+                    ui.label("Images");
+                    ui.checkbox(&mut prefs.inline_images, "image parts inline in the body");
+                    ui.end_row();
                     ui.label("Editor");
                     egui::ComboBox::from_id_salt("prefs-editor")
                         .selected_text(match prefs.editor {
@@ -863,7 +866,13 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
     let wheel = wheel_rows(gui, ui, size);
     let total = gui.pager_line_total(width);
     if let Mode::Pager(pager) = &mut gui.mode {
-        let max = total.saturating_sub(rows);
+        // Inline images take room the row arithmetic cannot see, so
+        // the wheel may then run until the last text row tops out.
+        let max = if gui.pager_drew_images {
+            total.saturating_sub(1)
+        } else {
+            total.saturating_sub(rows)
+        };
         pager.scroll = (pager.scroll as i64 + wheel).clamp(0, max as i64) as usize;
     }
     let Mode::Pager(pager) = &gui.mode else {
@@ -877,8 +886,33 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         &PagerStyle::of(&gui.session.config, &gui.session.quote_re),
         pager.hide_quoted,
     );
+    let (scroll, is_part) = (pager.scroll, pager.back.is_some());
+    // The k-th image Type marker pairs with the k-th image/* leaf;
+    // only the message pager carries markers (a part pager's body is
+    // the part itself), and only visible rows decode.
+    let mut images: std::collections::HashMap<usize, (String, std::sync::Arc<[u8]>)> =
+        std::collections::HashMap::new();
+    if !is_part && gui.session.config.gui.inline_images.unwrap_or(true) {
+        let mut k = 0;
+        for (i, row) in all.iter().enumerate() {
+            if matches!(row.kind, RowKind::Marker) && row.text.starts_with("[-- Type: image/") {
+                if i >= scroll
+                    && i < scroll + rows
+                    && let Some(image) = gui.pager_image(k)
+                {
+                    images.insert(i, image);
+                }
+                k += 1;
+            }
+        }
+    }
+    gui.pager_drew_images = !images.is_empty();
     let header_style = Style::new().fg(gui.theme.header).bold();
     let proportional = gui.session.config.gui.proportional.unwrap_or(false);
+    let row_h = ui
+        .ctx()
+        .fonts_mut(|f| f.row_height(&FontId::monospace(size)))
+        + 2.0;
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut job = LayoutJob::default();
     let flush = |ui: &mut egui::Ui, job: &mut LayoutJob| {
@@ -886,7 +920,7 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
             ui.add(egui::Label::new(std::mem::take(job)).extend());
         }
     };
-    for row in all.iter().skip(pager.scroll).take(rows) {
+    for (i, row) in all.iter().enumerate().skip(scroll).take(rows) {
         // The face: prose may go proportional; indented lines read
         // as preformatted and keep the grid.
         let mono = !proportional || row.text.starts_with([' ', '\t']);
@@ -899,7 +933,23 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
                 }
                 None => mono_line(&mut job, &row.text, header_style, size),
             },
-            RowKind::Marker => mono_line(&mut job, &row.text, header_style, size),
+            RowKind::Marker => {
+                mono_line(&mut job, &row.text, header_style, size);
+                // The image itself, under its announcement, capped
+                // at half the pager so text stays in reach.
+                if let Some((uri, bytes)) = images.get(&i) {
+                    flush(ui, &mut job);
+                    let cap = egui::Vec2::new(ui.available_width(), (rows as f32 * row_h) * 0.5);
+                    ui.add(
+                        egui::Image::from_bytes(
+                            uri.clone(),
+                            egui::load::Bytes::Shared(bytes.clone()),
+                        )
+                        .max_size(cap)
+                        .shrink_to_fit(),
+                    );
+                }
+            }
             RowKind::Quoted(depth) => {
                 let style = match gui.theme.quoted.len() {
                     0 => Style::new(),

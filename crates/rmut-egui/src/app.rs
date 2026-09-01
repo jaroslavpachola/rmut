@@ -82,6 +82,9 @@ pub enum Mode {
     NvimEdit,
 }
 
+/// One inline-drawable image: its loader URI and decoded bytes.
+pub type PagerImage = (String, std::sync::Arc<[u8]>);
+
 /// Which editor hosts a draft, from `[gui] editor`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum EditorMode {
@@ -263,6 +266,13 @@ pub struct Gui {
     pub about: bool,
     /// The Preferences dialog and its half-edited values.
     pub prefs: Option<Prefs>,
+    /// The open message's image parts, decoded once per message:
+    /// the bytes of each image/* leaf, in leaf order (None where the
+    /// decode failed). The path says which message they belong to.
+    pager_images: Option<(std::path::PathBuf, Vec<Option<PagerImage>>)>,
+    /// The last pager frame drew inline images, so the wheel may
+    /// scroll past the text-row arithmetic to reach them.
+    pub pager_drew_images: bool,
     /// The embedded nvim and the flow its exit resumes.
     pub nvim: Option<(crate::nvim::Embedded, PendingEdit)>,
     /// The egui context, for waking the frame loop from threads.
@@ -331,6 +341,8 @@ impl Gui {
             index_len: 0,
             about: false,
             prefs: None,
+            pager_images: None,
+            pager_drew_images: false,
             nvim: None,
             ctx: None,
             last_poll: Instant::now(),
@@ -2305,6 +2317,30 @@ impl Gui {
         self.run_pager_action(action);
     }
 
+    /// The k-th image part of the open message, decoded once per
+    /// message: the body's image Type markers and the leaf walk are
+    /// both depth-first, so the k-th marker is the k-th image leaf.
+    /// (An alternative branch left unrendered could shift the pair;
+    /// then the guard below simply draws nothing.)
+    pub fn pager_image(&mut self, k: usize) -> Option<PagerImage> {
+        let path = self.session.selected_path()?;
+        if self.pager_images.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path()) {
+            let mut list = Vec::new();
+            if let Ok(parts) = rmut_core::message::parts(&path) {
+                for (i, part) in parts.iter().enumerate() {
+                    if part.mimetype.starts_with("image/") {
+                        list.push(rmut_core::message::part_bytes(&path, i).ok().map(|bytes| {
+                            let uri = format!("bytes://{}#{i}", path.display());
+                            (uri, std::sync::Arc::from(bytes))
+                        }));
+                    }
+                }
+            }
+            self.pager_images = Some((path, list));
+        }
+        self.pager_images.as_ref()?.1.get(k)?.clone()
+    }
+
     /// Total pager display lines at this width, for the wheel.
     pub fn pager_line_total(&self, width: usize) -> usize {
         let Mode::Pager(pager) = &self.mode else {
@@ -2806,6 +2842,7 @@ pub struct Prefs {
     pub background: eframe::egui::Color32,
     pub foreground: eframe::egui::Color32,
     pub proportional: bool,
+    pub inline_images: bool,
     pub editor: EditorMode,
 }
 
@@ -2830,6 +2867,7 @@ impl Prefs {
             background: color(&config.gui.background, (0x10, 0x10, 0x10)),
             foreground: color(&config.gui.foreground, (0xd8, 0xd8, 0xd8)),
             proportional: config.gui.proportional.unwrap_or(false),
+            inline_images: config.gui.inline_images.unwrap_or(true),
             editor: match config.gui.editor.as_deref() {
                 Some("builtin") => EditorMode::Builtin,
                 Some("nvim") => EditorMode::Nvim,
@@ -2854,6 +2892,7 @@ impl Gui {
         gui.foreground = Some(hex(prefs.foreground));
         gui.terminal = (!prefs.terminal.trim().is_empty()).then(|| prefs.terminal.clone());
         gui.proportional = Some(prefs.proportional);
+        gui.inline_images = Some(prefs.inline_images);
         gui.editor = Some(
             match prefs.editor {
                 EditorMode::External => "external",
@@ -2890,6 +2929,9 @@ impl Gui {
         }
         if let Some(proportional) = gui.proportional {
             out += &format!("proportional = {proportional}\n");
+        }
+        if let Some(inline_images) = gui.inline_images {
+            out += &format!("inline_images = {inline_images}\n");
         }
         for (key, value) in [
             ("editor", &gui.editor),
@@ -2949,6 +2991,9 @@ pub fn load_gui_overlay(config: &mut rmut_core::config::Config) {
     }
     if saved.proportional.is_some() {
         gui.proportional = saved.proportional;
+    }
+    if saved.inline_images.is_some() {
+        gui.inline_images = saved.inline_images;
     }
 }
 

@@ -2521,8 +2521,10 @@ so the clickable layer cannot drift from the keymap.
       parts decode in a view of their own through egui_extras'
       loaders (the first thing the window does that the terminal
       cannot). Mailcap viewers followed (mutt's m and T, Enter
-      falling through to mailcap then text like view-attach);
-      inline-in-the-pager rendering still owed
+      falling through to mailcap then text like view-attach, the
+      terminal given the same keys for parity), and image/* parts
+      now also draw inline under their body markers ([gui]
+      inline_images, on by default, a Preferences checkbox)
 - [ ] Coverage registry: every `AskKind` handled
 
 ### G4: a window that sends mail

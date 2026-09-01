@@ -243,6 +243,49 @@ fn attachments_list_view_and_save() {
 }
 
 #[test]
+fn pager_decodes_image_parts_for_inlining() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: picture\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <i1@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nsee the picture\n\
+         --b\nContent-Type: image/png; name=\"pic.png\"\n\
+         Content-Disposition: attachment; filename=\"pic.png\"\n\
+         Content-Transfer-Encoding: base64\n\nAAEC\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("Enter opens the pager");
+    };
+    assert!(
+        pager.view.body.contains("[-- Type: image/png"),
+        "{}",
+        pager.view.body
+    );
+    // The first image marker maps to the decoded png leaf; there is
+    // no second image.
+    let (uri, bytes) = gui.pager_image(0).expect("the png leaf decodes");
+    assert!(uri.contains("#1"), "{uri}");
+    assert_eq!(&bytes[..], &[0u8, 1, 2], "decoded base64 bytes");
+    assert!(gui.pager_image(1).is_none());
+    // The frame lays out with the image row on screen, and the
+    // config key can turn the drawing off.
+    let off: Config = toml::from_str("[gui]\ninline_images = false\n").unwrap();
+    assert_eq!(off.gui.inline_images, Some(false));
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.run();
+    assert!(
+        harness.state().pager_drew_images,
+        "the marker drew its image"
+    );
+}
+
+#[test]
 fn attach_menu_views_through_mailcap_and_as_text() {
     let _guard = mailcaps_guard();
     let dir = tempfile::tempdir().unwrap();

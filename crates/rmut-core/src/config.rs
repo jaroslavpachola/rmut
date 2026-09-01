@@ -689,6 +689,9 @@ pub struct Gui {
     /// The message body in a proportional face; the index, headers
     /// and indented (preformatted) lines stay monospace.
     pub proportional: Option<bool>,
+    /// image/* parts drawn in the message body under their
+    /// `[-- Type: image/... --]` markers (on unless turned off).
+    pub inline_images: Option<bool>,
     /// Window-only overrides of `[colors]`, same keys and values
     /// (plus `#rrggbb`): the window can wear its own palette while
     /// the terminal keeps the shared one.
