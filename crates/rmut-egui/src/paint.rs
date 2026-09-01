@@ -734,6 +734,7 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         });
     }
     if let Some((vi, open)) = clicked {
+        let mods = ui.input(|i| i.modifiers);
         match &gui.mode {
             Mode::Pager(p) => {
                 // The mini-index above a message is a list of
@@ -745,6 +746,19 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
                     gui.click_row(vi);
                     gui.open_selected();
                 }
+            }
+            // Ctrl+click: toggle the tag there, the keyboard's t
+            // (it advances afterwards, as t does).
+            _ if mods.ctrl => {
+                gui.click_row(vi);
+                gui.click("t");
+            }
+            // Shift+click: tag the run from the cursor to the
+            // click, one undo step; the cursor lands on the click.
+            _ if mods.shift => {
+                let from = gui.session.sel;
+                gui.session.tag_span(from, vi);
+                gui.click_row(vi);
             }
             _ => {
                 gui.click_row(vi);
@@ -846,6 +860,19 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Delete", "d");
             item(&mut fire, ui, "Undelete", "u");
             item(&mut fire, ui, "Save…", "s");
+            ui.separator();
+            // The `;` sweeps: every item is tag-prefix plus the key,
+            // so the menu can never do what the keyboard cannot.
+            ui.menu_button("Tagged", |ui| {
+                item(&mut fire, ui, "Delete", ";d");
+                item(&mut fire, ui, "Undelete", ";u");
+                item(&mut fire, ui, "Flag", ";F");
+                item(&mut fire, ui, "Save…", ";s");
+                item(&mut fire, ui, "Untag", ";t");
+                ui.separator();
+                item(&mut fire, ui, "Tag matching…", "T");
+                item(&mut fire, ui, "Untag matching…", "<ctrl+t>");
+            });
         });
         ui.menu_button("Thread", |ui| {
             item(&mut fire, ui, "Collapse", "<alt+v>");

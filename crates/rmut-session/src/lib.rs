@@ -2791,6 +2791,24 @@ impl Session {
         self.note(format!("{} marked read", targets.len()));
     }
 
+    /// Tag every visible message between the two positions
+    /// (inclusive, either order): the pointer's range gesture
+    /// (shift+click in the window). One undo step, like any sweep.
+    pub fn tag_span(&mut self, a: usize, b: usize) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let last = self.visible.len() - 1;
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let (lo, hi) = (lo.min(last), hi.min(last));
+        let targets: Vec<usize> = self.visible[lo..=hi].to_vec();
+        self.push_undo("tag", &targets);
+        for &i in &targets {
+            self.msgs[i].env.tagged = true;
+        }
+        self.note(format!("{} tagged", targets.len()));
+    }
+
     pub fn mark_old_unread(&mut self) {
         if self.read_only || !self.config.mail.mark_old.unwrap_or(true) {
             return;

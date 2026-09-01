@@ -887,3 +887,57 @@ fn click_on_the_mini_index_opens_that_message() {
         pager.view.body
     );
 }
+
+/// Asked 2026-09-01: the pointer's tagging. Ctrl+click toggles the
+/// tag on the clicked row (the keyboard's t, advance included);
+/// Shift+click tags the run from the cursor to the click as one
+/// undo step, cursor landing on the click.
+#[test]
+fn ctrl_and_shift_clicks_tag_rows() {
+    let (_dir, mut gui) = fixture(&["one", "two", "three", "four", "five"]);
+    gui.session.sel = 0;
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(400.0, 400.0));
+    harness.run();
+    let click = |harness: &mut egui_kittest::Harness<'_, Gui>,
+                 y: f32,
+                 modifiers: eframe::egui::Modifiers| {
+        harness.event(eframe::egui::Event::ModifiersChanged(modifiers));
+        for pressed in [true, false] {
+            harness.event(eframe::egui::Event::PointerButton {
+                pos: eframe::egui::pos2(200.0, y),
+                button: eframe::egui::PointerButton::Primary,
+                pressed,
+                modifiers,
+            });
+            harness.run();
+        }
+        harness.event(eframe::egui::Event::ModifiersChanged(
+            eframe::egui::Modifiers::NONE,
+        ));
+        harness.run();
+    };
+    // Ctrl+click the third row: tagged, cursor advanced past it.
+    click(&mut harness, 95.0, eframe::egui::Modifiers::CTRL);
+    let tagged = |gui: &Gui, vi: usize| gui.session.msgs[gui.session.visible[vi]].env.tagged;
+    assert!(tagged(harness.state(), 2), "ctrl+click tagged the row");
+    assert_eq!(harness.state().session.sel, 3, "t advances");
+    // Shift+click the first row: the whole run back up gets tagged.
+    click(&mut harness, 58.0, eframe::egui::Modifiers::SHIFT);
+    for vi in 0..=3 {
+        assert!(tagged(harness.state(), vi), "row {vi} in the run");
+    }
+    assert!(!tagged(harness.state(), 4), "past the run stays clear");
+    assert_eq!(
+        harness.state().session.sel,
+        0,
+        "the cursor lands on the click"
+    );
+    // The sweep is one undo step: z takes it back, leaving only the
+    // ctrl+click's tag (it was a step of its own).
+    press(harness.state_mut(), "z");
+    assert!(tagged(harness.state(), 2), "the earlier tag survives");
+    for vi in [0, 1, 3] {
+        assert!(!tagged(harness.state(), vi), "row {vi} untagged by undo");
+    }
+}
