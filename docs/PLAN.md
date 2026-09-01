@@ -2536,7 +2536,9 @@ so the clickable layer cannot drift from the keymap.
       ($recall ask included), the postponed picker and the query
       screen (their G3 deferral repaid), mailto and resend, notmuch,
       `-p`; `$undo_send` flushes on close with trouble on stderr.
-      Still owed: the compose menu's mailcap/text views (V, Esc v)
+      The compose menu's mailcap/text views (V, Esc v) followed: a
+      copiousoutput viewer's text in the window, an interactive one
+      in the terminal, the bytes as text either way
 - [x] Every `FrontOp` now acts; the said-once notice survives only
       for suspend (a window minimizes instead) and `:`-bound keys
 

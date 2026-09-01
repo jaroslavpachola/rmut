@@ -426,6 +426,68 @@ fn the_builtin_editor_carries_the_compose_flow() {
 }
 
 #[test]
+fn compose_menu_views_an_attachment_as_text_and_through_mailcap() {
+    // One test holds both views so the MAILCAPS override never races
+    // another reader (nothing else in this crate consults mailcap).
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let attachment = dir.path().join("notes.txt");
+    fs::write(&attachment, "the attached words\n").unwrap();
+    let mailcap = dir.path().join("mailcap");
+    fs::write(&mailcap, "text/plain; cat %s; copiousoutput\n").unwrap();
+    unsafe { std::env::set_var("MAILCAPS", &mailcap) };
+    let config: Config = toml::from_str("[gui]\neditor = \"builtin\"\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "m");
+    press(&mut gui, "jane@example.com");
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "hello");
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Edit { text, .. } = &mut gui.mode else {
+        panic!("the draft opened in the built-in editor");
+    };
+    // An unmodified draft aborts (mutt's $abort_unmodified).
+    text.push_str("body\n");
+    gui.finish_edit(true);
+    assert!(matches!(gui.mode, Mode::Compose { .. }));
+    press(&mut gui, "a");
+    press(&mut gui, attachment.to_str().unwrap());
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "j");
+    let Mode::Compose { sel } = gui.mode else {
+        panic!("still on the compose menu");
+    };
+    assert_eq!(sel, 1, "j lands on the attachment row");
+    // Esc v: the bytes as text, whatever the type.
+    gui.handle_keys(vec![KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT)]);
+    let Mode::Help { lines, .. } = &gui.mode else {
+        panic!("Esc v shows the file as text");
+    };
+    assert!(
+        lines.iter().any(|l| l.contains("the attached words")),
+        "{lines:?}"
+    );
+    press(&mut gui, "q");
+    // V: the mailcap viewer; copiousoutput lands in the window. The
+    // return from the view put the cursor back on the body row.
+    press(&mut gui, "jV");
+    let Mode::Help { lines, .. } = &gui.mode else {
+        panic!("V shows the copiousoutput viewer's text");
+    };
+    assert!(
+        lines.iter().any(|l| l.contains("the attached words")),
+        "{lines:?}"
+    );
+    press(&mut gui, "q");
+    press(&mut gui, "q");
+    key(&mut gui, KeyCode::Esc);
+}
+
+#[test]
 fn real_nvim_round_trips_a_file() {
     // The embedding, end to end against the real binary: no display,
     // just RPC. Skipped quietly where nvim is not installed.

@@ -1397,6 +1397,10 @@ impl Gui {
                     self.start_shell(&command);
                 }
             }
+            KeyCode::Char('V') => self.view_compose_entry_with(View::Mailcap),
+            KeyCode::Char('v') if key.modifiers.contains(rmut_front::KeyModifiers::ALT) => {
+                self.view_compose_entry_with(View::Text)
+            }
             KeyCode::Enter => self.view_compose_entry(),
             KeyCode::Char('D') => {
                 let sel = *sel;
@@ -1429,9 +1433,65 @@ impl Gui {
     /// draft body, the forwarded original, or an attached file
     /// (text directly, other types through their [filters] command).
     fn view_compose_entry(&mut self) {
+        self.view_compose_entry_with(View::Filter);
+    }
+
+    /// mutt's view-mailcap (V) and view-text (Esc v) on a compose-menu
+    /// file: a copiousoutput viewer's text in the window, an
+    /// interactive viewer in the terminal (like `!`), or the bytes as
+    /// text whatever the type.
+    fn view_compose_entry_with(&mut self, how: View) {
         let Mode::Compose { sel } = self.mode else {
             return;
         };
+        if how != View::Filter {
+            let Some(k) = self.session.attach_index(sel) else {
+                return;
+            };
+            let Some(a) = self.session.attachments().into_iter().nth(k) else {
+                return;
+            };
+            let mimetype = a
+                .mime
+                .clone()
+                .unwrap_or_else(|| rmut_core::compose::content_type(&a.path).to_string());
+            let name = a.path.display().to_string();
+            match how {
+                View::Text => match std::fs::read(&a.path) {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        let mut lines = vec![name, String::new()];
+                        lines.extend(text.lines().map(String::from));
+                        self.mode = Mode::Help { lines, scroll: 0 };
+                    }
+                    Err(err) => self.error(format!("cannot read {name}: {err}")),
+                },
+                _ => {
+                    let entries = rmut_core::mailcap::load();
+                    match rmut_core::mailcap::viewer_for(&entries, &mimetype) {
+                        Some((command, copious)) => {
+                            let quoted = format!("'{}'", name.replace('\'', "'\\''"));
+                            let command = command.replace("%s", &quoted);
+                            if copious {
+                                match run_file_filter(&command, &a.path) {
+                                    Ok(text) => {
+                                        let mut lines = vec![name, String::new()];
+                                        lines.extend(text.lines().map(String::from));
+                                        self.mode = Mode::Help { lines, scroll: 0 };
+                                    }
+                                    Err(err) => self.error(format!("viewer failed: {err:#}")),
+                                }
+                            } else {
+                                let label = command.clone();
+                                self.spawn_terminal(&command, &[], PendingEdit::Shell(label));
+                            }
+                        }
+                        None => self.error(format!("no mailcap entry for {mimetype}")),
+                    }
+                }
+            }
+            return;
+        }
         let Some(c) = self.session.draft() else {
             return;
         };
@@ -2597,6 +2657,15 @@ pub fn saved_zoom() -> Option<f32> {
 }
 
 /// A shell command over a file's bytes, its stdout as text.
+/// How a compose-menu file is shown: through its [filters] command
+/// (Enter), its mailcap viewer (V), or as text (Esc v).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Filter,
+    Mailcap,
+    Text,
+}
+
 fn run_file_filter(command: &str, path: &std::path::Path) -> anyhow::Result<String> {
     use anyhow::Context as _;
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
