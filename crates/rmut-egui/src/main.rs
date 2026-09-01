@@ -4,6 +4,7 @@
 
 mod app;
 mod input;
+mod nvim;
 mod paint;
 #[cfg(test)]
 mod tests;

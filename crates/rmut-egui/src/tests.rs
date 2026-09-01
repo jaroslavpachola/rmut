@@ -412,3 +412,30 @@ fn the_builtin_editor_carries_the_compose_flow() {
     // q from the menu asks about postponing; Esc keeps the draft.
     press(&mut gui, "q");
 }
+
+#[test]
+fn real_nvim_round_trips_a_file() {
+    // The embedding, end to end against the real binary: no display,
+    // just RPC. Skipped quietly where nvim is not installed.
+    if std::process::Command::new("nvim")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("draft.txt");
+    fs::write(&file, "before\n").unwrap();
+    let mut nvim = crate::nvim::Embedded::start(&file, 60, 15, || {}).unwrap();
+    nvim.input("ohello from the grid<Esc>:wq<CR>");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !nvim.finished && std::time::Instant::now() < deadline {
+        nvim.pump();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(nvim.finished, "nvim exited on :wq");
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains("hello from the grid"), "{text}");
+    assert!(text.starts_with("before"), "{text}");
+}

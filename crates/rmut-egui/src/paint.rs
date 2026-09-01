@@ -165,10 +165,21 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.checkbox(&mut prefs.proportional, "proportional face for prose");
                     ui.end_row();
                     ui.label("Editor");
-                    ui.checkbox(
-                        &mut prefs.builtin_editor,
-                        "built-in text box instead of $EDITOR in a terminal",
-                    );
+                    egui::ComboBox::from_id_salt("prefs-editor")
+                        .selected_text(match prefs.editor {
+                            crate::app::EditorMode::External => "$EDITOR in a terminal",
+                            crate::app::EditorMode::Builtin => "built-in text box",
+                            crate::app::EditorMode::Nvim => "embedded Neovim",
+                        })
+                        .show_ui(ui, |ui| {
+                            for (mode, label) in [
+                                (crate::app::EditorMode::External, "$EDITOR in a terminal"),
+                                (crate::app::EditorMode::Builtin, "built-in text box"),
+                                (crate::app::EditorMode::Nvim, "embedded Neovim"),
+                            ] {
+                                ui.selectable_value(&mut prefs.editor, mode, label);
+                            }
+                        });
                     ui.end_row();
                 });
             ui.add_space(8.0);
@@ -242,6 +253,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::Image { .. } => IMAGE_HELP,
                 Mode::Compose { .. } => COMPOSE_HELP,
                 Mode::Edit { .. } => EDIT_HELP,
+                Mode::NvimEdit => NVIM_HELP,
                 Mode::Postponed { .. } => POSTPONED_HELP,
                 Mode::Query { .. } => QUERY_HELP,
             };
@@ -371,6 +383,45 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         mono_line(&mut job, line, Style::new(), size);
                     }
                     ui.add(egui::Label::new(job).extend());
+                }
+                Mode::NvimEdit => {
+                    let Some((nvim, _)) = gui.nvim.as_mut() else {
+                        return;
+                    };
+                    nvim.resize(width, rows);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let to32 = |c: u32| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+                    let (cursor_row, cursor_col) = nvim.grid.cursor;
+                    for (y, row) in nvim.grid.cells.iter().enumerate().take(rows) {
+                        let mut job = LayoutJob::default();
+                        for (x, cell) in row.iter().enumerate() {
+                            let attr = nvim.attrs.get(&cell.hl).copied().unwrap_or_default();
+                            let mut fg = to32(attr.fg.unwrap_or(nvim.default_fg));
+                            let mut bg = to32(attr.bg.unwrap_or(nvim.default_bg));
+                            if attr.reverse != (y == cursor_row && x == cursor_col) {
+                                std::mem::swap(&mut fg, &mut bg);
+                            }
+                            if attr.bold {
+                                fg = Color32::WHITE.lerp_to_gamma(fg, 0.4);
+                            }
+                            job.append(
+                                &cell.text,
+                                0.0,
+                                TextFormat {
+                                    font_id: FontId::monospace(size),
+                                    color: fg,
+                                    background: bg,
+                                    underline: if attr.underline {
+                                        egui::Stroke::new(1.0, fg)
+                                    } else {
+                                        egui::Stroke::NONE
+                                    },
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        ui.add(egui::Label::new(job).extend());
+                    }
                 }
                 Mode::Edit { .. } => {
                     // Ctrl+Enter finishes, Esc abandons; consumed
@@ -971,5 +1022,6 @@ const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save |:Pipe p:Print";
 const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP P:Postpone q:Quit";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";
+const NVIM_HELP: &str = "nvim owns the keyboard - :wq finishes, :q! abandons";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 const IMAGE_HELP: &str = "q:Back";

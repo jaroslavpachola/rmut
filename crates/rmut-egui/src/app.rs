@@ -77,6 +77,17 @@ pub enum Mode {
         text: String,
         target: EditTarget,
     },
+    /// Embedded Neovim ([gui] editor = "nvim"): the grid lives in
+    /// [`Gui::nvim`], every key goes to it, :wq brings the flow back.
+    NvimEdit,
+}
+
+/// Which editor hosts a draft, from `[gui] editor`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EditorMode {
+    External,
+    Builtin,
+    Nvim,
 }
 
 /// What the built-in editor was editing, so Done knows where the
@@ -95,7 +106,7 @@ pub enum EditTarget {
 
 /// What the terminal child that just closed was doing, so its end
 /// picks the flow back up.
-enum PendingEdit {
+pub enum PendingEdit {
     /// $EDITOR on the draft: the compose menu comes back after.
     Draft(Compose),
     /// $EDITOR on a plain file (mutt's new-mime); the menu returns.
@@ -246,6 +257,10 @@ pub struct Gui {
     pub about: bool,
     /// The Preferences dialog and its half-edited values.
     pub prefs: Option<Prefs>,
+    /// The embedded nvim and the flow its exit resumes.
+    pub nvim: Option<(crate::nvim::Embedded, PendingEdit)>,
+    /// The egui context, for waking the frame loop from threads.
+    pub ctx: Option<eframe::egui::Context>,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -309,6 +324,8 @@ impl Gui {
             last_notified: String::new(),
             about: false,
             prefs: None,
+            nvim: None,
+            ctx: None,
             last_poll: Instant::now(),
             quit: false,
         };
@@ -566,6 +583,13 @@ impl Gui {
             return;
         }
         match &self.mode {
+            Mode::NvimEdit => {
+                if let Some((nvim, _)) = &mut self.nvim
+                    && let Some(keys) = crate::nvim::notation(&key)
+                {
+                    nvim.input(&keys);
+                }
+            }
             Mode::Edit { .. } => {}
             Mode::Index => self.handle_index_key(key),
             Mode::Pager(_) => self.handle_pager_key(key),
@@ -826,16 +850,70 @@ impl Gui {
         })
     }
 
-    /// The built-in editor is a choice, never the default: mutt's
-    /// identity is $EDITOR, and the window honours that unless told.
+    /// The editor is a choice, never a surprise: mutt's identity is
+    /// $EDITOR in a terminal, and the window honours that unless the
+    /// config names the built-in box or embedded nvim.
+    fn editor_mode(&self) -> EditorMode {
+        match self.session.config.gui.editor.as_deref() {
+            Some("builtin") => EditorMode::Builtin,
+            Some("nvim") => EditorMode::Nvim,
+            _ => EditorMode::External,
+        }
+    }
+
     fn builtin_editor(&self) -> bool {
-        self.session.config.gui.editor.as_deref() == Some("builtin")
+        self.editor_mode() == EditorMode::Builtin
+    }
+
+    /// Real nvim on this file, the window as its terminal. Trouble
+    /// falls back to the external editor rather than losing the flow.
+    fn start_nvim(&mut self, path: &std::path::Path, what: PendingEdit) {
+        let (rows, cols) = self.view_size;
+        let wake = self.ctx.clone();
+        match crate::nvim::Embedded::start(path, cols.max(20), rows.max(5), move || {
+            if let Some(ctx) = &wake {
+                ctx.request_repaint();
+            }
+        }) {
+            Ok(nvim) => {
+                self.nvim = Some((nvim, what));
+                self.mode = Mode::NvimEdit;
+            }
+            Err(err) => {
+                self.error(format!("cannot start nvim ({err}); using the terminal"));
+                match what {
+                    PendingEdit::Draft(compose) => {
+                        let editor = self.editor_program();
+                        let path = compose.path.clone();
+                        self.spawn_terminal(
+                            &format!("{editor} \"$1\""),
+                            &[path.as_os_str()],
+                            PendingEdit::Draft(compose),
+                        );
+                    }
+                    other => {
+                        let editor = self.editor_program();
+                        let path = path.to_path_buf();
+                        self.spawn_terminal(
+                            &format!("{editor} \"$1\""),
+                            &[path.as_os_str()],
+                            other,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The draft into an editor: the window's own text box when
     /// configured, else $EDITOR in the terminal; the compose menu
     /// comes back either way.
     fn start_editor(&mut self, compose: Compose) {
+        if self.editor_mode() == EditorMode::Nvim {
+            let path = compose.path.clone();
+            self.start_nvim(&path, PendingEdit::Draft(compose));
+            return;
+        }
         if self.builtin_editor() {
             match std::fs::read_to_string(&compose.path) {
                 Ok(text) => {
@@ -898,6 +976,10 @@ impl Gui {
     /// A plain file into the editor (mutt's new-mime), the compose
     /// menu back afterwards.
     fn start_file_edit(&mut self, path: &std::path::Path) {
+        if self.editor_mode() == EditorMode::Nvim {
+            self.start_nvim(path, PendingEdit::File);
+            return;
+        }
         if self.builtin_editor() {
             match std::fs::read_to_string(path) {
                 Ok(text) => {
@@ -963,6 +1045,27 @@ impl Gui {
                 return;
             }
         };
+        if self.editor_mode() == EditorMode::Nvim {
+            let temp = match write_draft("").and_then(|p| {
+                std::fs::write(&p, &original)?;
+                Ok(p)
+            }) {
+                Ok(p) => p,
+                Err(err) => {
+                    self.error(format!("cannot write edit copy: {err:#}"));
+                    return;
+                }
+            };
+            self.start_nvim(
+                &temp.clone(),
+                PendingEdit::Raw {
+                    orig,
+                    temp,
+                    original,
+                },
+            );
+            return;
+        }
         // The built-in editor is a text box: only clean UTF-8 can go
         // through it unharmed; anything else keeps the terminal.
         if self.builtin_editor()
@@ -2307,6 +2410,18 @@ impl Gui {
     /// itself, so a test harness can drive it without one.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Embedded nvim: apply whatever it drew, and when it quits
+        // (:wq, :q!) the flow continues as an editor exit does.
+        self.ctx = Some(ctx.clone());
+        if let Some((nvim, _)) = &mut self.nvim {
+            nvim.pump();
+            if nvim.finished {
+                let (nvim, what) = self.nvim.take().unwrap();
+                drop(nvim);
+                self.mode = Mode::Index;
+                self.editor_done(what, true);
+            }
+        }
         // The terminal child ($EDITOR, `!`): when it closes, its
         // flow continues; while it runs, this window only waits.
         if let Some((child, _)) = &mut self.editing {
@@ -2490,7 +2605,7 @@ pub struct Prefs {
     pub background: eframe::egui::Color32,
     pub foreground: eframe::egui::Color32,
     pub proportional: bool,
-    pub builtin_editor: bool,
+    pub editor: EditorMode,
 }
 
 impl Prefs {
@@ -2514,7 +2629,11 @@ impl Prefs {
             background: color(&config.gui.background, (0x10, 0x10, 0x10)),
             foreground: color(&config.gui.foreground, (0xd8, 0xd8, 0xd8)),
             proportional: config.gui.proportional.unwrap_or(false),
-            builtin_editor: config.gui.editor.as_deref() == Some("builtin"),
+            editor: match config.gui.editor.as_deref() {
+                Some("builtin") => EditorMode::Builtin,
+                Some("nvim") => EditorMode::Nvim,
+                _ => EditorMode::External,
+            },
         }
     }
 }
@@ -2534,11 +2653,14 @@ impl Gui {
         gui.foreground = Some(hex(prefs.foreground));
         gui.terminal = (!prefs.terminal.trim().is_empty()).then(|| prefs.terminal.clone());
         gui.proportional = Some(prefs.proportional);
-        gui.editor = Some(if prefs.builtin_editor {
-            "builtin".into()
-        } else {
-            "external".into()
-        });
+        gui.editor = Some(
+            match prefs.editor {
+                EditorMode::External => "external",
+                EditorMode::Builtin => "builtin",
+                EditorMode::Nvim => "nvim",
+            }
+            .into(),
+        );
         let font = prefs.font.trim().to_string();
         let font_changed = gui.font.as_deref().unwrap_or("") != font;
         gui.font = (!font.is_empty()).then(|| font.clone());

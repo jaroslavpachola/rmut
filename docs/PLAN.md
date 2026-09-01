@@ -2289,6 +2289,16 @@ advance (index and pager), verified against mutt's source.
       stands down while it is up, and raw bytes that are not clean
       UTF-8 keep the terminal so nothing is mangled
 
+- [x] Embedded Neovim, asked for the same day: `[gui] editor =
+      "nvim"` (third choice in the Preferences combo) runs the real
+      `nvim --embed` over msgpack-RPC (rmpv), renders its
+      ext_linegrid with the window's own monospace machinery - nvim's
+      colors, cursor, the user's whole config and plugins - and
+      forwards every key in nvim notation; :wq resumes the compose
+      flow exactly as an editor exit does, spawn failure falls back
+      to the terminal, and a test drives the real binary over RPC
+      (no display needed)
+
 ## 2.2.1 (released 2026-09-01)
 
 The terminal hunt fixed hours after 2.2.0: it knew only foot,

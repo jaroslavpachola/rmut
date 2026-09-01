@@ -20,6 +20,7 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "wayl
 chrono = "0.4"
 mailparse = "0.16"
 regex-lite = "0.1"
+rmpv = "1"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
