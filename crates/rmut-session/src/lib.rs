@@ -2886,6 +2886,16 @@ impl Session {
                 }
             }
         }
+        // mutt's $resolve, as the save path has it: a successful
+        // untagged save steps to the next undeleted message, exactly
+        // like delete, staying put on the last one.
+        if delete
+            && !tagged
+            && errors.is_empty()
+            && let Some(pos) = self.step_message(true, true)
+        {
+            self.sel = pos;
+        }
         let mut status = match (delete, n) {
             (true, 1) => format!("saved to {target} (original marked deleted)"),
             (true, _) => format!("saved {n} to {target} (originals marked deleted)"),

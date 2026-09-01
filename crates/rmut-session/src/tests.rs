@@ -2767,3 +2767,28 @@ fn new_mime_makes_attaches_and_edits_and_write_fcc_files_the_message() {
     f.session.write_draft_to(dir.path().to_str().unwrap());
     assert!(f.log.said("is not a maildir"), "{}", f.log.last_text());
 }
+
+#[test]
+fn save_advances_like_delete() {
+    // mutt's $resolve on the save path (curs_main.c OP_SAVE): a
+    // successful untagged save steps to the next undeleted message.
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    let dest = tempfile::tempdir().unwrap();
+    let spec = dest.path().join("archive").display().to_string();
+    // The open positions on first-new; the test starts from the top.
+    f.session.sel = 0;
+    f.session.copy_message(&spec, true, false, false);
+    assert_eq!(f.session.sel, 1, "save moved to the next message");
+    assert!(f.session.msgs[0].env.file.flags.deleted);
+    // A copy stays put, like mutt's copy-message.
+    f.session.copy_message(&spec, false, false, false);
+    assert_eq!(f.session.sel, 1, "copy stays");
+    // A tagged save stays put too (mutt advances only untagged).
+    f.session.msgs[2].env.tagged = true;
+    f.session.copy_message(&spec, true, true, false);
+    assert_eq!(f.session.sel, 1, "tagged save stays");
+    // On the last undeleted message there is nowhere to go.
+    f.session.sel = 1;
+    f.session.copy_message(&spec, true, false, false);
+    assert_eq!(f.session.sel, 1, "the last one stays put");
+}
