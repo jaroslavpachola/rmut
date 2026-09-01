@@ -2301,6 +2301,18 @@ sweeps, the arrow cursor over rows and text selection kept out of
 them. Two bugfixes: the scrollbar hiding beyond the window edge next
 to over-wide rows, and `;t` now untagging them all as mutt does.
 
+## 2.5.0 (released 2026-09-01)
+
+The window opens before the mailbox: the session comes up on its own
+thread behind a boot screen - spinner, the opening progress where
+the stderr logs used to go, errors shown in the window with exit
+code 1 (-z/-Z keep the blocking open, since they answer by exit
+code). NoticeSink grew a Send bound for the one thread crossing, so
+the message-line handles moved from Rc to Arc. And a bugfix worth
+the release alone: view-mailcap honours nametemplate (matched
+against mutt's rfc1524.c), so a browser handed an html part renders
+it instead of sniffing an extensionless temp file into source view.
+
 ## After 2.2.1
 
 - [x] The built-in editor, asked for 2026-09-01: `[gui] editor =
