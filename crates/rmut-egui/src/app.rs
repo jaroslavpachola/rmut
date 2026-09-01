@@ -227,7 +227,7 @@ pub struct Gui {
 impl Gui {
     pub fn new(session: Session, mut warnings: Vec<String>, read_only: bool) -> Gui {
         let config = &session.config;
-        let (theme, mut all) = Theme::from_config(config);
+        let (theme, mut all) = Theme::from_config(&gui_colored(config));
         let (keymap, key_warnings) = Keymap::with_config(
             &config.keys.index,
             &config.keys.pager,
@@ -392,7 +392,7 @@ impl Gui {
     fn recompile_ui(&mut self) -> Vec<String> {
         let mut warnings = self.session.recompile();
         let config = &self.session.config;
-        let (theme, mut more) = Theme::from_config(config);
+        let (theme, mut more) = Theme::from_config(&gui_colored(config));
         let (keymap, key_warnings) = Keymap::with_config(
             &config.keys.index,
             &config.keys.pager,
@@ -2293,4 +2293,15 @@ fn run_file_filter(command: &str, path: &std::path::Path) -> anyhow::Result<Stri
         .with_context(|| format!("running {command}"))?;
     anyhow::ensure!(out.status.success(), "{command} exited with {}", out.status);
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The config as the window colors it: `[gui.colors]` laid over
+/// `[colors]`, so the window can wear its own palette while the
+/// terminal keeps the shared one.
+fn gui_colored(config: &rmut_core::config::Config) -> rmut_core::config::Config {
+    let mut config = config.clone();
+    for (key, value) in config.gui.colors.clone() {
+        config.colors.insert(key, value);
+    }
+    config
 }

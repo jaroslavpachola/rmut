@@ -288,3 +288,29 @@ fn compose_asks_before_any_editor() {
     press(&mut gui, "m");
     key(&mut gui, KeyCode::Esc);
 }
+
+#[test]
+fn the_window_wears_its_own_palette() {
+    let config: Config = toml::from_str(
+        "[colors]\ndeleted = \"blue\"\n[gui]\nbackground = \"#202030\"\n[gui.colors]\ndeleted = \"#ff8000\"\n",
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let gui = Gui::new(session, Vec::new(), false);
+    use rmut_front::style::Color;
+    assert_eq!(
+        gui.theme.deleted,
+        Color::Rgb(255, 128, 0),
+        "[gui.colors] wins in the window"
+    );
+    assert_eq!(
+        gui.session.config.colors.get("deleted").map(String::as_str),
+        Some("blue"),
+        "the shared [colors] stays as written for the terminal"
+    );
+}

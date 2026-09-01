@@ -22,6 +22,9 @@ pub enum Color {
     LightBlue,
     LightMagenta,
     LightCyan,
+    /// A truecolor value, from `#rrggbb` in the config. Terminals
+    /// carry it as 24-bit color; the window uses it directly.
+    Rgb(u8, u8, u8),
 }
 
 /// A style patch: what a color rule sets, leaving the rest alone.
@@ -85,6 +88,12 @@ impl Style {
 
 /// A color as a muttrc or the config names it.
 pub fn parse_color(name: &str) -> Option<Color> {
+    if let Some(hex) = name.strip_prefix('#')
+        && hex.len() == 6
+        && let Ok(v) = u32::from_str_radix(hex, 16)
+    {
+        return Some(Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
+    }
     Some(match name.to_lowercase().as_str() {
         "default" => Color::Reset,
         "black" => Color::Black,
@@ -135,6 +144,14 @@ pub fn rule_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_colors_parse_and_bad_ones_do_not() {
+        assert_eq!(parse_color("#ff8000"), Some(Color::Rgb(255, 128, 0)));
+        assert_eq!(parse_color("#FF8000"), Some(Color::Rgb(255, 128, 0)));
+        assert_eq!(parse_color("#f80"), None, "three digits stay unknown");
+        assert_eq!(parse_color("#zzzzzz"), None);
+    }
 
     #[test]
     fn patch_overlays_colors_and_adds_attributes() {

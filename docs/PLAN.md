@@ -2512,6 +2512,12 @@ TUI.
       `$new_mail_command` being unset
 - [ ] A scrollbar and mouse selection in the pager, mouse click to
       select in the index
+- [x] The window's own colors, asked for 2026-09-01: `#rrggbb`
+      accepted wherever a color is named (both front ends;
+      terminals carry it as truecolor), and the window alone adds
+      `[gui] background` / `foreground` for the canvas plus a
+      `[gui.colors]` table laid over `[colors]`, so the window can
+      wear its own palette while the terminal keeps the shared one
 - [ ] Menus, since egui has them (`MenuBar`, `menu_button`,
       `SubMenu`, `Response::context_menu`): a bar of Mailbox /
       Message / Thread / Help and a right-click menu on an index row,

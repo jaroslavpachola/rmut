@@ -21,6 +21,7 @@ pub fn color(c: Color) -> ratatui::style::Color {
         Color::LightBlue => R::LightBlue,
         Color::LightMagenta => R::LightMagenta,
         Color::LightCyan => R::LightCyan,
+        Color::Rgb(r, g, b) => R::Rgb(r, g, b),
     }
 }
 

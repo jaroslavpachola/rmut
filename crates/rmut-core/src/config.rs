@@ -679,6 +679,14 @@ pub struct Gui {
     /// The terminal emulator that hosts $EDITOR and `!` commands
     /// ($TERMINAL, then foot/alacritty/kitty/xterm, when unset).
     pub terminal: Option<String>,
+    /// The window canvas: what the text sits on and its default ink
+    /// (named colors or `#rrggbb`; a dark gray on off-white unset).
+    pub background: Option<String>,
+    pub foreground: Option<String>,
+    /// Window-only overrides of `[colors]`, same keys and values
+    /// (plus `#rrggbb`): the window can wear its own palette while
+    /// the terminal keeps the shared one.
+    pub colors: HashMap<String, String>,
 }
 
 /// The optional left pane listing `mail.mailboxes` with new-mail

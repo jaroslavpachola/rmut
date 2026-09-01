@@ -28,22 +28,49 @@ fn color32(c: Color, fallback: Color32) -> Color32 {
         Color::LightBlue => Color32::from_rgb(0x8c, 0xa8, 0xff),
         Color::LightMagenta => Color32::from_rgb(0xff, 0x5c, 0xff),
         Color::LightCyan => Color32::from_rgb(0x5c, 0xff, 0xff),
+        Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
     }
 }
 
 const FG: Color32 = Color32::from_rgb(0xd8, 0xd8, 0xd8);
 const BG: Color32 = Color32::from_rgb(0x10, 0x10, 0x10);
 
+thread_local! {
+    /// The frame's canvas pair, set at the top of every draw so the
+    /// style mapping reads the configured colors, not the consts.
+    static CANVAS: std::cell::Cell<(Color32, Color32)> = const { std::cell::Cell::new((BG, FG)) };
+}
+
+/// The window canvas: `[gui] background` / `foreground`, or the
+/// built-in dark pair.
+fn canvas(gui: &Gui) -> (Color32, Color32) {
+    let pick = |name: &Option<String>, fallback| {
+        name.as_deref()
+            .and_then(rmut_front::style::parse_color)
+            .map(|c| color32(c, fallback))
+            .unwrap_or(fallback)
+    };
+    (
+        pick(&gui.session.config.gui.background, BG),
+        pick(&gui.session.config.gui.foreground, FG),
+    )
+}
+
 /// A front-end style as egui text: bold is left to the color (egui
 /// has no monospace bold face by default), reverse swaps the pair.
 fn format(style: Style, size: f32) -> TextFormat {
-    let mut fg = color32(style.fg.unwrap_or(Color::Reset), FG);
+    let (canvas_bg, canvas_fg) = CANVAS.with(|c| c.get());
+    let mut fg = color32(style.fg.unwrap_or(Color::Reset), canvas_fg);
     let mut bg = style
         .bg
-        .map(|c| color32(c, BG))
+        .map(|c| color32(c, canvas_bg))
         .unwrap_or(Color32::TRANSPARENT);
     if style.reversed {
-        let solid_bg = if bg == Color32::TRANSPARENT { BG } else { bg };
+        let solid_bg = if bg == Color32::TRANSPARENT {
+            canvas_bg
+        } else {
+            bg
+        };
         (fg, bg) = (solid_bg, fg);
     }
     if style.bold {
@@ -68,6 +95,8 @@ fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
 }
 
 pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
+    let (canvas_bg, canvas_fg) = canvas(gui);
+    CANVAS.with(|c| c.set((canvas_bg, canvas_fg)));
     let size = gui.session.config.gui.size.unwrap_or(14.0).clamp(6.0, 40.0);
     let ctx = root.ctx().clone();
     let char_w = ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(size), ' '));
@@ -189,7 +218,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     }
 
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(BG))
+        .frame(egui::Frame::NONE.fill(canvas_bg))
         .show(root, |ui| {
             let rows = (ui.available_height() / row_h).max(1.0) as usize;
             let width = ((ui.available_width() / char_w) as usize).max(20);
@@ -396,7 +425,11 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         } else {
             "No mail in mailbox."
         };
-        ui.label(RichText::new(text).monospace().color(FG));
+        ui.label(
+            RichText::new(text)
+                .monospace()
+                .color(CANVAS.with(|c| c.get().1)),
+        );
         return;
     }
     let cfg = &gui.session.config.ui;
