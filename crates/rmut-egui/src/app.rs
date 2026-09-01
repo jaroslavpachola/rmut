@@ -71,6 +71,26 @@ pub enum Mode {
         results: Vec<String>,
         sel: usize,
     },
+    /// The built-in editor ([gui] editor = "builtin"): the same file
+    /// contract as $EDITOR, in an egui text box.
+    Edit {
+        text: String,
+        target: EditTarget,
+    },
+}
+
+/// What the built-in editor was editing, so Done knows where the
+/// text goes - the mirror of [`PendingEdit`] minus the shell.
+pub enum EditTarget {
+    /// The draft: written back, then the compose menu.
+    Draft(Compose),
+    /// A plain file (new-mime); the compose menu returns.
+    File(std::path::PathBuf),
+    /// The message's own bytes; a change replaces the original.
+    Raw {
+        orig: std::path::PathBuf,
+        original: String,
+    },
 }
 
 /// What the terminal child that just closed was doing, so its end
@@ -546,6 +566,7 @@ impl Gui {
             return;
         }
         match &self.mode {
+            Mode::Edit { .. } => {}
             Mode::Index => self.handle_index_key(key),
             Mode::Pager(_) => self.handle_pager_key(key),
             Mode::Help { .. } => self.handle_help_key(key),
@@ -805,9 +826,28 @@ impl Gui {
         })
     }
 
-    /// $EDITOR on the draft, in the terminal; the compose menu comes
-    /// back when it closes.
+    /// The built-in editor is a choice, never the default: mutt's
+    /// identity is $EDITOR, and the window honours that unless told.
+    fn builtin_editor(&self) -> bool {
+        self.session.config.gui.editor.as_deref() == Some("builtin")
+    }
+
+    /// The draft into an editor: the window's own text box when
+    /// configured, else $EDITOR in the terminal; the compose menu
+    /// comes back either way.
     fn start_editor(&mut self, compose: Compose) {
+        if self.builtin_editor() {
+            match std::fs::read_to_string(&compose.path) {
+                Ok(text) => {
+                    self.mode = Mode::Edit {
+                        text,
+                        target: EditTarget::Draft(compose),
+                    };
+                }
+                Err(err) => self.error(format!("cannot read draft: {err}")),
+            }
+            return;
+        }
         let editor = self.editor_program();
         let path = compose.path.clone();
         self.spawn_terminal(
@@ -817,9 +857,59 @@ impl Gui {
         );
     }
 
+    /// Ctrl+Enter (or the Done button) in the built-in editor.
+    pub fn finish_edit(&mut self, save: bool) {
+        let Mode::Edit { text, target } = std::mem::replace(&mut self.mode, Mode::Index) else {
+            return;
+        };
+        match target {
+            EditTarget::Draft(compose) => {
+                if save && let Err(err) = std::fs::write(&compose.path, &text) {
+                    self.error(format!("cannot write draft: {err}"));
+                    return;
+                }
+                if save {
+                    self.session.set_draft(compose);
+                    self.open_compose_menu();
+                } else {
+                    self.error(format!(
+                        "edit abandoned; draft kept at {}",
+                        compose.path.display()
+                    ));
+                }
+            }
+            EditTarget::File(path) => {
+                if save && let Err(err) = std::fs::write(&path, &text) {
+                    self.error(format!("cannot write {}: {err}", path.display()));
+                }
+                self.open_compose_menu();
+            }
+            EditTarget::Raw { orig, original } => {
+                if !save || text == original {
+                    self.note("message unchanged");
+                } else {
+                    self.session.store_edited(&orig, text.as_bytes());
+                    self.refresh_sidebar();
+                }
+            }
+        }
+    }
+
     /// A plain file into the editor (mutt's new-mime), the compose
     /// menu back afterwards.
     fn start_file_edit(&mut self, path: &std::path::Path) {
+        if self.builtin_editor() {
+            match std::fs::read_to_string(path) {
+                Ok(text) => {
+                    self.mode = Mode::Edit {
+                        text,
+                        target: EditTarget::File(path.to_path_buf()),
+                    };
+                }
+                Err(err) => self.error(format!("cannot read {}: {err}", path.display())),
+            }
+            return;
+        }
         let editor = self.editor_program();
         self.spawn_terminal(
             &format!("{editor} \"$1\""),
@@ -873,6 +963,20 @@ impl Gui {
                 return;
             }
         };
+        // The built-in editor is a text box: only clean UTF-8 can go
+        // through it unharmed; anything else keeps the terminal.
+        if self.builtin_editor()
+            && let Ok(text) = String::from_utf8(original.clone())
+        {
+            self.mode = Mode::Edit {
+                target: EditTarget::Raw {
+                    orig,
+                    original: text.clone(),
+                },
+                text,
+            };
+            return;
+        }
         let temp = match write_draft("").and_then(|p| {
             std::fs::write(&p, &original)?;
             Ok(p)
@@ -2365,6 +2469,7 @@ pub struct Prefs {
     pub background: eframe::egui::Color32,
     pub foreground: eframe::egui::Color32,
     pub proportional: bool,
+    pub builtin_editor: bool,
 }
 
 impl Prefs {
@@ -2388,6 +2493,7 @@ impl Prefs {
             background: color(&config.gui.background, (0x10, 0x10, 0x10)),
             foreground: color(&config.gui.foreground, (0xd8, 0xd8, 0xd8)),
             proportional: config.gui.proportional.unwrap_or(false),
+            builtin_editor: config.gui.editor.as_deref() == Some("builtin"),
         }
     }
 }
@@ -2407,6 +2513,11 @@ impl Gui {
         gui.foreground = Some(hex(prefs.foreground));
         gui.terminal = (!prefs.terminal.trim().is_empty()).then(|| prefs.terminal.clone());
         gui.proportional = Some(prefs.proportional);
+        gui.editor = Some(if prefs.builtin_editor {
+            "builtin".into()
+        } else {
+            "external".into()
+        });
         let font = prefs.font.trim().to_string();
         let font_changed = gui.font.as_deref().unwrap_or("") != font;
         gui.font = (!font.is_empty()).then(|| font.clone());
@@ -2437,6 +2548,7 @@ impl Gui {
             out += &format!("proportional = {proportional}\n");
         }
         for (key, value) in [
+            ("editor", &gui.editor),
             ("font", &gui.font),
             ("terminal", &gui.terminal),
             ("background", &gui.background),
@@ -2478,6 +2590,7 @@ pub fn load_gui_overlay(config: &mut rmut_core::config::Config) {
     };
     let gui = &mut config.gui;
     for (mine, theirs) in [
+        (&mut gui.editor, saved.editor),
         (&mut gui.font, saved.font),
         (&mut gui.terminal, saved.terminal),
         (&mut gui.background, saved.background),

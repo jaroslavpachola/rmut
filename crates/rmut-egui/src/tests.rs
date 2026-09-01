@@ -375,3 +375,40 @@ fn each_terminal_gets_its_own_calling_convention() {
     assert_eq!(terminal_invocation("foot"), ["-e"]);
     assert_eq!(terminal_invocation("x-terminal-emulator"), ["-e"]);
 }
+
+#[test]
+fn the_builtin_editor_carries_the_compose_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let config: Config = toml::from_str("[gui]\neditor = \"builtin\"\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "m");
+    press(&mut gui, "jane@example.com");
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "hello");
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Edit { text, .. } = &mut gui.mode else {
+        panic!("the staged draft opened in the built-in editor");
+    };
+    text.push_str("typed in the window\n");
+    // Keymap keys stay out of the editor.
+    press(&mut gui, "q");
+    assert!(
+        matches!(gui.mode, Mode::Edit { .. }),
+        "q is just a letter here"
+    );
+    gui.finish_edit(true);
+    assert!(
+        matches!(gui.mode, Mode::Compose { .. }),
+        "Done lands on the compose menu"
+    );
+    let draft = gui.session.draft().expect("the draft is set");
+    let written = fs::read_to_string(&draft.path).unwrap();
+    assert!(written.contains("typed in the window"), "{written}");
+    // q from the menu asks about postponing; Esc keeps the draft.
+    press(&mut gui, "q");
+}

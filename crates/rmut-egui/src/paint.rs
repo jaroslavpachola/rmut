@@ -164,6 +164,12 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.label("Body");
                     ui.checkbox(&mut prefs.proportional, "proportional face for prose");
                     ui.end_row();
+                    ui.label("Editor");
+                    ui.checkbox(
+                        &mut prefs.builtin_editor,
+                        "built-in text box instead of $EDITOR in a terminal",
+                    );
+                    ui.end_row();
                 });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -235,6 +241,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::Attach { .. } => ATTACH_HELP,
                 Mode::Image { .. } => IMAGE_HELP,
                 Mode::Compose { .. } => COMPOSE_HELP,
+                Mode::Edit { .. } => EDIT_HELP,
                 Mode::Postponed { .. } => POSTPONED_HELP,
                 Mode::Query { .. } => QUERY_HELP,
             };
@@ -364,6 +371,45 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         mono_line(&mut job, line, Style::new(), size);
                     }
                     ui.add(egui::Label::new(job).extend());
+                }
+                Mode::Edit { .. } => {
+                    // Ctrl+Enter finishes, Esc abandons; consumed
+                    // here so the text box never sees them.
+                    let done =
+                        ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
+                    let abandon =
+                        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                    let mut button_done = false;
+                    let mut button_abandon = false;
+                    ui.horizontal(|ui| {
+                        button_done = ui.button("Done (Ctrl+Enter)").clicked();
+                        button_abandon = ui.button("Abandon (Esc)").clicked();
+                    });
+                    ui.separator();
+                    let proportional = gui.session.config.gui.proportional.unwrap_or(false);
+                    let Mode::Edit { text, .. } = &mut gui.mode else {
+                        return;
+                    };
+                    let font = if proportional {
+                        FontId::proportional(size)
+                    } else {
+                        FontId::monospace(size)
+                    };
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let edit = egui::TextEdit::multiline(text)
+                            .font(font)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(rows.saturating_sub(2));
+                        let response = ui.add(edit);
+                        if ui.memory(|m| m.focused().is_none()) {
+                            response.request_focus();
+                        }
+                    });
+                    if done || button_done {
+                        gui.finish_edit(true);
+                    } else if abandon || button_abandon {
+                        gui.finish_edit(false);
+                    }
                 }
                 Mode::Compose { .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -924,5 +970,6 @@ const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save |:Pipe p:Print";
 const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP P:Postpone q:Quit";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
+const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 const IMAGE_HELP: &str = "q:Back";

@@ -2278,6 +2278,17 @@ Since 2.0.2: G1, G2, G2p, G3 and the G2 leftovers as the sections
 above tell it, and on the shared side the save path's $resolve
 advance (index and pager), verified against mutt's source.
 
+## After 2.2.1
+
+- [x] The built-in editor, asked for 2026-09-01: `[gui] editor =
+      "builtin"` (a Preferences checkbox; external stays the
+      default, as the G-plan promised) routes the draft, new-mime
+      files and raw-edit into an egui text box under the same file
+      contract as $EDITOR - Ctrl+Enter writes and lands on the
+      compose menu, Esc abandons with the draft kept, the keymap
+      stands down while it is up, and raw bytes that are not clean
+      UTF-8 keep the terminal so nothing is mangled
+
 ## 2.2.1 (released 2026-09-01)
 
 The terminal hunt fixed hours after 2.2.0: it knew only foot,
