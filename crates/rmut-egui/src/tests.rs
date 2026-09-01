@@ -406,6 +406,18 @@ fn the_builtin_editor_carries_the_compose_flow() {
         matches!(gui.mode, Mode::Compose { .. }),
         "Done lands on the compose menu"
     );
+    // Enter previews the body; q returns to the compose menu, not
+    // the index - the draft stays reachable.
+    key(&mut gui, KeyCode::Enter);
+    assert!(
+        matches!(gui.mode, Mode::Help { .. }),
+        "Enter previews the entry"
+    );
+    press(&mut gui, "q");
+    assert!(
+        matches!(gui.mode, Mode::Compose { .. }),
+        "q resumes the send flow"
+    );
     let draft = gui.session.draft().expect("the draft is set");
     let written = fs::read_to_string(&draft.path).unwrap();
     assert!(written.contains("typed in the window"), "{written}");

@@ -2375,7 +2375,15 @@ impl Gui {
         };
         let max = lines.len().saturating_sub(page);
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
+                self.mode = Mode::Index;
+                // Leaving the entry preview resumes the send flow,
+                // the TUI's way: a staged draft means the compose
+                // menu is what q returns to, never the bare index.
+                if self.session.draft().is_some() {
+                    self.open_compose_menu();
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(max),
             KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
             KeyCode::Char(' ') | KeyCode::PageDown => *scroll = (*scroll + page).min(max),
