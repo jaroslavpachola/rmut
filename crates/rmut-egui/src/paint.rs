@@ -886,11 +886,14 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
 }
 
 /// A translucent wash over a hovered row: the pointer's own
-/// highlight, under the selection's full-strength reverse.
+/// highlight, under the selection's full-strength reverse. The
+/// cursor stays the arrow - these are rows to click, not text to
+/// select, and the text I-beam would promise the wrong thing.
 fn hover(ui: &egui::Ui, response: &egui::Response) {
     if response.hovered() {
         ui.painter()
             .rect_filled(response.rect, 0.0, Color32::from_white_alpha(10));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
     }
 }
 
