@@ -772,3 +772,75 @@ fn scrollbar_stays_on_screen_beside_wide_rows() {
     };
     assert!(pager.scroll > 50, "narrow window scroll: {}", pager.scroll);
 }
+
+/// Asked 2026-09-01: the wheel moves the part it is over - the
+/// mini-index with the pointer on its rows, the message below it
+/// otherwise - never both at once.
+#[test]
+fn wheel_scrolls_only_the_hovered_region() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    for i in 0..30 {
+        write_message(dir.path(), i, &format!("subject {i}"));
+    }
+    let mut text = String::from(
+        "From: jane@example.com\nTo: sam@example.com\nSubject: zz long\n\
+         Date: Mon, 20 Mar 2024 10:00:00 +0000\nMessage-ID: <w1@example.com>\n\n",
+    );
+    for i in 0..200 {
+        text += &format!("line {i}\n");
+    }
+    fs::write(dir.path().join("cur").join("0100.x:2,S"), text).unwrap();
+    let config: Config = toml::from_str("[pager]\nindex_lines = 3\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    // Open the long message, wherever the date sort put it.
+    gui.session.sel = (0..gui.session.visible.len())
+        .find(|&v| gui.session.msgs[gui.session.visible[v]].env.subject == "zz long")
+        .expect("the long message is listed");
+    gui.index_offset = 0;
+    key(&mut gui, KeyCode::Enter);
+    assert!(matches!(gui.mode, Mode::Pager(_)));
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(400.0, 400.0));
+    harness.run();
+    let offset_before = harness.state().index_offset;
+    let wheel = |harness: &egui_kittest::Harness<'_, Gui>, pos: eframe::egui::Pos2| {
+        harness.event(eframe::egui::Event::PointerMoved(pos));
+        harness.event(eframe::egui::Event::MouseWheel {
+            unit: eframe::egui::MouseWheelUnit::Point,
+            delta: eframe::egui::Vec2::new(0.0, -80.0),
+            phase: eframe::egui::TouchPhase::Move,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+    };
+    // Deep in the body: the message scrolls, the list stays.
+    wheel(&harness, eframe::egui::pos2(200.0, 300.0));
+    harness.run();
+    harness.run_steps(8);
+    let Mode::Pager(pager) = &harness.state().mode else {
+        panic!()
+    };
+    assert!(pager.scroll > 0, "the body scrolled: {}", pager.scroll);
+    assert_eq!(
+        harness.state().index_offset,
+        offset_before,
+        "the list stayed put"
+    );
+    // On the mini-index rows: the list scrolls, the message stays.
+    let body_scroll = pager.scroll;
+    wheel(&harness, eframe::egui::pos2(200.0, 60.0));
+    harness.run();
+    harness.run_steps(8);
+    let Mode::Pager(pager) = &harness.state().mode else {
+        panic!()
+    };
+    assert_eq!(pager.scroll, body_scroll, "the message stayed put");
+    assert!(
+        harness.state().index_offset > offset_before,
+        "the list scrolled: {}",
+        harness.state().index_offset
+    );
+}

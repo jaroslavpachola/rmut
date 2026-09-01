@@ -375,7 +375,8 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     draw_pager(gui, ui, rows - il, width, size);
                 }
                 Mode::Help { .. } => {
-                    let wheel = wheel_rows(gui, ui, size);
+                    let region = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+                    let wheel = wheel_rows(gui, ui, size, region);
                     let Mode::Help { lines, scroll } = &mut gui.mode else {
                         return;
                     };
@@ -666,9 +667,17 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         );
     }
     gui.follow_tail(rows);
+    // The wheel turns this list only with the pointer over its own
+    // rows (the mini-index above a message is a slice, not a column).
+    let row_h = ui
+        .ctx()
+        .fonts_mut(|f| f.row_height(&FontId::monospace(size)))
+        + 2.0;
+    let mut region = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+    region.set_height(region.height().min(rows as f32 * row_h));
     let max_offset = gui.session.visible.len().saturating_sub(rows);
-    gui.index_offset =
-        (gui.index_offset as i64 + wheel_rows(gui, ui, size)).clamp(0, max_offset as i64) as usize;
+    gui.index_offset = (gui.index_offset as i64 + wheel_rows(gui, ui, size, region))
+        .clamp(0, max_offset as i64) as usize;
     let id_counts = rmut_front::index::id_counts(&gui.session);
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut clicked: Option<(usize, bool)> = None;
@@ -751,7 +760,15 @@ const CONTEXT_ITEMS: &[(&str, &str)] = &[
 ];
 
 /// Wheel motion as whole rows, the remainder kept for next frame.
-fn wheel_rows(gui: &mut Gui, ui: &egui::Ui, size: f32) -> i64 {
+/// Only the region under the pointer scrolls, so with the mini-index
+/// above the message the wheel moves the part it is over, not both.
+fn wheel_rows(gui: &mut Gui, ui: &egui::Ui, size: f32, region: egui::Rect) -> i64 {
+    let over = ui
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|pos| region.contains(pos));
+    if !over {
+        return 0;
+    }
     let row_h = ui
         .ctx()
         .fonts_mut(|f| f.row_height(&FontId::monospace(size)))
@@ -863,7 +880,12 @@ fn hover(ui: &egui::Ui, response: &egui::Response) {
 }
 
 fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size: f32) {
-    let wheel = wheel_rows(gui, ui, size);
+    // Clipped to what is actually on screen: an over-wide row (a
+    // long subject in the mini-index above) expands the region's
+    // max_rect past the window, and a bar hung on that edge would
+    // paint into the void.
+    let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+    let wheel = wheel_rows(gui, ui, size, area);
     let total = gui.pager_line_total(width);
     if let Mode::Pager(pager) = &mut gui.mode {
         // Inline images take room the row arithmetic cannot see, so
@@ -887,11 +909,6 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         pager.hide_quoted,
     );
     let (scroll, is_part) = (pager.scroll, pager.back.is_some());
-    // Clipped to what is actually on screen: an over-wide row (a
-    // long subject in the mini-index above) expands the region's
-    // max_rect past the window, and a bar hung on that edge would
-    // paint into the void.
-    let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
     // The k-th image Type marker pairs with the k-th image/* leaf;
     // only the message pager carries markers (a part pager's body is
     // the part itself), and only visible rows decode.
