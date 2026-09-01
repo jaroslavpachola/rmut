@@ -667,6 +667,7 @@ impl Gui {
             KeyCode::Enter => self.view_part(),
             KeyCode::Char('m') => self.view_part_mailcap(),
             KeyCode::Char('T') => self.view_part_text(),
+            KeyCode::Char('R') => self.view_part_rendered(),
             KeyCode::Char('|') => {
                 self.prompt = Some(Prompt::Line {
                     label: "Pipe part to command: ".into(),
@@ -868,6 +869,30 @@ impl Gui {
             }
         } else {
             self.spawn_terminal(&command, &[], PendingEdit::View { temp });
+        }
+    }
+
+    /// The internal html renderer, asked for by name (R): the
+    /// decoded bytes through html::to_text whatever the type claims
+    /// and whatever filters or [pager] html say - the way to compare
+    /// it against an auto_view filter, or to read a part whose
+    /// Content-Type lies. Not mutt's; added on request.
+    fn view_part_rendered(&mut self) {
+        let (msg_path, index, mimetype) = match &self.mode {
+            Mode::Attach {
+                msg_path,
+                parts,
+                sel,
+                ..
+            } => (msg_path.clone(), *sel, parts[*sel].mimetype.clone()),
+            _ => return,
+        };
+        match rmut_core::message::part_bytes(&msg_path, index) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                self.part_pager(mimetype, rmut_core::html::to_text(&text));
+            }
+            Err(err) => self.error(format!("cannot decode part: {err:#}")),
         }
     }
 

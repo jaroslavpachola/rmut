@@ -1076,3 +1076,45 @@ fn enter_on_an_html_part_renders_it() {
         pager.view.body
     );
 }
+
+/// Asked 2026-09-01: R views the part through the internal html
+/// renderer by name, whatever filters or [pager] html say - the way
+/// to compare against an auto_view filter.
+#[test]
+fn r_renders_internally_past_any_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: page\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <h2@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nsee the page\n\
+         --b\nContent-Type: text/html; name=\"page.html\"\n\
+         Content-Disposition: attachment; filename=\"page.html\"\n\n\
+         <html><body><p>Hello &amp; goodbye</p></body></html>\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let config: Config =
+        toml::from_str("[filters]\n\"text/html\" = \"printf FILTERED\"\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "vj");
+    // Enter: the auto_view filter wins, as in the message pager.
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("Enter views the part");
+    };
+    assert!(pager.view.body.contains("FILTERED"), "{}", pager.view.body);
+    press(&mut gui, "q");
+    // R: the internal renderer by name, past the filter.
+    press(&mut gui, "R");
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("R renders internally");
+    };
+    assert!(
+        pager.view.body.contains("Hello & goodbye"),
+        "{}",
+        pager.view.body
+    );
+    assert!(!pager.view.body.contains("FILTERED"), "{}", pager.view.body);
+}
