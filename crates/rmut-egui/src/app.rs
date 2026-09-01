@@ -2379,6 +2379,27 @@ impl Gui {
             }
         }
         let keys = ctx.input(|i| crate::input::keys(&i.events));
+        // While the keymap owns the keyboard, egui must not run its
+        // own focus traversal: Tab is completion here, not
+        // focus-next, or the first menu button quietly takes focus
+        // and the next Enter "clicks" it. The events were read
+        // above; consuming them now hides them from the widgets
+        // only. Any focus already granted is surrendered the same
+        // way - except when a widget screen (the built-in editor,
+        // a dialog) really owns the keys.
+        let widgets_own_keys =
+            matches!(self.mode, Mode::Edit { .. }) || self.prefs.is_some() || self.about;
+        if !widgets_own_keys {
+            ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+            });
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
         if !keys.is_empty() {
             if self.editing.is_some() {
                 self.note("editing in the terminal; close it to continue");
