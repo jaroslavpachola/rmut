@@ -2269,6 +2269,15 @@ everything else here.
       (the grouping and both knobs; break-thread out of a group and
       back), an importer test, and e2e scenario_subject_threading
 
+## 2.1.0 (released 2026-09-01)
+
+The first release with the window: `rmut-front` (the toolkit-free
+front-end pieces) and `rmut-egui` (egui over the session) join
+`rmut-core`, `rmut-session` and `rmut` on crates.io, all at 2.1.0.
+Since 2.0.2: G1, G2, G2p, G3 and the G2 leftovers as the sections
+above tell it, and on the shared side the save path's $resolve
+advance (index and pager), verified against mutt's source.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:

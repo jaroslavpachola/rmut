@@ -25,3 +25,4 @@ publish:
     cargo publish -p rmut-session
     cargo publish -p rmut-front
     cargo publish -p rmut
+    cargo publish -p rmut-egui
