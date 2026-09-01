@@ -885,19 +885,18 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Delete", "d");
             item(&mut fire, ui, "Undelete", "u");
             item(&mut fire, ui, "Save…", "s");
+        });
+        // The `;` sweeps: every item is tag-prefix plus the key, so
+        // the menu can never do what the keyboard cannot.
+        ui.menu_button("Tagged", |ui| {
+            item(&mut fire, ui, "Delete", ";d");
+            item(&mut fire, ui, "Undelete", ";u");
+            item(&mut fire, ui, "Flag", ";F");
+            item(&mut fire, ui, "Save…", ";s");
+            item(&mut fire, ui, "Untag", ";t");
             ui.separator();
-            // The `;` sweeps: every item is tag-prefix plus the key,
-            // so the menu can never do what the keyboard cannot.
-            ui.menu_button("Tagged", |ui| {
-                item(&mut fire, ui, "Delete", ";d");
-                item(&mut fire, ui, "Undelete", ";u");
-                item(&mut fire, ui, "Flag", ";F");
-                item(&mut fire, ui, "Save…", ";s");
-                item(&mut fire, ui, "Untag", ";t");
-                ui.separator();
-                item(&mut fire, ui, "Tag matching…", "T");
-                item(&mut fire, ui, "Untag matching…", "<ctrl+t>");
-            });
+            item(&mut fire, ui, "Tag matching…", "T");
+            item(&mut fire, ui, "Untag matching…", "<ctrl+t>");
         });
         ui.menu_button("Thread", |ui| {
             item(&mut fire, ui, "Collapse", "<alt+v>");
