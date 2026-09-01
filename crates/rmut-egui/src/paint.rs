@@ -107,6 +107,24 @@ fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
 pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     let (canvas_bg, canvas_fg) = canvas(gui);
     CANVAS.with(|c| c.set((canvas_bg, canvas_fg)));
+    // The canvas is the whole window's ground: every panel (menu
+    // bar, help, status, sidebar) and every modal sits on it, not on
+    // egui's stock gray. The widget theme follows its brightness so
+    // menus and dialogs stay readable on a light canvas.
+    if root.style().visuals.panel_fill != canvas_bg {
+        let bright = 0.299 * canvas_bg.r() as f32
+            + 0.587 * canvas_bg.g() as f32
+            + 0.114 * canvas_bg.b() as f32
+            > 140.0;
+        let mut visuals = if bright {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.panel_fill = canvas_bg;
+        visuals.window_fill = canvas_bg;
+        root.ctx().set_visuals(visuals);
+    }
     if gui.prefs.is_some() {
         let mut apply = false;
         let mut save = false;
