@@ -80,6 +80,8 @@ fn run() -> Result<()> {
         Box::new(move |cc| {
             // Ctrl+= / Ctrl+- / Ctrl+0: egui's own zoom, made sure of.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = true);
+            // image/* parts decode through egui's loaders.
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             if let Some(path) = font {
                 install_font(&cc.egui_ctx, &path);
             }

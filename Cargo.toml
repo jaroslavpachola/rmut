@@ -15,6 +15,7 @@ rmut-session = { path = "crates/rmut-session", version = "2.0.2" }
 rmut-front = { path = "crates/rmut-front", version = "2.0.2" }
 anyhow = "1"
 ratatui = "0.29"
+egui_extras = { version = "0.36", default-features = false, features = ["image"] }
 eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 chrono = "0.4"
 mailparse = "0.16"

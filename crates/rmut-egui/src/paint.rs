@@ -86,6 +86,8 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::Pager(_) => PAGER_HELP,
                 Mode::Help { .. } => HELP_HELP,
                 Mode::Folders { .. } => FOLDERS_HELP,
+                Mode::Attach { .. } => ATTACH_HELP,
+                Mode::Image { .. } => IMAGE_HELP,
             };
             let mut job = LayoutJob::default();
             job.append(help, 0.0, format(bar_style, size));
@@ -204,6 +206,58 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         mono_line(&mut job, line, Style::new(), size);
                     }
                     ui.add(egui::Label::new(job).extend());
+                }
+                Mode::Attach { .. } => {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let Mode::Attach { parts, sel, .. } = &gui.mode else {
+                        return;
+                    };
+                    let sel = *sel;
+                    let mut rowinfo = Vec::new();
+                    for (i, part) in parts.iter().enumerate().take(rows) {
+                        rowinfo.push(format!(
+                            "{:>3} [{:<24}] {:>6}  {}",
+                            i + 1,
+                            part.mimetype,
+                            rmut_front::pager::humanize_size(part.size as u64),
+                            part.filename.as_deref().unwrap_or("(inline)"),
+                        ));
+                    }
+                    let mut clicked = None;
+                    for (i, text) in rowinfo.iter().enumerate() {
+                        let style = if i == sel {
+                            Style::new().reversed()
+                        } else {
+                            Style::new()
+                        };
+                        let mut job = LayoutJob::default();
+                        job.append(text, 0.0, format(style, size));
+                        let response =
+                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        hover(ui, &response);
+                        if response.clicked() {
+                            clicked = Some((i, response.double_clicked()));
+                        }
+                    }
+                    if let Some((i, open)) = clicked {
+                        if let Mode::Attach { sel, .. } = &mut gui.mode {
+                            *sel = i;
+                        }
+                        if open {
+                            gui.click("<enter>");
+                        }
+                    }
+                }
+                Mode::Image { uri, bytes, .. } => {
+                    let image = egui::Image::from_bytes(
+                        uri.clone(),
+                        egui::load::Bytes::Shared(bytes.clone()),
+                    )
+                    .max_size(ui.available_size())
+                    .shrink_to_fit();
+                    ui.centered_and_justified(|ui| {
+                        ui.add(image);
+                    });
                 }
                 Mode::Folders { .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -518,3 +572,5 @@ pub const INDEX_HELP: &str = "q:Quit Enter:View m:New r:Reply f:Fwd t:Tag s:Save
 const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev h:Headers T:Quoted";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
+const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save |:Pipe p:Print";
+const IMAGE_HELP: &str = "q:Back";

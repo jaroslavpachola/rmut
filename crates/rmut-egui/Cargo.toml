@@ -12,6 +12,7 @@ categories = ["email"]
 [dependencies]
 anyhow = { workspace = true }
 eframe = { workspace = true }
+egui_extras = { workspace = true }
 regex-lite = { workspace = true }
 rmut-core = { workspace = true }
 rmut-front = { workspace = true }

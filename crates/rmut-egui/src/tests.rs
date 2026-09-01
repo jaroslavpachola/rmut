@@ -195,3 +195,53 @@ fn gui_config_parses_size_and_font() {
         "unset stays unset; the window defaults to 14"
     );
 }
+
+#[test]
+fn attachments_list_view_and_save() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: parts\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <p1@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nhello body\n\
+         --b\nContent-Type: application/octet-stream; name=\"blob.bin\"\n\
+         Content-Disposition: attachment; filename=\"blob.bin\"\n\
+         Content-Transfer-Encoding: base64\n\nAAEC\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let (session, warnings) = Session::open(dir.path(), Config::default()).unwrap();
+    assert_eq!(warnings, Vec::<String>::new());
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "v");
+    let Mode::Attach { parts, .. } = &gui.mode else {
+        panic!("v opens the attachment menu");
+    };
+    assert_eq!(parts.len(), 2, "two leaves listed");
+    // Enter views the text part in a part pager; q returns to the menu.
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("Enter views the part")
+    };
+    assert!(pager.back.is_some(), "a part pager knows its way back");
+    assert!(pager.view.body.contains("hello body"));
+    press(&mut gui, "q");
+    assert!(matches!(gui.mode, Mode::Attach { .. }));
+    // s saves the selected (binary) part under its own name.
+    press(&mut gui, "j");
+    press(&mut gui, "s");
+    gui.handle_keys(vec![KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )]);
+    let target = dir.path().join("blob.out");
+    press(&mut gui, target.to_str().unwrap());
+    key(&mut gui, KeyCode::Enter);
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        [0u8, 1, 2],
+        "decoded base64 bytes"
+    );
+    press(&mut gui, "q");
+    assert!(matches!(gui.mode, Mode::Index));
+}

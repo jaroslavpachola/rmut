@@ -2446,15 +2446,21 @@ so the clickable layer cannot drift from the keymap.
 
 ### G3: a window that changes mail
 
-- [ ] Drop the forced read-only; sync, delete/undelete, flags, tags,
-      tag-prefix, limit, search, sort, all through the same
-      `Function`s. The write path is the session's; the round is
-      the prompts and confirmations reaching the screen
-- [ ] The folder browser, postponed list and query list as
-      selectable lists (the `Mode` screens that are lists)
-- [ ] Attachments: the list, save, pipe; `mailcap` viewers spawn as
-      they do in the TUI. `image/*` parts render inline in the pager
-      (the first thing the GUI does that the terminal cannot)
+- [x] Dropped the forced read-only (-R still means what it means, one
+      test guards it); sync, delete/undelete, flags, tags, tag-prefix,
+      limit, sort through the same `Function`s, the pager's write keys
+      wired the TUI's way (delete advances or falls out, undo takes
+      $undo_send first), Alt+c's read-only open carried through
+- [ ] The postponed and query lists as selectable lists - moved to
+      G4, where Enter on them can actually compose; the folder
+      browser has been in since G2
+- [x] Attachments: the menu (list, view, save, pipe, print) with the
+      TUI's keys plus click/double-click; text and auto_view-filtered
+      parts open in a part pager that knows its way back; `image/*`
+      parts decode in a view of their own through egui_extras'
+      loaders (the first thing the window does that the terminal
+      cannot). Inline-in-the-pager rendering still owed; mailcap
+      viewer spawning still owed
 - [ ] Coverage registry: every `AskKind` handled
 
 ### G4: a window that sends mail

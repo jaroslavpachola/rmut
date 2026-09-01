@@ -25,6 +25,9 @@ pub struct Pager {
     pub scroll: usize,
     pub full_headers: bool,
     pub hide_quoted: bool,
+    /// Set when this pager shows a single attachment part: the
+    /// attachment menu to restore on q (mutt returns to the menu).
+    pub back: Option<Box<Mode>>,
 }
 
 pub enum Mode {
@@ -38,12 +41,35 @@ pub enum Mode {
         dirs: Vec<(String, usize)>,
         sel: usize,
     },
+    /// mutt's attachment menu (v).
+    Attach {
+        msg_path: std::path::PathBuf,
+        parts: Vec<rmut_core::message::Part>,
+        sel: usize,
+        /// Pager to return to when the menu was opened from there.
+        back: Option<Pager>,
+    },
+    /// An image part, decoded by egui's loaders.
+    Image {
+        uri: String,
+        bytes: std::sync::Arc<[u8]>,
+        back: Box<Mode>,
+    },
 }
 
 #[derive(Clone)]
 pub enum LineKind {
-    Ask { what: AskKind, wants: Wants },
-    ChangeDir { read_only: bool },
+    Ask {
+        what: AskKind,
+        wants: Wants,
+    },
+    /// Save the selected attachment part to this file.
+    SavePart,
+    /// Pipe the selected attachment part to this command.
+    PipePart,
+    ChangeDir {
+        read_only: bool,
+    },
     EnterCommand,
 }
 
@@ -58,9 +84,18 @@ impl LineKind {
                 Wants::Other => "other",
             },
             LineKind::ChangeDir { .. } => "mailbox",
+            LineKind::SavePart => "file",
+            LineKind::PipePart => "command",
             LineKind::EnterCommand => "command",
         }
     }
+}
+
+pub enum KeyKind {
+    /// A one-key question the session asked.
+    Ask(AskKind),
+    /// Confirm printing the selected attachment part.
+    PrintPart,
 }
 
 pub enum Prompt {
@@ -71,7 +106,7 @@ pub enum Prompt {
     },
     Key {
         label: String,
-        what: AskKind,
+        kind: KeyKind,
     },
 }
 
@@ -267,6 +302,7 @@ impl Gui {
                         scroll: 0,
                         full_headers: false,
                         hide_quoted: false,
+                        back: None,
                     });
                 }
                 Request::Command(cmd) => match cmd {
@@ -336,7 +372,7 @@ impl Gui {
         let before = self.session.selected_path();
         let next = self.session.answer(what, answer);
         self.open_ask(next);
-        if self.prompt.is_none() && matches!(self.mode, Mode::Pager(_)) {
+        if self.prompt.is_none() && matches!(&self.mode, Mode::Pager(p) if p.back.is_none()) {
             if self.session.selected_path() != before {
                 self.open_selected();
             } else if self
@@ -367,7 +403,10 @@ impl Gui {
                 });
             }
             Some(Ask::Key { label, what }) => {
-                self.prompt = Some(Prompt::Key { label, what });
+                self.prompt = Some(Prompt::Key {
+                    label,
+                    kind: KeyKind::Ask(what),
+                });
             }
             None => {}
         }
@@ -425,21 +464,248 @@ impl Gui {
             Mode::Pager(_) => self.handle_pager_key(key),
             Mode::Help { .. } => self.handle_help_key(key),
             Mode::Folders { .. } => self.handle_folders_key(key),
+            Mode::Attach { .. } => self.handle_attach_key(key),
+            Mode::Image { .. } => {
+                if matches!(
+                    key.code,
+                    KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc
+                ) && let Mode::Image { back, .. } =
+                    std::mem::replace(&mut self.mode, Mode::Index)
+                {
+                    self.mode = *back;
+                }
+            }
+        }
+    }
+
+    fn handle_attach_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Attach { parts, sel, .. } = &mut self.mode {
+                    *sel = (*sel + 1).min(parts.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Attach { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Esc => {
+                let back = match &mut self.mode {
+                    Mode::Attach { back, .. } => back.take(),
+                    _ => None,
+                };
+                self.mode = match back {
+                    Some(pager) => Mode::Pager(pager),
+                    None => Mode::Index,
+                };
+            }
+            KeyCode::Enter => self.view_part(),
+            KeyCode::Char('|') => {
+                self.prompt = Some(Prompt::Line {
+                    label: "Pipe part to command: ".into(),
+                    edit: LineEdit::new(String::new()),
+                    kind: LineKind::PipePart,
+                });
+            }
+            KeyCode::Char('p') => {
+                self.prompt = Some(Prompt::Key {
+                    label: "Print part? (y/n): ".into(),
+                    kind: KeyKind::PrintPart,
+                });
+            }
+            KeyCode::Char('s') => {
+                if let Mode::Attach { parts, sel, .. } = &self.mode {
+                    let default = parts[*sel]
+                        .filename
+                        .clone()
+                        .unwrap_or_else(|| format!("part-{}.bin", *sel + 1));
+                    self.prompt = Some(Prompt::Line {
+                        label: "Save to file: ".into(),
+                        edit: LineEdit::new(default),
+                        kind: LineKind::SavePart,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn open_attachments(&mut self) {
+        let Some(&i) = self.session.visible.get(self.session.sel) else {
+            return;
+        };
+        let msg_path = self.session.msgs[i].env.file.path.clone();
+        match rmut_core::message::parts(&msg_path) {
+            Ok(parts) if !parts.is_empty() => {
+                let back = match std::mem::replace(&mut self.mode, Mode::Index) {
+                    Mode::Pager(pager) => Some(pager),
+                    _ => None,
+                };
+                self.mode = Mode::Attach {
+                    msg_path,
+                    parts,
+                    sel: 0,
+                    back,
+                };
+            }
+            Ok(_) => self.error("message has no parts"),
+            Err(err) => self.error(format!("cannot list parts: {err:#}")),
+        }
+    }
+
+    /// Enter on the attachment menu: text and filtered parts in a
+    /// pager, images decoded in a view of their own, the rest said.
+    fn view_part(&mut self) {
+        let (msg_path, index, is_text, mimetype) = match &self.mode {
+            Mode::Attach {
+                msg_path,
+                parts,
+                sel,
+                ..
+            } => {
+                let part = &parts[*sel];
+                (msg_path.clone(), *sel, part.is_text, part.mimetype.clone())
+            }
+            _ => return,
+        };
+        if mimetype.starts_with("image/") {
+            match rmut_core::message::part_bytes(&msg_path, index) {
+                Ok(bytes) => {
+                    let uri = format!("bytes://{}#{index}", msg_path.display());
+                    let back = std::mem::replace(&mut self.mode, Mode::Index);
+                    self.mode = Mode::Image {
+                        uri,
+                        bytes: bytes.into(),
+                        back: Box::new(back),
+                    };
+                }
+                Err(err) => self.error(format!("cannot decode part: {err:#}")),
+            }
+            return;
+        }
+        let body = if is_text {
+            rmut_core::message::part_text(&msg_path, index)
+                .map_err(|err| format!("cannot decode part: {err:#}"))
+        } else {
+            match self.session.display.filters.get(&mimetype).cloned() {
+                Some(command) => rmut_core::message::filter_part(&msg_path, index, &command)
+                    .map_err(|err| format!("filter failed: {err:#}")),
+                None => Err(format!("{mimetype} is not text; save it with s")),
+            }
+        };
+        match body {
+            Ok(body) => {
+                let headers = vec![("Content-Type".to_string(), mimetype)];
+                let menu = std::mem::replace(&mut self.mode, Mode::Index);
+                self.mode = Mode::Pager(Pager {
+                    view: rmut_core::message::MessageView {
+                        brief: headers.clone(),
+                        all: headers,
+                        body,
+                    },
+                    scroll: 0,
+                    full_headers: false,
+                    hide_quoted: false,
+                    back: Some(Box::new(menu)),
+                });
+            }
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// The selected attachment's decoded bytes, from the menu state.
+    fn selected_part_bytes(&mut self) -> Option<Vec<u8>> {
+        let (msg_path, index) = match &self.mode {
+            Mode::Attach { msg_path, sel, .. } => (msg_path.clone(), *sel),
+            _ => return None,
+        };
+        match rmut_core::message::part_bytes(&msg_path, index) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                self.error(format!("cannot decode part: {err:#}"));
+                None
+            }
+        }
+    }
+
+    fn save_part(&mut self, input: &str) {
+        let (msg_path, index) = match &self.mode {
+            Mode::Attach { msg_path, sel, .. } => (msg_path.clone(), *sel),
+            _ => return,
+        };
+        if input.is_empty() {
+            self.error("no filename given");
+            return;
+        }
+        let target = rmut_session::expand_tilde(input);
+        if target.exists() {
+            self.error(format!("{} exists, not overwriting", target.display()));
+            return;
+        }
+        let result = rmut_core::message::part_bytes(&msg_path, index).and_then(|bytes| {
+            std::fs::write(&target, &bytes)?;
+            Ok(bytes.len())
+        });
+        match result {
+            Ok(n) => self.note(format!("saved {n} bytes to {}", target.display())),
+            Err(err) => self.error(format!("save failed: {err:#}")),
+        }
+    }
+
+    fn pipe_part(&mut self, command: &str) {
+        if command.is_empty() {
+            self.error("no command given");
+            return;
+        }
+        let Some(bytes) = self.selected_part_bytes() else {
+            return;
+        };
+        match rmut_session::pipe_to(command, &bytes) {
+            Ok(()) => self.note(format!("piped to {command}")),
+            Err(err) => self.error(format!("pipe failed: {err:#}")),
+        }
+    }
+
+    /// p on the attachment menu: the decoded part to print_command.
+    fn print_part(&mut self) {
+        let Some(bytes) = self.selected_part_bytes() else {
+            return;
+        };
+        let command = self
+            .session
+            .config
+            .mail
+            .print
+            .clone()
+            .unwrap_or_else(|| "lpr".into());
+        match rmut_session::pipe_to(&command, &bytes) {
+            Ok(()) => self.note(format!("printed via {command}")),
+            Err(err) => self.error(format!("print failed: {err:#}")),
         }
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) {
         match &mut self.prompt {
             Some(Prompt::Key { .. }) => {
-                let Some(Prompt::Key { what, .. }) = self.prompt.take() else {
+                let Some(Prompt::Key { kind, .. }) = self.prompt.take() else {
                     return;
                 };
-                let answer = match key.code {
-                    KeyCode::Char(c) => Key::Char(c),
-                    KeyCode::Enter => Key::Enter,
-                    _ => Key::Other,
-                };
-                self.answer_ask(what, Answer::Key(answer));
+                match kind {
+                    KeyKind::Ask(what) => {
+                        let answer = match key.code {
+                            KeyCode::Char(c) => Key::Char(c),
+                            KeyCode::Enter => Key::Enter,
+                            _ => Key::Other,
+                        };
+                        self.answer_ask(what, Answer::Key(answer));
+                    }
+                    KeyKind::PrintPart => {
+                        if key.code == KeyCode::Char('y') {
+                            self.print_part();
+                        }
+                    }
+                }
             }
             Some(Prompt::Line { edit, .. }) => match edit.key(key) {
                 Edit::Cancel => {
@@ -493,6 +759,8 @@ impl Gui {
                     self.note(format!("{} (read-only)", self.session.title));
                 }
             }
+            LineKind::SavePart => self.save_part(input),
+            LineKind::PipePart => self.pipe_part(input),
             LineKind::EnterCommand => {
                 if input.is_empty() {
                     return;
@@ -625,7 +893,7 @@ impl Gui {
             }
             FrontOp::Compose(_) | FrontOp::Resend => self.not_yet("composing"),
             FrontOp::RawEdit => self.not_yet("editing"),
-            FrontOp::Attachments => self.not_yet("the attachment menu"),
+            FrontOp::Attachments => self.open_attachments(),
             FrontOp::Query => self.not_yet("query"),
             FrontOp::Notmuch => self.not_yet("notmuch"),
         }
@@ -724,7 +992,13 @@ impl Gui {
         };
         let max_scroll = total.saturating_sub(page);
         match action {
-            PagerAction::Back => self.mode = Mode::Index,
+            PagerAction::Back => {
+                let back = pager.back.take();
+                self.mode = match back {
+                    Some(menu) => *menu,
+                    None => Mode::Index,
+                };
+            }
             PagerAction::Down => {
                 pager.scroll = (pager.scroll + 1).min(max_scroll);
             }
@@ -844,7 +1118,7 @@ impl Gui {
                 }
             }
             PagerAction::Suspend => self.not_yet("suspend"),
-            PagerAction::Attachments => self.not_yet("the attachment menu"),
+            PagerAction::Attachments => self.open_attachments(),
             PagerAction::Compose
             | PagerAction::Reply
             | PagerAction::GroupReply
