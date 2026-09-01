@@ -2286,6 +2286,21 @@ default), and the daily-use fixes - the compose-entry preview
 resuming the send flow, egui's focus traversal stood down under the
 keymap, and the tail view following new mail into sight.
 
+## 2.4.0 (released 2026-09-01)
+
+The G3 and G5 leftovers, and the pointer grown up. Mailcap views on
+the attachment menu (mutt's m and T, Enter falling through to
+mailcap then text - both front ends, verified against mutt's
+source), the compose menu's V / Esc v in the window, image/* parts
+inline in the pager body ([gui] inline_images), the pager scrollbar,
+and mark-all-read (Alt+a, not mutt's, added on request). Pointer
+manners from a day of use: the wheel moves only the part it is over,
+a mini-index click opens the clicked message, Ctrl+click and
+Shift+click tag (with Session::tag_span), a Tagged menu of the `;`
+sweeps, the arrow cursor over rows and text selection kept out of
+them. Two bugfixes: the scrollbar hiding beyond the window edge next
+to over-wide rows, and `;t` now untagging them all as mutt does.
+
 ## After 2.2.1
 
 - [x] The built-in editor, asked for 2026-09-01: `[gui] editor =
