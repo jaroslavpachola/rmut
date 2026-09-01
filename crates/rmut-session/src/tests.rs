@@ -2159,6 +2159,24 @@ fn the_tag_prefix_refuses_with_nothing_tagged() {
 }
 
 #[test]
+fn the_tag_prefix_on_tag_untags_them_all() {
+    // mutt's `;t` (curs_main.c OP_TAG under the tag flag): every
+    // visible message untagged, the cursor staying put - never a
+    // toggle of the current row.
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    f.tag("one");
+    f.tag("three");
+    f.session.sel = 1;
+    f.run_tagged("tag");
+    assert!(!f.is_tagged("one") && !f.is_tagged("three"));
+    assert_eq!(f.session.sel, 1, "the cursor stays put");
+    // One undo step brings the sweep back.
+    f.session.undo_last();
+    assert!(f.is_tagged("one") && f.is_tagged("three"));
+    assert!(!f.is_tagged("two"));
+}
+
+#[test]
 fn a_function_that_needs_an_answer_hands_the_question_back() {
     let mut f = Fixture::new(&["alpha", "beta"]);
     let ask = asked(f.run("limit")).expect("limit asks for a pattern");

@@ -565,7 +565,23 @@ impl Session {
 
             // ---- marks ----
             Tag => {
-                if let Some(&i) = self.visible.get(self.sel) {
+                if tagged {
+                    // mutt's `;t`: the prefix on tag-message untags
+                    // every visible message (curs_main.c OP_TAG with
+                    // the tag flag set), the cursor staying put.
+                    let targets: Vec<usize> = self
+                        .visible
+                        .iter()
+                        .copied()
+                        .filter(|&i| self.msgs[i].env.tagged)
+                        .collect();
+                    if !targets.is_empty() {
+                        self.push_undo("untag", &targets);
+                        for &i in &targets {
+                            self.msgs[i].env.tagged = false;
+                        }
+                    }
+                } else if let Some(&i) = self.visible.get(self.sel) {
                     self.push_undo("tag", &[i]);
                     self.msgs[i].env.tagged = !self.msgs[i].env.tagged;
                     self.select(self.sel.saturating_add(1));
