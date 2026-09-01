@@ -887,6 +887,7 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         pager.hide_quoted,
     );
     let (scroll, is_part) = (pager.scroll, pager.back.is_some());
+    let area = ui.available_rect_before_wrap();
     // The k-th image Type marker pairs with the k-th image/* leaf;
     // only the message pager carries markers (a part pager's body is
     // the part itself), and only visible rows decode.
@@ -970,6 +971,53 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         }
     }
     flush(ui, &mut job);
+    // The scrollbar, an overlay on the right edge: the thumb is the
+    // visible share of the message, a click or drag puts the view
+    // there. Keyboard paging stays mutt's; this is the pointer's way.
+    if total > rows {
+        let bar = egui::Rect::from_min_max(egui::pos2(area.right() - 8.0, area.top()), {
+            egui::pos2(area.right(), area.bottom())
+        });
+        let response = ui.interact(
+            bar,
+            ui.id().with("pager-scrollbar"),
+            egui::Sense::click_and_drag(),
+        );
+        let max = if gui.pager_drew_images {
+            total.saturating_sub(1)
+        } else {
+            total.saturating_sub(rows)
+        };
+        if (response.clicked() || response.dragged())
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            // The thumb centers on the pointer, the usual feel.
+            let frac = ((pos.y - area.top()) / area.height()).clamp(0.0, 1.0);
+            let target = (frac * total as f32 - rows as f32 / 2.0).round().max(0.0) as usize;
+            if let Mode::Pager(pager) = &mut gui.mode {
+                pager.scroll = target.min(max);
+            }
+        }
+        let scroll = match &gui.mode {
+            Mode::Pager(p) => p.scroll,
+            _ => 0,
+        };
+        let (_, canvas_fg) = CANVAS.with(|c| c.get());
+        let painter = ui.painter();
+        painter.rect_filled(bar, 2.0, canvas_fg.gamma_multiply(0.08));
+        let top = bar.top() + bar.height() * (scroll as f32 / total as f32);
+        let len = (bar.height() * (rows as f32 / total as f32)).max(16.0);
+        let thumb = egui::Rect::from_min_max(
+            egui::pos2(bar.left() + 2.0, top),
+            egui::pos2(bar.right() - 2.0, (top + len).min(bar.bottom())),
+        );
+        let strength = if response.hovered() || response.dragged() {
+            0.55
+        } else {
+            0.35
+        };
+        painter.rect_filled(thumb, 2.0, canvas_fg.gamma_multiply(strength));
+    }
 }
 
 /// One body row: straight into the running job, unless it carries a

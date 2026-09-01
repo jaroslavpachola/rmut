@@ -2565,15 +2565,20 @@ TUI.
       becomes a notify-send when the window is unfocused - only as
       the fallback with `$new_mail_command` unset, since the session
       fires that command itself for every front end
-- [ ] A scrollbar and mouse selection in the pager, mouse click to
-      select in the index
+- [x] A scrollbar and mouse selection in the pager, mouse click to
+      select in the index. The click-to-select came with G2p; the
+      selection was already egui's own (labels are selectable by
+      default, and Ctrl+C reaches egui as a Copy event before the
+      keymap can see it - verified in egui-winit); the scrollbar is
+      drawn over the pager's right edge, the thumb the visible
+      share, click or drag jumping the view
 - [x] The window's own colors, asked for 2026-09-01: `#rrggbb`
       accepted wherever a color is named (both front ends;
       terminals carry it as truecolor), and the window alone adds
       `[gui] background` / `foreground` for the canvas plus a
       `[gui.colors]` table laid over `[colors]`, so the window can
       wear its own palette while the terminal keeps the shared one
-- [ ] Menus, since egui has them (`MenuBar`, `menu_button`,
+- [x] (shipped with G2p) Menus, since egui has them (`MenuBar`, `menu_button`,
       `SubMenu`, `Response::context_menu`): a bar of Mailbox /
       Message / Thread / Help and a right-click menu on an index row,
       every item a `Function` labelled with its bound key, so the

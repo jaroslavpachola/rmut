@@ -243,6 +243,53 @@ fn attachments_list_view_and_save() {
 }
 
 #[test]
+fn pager_scrollbar_jumps_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let mut text = String::from(
+        "From: jane@example.com\nTo: sam@example.com\nSubject: long\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <l1@example.com>\n\n",
+    );
+    for i in 0..200 {
+        text += &format!("line {i}\n");
+    }
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    key(&mut gui, KeyCode::Enter);
+    assert!(matches!(gui.mode, Mode::Pager(_)));
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(400.0, 300.0));
+    harness.run();
+    let Mode::Pager(pager) = &harness.state().mode else {
+        panic!("still paging");
+    };
+    assert_eq!(pager.scroll, 0);
+    // A click two thirds down the right-edge scrollbar jumps there.
+    let pos = eframe::egui::pos2(397.0, 200.0);
+    harness.event(eframe::egui::Event::PointerButton {
+        pos,
+        button: eframe::egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    harness.run();
+    harness.event(eframe::egui::Event::PointerButton {
+        pos,
+        button: eframe::egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    harness.run();
+    let Mode::Pager(pager) = &harness.state().mode else {
+        panic!("still paging");
+    };
+    assert!(pager.scroll > 50, "the view jumped: {}", pager.scroll);
+}
+
+#[test]
 fn pager_decodes_image_parts_for_inlining() {
     let dir = tempfile::tempdir().unwrap();
     for sub in ["cur", "new", "tmp"] {
