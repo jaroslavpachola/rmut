@@ -234,7 +234,7 @@ def scenario_pager_save_advances(tmp):
     r.expect("Are you free for lunch")
     r.keys(b"s")
     r.expect("Save to")
-    r.keys(str(tmp / "archive").encode() + b"\r")
+    r.keys(os.path.join(tmp, "archive").encode() + b"\r")
     # The save advanced, and the pager followed to the next message.
     r.expect("saved to", "sejdeme se zítra v 9:00")
     r.keys(b"i")
