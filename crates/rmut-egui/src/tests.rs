@@ -357,3 +357,21 @@ fn proportional_parses_and_rides_the_overlay() {
     let bare: Config = toml::from_str("").unwrap();
     assert_eq!(bare.gui.proportional, None, "unset means monospace");
 }
+
+#[test]
+fn each_terminal_gets_its_own_calling_convention() {
+    use crate::app::terminal_invocation;
+    assert_eq!(terminal_invocation("gnome-terminal"), ["--wait", "--"]);
+    assert_eq!(
+        terminal_invocation("/usr/bin/gnome-terminal"),
+        ["--wait", "--"]
+    );
+    assert_eq!(terminal_invocation("kitty"), [] as [&str; 0]);
+    assert_eq!(terminal_invocation("terminator"), ["-x"]);
+    assert_eq!(
+        terminal_invocation("xfce4-terminal"),
+        ["--disable-server", "-x"]
+    );
+    assert_eq!(terminal_invocation("foot"), ["-e"]);
+    assert_eq!(terminal_invocation("x-terminal-emulator"), ["-e"]);
+}

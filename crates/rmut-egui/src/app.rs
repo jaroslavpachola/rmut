@@ -755,17 +755,27 @@ impl Gui {
         {
             return Some(term);
         }
-        ["foot", "alacritty", "kitty", "xterm"]
-            .iter()
-            .find(|t| {
-                std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(format!("command -v {t}"))
-                    .stdout(std::process::Stdio::null())
-                    .status()
-                    .is_ok_and(|s| s.success())
-            })
-            .map(|t| t.to_string())
+        [
+            "foot",
+            "alacritty",
+            "kitty",
+            "gnome-terminal",
+            "konsole",
+            "xfce4-terminal",
+            "terminator",
+            "xterm",
+            "x-terminal-emulator",
+        ]
+        .iter()
+        .find(|t| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("command -v {t}"))
+                .stdout(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+        .map(|t| t.to_string())
     }
 
     /// Run `sh -c SCRIPT args...` inside the terminal, without
@@ -776,9 +786,8 @@ impl Gui {
             return;
         };
         let mut cmd = std::process::Command::new(&term);
-        // kitty takes the command bare; the others take -e.
-        if !term.ends_with("kitty") {
-            cmd.arg("-e");
+        for flag in terminal_invocation(&term) {
+            cmd.arg(flag);
         }
         cmd.arg("sh").arg("-c").arg(script).arg("rmut-egui");
         cmd.args(args);
@@ -2514,4 +2523,20 @@ pub fn install_font(ctx: &eframe::egui::Context, path: &str) {
             .insert(0, "gui.font".to_string());
     }
     ctx.set_fonts(fonts);
+}
+
+/// How this terminal takes a command line. gnome-terminal without
+/// --wait forks to its server and "finishes" at once, which would
+/// resume the compose flow mid-edit; terminator and xfce4-terminal
+/// run the rest of the line only behind -x; kitty takes it bare;
+/// everything else honours -e.
+pub fn terminal_invocation(term: &str) -> &'static [&'static str] {
+    let base = term.rsplit('/').next().unwrap_or(term);
+    match base {
+        "kitty" => &[],
+        "gnome-terminal" => &["--wait", "--"],
+        "xfce4-terminal" => &["--disable-server", "-x"],
+        "terminator" => &["-x"],
+        _ => &["-e"],
+    }
 }
