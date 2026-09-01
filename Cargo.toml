@@ -3,16 +3,16 @@ resolver = "2"
 members = ["crates/rmut-core", "crates/rmut-session", "crates/rmut-front", "crates/rmut", "crates/rmut-egui"]
 
 [workspace.package]
-version = "2.2.1"
+version = "2.3.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/jaroslavpachola/rmut"
 readme = "README.md"
 
 [workspace.dependencies]
-rmut-core = { path = "crates/rmut-core", version = "2.2.1" }
-rmut-session = { path = "crates/rmut-session", version = "2.2.1" }
-rmut-front = { path = "crates/rmut-front", version = "2.2.1" }
+rmut-core = { path = "crates/rmut-core", version = "2.3.0" }
+rmut-session = { path = "crates/rmut-session", version = "2.3.0" }
+rmut-front = { path = "crates/rmut-front", version = "2.3.0" }
 anyhow = "1"
 ratatui = "0.29"
 egui_extras = { version = "0.36", default-features = false, features = ["image"] }

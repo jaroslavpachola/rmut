@@ -2278,6 +2278,14 @@ Since 2.0.2: G1, G2, G2p, G3 and the G2 leftovers as the sections
 above tell it, and on the shared side the save path's $resolve
 advance (index and pager), verified against mutt's source.
 
+## 2.3.0 (released 2026-09-01)
+
+The editors and the first week's finds: the built-in text box and
+embedded Neovim (both opt-in, $EDITOR in a terminal stays the
+default), and the daily-use fixes - the compose-entry preview
+resuming the send flow, egui's focus traversal stood down under the
+keymap, and the tail view following new mail into sight.
+
 ## After 2.2.1
 
 - [x] The built-in editor, asked for 2026-09-01: `[gui] editor =
