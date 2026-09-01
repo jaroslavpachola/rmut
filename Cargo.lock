@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "rmut"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-core"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2723,7 +2723,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-egui"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2739,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-front"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "regex-lite",
  "rmut-core",
@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-session"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "regex-lite",

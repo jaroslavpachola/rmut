@@ -2278,6 +2278,17 @@ Since 2.0.2: G1, G2, G2p, G3 and the G2 leftovers as the sections
 above tell it, and on the shared side the save path's $resolve
 advance (index and pager), verified against mutt's source.
 
+## 2.2.0 (released 2026-09-01)
+
+The window grown up, all at 2.2.0 on crates.io: G4 (the compose flow
+through a spawned terminal, the compose menu, postponed and query
+screens, mailto, resend, -p), G5 (clickable URLs, the proportional
+body, the new-mail notification), the window's own colors (#rrggbb
+everywhere, [gui.colors], the canvas as the whole window's ground
+with the widget theme following its brightness, the zebra derived
+from it), the About overlay and the Preferences dialog with its
+gui.toml overlay.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
