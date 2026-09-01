@@ -819,7 +819,7 @@ impl Gui {
             _ => return,
         };
         let entries = rmut_core::mailcap::load();
-        let Some((command, copious)) = rmut_core::mailcap::viewer_for(&entries, &mimetype) else {
+        let Some(viewer) = rmut_core::mailcap::viewer_for(&entries, &mimetype) else {
             self.error(format!("no mailcap entry for {mimetype}"));
             return;
         };
@@ -831,12 +831,15 @@ impl Gui {
             }
         };
         // %s wants a file: the part's own name (basename only, like
-        // mutt's sanitizer) in a directory of ours.
+        // mutt's sanitizer) in a directory of ours, shaped by the
+        // entry's nametemplate - a browser handed an extensionless
+        // file sniffs it as text and shows source.
         let name = filename
             .as_deref()
             .and_then(|n| std::path::Path::new(n).file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("part-{}", index + 1));
+        let name = rmut_core::mailcap::apply_nametemplate(viewer.nametemplate.as_deref(), &name);
         let dir = std::env::temp_dir().join(format!("rmut-egui-{}", std::process::id()));
         let temp = dir.join(name);
         if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&temp, &bytes))
@@ -845,8 +848,8 @@ impl Gui {
             return;
         }
         let quoted = format!("'{}'", temp.display().to_string().replace('\'', "'\\''"));
-        let command = command.replace("%s", &quoted);
-        if copious {
+        let command = viewer.command.replace("%s", &quoted);
+        if viewer.copious {
             let shown = run_file_filter(&command, &temp);
             let _ = std::fs::remove_file(&temp);
             match shown {
@@ -1586,10 +1589,10 @@ impl Gui {
                 _ => {
                     let entries = rmut_core::mailcap::load();
                     match rmut_core::mailcap::viewer_for(&entries, &mimetype) {
-                        Some((command, copious)) => {
+                        Some(viewer) => {
                             let quoted = format!("'{}'", name.replace('\'', "'\\''"));
-                            let command = command.replace("%s", &quoted);
-                            if copious {
+                            let command = viewer.command.replace("%s", &quoted);
+                            if viewer.copious {
                                 match run_file_filter(&command, &a.path) {
                                     Ok(text) => {
                                         let mut lines = vec![name, String::new()];

@@ -393,6 +393,24 @@ fn attach_menu_views_through_mailcap_and_as_text() {
         pager.view.body
     );
     press(&mut gui, "q");
+    // nametemplate shapes the temp file's name (a browser handed an
+    // extensionless file shows source): the viewer echoing the path
+    // it was given proves the .data suffix arrived.
+    fs::write(
+        &mailcap,
+        "application/octet-stream; printf 'AT %s' %s; copiousoutput; nametemplate=%s.data\n",
+    )
+    .unwrap();
+    press(&mut gui, "m");
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("m views through mailcap");
+    };
+    assert!(
+        pager.view.body.contains("blob.bin.data"),
+        "{}",
+        pager.view.body
+    );
+    press(&mut gui, "q");
     // With no matching entry, mutt says so and shows text.
     fs::write(&mailcap, "video/mp4; mpv %s\n").unwrap();
     key(&mut gui, KeyCode::Enter);

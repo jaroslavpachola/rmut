@@ -27,6 +27,10 @@ pub struct Entry {
     /// `test=`: a shell command that must succeed for the entry to
     /// apply (this is how a mailcap gates on `$DISPLAY`).
     pub test: Option<String>,
+    /// `nametemplate=%s.html`: the shape the viewer wants the temp
+    /// file's name in - a browser sniffs an extensionless file as
+    /// text and shows source.
+    pub nametemplate: Option<String>,
 }
 
 /// The mailcap files to consult, in order.
@@ -86,6 +90,7 @@ pub fn parse(text: &str) -> Vec<Entry> {
             copiousoutput: false,
             needsterminal: false,
             test: None,
+            nametemplate: None,
         };
         for field in rest {
             let field = field.trim();
@@ -97,6 +102,7 @@ pub fn parse(text: &str) -> Vec<Entry> {
                 ("copiousoutput", _) => entry.copiousoutput = true,
                 ("needsterminal", _) => entry.needsterminal = true,
                 ("test", Some(v)) => entry.test = Some(v),
+                ("nametemplate", Some(v)) => entry.nametemplate = Some(v),
                 _ => {}
             }
         }
@@ -120,10 +126,19 @@ pub fn command_for(entries: &[Entry], mimetype: &str) -> Option<String> {
         .map(|e| e.command.clone())
 }
 
+/// What view-mailcap needs of the entry it picked.
+#[derive(Debug, Clone)]
+pub struct Viewer {
+    pub command: String,
+    /// Writes plain text to stdout rather than taking the terminal.
+    pub copious: bool,
+    /// The temp file name shape the viewer wants, when it says.
+    pub nametemplate: Option<String>,
+}
+
 /// The viewer for `mimetype`, mutt's view-mailcap: the first matching
-/// entry whose `test` passes, terminal-wanting or not, with whether
-/// it writes to stdout (`copiousoutput`) rather than the terminal.
-pub fn viewer_for(entries: &[Entry], mimetype: &str) -> Option<(String, bool)> {
+/// entry whose `test` passes, terminal-wanting or not.
+pub fn viewer_for(entries: &[Entry], mimetype: &str) -> Option<Viewer> {
     let want = mimetype.trim().to_lowercase();
     let main = want.split('/').next().unwrap_or_default();
     entries
@@ -131,7 +146,40 @@ pub fn viewer_for(entries: &[Entry], mimetype: &str) -> Option<(String, bool)> {
         .filter(|e| e.mimetype == want || e.mimetype == format!("{main}/*"))
         .filter(|e| !e.command.contains("%{"))
         .find(|e| e.test.as_deref().is_none_or(test_passes))
-        .map(|e| (e.command.clone(), e.copiousoutput))
+        .map(|e| Viewer {
+            command: e.command.clone(),
+            copious: e.copiousoutput,
+            nametemplate: e.nametemplate.clone(),
+        })
+}
+
+/// A part's temp-file name through the entry's `nametemplate`,
+/// mutt's rfc1524_expand_filename: basenames only; around the
+/// template's `%s`, each side of the name that already matches is
+/// kept, and each side that does not is added - so `page.html`
+/// through `%s.html` stays itself, and `part-2` becomes
+/// `part-2.html`. A template with no `%s` names the file outright.
+pub fn apply_nametemplate(template: Option<&str>, name: &str) -> String {
+    let base = |s: &str| s.rsplit('/').next().unwrap_or(s).to_string();
+    let name = base(name);
+    let Some(template) = template else {
+        return name;
+    };
+    let template = base(template);
+    match template.split_once("%s") {
+        None => template,
+        Some((pre, suf)) => {
+            let mut out = String::new();
+            if !name.starts_with(pre) {
+                out.push_str(pre);
+            }
+            out.push_str(&name);
+            if !name.ends_with(suf) {
+                out.push_str(suf);
+            }
+            out
+        }
+    }
 }
 
 /// Run a `test=` field: success is exit status zero, and a test that
@@ -235,6 +283,34 @@ broken line without a command
         // The continuation line is folded into the command.
         assert_eq!(entries[2].command, "pdftotext -layout %s -");
         assert!(entries[5].needsterminal);
+    }
+
+    #[test]
+    fn nametemplate_is_read_and_applied_like_mutt() {
+        let entries = parse(SAMPLE);
+        let viewer = viewer_for(&entries, "text/html").expect("html has a viewer");
+        assert_eq!(viewer.nametemplate.as_deref(), Some("%s.html"));
+        // mutt's rfc1524_expand_filename: a side of the name that
+        // already matches the template is kept, one that does not is
+        // added; no template keeps the name; basenames only.
+        assert_eq!(apply_nametemplate(Some("%s.html"), "part-2"), "part-2.html");
+        assert_eq!(
+            apply_nametemplate(Some("%s.html"), "page.html"),
+            "page.html"
+        );
+        assert_eq!(
+            apply_nametemplate(Some("mutt-%s.html"), "page.html"),
+            "mutt-page.html"
+        );
+        assert_eq!(apply_nametemplate(None, "blob.bin"), "blob.bin");
+        assert_eq!(
+            apply_nametemplate(Some("fixed.pdf"), "whatever"),
+            "fixed.pdf"
+        );
+        assert_eq!(
+            apply_nametemplate(Some("/tmp/%s.html"), "../../etc/passwd"),
+            "passwd.html"
+        );
     }
 
     #[test]
