@@ -222,6 +222,8 @@ pub struct Gui {
     editing: Option<(std::process::Child, PendingEdit)>,
     /// The About overlay is up.
     pub about: bool,
+    /// The Preferences dialog and its half-edited values.
+    pub prefs: Option<Prefs>,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -283,6 +285,7 @@ impl Gui {
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
             about: false,
+            prefs: None,
             last_poll: Instant::now(),
             quit: false,
         };
@@ -511,6 +514,12 @@ impl Gui {
         if self.about {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
                 self.about = false;
+            }
+            return;
+        }
+        if self.prefs.is_some() {
+            if key.code == KeyCode::Esc {
+                self.prefs = None;
             }
             return;
         }
@@ -2313,4 +2322,164 @@ fn gui_colored(config: &rmut_core::config::Config) -> rmut_core::config::Config 
         config.colors.insert(key, value);
     }
     config
+}
+
+/// The Preferences dialog's working copy: edited in the modal,
+/// applied to the live config, saved to the overlay file.
+pub struct Prefs {
+    pub size: f32,
+    pub font: String,
+    pub terminal: String,
+    pub background: eframe::egui::Color32,
+    pub foreground: eframe::egui::Color32,
+}
+
+impl Prefs {
+    /// The dialog opens on what the window currently runs with.
+    pub fn from_config(config: &rmut_core::config::Config) -> Prefs {
+        let color = |name: &Option<String>, fallback: (u8, u8, u8)| {
+            let (r, g, b) = name
+                .as_deref()
+                .and_then(rmut_front::style::parse_color)
+                .and_then(|c| match c {
+                    rmut_front::style::Color::Rgb(r, g, b) => Some((r, g, b)),
+                    _ => None,
+                })
+                .unwrap_or(fallback);
+            eframe::egui::Color32::from_rgb(r, g, b)
+        };
+        Prefs {
+            size: config.gui.size.unwrap_or(14.0),
+            font: config.gui.font.clone().unwrap_or_default(),
+            terminal: config.gui.terminal.clone().unwrap_or_default(),
+            background: color(&config.gui.background, (0x10, 0x10, 0x10)),
+            foreground: color(&config.gui.foreground, (0xd8, 0xd8, 0xd8)),
+        }
+    }
+}
+
+fn hex(c: eframe::egui::Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+impl Gui {
+    /// Apply the dialog to the running window: the config's [gui]
+    /// half moves, and everything that reads it follows next frame.
+    pub fn apply_prefs(&mut self, ctx: &eframe::egui::Context) {
+        let Some(prefs) = &self.prefs else { return };
+        let gui = &mut self.session.config.gui;
+        gui.size = Some(prefs.size.clamp(6.0, 40.0));
+        gui.background = Some(hex(prefs.background));
+        gui.foreground = Some(hex(prefs.foreground));
+        gui.terminal = (!prefs.terminal.trim().is_empty()).then(|| prefs.terminal.clone());
+        let font = prefs.font.trim().to_string();
+        let font_changed = gui.font.as_deref().unwrap_or("") != font;
+        gui.font = (!font.is_empty()).then(|| font.clone());
+        if font_changed {
+            if font.is_empty() {
+                ctx.set_fonts(eframe::egui::FontDefinitions::default());
+            } else {
+                install_font(ctx, &font);
+            }
+        }
+    }
+
+    /// Save the [gui] section to the overlay file the window owns
+    /// (never the hand-written config), and say where it went.
+    pub fn save_prefs(&mut self) {
+        let Some(path) = gui_overlay_path() else {
+            self.error("no config directory to save into");
+            return;
+        };
+        let gui = &self.session.config.gui;
+        let mut out = String::from(
+            "# written by rmut-egui's Preferences dialog; loaded over\n# the [gui] section of config.toml\n",
+        );
+        if let Some(size) = gui.size {
+            out += &format!("size = {size}\n");
+        }
+        for (key, value) in [
+            ("font", &gui.font),
+            ("terminal", &gui.terminal),
+            ("background", &gui.background),
+            ("foreground", &gui.foreground),
+        ] {
+            if let Some(value) = value {
+                out += &format!("{key} = {value:?}\n");
+            }
+        }
+        let result = path
+            .parent()
+            .map(std::fs::create_dir_all)
+            .unwrap_or(Ok(()))
+            .and_then(|()| std::fs::write(&path, out));
+        match result {
+            Ok(()) => self.note(format!("saved to {}", path.display())),
+            Err(err) => self.error(format!("cannot save: {err}")),
+        }
+    }
+}
+
+/// The dialog's file: gui.toml next to the config.
+pub fn gui_overlay_path() -> Option<std::path::PathBuf> {
+    Some(rmut_core::config::path()?.parent()?.join("gui.toml"))
+}
+
+/// Lay the saved dialog values over the loaded config's [gui]: the
+/// hand-written section is the default, the dialog's file wins.
+pub fn load_gui_overlay(config: &mut rmut_core::config::Config) {
+    let Some(path) = gui_overlay_path() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(saved) = toml::from_str::<rmut_core::config::Gui>(&text) else {
+        eprintln!("rmut-egui: {} is not readable, ignored", path.display());
+        return;
+    };
+    let gui = &mut config.gui;
+    for (mine, theirs) in [
+        (&mut gui.font, saved.font),
+        (&mut gui.terminal, saved.terminal),
+        (&mut gui.background, saved.background),
+        (&mut gui.foreground, saved.foreground),
+    ] {
+        if theirs.is_some() {
+            *mine = theirs;
+        }
+    }
+    if saved.size.is_some() {
+        gui.size = saved.size;
+    }
+}
+
+/// `[gui] font`: the file's face becomes the monospace family (and
+/// the fallback for everything), egui's built-ins behind it. A file
+/// that cannot be read is said and skipped, never fatal.
+pub fn install_font(ctx: &eframe::egui::Context, path: &str) {
+    use eframe::egui::{FontData, FontDefinitions, FontFamily};
+    let expanded = rmut_session::expand_tilde(path);
+    let bytes = match std::fs::read(&expanded) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!(
+                "rmut-egui: cannot read [gui] font {}: {err}",
+                expanded.display()
+            );
+            return;
+        }
+    };
+    let mut fonts = FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("gui.font".to_string(), FontData::from_owned(bytes).into());
+    for family in [FontFamily::Monospace, FontFamily::Proportional] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, "gui.font".to_string());
+    }
+    ctx.set_fonts(fonts);
 }

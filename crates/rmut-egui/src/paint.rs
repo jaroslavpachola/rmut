@@ -97,6 +97,70 @@ fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
 pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     let (canvas_bg, canvas_fg) = canvas(gui);
     CANVAS.with(|c| c.set((canvas_bg, canvas_fg)));
+    if gui.prefs.is_some() {
+        let mut apply = false;
+        let mut save = false;
+        let mut close = false;
+        let response = egui::Modal::new(egui::Id::new("prefs")).show(root.ctx(), |ui| {
+            ui.set_width(380.0);
+            ui.heading("Preferences");
+            ui.add_space(6.0);
+            let Some(prefs) = gui.prefs.as_mut() else {
+                return;
+            };
+            egui::Grid::new("prefs-grid")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Text size");
+                    ui.add(egui::Slider::new(&mut prefs.size, 8.0..=32.0).suffix(" pt"));
+                    ui.end_row();
+                    ui.label("Font file");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut prefs.font)
+                            .hint_text("~/.fonts/mono.ttf (empty: built-in)"),
+                    );
+                    ui.end_row();
+                    ui.label("Terminal");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut prefs.terminal)
+                            .hint_text("$TERMINAL, else foot/alacritty/kitty/xterm"),
+                    );
+                    ui.end_row();
+                    ui.label("Background");
+                    ui.color_edit_button_srgba(&mut prefs.background);
+                    ui.end_row();
+                    ui.label("Foreground");
+                    ui.color_edit_button_srgba(&mut prefs.foreground);
+                    ui.end_row();
+                });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    apply = true;
+                }
+                if ui
+                    .button("Save")
+                    .on_hover_text("applies, and writes gui.toml next to the config")
+                    .clicked()
+                {
+                    save = true;
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if apply || save {
+            gui.apply_prefs(root.ctx());
+        }
+        if save {
+            gui.save_prefs();
+        }
+        if close || response.should_close() {
+            gui.prefs = None;
+        }
+    }
     if gui.about {
         let response = egui::Modal::new(egui::Id::new("about")).show(root.ctx(), |ui| {
             ui.set_width(360.0);
@@ -577,6 +641,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, keys: &str) -> bool {
 fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     let mut fire: Option<&'static str> = None;
     let mut about = false;
+    let mut prefs = false;
     let item = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys| {
         if menu_item(ui, label, keys) {
             *target = Some(keys);
@@ -587,6 +652,11 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Open…", "c");
             item(&mut fire, ui, "Browse folders", "y");
             item(&mut fire, ui, "Limit…", "l");
+            ui.separator();
+            // Window chrome, like About: no key to queue.
+            if ui.button("Preferences…").clicked() {
+                prefs = true;
+            }
             ui.separator();
             item(&mut fire, ui, "Quit", "q");
         });
@@ -634,6 +704,9 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     }
     if about {
         gui.about = true;
+    }
+    if prefs {
+        gui.prefs = Some(crate::app::Prefs::from_config(&gui.session.config));
     }
 }
 

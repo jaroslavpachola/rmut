@@ -17,8 +17,8 @@ regex-lite = { workspace = true }
 rmut-core = { workspace = true }
 rmut-front = { workspace = true }
 rmut-session = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
-toml = { workspace = true }
 egui_kittest = { version = "0.36", features = ["eframe"] }
 tempfile = "3"

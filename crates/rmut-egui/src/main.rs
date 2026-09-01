@@ -79,6 +79,8 @@ fn run() -> Result<()> {
     let cli = parse_args(std::env::args().skip(1))?;
     let (mut config, config_warning) = rmut_core::config::load_default();
     config.expand_folders();
+    // What the Preferences dialog saved, over the [gui] section.
+    app::load_gui_overlay(&mut config);
     let spec = match cli.spec.clone() {
         Some(s) => s,
         None => default_mailbox(&config)?,
@@ -124,7 +126,7 @@ fn run() -> Result<()> {
             // image/* parts decode through egui's loaders.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             if let Some(path) = font {
-                install_font(&cc.egui_ctx, &path);
+                app::install_font(&cc.egui_ctx, &path);
             }
             Ok(Box::new(app))
         }),
@@ -142,34 +144,4 @@ fn default_mailbox(config: &rmut_core::config::Config) -> Result<String> {
         return Ok(folder.to_string());
     }
     bail!("no mailbox configured (set [mail] mailboxes or pass one)")
-}
-
-/// `[gui] font`: the file's face becomes the monospace family (and
-/// the fallback for everything), egui's built-ins behind it. A file
-/// that cannot be read is said and skipped, never fatal.
-fn install_font(ctx: &eframe::egui::Context, path: &str) {
-    use eframe::egui::{FontData, FontDefinitions, FontFamily};
-    let expanded = rmut_session::expand_tilde(path);
-    let bytes = match std::fs::read(&expanded) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!(
-                "rmut-egui: cannot read [gui] font {}: {err}",
-                expanded.display()
-            );
-            return;
-        }
-    };
-    let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("gui.font".to_string(), FontData::from_owned(bytes).into());
-    for family in [FontFamily::Monospace, FontFamily::Proportional] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, "gui.font".to_string());
-    }
-    ctx.set_fonts(fonts);
 }

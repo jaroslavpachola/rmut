@@ -327,3 +327,25 @@ fn the_about_overlay_opens_and_esc_closes() {
     press(&mut gui, "j");
     assert_eq!(gui.session.sel, 1, "and the keys are back");
 }
+
+#[test]
+fn prefs_apply_to_the_live_config() {
+    let (_dir, mut gui) = fixture(&["one"]);
+    let mut prefs = crate::app::Prefs::from_config(&gui.session.config);
+    assert_eq!(prefs.size, 14.0, "the dialog opens on the defaults");
+    prefs.size = 18.0;
+    prefs.terminal = "foot".into();
+    prefs.background = eframe::egui::Color32::from_rgb(0x20, 0x20, 0x30);
+    gui.prefs = Some(prefs);
+    gui.apply_prefs(&eframe::egui::Context::default());
+    let cfg = &gui.session.config.gui;
+    assert_eq!(cfg.size, Some(18.0));
+    assert_eq!(cfg.terminal.as_deref(), Some("foot"));
+    assert_eq!(cfg.background.as_deref(), Some("#202030"));
+    // Esc closes the dialog and keys stay out while it is up.
+    let sel = gui.session.sel;
+    press(&mut gui, "j");
+    assert_eq!(gui.session.sel, sel, "keys wait under the dialog");
+    key(&mut gui, KeyCode::Esc);
+    assert!(gui.prefs.is_none());
+}
