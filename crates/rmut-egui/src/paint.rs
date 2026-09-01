@@ -887,7 +887,11 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         pager.hide_quoted,
     );
     let (scroll, is_part) = (pager.scroll, pager.back.is_some());
-    let area = ui.available_rect_before_wrap();
+    // Clipped to what is actually on screen: an over-wide row (a
+    // long subject in the mini-index above) expands the region's
+    // max_rect past the window, and a bar hung on that edge would
+    // paint into the void.
+    let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
     // The k-th image Type marker pairs with the k-th image/* leaf;
     // only the message pager carries markers (a part pager's body is
     // the part itself), and only visible rows decode.
@@ -940,7 +944,7 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
                 // at half the pager so text stays in reach.
                 if let Some((uri, bytes)) = images.get(&i) {
                     flush(ui, &mut job);
-                    let cap = egui::Vec2::new(ui.available_width(), (rows as f32 * row_h) * 0.5);
+                    let cap = egui::Vec2::new(area.width(), (rows as f32 * row_h) * 0.5);
                     ui.add(
                         egui::Image::from_bytes(
                             uri.clone(),

@@ -727,3 +727,48 @@ fn an_arrival_below_the_fold_scrolls_into_sight() {
         "history reading is not yanked to the tail"
     );
 }
+/// Reported 2026-09-01: with the mini-index above the pager, a
+/// subject wider than the window expanded egui's region past the
+/// screen edge, and the scrollbar hung on that edge - painted and
+/// clickable in the void. It must stay on the visible edge.
+#[test]
+fn scrollbar_stays_on_screen_beside_wide_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let mut text = String::from(
+        "From: jane@example.com\nTo: sam@example.com\nSubject: a very very very very very very very very very very long subject line indeed truly\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <l2@example.com>\n\n",
+    );
+    for i in 0..200 {
+        text += &format!("line {i}\n");
+    }
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let config: Config = toml::from_str("[pager]\nindex_lines = 3\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    key(&mut gui, KeyCode::Enter);
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(300.0, 300.0));
+    harness.run();
+    let pos = eframe::egui::pos2(297.0, 200.0);
+    harness.event(eframe::egui::Event::PointerButton {
+        pos,
+        button: eframe::egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    harness.run();
+    harness.event(eframe::egui::Event::PointerButton {
+        pos,
+        button: eframe::egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    harness.run();
+    let Mode::Pager(pager) = &harness.state().mode else {
+        panic!()
+    };
+    assert!(pager.scroll > 50, "narrow window scroll: {}", pager.scroll);
+}
