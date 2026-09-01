@@ -159,18 +159,6 @@ fn help_and_folders_are_screens_of_their_own() {
 }
 
 #[test]
-fn sending_is_refused_with_a_pointer_at_rmut() {
-    let (_dir, mut gui) = fixture(&["one"]);
-    press(&mut gui, "m");
-    let notice = gui.notice().expect("m says its round");
-    assert!(
-        notice.text().contains("not in the GUI yet"),
-        "{}",
-        notice.text()
-    );
-}
-
-#[test]
 fn a_frame_lays_out_without_a_display() {
     let (_dir, gui) = fixture(&["one", "two"]);
     let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
@@ -282,4 +270,21 @@ fn tab_at_an_empty_mailbox_prompt_opens_the_browser() {
         matches!(gui.mode, Mode::Folders { .. }),
         "Tab with nothing typed opens the folder browser"
     );
+}
+
+#[test]
+fn compose_asks_before_any_editor() {
+    let (_dir, mut gui) = fixture(&["one"]);
+    press(&mut gui, "m");
+    let Some(crate::app::Prompt::Line { label, .. }) = &gui.prompt else {
+        panic!("m asks for the recipients");
+    };
+    assert!(label.contains("To"), "{label}");
+    key(&mut gui, KeyCode::Esc);
+    assert!(gui.prompt.is_none(), "Esc calls the compose off");
+    assert!(gui.session.draft().is_none(), "no draft was staged");
+    // Recalling with nothing postponed says so instead of spawning.
+    gui.handle_keys(vec![]);
+    press(&mut gui, "m");
+    key(&mut gui, KeyCode::Esc);
 }

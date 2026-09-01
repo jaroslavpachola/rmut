@@ -2478,15 +2478,19 @@ so the clickable layer cannot drift from the keymap.
 
 ### G4: a window that sends mail
 
-- [ ] `gui.terminal` and the spawn wrapper: run `TERMINAL -e CMD`,
-      wait, reload. `$EDITOR` for compose, RawEdit, new-mime files;
-      `!` and `$shell` for the shell; `print_command` and pipes as
-      today
-- [ ] The compose menu screen over `Compose`; send, postpone, recall,
-      PGP prompts, `$undo_send`, the exit notes shown in a dialog
-      instead of on stderr
-- [ ] Coverage registry: every `FrontOp` handled; the said-once
-      notice path is removed from the GUI
+- [x] `[gui] terminal` and the spawn wrapper ($TERMINAL, then
+      foot/alacritty/kitty/xterm), non-blocking: the child is polled
+      each frame, keys wait while it runs, and its close resumes the
+      flow. `$EDITOR` for compose, raw-edit and new-mime files; `!`
+      and `$shell`; `print_command` and pipes as before
+- [x] The compose menu screen (headers, the attachment table,
+      clickable rows) with the TUI's keys; send, postpone, recall
+      ($recall ask included), the postponed picker and the query
+      screen (their G3 deferral repaid), mailto and resend, notmuch,
+      `-p`; `$undo_send` flushes on close with trouble on stderr.
+      Still owed: the compose menu's mailcap/text views (V, Esc v)
+- [x] Every `FrontOp` now acts; the said-once notice survives only
+      for suspend (a window minimizes instead) and `:`-bound keys
 
 ### G5: what only a window can do
 

@@ -676,6 +676,9 @@ pub struct Gui {
     /// Path to a .ttf/.otf file used as the window's monospace face
     /// (egui's built-in face when unset).
     pub font: Option<String>,
+    /// The terminal emulator that hosts $EDITOR and `!` commands
+    /// ($TERMINAL, then foot/alacritty/kitty/xterm, when unset).
+    pub terminal: Option<String>,
 }
 
 /// The optional left pane listing `mail.mailboxes` with new-mail

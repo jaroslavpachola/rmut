@@ -88,6 +88,9 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::Folders { .. } => FOLDERS_HELP,
                 Mode::Attach { .. } => ATTACH_HELP,
                 Mode::Image { .. } => IMAGE_HELP,
+                Mode::Compose { .. } => COMPOSE_HELP,
+                Mode::Postponed { .. } => POSTPONED_HELP,
+                Mode::Query { .. } => QUERY_HELP,
             };
             let mut job = LayoutJob::default();
             job.append(help, 0.0, format(bar_style, size));
@@ -215,6 +218,83 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         mono_line(&mut job, line, Style::new(), size);
                     }
                     ui.add(egui::Label::new(job).extend());
+                }
+                Mode::Compose { .. } => {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let Mode::Compose { sel } = gui.mode else {
+                        return;
+                    };
+                    let header_style = Style::new().fg(gui.theme.header).bold();
+                    let mut job = LayoutJob::default();
+                    for (name, value) in gui.compose_header_lines() {
+                        job.append(&format!("{name:>9}: "), 0.0, format(header_style, size));
+                        job.append(&value, 0.0, format(Style::new(), size));
+                        job.append("\n", 0.0, format(Style::new(), size));
+                    }
+                    mono_line(&mut job, "", Style::new(), size);
+                    mono_line(&mut job, "-- Attachments", header_style, size);
+                    ui.add(egui::Label::new(job).extend());
+                    let entries = gui.compose_entries();
+                    let mut clicked = None;
+                    for (i, entry) in entries.iter().enumerate() {
+                        let style = if i == sel {
+                            Style::new().reversed()
+                        } else {
+                            Style::new()
+                        };
+                        let mut job = LayoutJob::default();
+                        job.append(&format!(" {:>2} {entry}", i + 1), 0.0, format(style, size));
+                        let response =
+                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        hover(ui, &response);
+                        if response.clicked() {
+                            clicked = Some((i, response.double_clicked()));
+                        }
+                    }
+                    if let Some((i, open)) = clicked {
+                        if let Mode::Compose { sel } = &mut gui.mode {
+                            *sel = i;
+                        }
+                        if open {
+                            gui.click("<enter>");
+                        }
+                    }
+                }
+                Mode::Postponed { .. } | Mode::Query { .. } => {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let (rows_text, sel) = match &gui.mode {
+                        Mode::Postponed { drafts, sel } => {
+                            (drafts.iter().map(|d| d.1.clone()).collect::<Vec<_>>(), *sel)
+                        }
+                        Mode::Query { results, sel } => (results.clone(), *sel),
+                        _ => return,
+                    };
+                    let mut clicked = None;
+                    for (i, text) in rows_text.iter().enumerate().take(rows) {
+                        let style = if i == sel {
+                            Style::new().reversed()
+                        } else {
+                            Style::new()
+                        };
+                        let mut job = LayoutJob::default();
+                        job.append(text, 0.0, format(style, size));
+                        let response =
+                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        hover(ui, &response);
+                        if response.clicked() {
+                            clicked = Some((i, response.double_clicked()));
+                        }
+                    }
+                    if let Some((i, open)) = clicked {
+                        match &mut gui.mode {
+                            Mode::Postponed { sel, .. } => *sel = i,
+                            Mode::Query { sel, .. } => *sel = i,
+                            _ => {}
+                        }
+                        if open {
+                            gui.click("<enter>");
+                        }
+                    }
                 }
                 Mode::Attach { .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -592,4 +672,7 @@ const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev h:He
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View s:Save |:Pipe p:Print";
+const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP P:Postpone q:Quit";
+const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
+const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 const IMAGE_HELP: &str = "q:Back";

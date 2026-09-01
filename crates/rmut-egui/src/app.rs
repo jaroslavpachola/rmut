@@ -17,8 +17,8 @@ use rmut_front::style::{Style, rule_style};
 use rmut_front::theme::Theme;
 use rmut_front::{KeyCode, KeyEvent, Keymap, PagerAction, parse_sequence};
 use rmut_session::{
-    Answer, Ask, AskKind, FrontOp, Function, Key, Outcome, PageSpot, Request, Session, SidebarOp,
-    Wants,
+    Answer, Ask, AskKind, Compose, ComposeKind, FrontOp, Function, Key, Outcome, PageSpot, Request,
+    Session, SidebarOp, Wants, default_from, draft_full, header_value, write_draft,
 };
 
 pub struct Pager {
@@ -56,6 +56,38 @@ pub enum Mode {
         bytes: std::sync::Arc<[u8]>,
         back: Box<Mode>,
     },
+    /// mutt's compose menu: the draft's headers and attachment list,
+    /// reviewed between the editor and y (send).
+    Compose {
+        sel: usize,
+    },
+    /// Picking one of several postponed drafts to recall.
+    Postponed {
+        drafts: Vec<(std::path::PathBuf, String)>,
+        sel: usize,
+    },
+    /// query_command results (Q); Enter composes to the pick.
+    Query {
+        results: Vec<String>,
+        sel: usize,
+    },
+}
+
+/// What the terminal child that just closed was doing, so its end
+/// picks the flow back up.
+enum PendingEdit {
+    /// $EDITOR on the draft: the compose menu comes back after.
+    Draft(Compose),
+    /// $EDITOR on a plain file (mutt's new-mime); the menu returns.
+    File,
+    /// mutt's `e`: the message's own bytes; a change replaces it.
+    Raw {
+        orig: std::path::PathBuf,
+        temp: std::path::PathBuf,
+        original: Vec<u8>,
+    },
+    /// A shell or viewer; nothing to do but say it ended.
+    Shell(String),
 }
 
 #[derive(Clone)]
@@ -73,6 +105,10 @@ pub enum LineKind {
     },
     /// The pager's text search (`/` inside a message).
     PagerSearch,
+    /// The `Q` query menu's search term.
+    Query,
+    /// The notmuch query (`X`).
+    Notmuch,
     EnterCommand,
 }
 
@@ -88,6 +124,8 @@ impl LineKind {
             },
             LineKind::ChangeDir { .. } => "mailbox",
             LineKind::PagerSearch => "pattern",
+            LineKind::Query => "other",
+            LineKind::Notmuch => "notmuch",
             LineKind::SavePart => "file",
             LineKind::PipePart => "command",
             LineKind::EnterCommand => "command",
@@ -100,6 +138,8 @@ pub enum KeyKind {
     Ask(AskKind),
     /// Confirm printing the selected attachment part.
     PrintPart,
+    /// mutt's $recall = ask: (n)ew message or (r)ecall postponed?
+    Recall,
 }
 
 pub enum Prompt {
@@ -177,6 +217,9 @@ pub struct Gui {
     complete: Option<Complete>,
     /// The zoom factor as last saved, so a change is written once.
     last_zoom: f32,
+    /// A terminal child ($EDITOR, `!`) and what it was doing; keys
+    /// wait until it closes.
+    editing: Option<(std::process::Child, PendingEdit)>,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -236,6 +279,7 @@ impl Gui {
             pager_search_text: String::new(),
             complete: None,
             last_zoom: saved_zoom().unwrap_or(1.0),
+            editing: None,
             last_poll: Instant::now(),
             quit: false,
         };
@@ -330,12 +374,12 @@ impl Gui {
                     rmut_core::command::Command::Exec(name) => self.exec_function(&name),
                     _ => self.not_yet("key bindings from ':'"),
                 },
-                Request::Editor(_) | Request::ShowDraft | Request::Mailto(_) => {
-                    self.not_yet("composing")
-                }
-                Request::EditFile(_) => self.not_yet("editing"),
-                Request::Shell(_) => self.not_yet("shell commands"),
-                Request::Suspend => self.not_yet("suspend"),
+                Request::Editor(compose) => self.start_editor(compose),
+                Request::ShowDraft => self.open_compose_menu(),
+                Request::Mailto(mailto) => self.start_mailto(&mailto),
+                Request::EditFile(path) => self.start_file_edit(&path),
+                Request::Shell(command) => self.start_shell(&command),
+                Request::Suspend => self.not_yet("suspend (minimize the window)"),
             }
         }
         if !warnings.is_empty() {
@@ -486,6 +530,9 @@ impl Gui {
             Mode::Help { .. } => self.handle_help_key(key),
             Mode::Folders { .. } => self.handle_folders_key(key),
             Mode::Attach { .. } => self.handle_attach_key(key),
+            Mode::Compose { .. } => self.handle_compose_key(key),
+            Mode::Postponed { .. } => self.handle_postponed_key(key),
+            Mode::Query { .. } => self.handle_query_key(key),
             Mode::Image { .. } => {
                 if matches!(
                     key.code,
@@ -674,6 +721,724 @@ impl Gui {
         }
     }
 
+    // ---- the terminal, and everything that runs in it ----
+
+    /// The terminal emulator that hosts $EDITOR and `!`:
+    /// `[gui] terminal`, $TERMINAL, then the usual suspects.
+    fn terminal_program(&self) -> Option<String> {
+        if let Some(term) = &self.session.config.gui.terminal {
+            return Some(term.clone());
+        }
+        if let Ok(term) = std::env::var("TERMINAL")
+            && !term.trim().is_empty()
+        {
+            return Some(term);
+        }
+        ["foot", "alacritty", "kitty", "xterm"]
+            .iter()
+            .find(|t| {
+                std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("command -v {t}"))
+                    .stdout(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            })
+            .map(|t| t.to_string())
+    }
+
+    /// Run `sh -c SCRIPT args...` inside the terminal, without
+    /// blocking the window; `what` says how the exit continues.
+    fn spawn_terminal(&mut self, script: &str, args: &[&std::ffi::OsStr], what: PendingEdit) {
+        let Some(term) = self.terminal_program() else {
+            self.error("no terminal found (set [gui] terminal or $TERMINAL)");
+            return;
+        };
+        let mut cmd = std::process::Command::new(&term);
+        // kitty takes the command bare; the others take -e.
+        if !term.ends_with("kitty") {
+            cmd.arg("-e");
+        }
+        cmd.arg("sh").arg("-c").arg(script).arg("rmut-egui");
+        cmd.args(args);
+        match cmd.spawn() {
+            Ok(child) => self.editing = Some((child, what)),
+            Err(err) => self.error(format!("cannot run {term}: {err}")),
+        }
+    }
+
+    fn editor_program(&self) -> String {
+        self.session.config.mail.editor.clone().unwrap_or_else(|| {
+            std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".into())
+        })
+    }
+
+    /// $EDITOR on the draft, in the terminal; the compose menu comes
+    /// back when it closes.
+    fn start_editor(&mut self, compose: Compose) {
+        let editor = self.editor_program();
+        let path = compose.path.clone();
+        self.spawn_terminal(
+            &format!("{editor} \"$1\""),
+            &[path.as_os_str()],
+            PendingEdit::Draft(compose),
+        );
+    }
+
+    /// A plain file into the editor (mutt's new-mime), the compose
+    /// menu back afterwards.
+    fn start_file_edit(&mut self, path: &std::path::Path) {
+        let editor = self.editor_program();
+        self.spawn_terminal(
+            &format!("{editor} \"$1\""),
+            &[path.as_os_str()],
+            PendingEdit::File,
+        );
+    }
+
+    /// mutt's `!`: the command (or an interactive $shell) in the
+    /// terminal, the window waiting politely.
+    fn start_shell(&mut self, command: &str) {
+        let label = if command.trim().is_empty() {
+            "shell".to_string()
+        } else {
+            command.to_string()
+        };
+        let script = if command.trim().is_empty() {
+            self.session
+                .config
+                .mail
+                .shell
+                .clone()
+                .or_else(|| std::env::var("SHELL").ok())
+                .unwrap_or_else(|| "sh".into())
+        } else {
+            command.to_string()
+        };
+        self.spawn_terminal(&script, &[], PendingEdit::Shell(label));
+    }
+
+    /// mutt's edit function (`e`): the raw bytes through $EDITOR; a
+    /// changed result replaces the original.
+    fn start_raw_edit(&mut self) {
+        if self.session.deny_readonly() {
+            return;
+        }
+        if self.session.mbox.is_some() {
+            self.error("editing in place is not supported for mbox spools");
+            return;
+        }
+        if self.session.full_message_bytes().is_none() {
+            return;
+        }
+        let Some(orig) = self.session.selected_path() else {
+            return;
+        };
+        let original = match std::fs::read(&orig) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.error(format!("cannot read message: {err}"));
+                return;
+            }
+        };
+        let temp = match write_draft("").and_then(|p| {
+            std::fs::write(&p, &original)?;
+            Ok(p)
+        }) {
+            Ok(p) => p,
+            Err(err) => {
+                self.error(format!("cannot write edit copy: {err:#}"));
+                return;
+            }
+        };
+        let editor = self.editor_program();
+        let temp_os = temp.clone();
+        self.spawn_terminal(
+            &format!("{editor} \"$1\""),
+            &[temp_os.as_os_str()],
+            PendingEdit::Raw {
+                orig,
+                temp,
+                original,
+            },
+        );
+    }
+
+    /// The terminal child closed: pick the flow back up.
+    fn editor_done(&mut self, what: PendingEdit, success: bool) {
+        match what {
+            PendingEdit::Draft(compose) => {
+                if success {
+                    self.session.set_draft(compose);
+                    self.open_compose_menu();
+                } else {
+                    self.error(format!(
+                        "editor failed; draft kept at {}",
+                        compose.path.display()
+                    ));
+                }
+            }
+            PendingEdit::File => {
+                if !success {
+                    self.error("editor failed");
+                }
+                self.open_compose_menu();
+            }
+            PendingEdit::Raw {
+                orig,
+                temp,
+                original,
+            } => {
+                let edited = std::fs::read(&temp).unwrap_or_default();
+                let _ = std::fs::remove_file(&temp);
+                if !success {
+                    self.error("editor failed, message unchanged");
+                } else if edited == original {
+                    self.note("message unchanged");
+                } else {
+                    self.session.store_edited(&orig, &edited);
+                    self.refresh_sidebar();
+                }
+            }
+            PendingEdit::Shell(label) => {
+                if success {
+                    self.note(format!("{label} finished"));
+                } else {
+                    self.error(format!("{label} failed"));
+                }
+                self.run_requests();
+            }
+        }
+    }
+
+    // ---- composing ----
+
+    /// mutt asks before a new message when there are postponed
+    /// drafts, since recalling one is a menu rather than an answer.
+    fn start_compose(&mut self, kind: ComposeKind) {
+        if kind == ComposeKind::New && self.session.has_postponed() {
+            match self
+                .session
+                .config
+                .mail
+                .recall
+                .as_deref()
+                .unwrap_or("ask-yes")
+                .trim()
+                .to_lowercase()
+                .as_str()
+            {
+                "no" => {}
+                "yes" => {
+                    self.recall_postponed();
+                    return;
+                }
+                _ => {
+                    self.prompt = Some(Prompt::Key {
+                        label: "(n)ew message or (r)ecall postponed? ".into(),
+                        kind: KeyKind::Recall,
+                    });
+                    return;
+                }
+            }
+        }
+        let ask = self.session.start_compose(kind);
+        self.open_ask(ask);
+    }
+
+    /// One of the draft's headers, edited from the compose menu.
+    fn ask_header(&mut self, name: &str) {
+        let ask = self.session.ask_header(name);
+        self.open_ask(ask);
+    }
+
+    /// mutt's compose menu: entered after the editor, and again after
+    /// every sub-prompt, until y sends, P/q postpones, or q discards.
+    fn open_compose_menu(&mut self) {
+        if self.session.draft().is_some() {
+            let sel = match self.mode {
+                Mode::Compose { sel } => sel,
+                _ => 0,
+            };
+            self.mode = Mode::Compose { sel };
+        }
+    }
+
+    /// Header lines the compose menu shows; From falls back to the
+    /// identity that send would use.
+    pub fn compose_header_lines(&self) -> Vec<(&'static str, String)> {
+        let head = self.session.draft_head();
+        let get = |n: &str| header_value(&head, n).unwrap_or_default();
+        let from = match header_value(&head, "From") {
+            Some(f) => f,
+            None => self
+                .session
+                .current_identity(&[])
+                .from_line()
+                .unwrap_or_else(|| default_from(&rmut_core::maildir::hostname())),
+        };
+        let security = self
+            .session
+            .draft()
+            .map(|c| c.security.label())
+            .filter(|l| !l.is_empty())
+            .unwrap_or("none");
+        let fcc = match self.session.draft().and_then(|c| c.fcc.clone()) {
+            Some(fcc) if fcc.is_empty() => "(no copy)".into(),
+            Some(fcc) => fcc,
+            None if self.session.config.mail.copy == Some(false) => "(no copy)".into(),
+            None => {
+                let default = self.session.default_fcc(self.session.draft());
+                if default.is_empty() {
+                    "(nearby Sent maildir)".into()
+                } else {
+                    default
+                }
+            }
+        };
+        vec![
+            ("From", from),
+            ("To", get("To")),
+            ("Cc", get("Cc")),
+            ("Bcc", get("Bcc")),
+            ("Subject", get("Subject")),
+            ("Fcc", fcc),
+            ("Security", security.to_string()),
+        ]
+    }
+
+    /// Attachment-table entries: the body, the forwarded original,
+    /// then every Attach: file, in detach order.
+    pub fn compose_entries(&self) -> Vec<String> {
+        let Some(c) = self.session.draft() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let body_size = std::fs::metadata(&c.path).map(|m| m.len()).unwrap_or(0);
+        out.push(format!(
+            "{:<28} {:>8}  text/plain",
+            "(message body)",
+            rmut_front::pager::humanize_size(body_size)
+        ));
+        if let Some(orig) = &c.attach {
+            let size = std::fs::metadata(orig).map(|m| m.len()).unwrap_or(0);
+            out.push(format!(
+                "{:<28} {:>8}  message/rfc822  forwarded original",
+                orig.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                rmut_front::pager::humanize_size(size)
+            ));
+        }
+        let text = draft_full(c).unwrap_or_default();
+        for a in rmut_core::compose::extract_attachments(&text).1 {
+            let size = match std::fs::metadata(&a.path) {
+                Ok(m) => rmut_front::pager::humanize_size(m.len()),
+                Err(_) => "missing!".into(),
+            };
+            let mut marks = String::new();
+            if a.inline {
+                marks += " [inline]";
+            }
+            if a.unlink {
+                marks += " [unlink]";
+            }
+            if let Some(name) = &a.name {
+                marks += &format!(" as {name}");
+            }
+            out.push(format!(
+                "{:<28} {:>8}  {}{}{}",
+                a.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                size,
+                a.mime
+                    .as_deref()
+                    .unwrap_or_else(|| rmut_core::compose::content_type(&a.path)),
+                marks,
+                a.description
+                    .as_deref()
+                    .map(|d| format!("  ({d})"))
+                    .unwrap_or_default(),
+            ));
+        }
+        out
+    }
+
+    fn handle_compose_key(&mut self, key: KeyEvent) {
+        let entries = self.compose_entries().len();
+        let Mode::Compose { sel } = &mut self.mode else {
+            return;
+        };
+        let ctrl = key.modifiers.contains(rmut_front::KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => *sel = (*sel + 1).min(entries.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => *sel = sel.saturating_sub(1),
+            KeyCode::Char('y') => {
+                self.mode = Mode::Index;
+                let ask = self.session.send_draft();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('e') => {
+                self.mode = Mode::Index;
+                if let Some(c) = self.session.take_draft() {
+                    self.start_editor(c);
+                }
+            }
+            KeyCode::Char('t') if ctrl => {
+                let sel = *sel;
+                let ask = self.session.ask_attach_field(sel, true);
+                self.open_ask(ask);
+            }
+            KeyCode::Char('t') => self.ask_header("To"),
+            KeyCode::Char('c') => self.ask_header("Cc"),
+            KeyCode::Char('b') => self.ask_header("Bcc"),
+            KeyCode::Char('s') => self.ask_header("Subject"),
+            KeyCode::Char('F') => self.ask_header("From"),
+            KeyCode::Char('r') => self.ask_header("Reply-To"),
+            KeyCode::Char('d') if ctrl => {
+                let sel = *sel;
+                self.session.toggle_disposition(sel);
+            }
+            KeyCode::Char('d') => {
+                let sel = *sel;
+                let ask = self.session.ask_attach_field(sel, false);
+                self.open_ask(ask);
+            }
+            KeyCode::Char('f') => {
+                let ask = self.session.ask_fcc();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('a') => {
+                let ask = self.session.ask_attach_file();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('A') => self.session.attach_messages(),
+            KeyCode::Char('o') if ctrl => {
+                let sel = *sel;
+                let ask = self.session.ask_rename_attachment(sel);
+                self.open_ask(ask);
+            }
+            KeyCode::Char('u') => {
+                let sel = *sel;
+                self.session.toggle_unlink(sel);
+            }
+            KeyCode::Char('n') => {
+                let ask = self.session.ask_new_mime();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('K') | KeyCode::Char('J') => {
+                let up = key.code == KeyCode::Char('K');
+                let at = *sel;
+                if self.session.move_attachment(at, up)
+                    && let Mode::Compose { sel } = &mut self.mode
+                {
+                    *sel = if up { at - 1 } else { at + 1 };
+                }
+            }
+            KeyCode::Char('w') => {
+                let ask = self.session.ask_write_fcc();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('i') => {
+                if let Some(command) = self.session.ispell_command() {
+                    self.start_shell(&command);
+                }
+            }
+            KeyCode::Enter => self.view_compose_entry(),
+            KeyCode::Char('D') => {
+                let sel = *sel;
+                self.session.detach(sel);
+                let len = self.compose_entries().len();
+                if let Mode::Compose { sel } = &mut self.mode {
+                    *sel = (*sel).min(len.saturating_sub(1));
+                }
+            }
+            KeyCode::Char('p') => {
+                let ask = self.session.ask_security();
+                self.open_ask(ask);
+            }
+            KeyCode::Char('P') => {
+                self.mode = Mode::Index;
+                if let Some(draft) = self.session.take_draft() {
+                    self.session.postpone_draft(draft);
+                }
+            }
+            KeyCode::Char('q') => {
+                self.mode = Mode::Index;
+                let ask = self.session.ask_postpone();
+                self.open_ask(ask);
+            }
+            _ => {}
+        }
+    }
+
+    /// Enter in the compose menu: the selected entry as text - the
+    /// draft body, the forwarded original, or an attached file
+    /// (text directly, other types through their [filters] command).
+    fn view_compose_entry(&mut self) {
+        let Mode::Compose { sel } = self.mode else {
+            return;
+        };
+        let Some(c) = self.session.draft() else {
+            return;
+        };
+        let has_orig = c.attach.is_some();
+        let (title, text) = if sel == 0 {
+            let content = std::fs::read_to_string(&c.path).unwrap_or_default();
+            let body = match &c.hidden_head {
+                Some(_) => content,
+                None => match content.split_once("\n\n") {
+                    Some((_, b)) => b.to_string(),
+                    None => content,
+                },
+            };
+            ("Message body".to_string(), body)
+        } else if has_orig && sel == 1 {
+            let path = c.attach.clone().unwrap_or_default();
+            (
+                "Forwarded original".to_string(),
+                rmut_core::message::body_text(&path).unwrap_or_default(),
+            )
+        } else {
+            let k = sel - 1 - usize::from(has_orig);
+            let full = draft_full(c).unwrap_or_default();
+            let Some(a) = rmut_core::compose::extract_attachments(&full)
+                .1
+                .into_iter()
+                .nth(k)
+            else {
+                return;
+            };
+            let mimetype = a
+                .mime
+                .clone()
+                .unwrap_or_else(|| rmut_core::compose::content_type(&a.path).to_string());
+            let name = a.path.display().to_string();
+            match self.session.display.filters.get(mimetype.as_str()).cloned() {
+                Some(command) => match run_file_filter(&command, &a.path) {
+                    Ok(text) => (name, text),
+                    Err(err) => {
+                        self.error(format!("filter failed: {err:#}"));
+                        return;
+                    }
+                },
+                None if mimetype.starts_with("text/") => match std::fs::read_to_string(&a.path) {
+                    Ok(text) => (name, text),
+                    Err(err) => {
+                        self.error(format!("cannot read {name}: {err}"));
+                        return;
+                    }
+                },
+                None => {
+                    self.note(format!("no [filters] entry for {mimetype}"));
+                    return;
+                }
+            }
+        };
+        let mut lines = vec![title, String::new()];
+        lines.extend(text.lines().map(String::from));
+        self.mode = Mode::Help { lines, scroll: 0 };
+    }
+
+    /// Recall a postponed draft: straight into the editor when there
+    /// is one, a picker when there are several.
+    fn recall_postponed(&mut self) {
+        let mut files = self
+            .session
+            .postponed_dir()
+            .and_then(|dir| rmut_core::maildir::scan(&dir).ok())
+            .unwrap_or_default();
+        if files.is_empty() {
+            self.error("no postponed messages");
+            return;
+        }
+        if files.len() == 1 {
+            let file = files.remove(0);
+            if let Some(compose) = self.session.recall_file(file.path) {
+                self.start_editor(compose);
+            }
+            return;
+        }
+        files.sort_by_key(|f| std::cmp::Reverse(f.path.metadata().and_then(|m| m.modified()).ok()));
+        let drafts = files
+            .into_iter()
+            .map(|f| {
+                let label = match rmut_core::message::envelope(f.clone()) {
+                    Ok(env) => format!(
+                        "{}  {}",
+                        rmut_core::message::format_index_date(env.date),
+                        env.subject
+                    ),
+                    Err(_) => f.path.display().to_string(),
+                };
+                (f.path, label)
+            })
+            .collect();
+        self.mode = Mode::Postponed { drafts, sel: 0 };
+    }
+
+    /// `-p`: straight into the postponed picker.
+    pub fn open_postponed(&mut self) {
+        self.recall_postponed();
+    }
+
+    fn handle_postponed_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Postponed { drafts, sel } = &mut self.mode {
+                    *sel = (*sel + 1).min(drafts.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Postponed { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
+            KeyCode::Enter => {
+                let path = match &self.mode {
+                    Mode::Postponed { drafts, sel } => drafts.get(*sel).map(|d| d.0.clone()),
+                    _ => None,
+                };
+                if let Some(path) = path {
+                    self.mode = Mode::Index;
+                    if let Some(compose) = self.session.recall_file(path) {
+                        self.start_editor(compose);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_query(&mut self, input: &str) {
+        if input.is_empty() {
+            return;
+        }
+        let Some(command) = self.session.config.mail.query_command.clone() else {
+            return;
+        };
+        let results = rmut_core::alias::query(&command, input);
+        if results.is_empty() {
+            self.note("query returned nothing");
+            return;
+        }
+        self.mode = Mode::Query { results, sel: 0 };
+    }
+
+    fn handle_query_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Query { results, sel } = &mut self.mode {
+                    *sel = (*sel + 1).min(results.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Query { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Esc => self.mode = Mode::Index,
+            KeyCode::Enter | KeyCode::Char('m') => {
+                let addr = match &self.mode {
+                    Mode::Query { results, sel } => results.get(*sel).cloned(),
+                    _ => None,
+                };
+                let Some(addr) = addr else { return };
+                self.mode = Mode::Index;
+                // The normal compose chain, with To prefilled.
+                self.start_compose(ComposeKind::New);
+                if let Some(Prompt::Line { edit, .. }) = &mut self.prompt {
+                    edit.set(&addr);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn notmuch_search(&mut self, query: &str) {
+        let Some((dir, count)) = self.session.notmuch_mirror(query) else {
+            return;
+        };
+        self.open_mailbox_spec(&dir.display().to_string());
+        if self.session.dir == dir {
+            // The virtual mailbox: never write through the symlinks.
+            self.session.read_only = true;
+            self.session.title = format!("notmuch: {query}");
+            self.note(format!("{count} matching message(s)"));
+        }
+    }
+
+    pub fn start_mailto(&mut self, m: &rmut_core::mailto::Mailto) {
+        let from = self.session.compose_from(None, &m.to);
+        let text = rmut_core::compose::draft_text(
+            &rmut_core::compose::DraftHeaders {
+                from,
+                to: m.to.clone(),
+                cc: m.cc.clone(),
+                subject: m.subject.clone(),
+                in_reply_to: None,
+                references: None,
+            },
+            &m.body,
+        );
+        let text = match m.bcc.as_deref().filter(|b| !b.trim().is_empty()) {
+            Some(bcc) => match text.split_once("\n\n") {
+                Some((head, body)) => format!("{head}\nBcc: {bcc}\n\n{body}"),
+                None => text,
+            },
+            None => text,
+        };
+        match self.session.stage_draft(&text) {
+            Ok((path, hidden_head)) => {
+                self.start_editor(Compose {
+                    path,
+                    recall_source: None,
+                    security: self.session.default_security(),
+                    attach: None,
+                    hidden_head,
+                    fcc: None,
+                });
+            }
+            Err(err) => self.error(format!("cannot write draft: {err:#}")),
+        }
+    }
+
+    /// Open a copy of the message as a new draft (mutt's resend).
+    fn resend_current(&mut self) {
+        if self.session.full_message_bytes().is_none() {
+            return;
+        }
+        let Some(base) = self.session.compose_base() else {
+            self.error("no message selected");
+            return;
+        };
+        let body = rmut_core::message::body_text(&base.path).unwrap_or_default();
+        let text = rmut_core::compose::draft_text(
+            &rmut_core::compose::DraftHeaders {
+                from: self.session.compose_from(None, &base.orig_to),
+                to: base.orig_to.clone(),
+                cc: (!base.orig_cc.trim().is_empty()).then(|| base.orig_cc.clone()),
+                subject: base.subject.clone(),
+                in_reply_to: None,
+                references: None,
+            },
+            &body,
+        );
+        match self.session.stage_draft(&text) {
+            Ok((path, hidden_head)) => {
+                self.start_editor(Compose {
+                    path,
+                    recall_source: None,
+                    security: self.session.default_security(),
+                    attach: None,
+                    hidden_head,
+                    fcc: None,
+                });
+            }
+            Err(err) => self.error(format!("cannot write draft: {err:#}")),
+        }
+    }
+
     fn pipe_part(&mut self, command: &str) {
         if command.is_empty() {
             self.error("no command given");
@@ -726,6 +1491,14 @@ impl Gui {
                             self.print_part();
                         }
                     }
+                    KeyKind::Recall => match key.code {
+                        KeyCode::Char('r') => self.recall_postponed(),
+                        KeyCode::Char('n') => {
+                            let ask = self.session.start_compose(ComposeKind::New);
+                            self.open_ask(ask);
+                        }
+                        _ => {}
+                    },
                 }
             }
             Some(Prompt::Line { edit, .. }) => match edit.key(key) {
@@ -780,6 +1553,8 @@ impl Gui {
                     self.note(format!("{} (read-only)", self.session.title));
                 }
             }
+            LineKind::Query => self.run_query(input),
+            LineKind::Notmuch => self.notmuch_search(input),
             LineKind::PagerSearch => {
                 if !input.is_empty() {
                     self.pager_search = Some(rmut_core::pattern::Matcher::new(input));
@@ -924,11 +1699,24 @@ impl Gui {
                     self.open_mailbox_spec(&spec);
                 }
             }
-            FrontOp::Compose(_) | FrontOp::Resend => self.not_yet("composing"),
-            FrontOp::RawEdit => self.not_yet("editing"),
+            FrontOp::Compose(kind) => self.start_compose(kind),
+            FrontOp::Resend => self.resend_current(),
+            FrontOp::RawEdit => self.start_raw_edit(),
             FrontOp::Attachments => self.open_attachments(),
-            FrontOp::Query => self.not_yet("query"),
-            FrontOp::Notmuch => self.not_yet("notmuch"),
+            FrontOp::Query => {
+                self.prompt = Some(Prompt::Line {
+                    label: "Query for: ".into(),
+                    edit: LineEdit::new(String::new()),
+                    kind: LineKind::Query,
+                });
+            }
+            FrontOp::Notmuch => {
+                self.prompt = Some(Prompt::Line {
+                    label: "Notmuch query: ".into(),
+                    edit: LineEdit::new(String::new()),
+                    kind: LineKind::Notmuch,
+                });
+            }
         }
     }
 
@@ -1385,6 +2173,21 @@ impl Gui {
     /// itself, so a test harness can drive it without one.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // The terminal child ($EDITOR, `!`): when it closes, its
+        // flow continues; while it runs, this window only waits.
+        if let Some((child, _)) = &mut self.editing {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let (_, what) = self.editing.take().unwrap();
+                    self.editor_done(what, status.success());
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    self.editing = None;
+                    self.error(format!("lost the editor: {err}"));
+                }
+            }
+        }
         // Keys a menu or context item queued during the last paint.
         if !self.pending_keys.is_empty() {
             self.handle_keys(Vec::new());
@@ -1423,8 +2226,16 @@ impl Gui {
         }
         let keys = ctx.input(|i| crate::input::keys(&i.events));
         if !keys.is_empty() {
-            self.keys_this_frame = true;
-            self.handle_keys(keys);
+            if self.editing.is_some() {
+                self.note("editing in the terminal; close it to continue");
+            } else {
+                self.keys_this_frame = true;
+                self.handle_keys(keys);
+            }
+        }
+        if self.editing.is_some() {
+            // Wake soon to notice the editor closing.
+            ctx.request_repaint_after(Duration::from_millis(200));
         }
         crate::paint::draw(self, ui);
         self.keys_this_frame = false;
@@ -1442,6 +2253,12 @@ impl eframe::App for Gui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
         if self.quit {
+            // Whatever is still inside its $undo_send window goes out
+            // now: quitting is not cancelling. The window is closing,
+            // so trouble lands on stderr, as the TUI's exit does.
+            for note in self.session.flush_outbox() {
+                eprintln!("rmut-egui: {note}");
+            }
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -1462,4 +2279,18 @@ pub fn saved_zoom() -> Option<f32> {
     let text = std::fs::read_to_string(zoom_path()?).ok()?;
     let zoom: f32 = text.trim().parse().ok()?;
     (0.5..=4.0).contains(&zoom).then_some(zoom)
+}
+
+/// A shell command over a file's bytes, its stdout as text.
+fn run_file_filter(command: &str, path: &std::path::Path) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::from(file))
+        .output()
+        .with_context(|| format!("running {command}"))?;
+    anyhow::ensure!(out.status.success(), "{command} exited with {}", out.status);
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

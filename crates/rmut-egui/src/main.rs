@@ -10,7 +10,7 @@ mod tests;
 
 use anyhow::{Result, bail};
 
-const USAGE: &str = "usage: rmut-egui [-R] [-y] [-z|-Z] [-e CMD]... [-f MAILBOX | mailbox]";
+const USAGE: &str = "usage: rmut-egui [-R] [-y] [-p] [-z|-Z] [-e CMD]... [-f MAILBOX | mailbox]";
 
 struct Cli {
     spec: Option<String>,
@@ -19,6 +19,7 @@ struct Cli {
     exit_if_empty: bool,
     exit_unless_new: bool,
     commands: Vec<String>,
+    postponed: bool,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli> {
@@ -29,6 +30,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli> {
         exit_if_empty: false,
         exit_unless_new: false,
         commands: Vec::new(),
+        postponed: false,
     };
     while let Some(arg) = args.next() {
         // A value-taking option, given as -f BOX or -fBOX.
@@ -53,7 +55,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli> {
             "-s" | "-a" | "-c" | "-b" | "-i" | "--" => {
                 bail!("send mode needs a terminal: use rmut {arg} ...")
             }
-            "-p" => bail!("-p: not in the GUI yet (use rmut)"),
+            "-p" => cli.postponed = true,
             _ if arg.starts_with("-e") => cli.commands.push(value("-e", &arg)?),
             _ if arg.starts_with("-f") => cli.spec = Some(value("-f", &arg)?),
             other if !other.starts_with('-') => cli.spec = Some(other.to_string()),
@@ -83,7 +85,6 @@ fn run() -> Result<()> {
     };
     let progress: rmut_core::remote::Progress = Box::new(|msg| eprintln!("rmut-egui: {msg}"));
     let (session, warnings) = rmut_session::Session::open_spec(&spec, config, progress)?;
-    let session = session;
     // -z / -Z: report through the exit code without a window.
     if cli.exit_if_empty && session.msgs.is_empty() {
         std::process::exit(1);
@@ -98,7 +99,9 @@ fn run() -> Result<()> {
     for command in &cli.commands {
         app.run_startup_command(command);
     }
-    if cli.folders {
+    if cli.postponed {
+        app.open_postponed();
+    } else if cli.folders {
         app.open_folder_browser();
     }
     let options = eframe::NativeOptions {
