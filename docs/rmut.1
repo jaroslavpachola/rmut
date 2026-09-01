@@ -312,7 +312,15 @@ check for new mail now
 .TP
 .B v
 list message parts (attachments); in that menu Enter views a text
-part (or one with a matching [filters] entry),
+part (or one with a matching [filters] entry \(em any other type
+falls through to its mailcap viewer, then to text, like mutt's
+view\-attach),
+.B m
+views through mailcap regardless (view\-mailcap: a copiousoutput
+viewer's text in the pager, an interactive viewer on the terminal,
+the part decoded to a temp file that goes when the view ends),
+.B T
+shows the decoded bytes as text (view\-text),
 .B s
 saves,
 .B |

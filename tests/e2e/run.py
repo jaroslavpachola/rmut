@@ -2131,6 +2131,49 @@ def scenario_attachment_pager(tmp):
 
 
 
+def scenario_attach_mailcap(tmp):
+    """The attachment menu's mailcap views: m (view-mailcap) runs the
+    part's mailcap entry over a temp file, T (view-text) shows the
+    decoded bytes whatever the type, and Enter on a non-text part
+    with no [filters] entry falls through to mailcap, then to text
+    with mutt's complaint (view-attach's order)."""
+    md = make_maildir(tmp, "md-attmc")
+    with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
+        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+                "Subject: odd attachments\r\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <am1@example.com>\r\nMIME-Version: 1.0\r\n"
+                "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n"
+                "--b\r\nContent-Type: text/plain\r\n\r\nmain body here\r\n"
+                "--b\r\nContent-Type: application/x-blob; name=\"blob.dat\"\r\n"
+                "Content-Disposition: attachment; filename=\"blob.dat\"\r\n\r\n"
+                "fake blob payload\r\n"
+                "--b\r\nContent-Type: video/mpeg\r\n\r\n"
+                "not a film\r\n--b--\r\n")
+    mailcap = os.path.join(tmp, "attach-mailcap")
+    with open(mailcap, "w") as f:
+        f.write("application/x-blob; printf 'VIEWED ' && cat %s; copiousoutput\n")
+    r = Rmut(md, base_env(tmp, {"MAILCAPS": mailcap}))
+    r.expect("Msgs:1")
+    r.keys(b"v")
+    r.expect("Parts:3")
+    r.keys(b"jT")   # the decoded bytes as plain text first
+    r.expect("fake blob payload", absent=("VIEWED",))
+    r.keys(b"q")
+    r.keys(b"m")    # the blob through its mailcap viewer
+    r.expect("VIEWED fake blob payload")
+    r.keys(b"q")
+    r.keys(b"\r")   # Enter falls through to mailcap for this type
+    r.expect("VIEWED fake blob payload")
+    r.keys(b"q")
+    r.keys(b"j\r")  # no entry for video/mpeg: the complaint, then text
+    r.expect("no matching mailcap entry found, viewing as text",
+             "not a film")
+    r.keys(b"q")
+    r.expect("Parts:3")
+    r.close()
+
+
 def scenario_enter_command(tmp):
     """R32: the `:` prompt applies config commands to the live session:
     set/unset/toggle with a `?` query, bind and macro against the key
@@ -4517,6 +4560,7 @@ SCENARIOS = [
     scenario_tag_save_sort,
     scenario_import_muttrc,
     scenario_attachment_pager,
+    scenario_attach_mailcap,
     scenario_network_timeouts,
     scenario_network_abort,
     scenario_reply_text,
