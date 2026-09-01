@@ -16,8 +16,7 @@ use rmut_core::{alias, command, compose, maildir, message};
 use rmut_front::{KeyCode, KeyEvent, KeyModifiers};
 use rmut_session::{
     Answer, Ask, AskKind, Compose, ComposeKind, FrontOp, Function, Key, Outcome, PageSpot, Request,
-    Session, SidebarOp, Wants, default_from, draft_full, expand_tilde, pipe_to, wrap_order,
-    write_draft,
+    Session, SidebarOp, Wants, default_from, draft_full, expand_tilde, pipe_to, write_draft,
 };
 
 use rmut_front::editor::{Complete, Edit, History, LineEdit};
@@ -1650,7 +1649,7 @@ impl App {
             pager.hide_quoted,
         );
         let context = self.session.config.pager.search_context;
-        match search_lines(&lines, &matcher, pager.scroll, forward) {
+        match rmut_front::pager::search_lines(&lines, &matcher, pager.scroll, forward) {
             Some((hit, wrapped)) => {
                 // The hit becomes the top line even near the end (past
                 // max_scroll), like mutt; otherwise close-to-the-end
@@ -3157,44 +3156,5 @@ fn run_file_filter(command: &str, path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The first line matching `m` strictly after (before, when searching
-/// backwards) `from`, wrapping around; the flag reports the wrap. The
-/// starting line itself is only reached by going all the way around.
-fn search_lines(
-    lines: &[String],
-    m: &pattern::Matcher,
-    from: usize,
-    forward: bool,
-) -> Option<(usize, bool)> {
-    wrap_order(lines.len(), from, forward)
-        .into_iter()
-        .find(|&(idx, _)| m.is_match(&lines[idx]))
-}
-
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn search_lines_steps_and_wraps() {
-        use super::search_lines;
-        use rmut_core::pattern::Matcher;
-        let lines: Vec<String> = ["alpha", "the needle", "beta", "a Needle too"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let m = Matcher::new("needle");
-        // Forward from the top: the next hit, no wrap; case-insensitive.
-        assert_eq!(search_lines(&lines, &m, 0, true), Some((1, false)));
-        assert_eq!(search_lines(&lines, &m, 1, true), Some((3, false)));
-        // Past the last hit it wraps to the first.
-        assert_eq!(search_lines(&lines, &m, 3, true), Some((1, true)));
-        // Backwards, with and without the wrap.
-        assert_eq!(search_lines(&lines, &m, 3, false), Some((1, false)));
-        assert_eq!(search_lines(&lines, &m, 1, false), Some((3, true)));
-        // No match, and the empty pager.
-        assert_eq!(search_lines(&lines, &Matcher::new("zzz"), 0, true), None);
-        assert_eq!(search_lines(&[], &m, 0, true), None);
-        // A regex argument works like the patterns do.
-        let re = Matcher::new("^bet.");
-        assert_eq!(search_lines(&lines, &re, 0, true), Some((2, false)));
-    }
-}
+mod tests {}

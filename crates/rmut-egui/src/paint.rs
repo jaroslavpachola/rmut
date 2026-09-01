@@ -193,7 +193,16 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
             gui.view_size = (rows, width);
             match &gui.mode {
                 Mode::Index => draw_index(gui, ui, rows, width, size),
-                Mode::Pager(_) => draw_pager(gui, ui, rows, width, size),
+                Mode::Pager(_) => {
+                    // mutt's $pager_index_lines: a slice of the index
+                    // stays above the message.
+                    let il =
+                        (gui.session.config.pager.index_lines as usize).min(rows.saturating_sub(1));
+                    if il > 0 {
+                        draw_index(gui, ui, il, width, size);
+                    }
+                    draw_pager(gui, ui, rows - il, width, size);
+                }
                 Mode::Help { .. } => {
                     let wheel = wheel_rows(gui, ui, size);
                     let Mode::Help { lines, scroll } = &mut gui.mode else {
@@ -545,13 +554,23 @@ fn body_line(gui: &Gui, job: &mut LayoutJob, text: &str, base: Style, size: f32)
         return;
     }
     let mut styles = vec![base; chars.len()];
+    let paint = |styles: &mut Vec<Style>, start: usize, end: usize, patch: Style| {
+        for (i, (off, _)) in chars.iter().enumerate() {
+            if *off >= start && *off < end {
+                styles[i] = styles[i].patch(patch);
+            }
+        }
+    };
     for (re, style) in &gui.body_rules {
         for m in re.find_iter(text) {
-            for (i, (off, _)) in chars.iter().enumerate() {
-                if *off >= m.start() && *off < m.end() {
-                    styles[i] = styles[i].patch(*style);
-                }
-            }
+            paint(&mut styles, m.start(), m.end(), *style);
+        }
+    }
+    if !gui.pager_search_off
+        && let Some(matcher) = &gui.pager_search
+    {
+        for (start, end) in matcher.find_ranges(text) {
+            paint(&mut styles, start, end, gui.theme.search);
         }
     }
     let mut cur = String::new();

@@ -223,6 +223,20 @@ pub fn recenter(top: usize, sel: usize, rows: usize, max: usize, menu: Menu) -> 
     top.max(0) as usize
 }
 
+/// The pager's text search: the next line matching `m` from `from`,
+/// wrapping around, and whether it wrapped. Both front ends step
+/// their pagers with this.
+pub fn search_lines(
+    lines: &[String],
+    m: &rmut_core::pattern::Matcher,
+    from: usize,
+    forward: bool,
+) -> Option<(usize, bool)> {
+    rmut_session::wrap_order(lines.len(), from, forward)
+        .into_iter()
+        .find(|&(idx, _)| m.is_match(&lines[idx]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -383,5 +397,30 @@ mod tests {
             move_off: true,
         };
         assert_eq!(recenter(95, 99, 10, 100, free), 95);
+    }
+
+    #[test]
+    fn search_lines_steps_and_wraps() {
+        use super::search_lines;
+        use rmut_core::pattern::Matcher;
+        let lines: Vec<String> = ["alpha", "the needle", "beta", "a Needle too"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let m = Matcher::new("needle");
+        // Forward from the top: the next hit, no wrap; case-insensitive.
+        assert_eq!(search_lines(&lines, &m, 0, true), Some((1, false)));
+        assert_eq!(search_lines(&lines, &m, 1, true), Some((3, false)));
+        // Past the last hit it wraps to the first.
+        assert_eq!(search_lines(&lines, &m, 3, true), Some((1, true)));
+        // Backwards, with and without the wrap.
+        assert_eq!(search_lines(&lines, &m, 3, false), Some((1, false)));
+        assert_eq!(search_lines(&lines, &m, 1, false), Some((3, true)));
+        // No match, and the empty pager.
+        assert_eq!(search_lines(&lines, &Matcher::new("zzz"), 0, true), None);
+        assert_eq!(search_lines(&[], &m, 0, true), None);
+        // A regex argument works like the patterns do.
+        let re = Matcher::new("^bet.");
+        assert_eq!(search_lines(&lines, &re, 0, true), Some((2, false)));
     }
 }

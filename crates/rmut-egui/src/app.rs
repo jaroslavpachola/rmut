@@ -12,6 +12,7 @@ use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::Pattern;
 use rmut_front::editor::{Edit, History, LineEdit};
 use rmut_front::pager::{PagerStyle, pager_line_count};
+use rmut_front::status;
 use rmut_front::style::{Style, rule_style};
 use rmut_front::theme::Theme;
 use rmut_front::{KeyCode, KeyEvent, Keymap, PagerAction, parse_sequence};
@@ -70,6 +71,8 @@ pub enum LineKind {
     ChangeDir {
         read_only: bool,
     },
+    /// The pager's text search (`/` inside a message).
+    PagerSearch,
     EnterCommand,
 }
 
@@ -84,6 +87,7 @@ impl LineKind {
                 Wants::Other => "other",
             },
             LineKind::ChangeDir { .. } => "mailbox",
+            LineKind::PagerSearch => "pattern",
             LineKind::SavePart => "file",
             LineKind::PipePart => "command",
             LineKind::EnterCommand => "command",
@@ -161,6 +165,14 @@ pub struct Gui {
     pub keys_this_frame: bool,
     /// Wheel remainder, in points, until a whole row is crossed.
     pub scroll_px: f32,
+    /// The pager's text search, kept across messages so n/N carry
+    /// over; the pager highlights its hits.
+    pub pager_search: Option<rmut_core::pattern::Matcher>,
+    /// mutt's search-toggle (`\`): hide the highlighting without
+    /// forgetting the pattern.
+    pub pager_search_off: bool,
+    /// Its raw text, prefilling the next Search for: prompt.
+    pager_search_text: String,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -215,6 +227,9 @@ impl Gui {
             said: Default::default(),
             keys_this_frame: false,
             scroll_px: 0.0,
+            pager_search: None,
+            pager_search_off: false,
+            pager_search_text: String::new(),
             last_poll: Instant::now(),
             quit: false,
         };
@@ -759,6 +774,18 @@ impl Gui {
                     self.note(format!("{} (read-only)", self.session.title));
                 }
             }
+            LineKind::PagerSearch => {
+                if !input.is_empty() {
+                    self.pager_search = Some(rmut_core::pattern::Matcher::new(input));
+                    self.pager_search_off = false;
+                    self.pager_search_text = input.to_string();
+                }
+                if self.pager_search.is_some() {
+                    self.pager_search_step(true);
+                } else {
+                    self.error("No search pattern.");
+                }
+            }
             LineKind::SavePart => self.save_part(input),
             LineKind::PipePart => self.pipe_part(input),
             LineKind::EnterCommand => {
@@ -900,6 +927,9 @@ impl Gui {
     }
 
     fn open_selected(&mut self) {
+        // A fresh pager session, search-wise, like mutt; the text
+        // stays as the next prompt's prefill.
+        self.pager_search = None;
         self.session.open_message();
         self.run_requests();
     }
@@ -984,8 +1014,59 @@ impl Gui {
         )
     }
 
+    /// The pager's own page: the mini-index (pager.index_lines)
+    /// shrinks the viewport, and $pager_context keeps overlap.
+    fn pager_page(&self) -> usize {
+        self.view_size
+            .0
+            .saturating_sub(self.session.config.pager.index_lines as usize)
+            .max(1)
+    }
+
+    fn pager_search_step(&mut self, forward: bool) {
+        let Some(matcher) = self.pager_search.clone() else {
+            // n/N with nothing searched yet: ask for the pattern
+            // first (mutt falls through to search the same way).
+            self.prompt = Some(Prompt::Line {
+                label: "Search for: ".into(),
+                edit: LineEdit::new(self.pager_search_text.clone()),
+                kind: LineKind::PagerSearch,
+            });
+            return;
+        };
+        let width = status::pager_wrap(&self.session.config, self.view_size.1);
+        let context = self.session.config.pager.search_context;
+        let Mode::Pager(pager) = &mut self.mode else {
+            return;
+        };
+        let lines = rmut_front::pager::pager_text_lines(
+            &pager.view,
+            width,
+            pager.full_headers,
+            &PagerStyle::of(&self.session.config, &self.session.quote_re),
+            pager.hide_quoted,
+        );
+        match rmut_front::pager::search_lines(&lines, &matcher, pager.scroll, forward) {
+            Some((hit, wrapped)) => {
+                // The hit becomes the top line even near the end,
+                // like mutt; $search_context keeps lines above it.
+                pager.scroll = hit.saturating_sub(context);
+                if wrapped {
+                    self.note(match forward {
+                        true => "Search wrapped to top.",
+                        false => "Search wrapped to bottom.",
+                    });
+                }
+            }
+            None => self.error("Not found."),
+        }
+    }
+
     fn run_pager_action(&mut self, action: PagerAction) {
-        let page = self.view_size.0;
+        let page = self.pager_page();
+        let step = page
+            .saturating_sub(self.session.config.pager.context)
+            .max(1);
         let total = self.pager_lines();
         let Mode::Pager(pager) = &mut self.mode else {
             return;
@@ -1003,8 +1084,8 @@ impl Gui {
                 pager.scroll = (pager.scroll + 1).min(max_scroll);
             }
             PagerAction::Up => pager.scroll = pager.scroll.saturating_sub(1),
-            PagerAction::PageDown => pager.scroll = (pager.scroll + page).min(max_scroll),
-            PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(page),
+            PagerAction::PageDown => pager.scroll = (pager.scroll + step).min(max_scroll),
+            PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(step),
             PagerAction::HalfDown => pager.scroll = (pager.scroll + page / 2).min(max_scroll),
             PagerAction::HalfUp => pager.scroll = pager.scroll.saturating_sub(page / 2),
             PagerAction::Top => pager.scroll = 0,
@@ -1054,11 +1135,28 @@ impl Gui {
                 self.mode = Mode::Help { lines, scroll: 0 };
             }
             PagerAction::WhatKey => self.run_front_op(FrontOp::WhatKey),
-            PagerAction::SkipQuoted
-            | PagerAction::Search
-            | PagerAction::SearchNext
-            | PagerAction::SearchPrev
-            | PagerAction::SearchToggle => self.not_yet("the pager search"),
+            PagerAction::Search => {
+                self.prompt = Some(Prompt::Line {
+                    label: "Search for: ".into(),
+                    edit: LineEdit::new(self.pager_search_text.clone()),
+                    kind: LineKind::PagerSearch,
+                });
+            }
+            PagerAction::SearchNext => self.pager_search_step(true),
+            PagerAction::SearchPrev => self.pager_search_step(false),
+            PagerAction::SearchToggle => {
+                if self.pager_search.is_none() {
+                    self.note("no search to toggle");
+                } else {
+                    self.pager_search_off = !self.pager_search_off;
+                    self.note(if self.pager_search_off {
+                        "search highlighting off"
+                    } else {
+                        "search highlighting on"
+                    });
+                }
+            }
+            PagerAction::SkipQuoted => self.not_yet("skip-quoted"),
             PagerAction::Delete => {
                 if self.session.deny_readonly() {
                     return;

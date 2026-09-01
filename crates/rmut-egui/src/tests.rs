@@ -245,3 +245,28 @@ fn attachments_list_view_and_save() {
     press(&mut gui, "q");
     assert!(matches!(gui.mode, Mode::Index));
 }
+
+#[test]
+fn pager_search_finds_and_toggles() {
+    let (_dir, mut gui) = fixture(&["one", "two"]);
+    gui.session.sel = 0;
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "/body");
+    key(&mut gui, KeyCode::Enter);
+    assert!(gui.pager_search.is_some(), "the search compiled");
+    // The only hit is the body line; the next step wraps and says so.
+    press(&mut gui, "n");
+    let notice = gui.notice().expect("n wraps with a note");
+    assert!(notice.text().contains("wrapped"), "{}", notice.text());
+    press(&mut gui, "\\");
+    assert!(gui.pager_search_off, "backslash hides the highlighting");
+    // A missing pattern says so.
+    press(&mut gui, "/");
+    gui.handle_keys(vec![KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )]);
+    key(&mut gui, KeyCode::Enter);
+    // The old pattern survives an empty answer, like mutt's prefill.
+    assert!(gui.pager_search.is_some());
+}
