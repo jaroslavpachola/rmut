@@ -97,6 +97,28 @@ fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
 pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     let (canvas_bg, canvas_fg) = canvas(gui);
     CANVAS.with(|c| c.set((canvas_bg, canvas_fg)));
+    if gui.about {
+        let response = egui::Modal::new(egui::Id::new("about")).show(root.ctx(), |ui| {
+            ui.set_width(360.0);
+            ui.vertical_centered(|ui| {
+                ui.heading("rmut");
+                ui.label(format!("rmut-egui {}", env!("CARGO_PKG_VERSION")));
+                ui.add_space(6.0);
+                ui.label("mutt's engine in a window: the rmut-session");
+                ui.label("mail library under an egui front end.");
+                ui.add_space(6.0);
+                ui.hyperlink("https://github.com/jaroslavpachola/rmut");
+                ui.label("MIT license");
+                ui.add_space(8.0);
+                if ui.button("Close").clicked() {
+                    gui.about = false;
+                }
+            });
+        });
+        if response.should_close() {
+            gui.about = false;
+        }
+    }
     let size = gui.session.config.gui.size.unwrap_or(14.0).clamp(6.0, 40.0);
     let ctx = root.ctx().clone();
     let char_w = ctx.fonts_mut(|f| f.glyph_width(&FontId::monospace(size), ' '));
@@ -554,6 +576,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, keys: &str) -> bool {
 /// rmut can do.
 fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     let mut fire: Option<&'static str> = None;
+    let mut about = false;
     let item = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys| {
         if menu_item(ui, label, keys) {
             *target = Some(keys);
@@ -599,10 +622,18 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
         ui.menu_button("Help", |ui| {
             item(&mut fire, ui, "Keys", "?");
             item(&mut fire, ui, "Version", "V");
+            ui.separator();
+            // Window chrome, not a mail function: no key to queue.
+            if ui.button("About rmut-egui").clicked() {
+                about = true;
+            }
         });
     });
     if let Some(keys) = fire {
         gui.click(keys);
+    }
+    if about {
+        gui.about = true;
     }
 }
 

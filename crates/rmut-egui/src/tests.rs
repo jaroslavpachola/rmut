@@ -314,3 +314,16 @@ fn the_window_wears_its_own_palette() {
         "the shared [colors] stays as written for the terminal"
     );
 }
+
+#[test]
+fn the_about_overlay_opens_and_esc_closes() {
+    let (_dir, mut gui) = fixture(&["one", "two"]);
+    gui.session.sel = 0;
+    gui.about = true;
+    press(&mut gui, "j");
+    assert_eq!(gui.session.sel, 0, "keys stay out while it is up");
+    key(&mut gui, KeyCode::Esc);
+    assert!(!gui.about, "Esc closes the overlay");
+    press(&mut gui, "j");
+    assert_eq!(gui.session.sel, 1, "and the keys are back");
+}

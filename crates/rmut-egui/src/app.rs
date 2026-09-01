@@ -220,6 +220,8 @@ pub struct Gui {
     /// A terminal child ($EDITOR, `!`) and what it was doing; keys
     /// wait until it closes.
     editing: Option<(std::process::Child, PendingEdit)>,
+    /// The About overlay is up.
+    pub about: bool,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -280,6 +282,7 @@ impl Gui {
             complete: None,
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
+            about: false,
             last_poll: Instant::now(),
             quit: false,
         };
@@ -505,6 +508,12 @@ impl Gui {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.about {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
+                self.about = false;
+            }
+            return;
+        }
         if self.what_key {
             if key.code == KeyCode::Char('g')
                 && key.modifiers.contains(rmut_front::KeyModifiers::CONTROL)
