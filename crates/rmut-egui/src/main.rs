@@ -10,29 +10,52 @@ mod tests;
 
 use anyhow::{Result, bail};
 
-const USAGE: &str = "usage: rmut-egui [-R] [-y] [mailbox]";
+const USAGE: &str = "usage: rmut-egui [-R] [-y] [-z|-Z] [-e CMD]... [-f MAILBOX | mailbox]";
 
 struct Cli {
     spec: Option<String>,
     read_only: bool,
     folders: bool,
+    exit_if_empty: bool,
+    exit_unless_new: bool,
+    commands: Vec<String>,
 }
 
-fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
+fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli> {
     let mut cli = Cli {
         spec: None,
         read_only: false,
         folders: false,
+        exit_if_empty: false,
+        exit_unless_new: false,
+        commands: Vec::new(),
     };
-    for arg in args {
+    while let Some(arg) = args.next() {
+        // A value-taking option, given as -f BOX or -fBOX.
+        let mut value = |flag: &str, arg: &str| -> Result<String> {
+            match arg.strip_prefix(flag).filter(|rest| !rest.is_empty()) {
+                Some(rest) => Ok(rest.to_string()),
+                None => args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("{flag} needs an argument\n{USAGE}")),
+            }
+        };
         match arg.as_str() {
             "-R" | "--read-only" => cli.read_only = true,
             "-y" => cli.folders = true,
+            "-z" => cli.exit_if_empty = true,
+            "-Z" => cli.exit_unless_new = true,
             "-h" | "--help" => bail!("{USAGE}"),
+            "-V" | "--version" => {
+                println!("rmut-egui {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "-s" | "-a" | "-c" | "-b" | "-i" | "--" => {
                 bail!("send mode needs a terminal: use rmut {arg} ...")
             }
-            "-z" | "-Z" | "-p" | "-e" | "-f" => bail!("{arg}: not in the GUI yet (use rmut)"),
+            "-p" => bail!("-p: not in the GUI yet (use rmut)"),
+            _ if arg.starts_with("-e") => cli.commands.push(value("-e", &arg)?),
+            _ if arg.starts_with("-f") => cli.spec = Some(value("-f", &arg)?),
             other if !other.starts_with('-') => cli.spec = Some(other.to_string()),
             other => bail!("unknown option {other}\n{USAGE}"),
         }
@@ -60,9 +83,20 @@ fn run() -> Result<()> {
     };
     let progress: rmut_core::remote::Progress = Box::new(|msg| eprintln!("rmut-egui: {msg}"));
     let (session, warnings) = rmut_session::Session::open_spec(&spec, config, progress)?;
+    let session = session;
+    // -z / -Z: report through the exit code without a window.
+    if cli.exit_if_empty && session.msgs.is_empty() {
+        std::process::exit(1);
+    }
+    if cli.exit_unless_new && session.new_count() == 0 {
+        std::process::exit(1);
+    }
     let mut app = app::Gui::new(session, warnings, cli.read_only);
     if let Some(warning) = config_warning {
         app.note(warning);
+    }
+    for command in &cli.commands {
+        app.run_startup_command(command);
     }
     if cli.folders {
         app.open_folder_browser();
@@ -80,6 +114,10 @@ fn run() -> Result<()> {
         Box::new(move |cc| {
             // Ctrl+= / Ctrl+- / Ctrl+0: egui's own zoom, made sure of.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = true);
+            // The zoom the last run settled on.
+            if let Some(zoom) = app::saved_zoom() {
+                cc.egui_ctx.set_zoom_factor(zoom);
+            }
             // image/* parts decode through egui's loaders.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             if let Some(path) = font {

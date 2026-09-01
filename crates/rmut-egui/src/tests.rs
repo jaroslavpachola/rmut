@@ -270,3 +270,16 @@ fn pager_search_finds_and_toggles() {
     // The old pattern survives an empty answer, like mutt's prefill.
     assert!(gui.pager_search.is_some());
 }
+
+#[test]
+fn tab_at_an_empty_mailbox_prompt_opens_the_browser() {
+    let (_dir, mut gui) = fixture(&["one"]);
+    press(&mut gui, "c");
+    assert!(matches!(gui.prompt, Some(crate::app::Prompt::Line { .. })));
+    key(&mut gui, KeyCode::Tab);
+    assert!(gui.prompt.is_none(), "the prompt made way");
+    assert!(
+        matches!(gui.mode, Mode::Folders { .. }),
+        "Tab with nothing typed opens the folder browser"
+    );
+}

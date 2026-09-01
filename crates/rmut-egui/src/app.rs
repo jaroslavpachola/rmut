@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::Pattern;
-use rmut_front::editor::{Edit, History, LineEdit};
+use rmut_front::editor::{Complete, Edit, History, LineEdit};
 use rmut_front::pager::{PagerStyle, pager_line_count};
 use rmut_front::status;
 use rmut_front::style::{Style, rule_style};
@@ -173,6 +173,10 @@ pub struct Gui {
     pub pager_search_off: bool,
     /// Its raw text, prefilling the next Search for: prompt.
     pager_search_text: String,
+    /// Address completion state at a prompt (Tab cycles).
+    complete: Option<Complete>,
+    /// The zoom factor as last saved, so a change is written once.
+    last_zoom: f32,
     last_poll: Instant,
     pub quit: bool,
 }
@@ -230,6 +234,8 @@ impl Gui {
             pager_search: None,
             pager_search_off: false,
             pager_search_text: String::new(),
+            complete: None,
+            last_zoom: saved_zoom().unwrap_or(1.0),
             last_poll: Instant::now(),
             quit: false,
         };
@@ -732,7 +738,7 @@ impl Gui {
                         edit.history_step(self.history.get(kind.history_bucket()), older);
                     }
                 }
-                Edit::Complete => {}
+                Edit::Complete => self.tab_complete(),
                 Edit::Submit => {
                     if let Some(Prompt::Line { edit, kind, .. }) = self.prompt.take() {
                         self.history.push(kind.history_bucket(), &edit.buf);
@@ -955,6 +961,111 @@ impl Gui {
             }
             Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
         }
+        self.complete = None;
+    }
+
+    /// -e on the command line: one config command before the window.
+    pub fn run_startup_command(&mut self, line: &str) {
+        let run = self.session.run_command_line(line);
+        let mut reports = run.reports;
+        reports.extend(run.warnings);
+        self.run_requests();
+        if !reports.is_empty() {
+            self.note(reports.join("; "));
+        }
+    }
+
+    /// Tab at a prompt: at an address prompt, complete the token
+    /// against aliases and query_command; at a mailbox prompt,
+    /// against the folder candidates; with nothing typed at the c
+    /// prompt, the folder browser opens instead. Repeated Tab
+    /// cycles. The TUI's, ported.
+    fn tab_complete(&mut self) {
+        let (buf_now, kind) = match &self.prompt {
+            Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), kind.clone()),
+            _ => return,
+        };
+        let is_addr = matches!(
+            kind,
+            LineKind::Ask {
+                wants: Wants::Address,
+                ..
+            }
+        );
+        let is_mbox = matches!(
+            kind,
+            LineKind::Ask {
+                wants: Wants::Mailbox,
+                ..
+            } | LineKind::ChangeDir { .. }
+        );
+        if !is_addr && !is_mbox {
+            return;
+        }
+        if matches!(kind, LineKind::ChangeDir { .. }) && buf_now.trim().is_empty() {
+            self.prompt = None;
+            self.complete = None;
+            self.open_folder_browser();
+            return;
+        }
+        let set_buf = |gui: &mut Gui, text: &str| {
+            if let Some(Prompt::Line { edit, .. }) = &mut gui.prompt {
+                edit.set(text);
+            }
+        };
+        if let Some(c) = &mut self.complete
+            && let Some((next, note)) = c.cycle(&buf_now)
+        {
+            set_buf(self, &next);
+            self.note(note);
+            return;
+        }
+        self.complete = None;
+        let (start, word) = Complete::token(&buf_now, is_addr);
+        if word.is_empty() {
+            self.error("nothing to complete");
+            return;
+        }
+        let candidates = if is_addr {
+            rmut_core::alias::complete(
+                &word,
+                &rmut_core::alias::load(self.session.config.mail.alias_file.as_deref()),
+                self.session.config.mail.query_command.as_deref(),
+                self.session.config.mail.sort_alias.as_deref(),
+            )
+        } else {
+            let specs = match self.session.folder_candidates() {
+                Ok(specs) => specs,
+                Err(err) => {
+                    self.error(format!("cannot list folders: {err:#}"));
+                    return;
+                }
+            };
+            // The typed prefix against the spec as written and
+            // tilde-expanded, so both spellings hit.
+            let wexp = rmut_session::expand_tilde(&word).display().to_string();
+            specs
+                .into_iter()
+                .map(|(spec, _)| spec)
+                .filter(|s| {
+                    s.starts_with(&word)
+                        || rmut_session::expand_tilde(s)
+                            .display()
+                            .to_string()
+                            .starts_with(&wexp)
+                })
+                .collect()
+        };
+        if candidates.is_empty() {
+            self.error(format!("no matches for {word}"));
+            return;
+        }
+        let (state, next, note) = Complete::first(&buf_now, start, candidates);
+        set_buf(self, &next);
+        if let Some(note) = note {
+            self.note(note);
+        }
+        self.complete = Some(state);
     }
 
     pub fn open_folder_browser(&mut self) {
@@ -1300,6 +1411,16 @@ impl Gui {
         if zoom != 1.0 {
             ctx.set_zoom_factor((ctx.zoom_factor() * zoom).clamp(0.5, 4.0));
         }
+        // Whatever changed the zoom (wheel here, egui's own keys),
+        // remember it for the next run, once per change.
+        let now = ctx.zoom_factor();
+        if (now - self.last_zoom).abs() > f32::EPSILON {
+            self.last_zoom = now;
+            if let Some(path) = zoom_path() {
+                let _ = std::fs::create_dir_all(path.parent().unwrap());
+                let _ = std::fs::write(&path, format!("{now}\n"));
+            }
+        }
         let keys = ctx.input(|i| crate::input::keys(&i.events));
         if !keys.is_empty() {
             self.keys_this_frame = true;
@@ -1324,4 +1445,21 @@ impl eframe::App for Gui {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
+}
+
+/// Where the window remembers its zoom: the cache, next to the
+/// header caches, never the user's config.
+pub fn zoom_path() -> Option<std::path::PathBuf> {
+    let base = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
+        _ => rmut_session::expand_tilde("~/.cache"),
+    };
+    Some(base.join("rmut").join("gui-zoom"))
+}
+
+/// The saved zoom factor, if any run saved one.
+pub fn saved_zoom() -> Option<f32> {
+    let text = std::fs::read_to_string(zoom_path()?).ok()?;
+    let zoom: f32 = text.trim().parse().ok()?;
+    (0.5..=4.0).contains(&zoom).then_some(zoom)
 }

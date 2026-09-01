@@ -2386,16 +2386,18 @@ the same keys.
 
 - [x] `crates/rmut-egui`, workspace member, binary `rmut-egui`
       (egui 0.36: the unified `Panel` API, `App::ui`). Args are its
-      own small set for now (`-R`, `-y`, a mailbox); `-s`/`--` are
-      refused with a pointer at `rmut`, the rest of the TUI's flags
-      say "not in the GUI yet" - sharing `parse_args` through
-      `rmut-front` is still owed
+      own small set (`-R`, `-y`, `-z`/`-Z`, `-e`, `-f`, a mailbox,
+      `-V`); `-s`/`--` are refused with a pointer at `rmut`, `-p`
+      says its round - one shared `parse_args` is still owed, the
+      window also remembers its zoom in the cache between runs
 - [x] Index: the shared `rmut-front::index` row builder (text and
       style from one place; the TUI now draws from it too), monospace
       LayoutJob rows, thread depth, collapse, the sidebar
 - [x] Pager: `pager_rows` over the same `MessageView`, quote colors,
-      body color rules. Still owed: `$pager_index_lines`, the pager
-      search (and its highlight)
+      body color rules; `$pager_index_lines` above the message,
+      `$pager_context` overlap, and the pager search (/, n, N, the
+      backslash toggle, `$search_context`, highlighting) through the
+      shared `search_lines`
 - [x] Status bar and message line from the shared `rmut-front::status`
       expanders; notices through the same one-line `NoticeSink`
 - [x] Repaint discipline: the window idles. `request_repaint_after`
@@ -2403,7 +2405,9 @@ the same keys.
       `poll_network` / `check_new_mail` run between frames the way
       the TUI runs them between keys
 - [x] `Ask::Line` and `Ask::Key` as a bottom line, driven by the
-      shared line editor with history; Tab completion still owed
+      shared line editor with history; Tab completion ported from the
+      TUI (aliases + query_command at address prompts, folder
+      candidates at mailbox ones, the empty-c browser fallthrough)
 - [x] `FrontOp`s handled: Exit, OpenSelected, Help, Redraw, PageMove,
       Sidebar, ErrorHistory, OpenMailbox, ChangeMailbox, Folders,
       WhatKey, CommandPrompt, TagPrefix; macros replay through the
