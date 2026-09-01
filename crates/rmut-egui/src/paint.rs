@@ -734,9 +734,24 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         });
     }
     if let Some((vi, open)) = clicked {
-        gui.click_row(vi);
-        if open {
-            gui.click("<enter>");
+        match &gui.mode {
+            Mode::Pager(p) => {
+                // The mini-index above a message is a list of
+                // messages: clicking one shows it, the way j/k move
+                // the pager. The row already showing stays put (no
+                // scroll reset), and under a part view the slice is
+                // only context - clicks keep out.
+                if p.back.is_none() && vi != gui.session.sel {
+                    gui.click_row(vi);
+                    gui.open_selected();
+                }
+            }
+            _ => {
+                gui.click_row(vi);
+                if open {
+                    gui.click("<enter>");
+                }
+            }
         }
     }
     if let Some((vi, keys)) = ctx_fire {

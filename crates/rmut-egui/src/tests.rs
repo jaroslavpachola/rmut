@@ -844,3 +844,46 @@ fn wheel_scrolls_only_the_hovered_region() {
         harness.state().index_offset
     );
 }
+
+/// Asked 2026-09-01: a click on a mini-index row shows that message,
+/// the way j/k move the pager - the body below never goes stale.
+#[test]
+fn click_on_the_mini_index_opens_that_message() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    for (i, subject) in ["one", "two", "three"].iter().enumerate() {
+        write_message(dir.path(), i, subject);
+    }
+    let config: Config = toml::from_str("[pager]\nindex_lines = 3\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    gui.session.sel = 0;
+    key(&mut gui, KeyCode::Enter);
+    assert!(matches!(gui.mode, Mode::Pager(_)));
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(400.0, 400.0));
+    harness.run();
+    // The third row of the mini-index (the slice starts at ~52 with
+    // ~18.3pt rows at the default size).
+    let pos = eframe::egui::pos2(200.0, 95.0);
+    for pressed in [true, false] {
+        harness.event(eframe::egui::Event::PointerButton {
+            pos,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+        harness.run();
+    }
+    assert_eq!(harness.state().session.sel, 2, "the cursor moved");
+    let Mode::Pager(pager) = &harness.state().mode else {
+        panic!("still paging");
+    };
+    assert!(
+        pager.view.body.contains("body of three"),
+        "the clicked message shows: {}",
+        pager.view.body
+    );
+}

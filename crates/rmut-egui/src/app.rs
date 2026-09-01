@@ -2153,7 +2153,7 @@ impl Gui {
         }
     }
 
-    fn open_selected(&mut self) {
+    pub(crate) fn open_selected(&mut self) {
         // A fresh pager session, search-wise, like mutt; the text
         // stays as the next prompt's prefill.
         self.pager_search = None;
