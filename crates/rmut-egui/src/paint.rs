@@ -662,6 +662,7 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
             },
         );
     }
+    gui.follow_tail(rows);
     let max_offset = gui.session.visible.len().saturating_sub(rows);
     gui.index_offset =
         (gui.index_offset as i64 + wheel_rows(gui, ui, size)).clamp(0, max_offset as i64) as usize;

@@ -451,3 +451,38 @@ fn real_nvim_round_trips_a_file() {
     assert!(text.contains("hello from the grid"), "{text}");
     assert!(text.starts_with("before"), "{text}");
 }
+
+#[test]
+fn an_arrival_below_the_fold_scrolls_into_sight() {
+    let (dir, mut gui) = fixture(&["m1", "m2", "m3", "m4", "m5"]);
+    // A five-row mailbox on a three-row view, showing the tail.
+    gui.index_offset = 2;
+    gui.follow_tail(3);
+    assert_eq!(gui.index_len, 5, "the first call only takes note");
+    assert_eq!(gui.index_offset, 2);
+    // A sixth message lands (the mtime bump makes the poll look).
+    write_message(dir.path(), 5, "m6");
+    for sub in ["new", "cur"] {
+        let f = fs::File::open(dir.path().join(sub)).unwrap();
+        let t = f.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(1);
+        f.set_modified(t).unwrap();
+    }
+    gui.session.check_new_mail();
+    assert_eq!(gui.session.visible.len(), 6, "the poll saw it");
+    gui.follow_tail(3);
+    assert_eq!(gui.index_offset, 3, "the tail view followed the growth");
+    // A view scrolled up into history stays where the reader left it.
+    gui.index_offset = 0;
+    write_message(dir.path(), 6, "m7");
+    for sub in ["new", "cur"] {
+        let f = fs::File::open(dir.path().join(sub)).unwrap();
+        let t = f.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        f.set_modified(t).unwrap();
+    }
+    gui.session.check_new_mail();
+    gui.follow_tail(3);
+    assert_eq!(
+        gui.index_offset, 0,
+        "history reading is not yanked to the tail"
+    );
+}

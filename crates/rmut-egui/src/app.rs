@@ -250,6 +250,9 @@ pub struct Gui {
     last_zoom: f32,
     /// The last new-mail text sent as a desktop notification.
     last_notified: String,
+    /// How long the visible list was at the last draw, so an arrival
+    /// below a view already showing the tail scrolls into sight.
+    pub index_len: usize,
     /// A terminal child ($EDITOR, `!`) and what it was doing; keys
     /// wait until it closes.
     editing: Option<(std::process::Child, PendingEdit)>,
@@ -322,6 +325,7 @@ impl Gui {
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
             last_notified: String::new(),
+            index_len: 0,
             about: false,
             prefs: None,
             nvim: None,
@@ -373,6 +377,19 @@ impl Gui {
             .as_deref()
             .filter(|p| !p.trim().is_empty())
             .map(rmut_session::expand_tilde)
+    }
+
+    /// New mail below a view already at the tail stays visible: the
+    /// window follows the growth, the cursor staying put (mutt keeps
+    /// the fold; a window can do better). The first draw only takes
+    /// note, so the open still lands on first-new.
+    pub fn follow_tail(&mut self, rows: usize) {
+        let len = self.session.visible.len();
+        if self.index_len > 0 && len > self.index_len && self.index_offset + rows >= self.index_len
+        {
+            self.index_offset = len.saturating_sub(rows);
+        }
+        self.index_len = len;
     }
 
     pub fn refresh_sidebar(&mut self) {
