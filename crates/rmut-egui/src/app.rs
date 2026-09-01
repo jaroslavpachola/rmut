@@ -119,6 +119,9 @@ pub enum PendingEdit {
     },
     /// A shell or viewer; nothing to do but say it ended.
     Shell(String),
+    /// A mailcap viewer on a decoded part; the temp file goes when
+    /// it closes.
+    View { temp: std::path::PathBuf },
 }
 
 #[derive(Clone)]
@@ -652,6 +655,8 @@ impl Gui {
                 };
             }
             KeyCode::Enter => self.view_part(),
+            KeyCode::Char('m') => self.view_part_mailcap(),
+            KeyCode::Char('T') => self.view_part_text(),
             KeyCode::Char('|') => {
                 self.prompt = Some(Prompt::Line {
                     label: "Pipe part to command: ".into(),
@@ -742,26 +747,122 @@ impl Gui {
             match self.session.display.filters.get(&mimetype).cloned() {
                 Some(command) => rmut_core::message::filter_part(&msg_path, index, &command)
                     .map_err(|err| format!("filter failed: {err:#}")),
-                None => Err(format!("{mimetype} is not text; save it with s")),
+                None => {
+                    // mutt's view-attach on a type that needs mailcap
+                    // goes through it; with no entry, mutt says so
+                    // and shows the bytes as text.
+                    let entries = rmut_core::mailcap::load();
+                    if rmut_core::mailcap::viewer_for(&entries, &mimetype).is_some() {
+                        self.view_part_mailcap();
+                    } else {
+                        self.error("no matching mailcap entry found, viewing as text");
+                        self.view_part_text();
+                    }
+                    return;
+                }
             }
         };
         match body {
-            Ok(body) => {
-                let headers = vec![("Content-Type".to_string(), mimetype)];
-                let menu = std::mem::replace(&mut self.mode, Mode::Index);
-                self.mode = Mode::Pager(Pager {
-                    view: rmut_core::message::MessageView {
-                        brief: headers.clone(),
-                        all: headers,
-                        body,
-                    },
-                    scroll: 0,
-                    full_headers: false,
-                    hide_quoted: false,
-                    back: Some(Box::new(menu)),
-                });
-            }
+            Ok(body) => self.part_pager(mimetype, body),
             Err(err) => self.error(err),
+        }
+    }
+
+    /// A decoded part (or a viewer's text over it) in a pager that
+    /// knows its way back to the attachment menu.
+    fn part_pager(&mut self, mimetype: String, body: String) {
+        let headers = vec![("Content-Type".to_string(), mimetype)];
+        let menu = std::mem::replace(&mut self.mode, Mode::Index);
+        self.mode = Mode::Pager(Pager {
+            view: rmut_core::message::MessageView {
+                brief: headers.clone(),
+                all: headers,
+                body,
+            },
+            scroll: 0,
+            full_headers: false,
+            hide_quoted: false,
+            back: Some(Box::new(menu)),
+        });
+    }
+
+    /// mutt's view-mailcap (m): the part decoded to a temp file, its
+    /// mailcap viewer over it - a copiousoutput viewer's text in a
+    /// part pager, an interactive one in the terminal; the temp file
+    /// goes when the view ends.
+    fn view_part_mailcap(&mut self) {
+        let (msg_path, index, mimetype, filename) = match &self.mode {
+            Mode::Attach {
+                msg_path,
+                parts,
+                sel,
+                ..
+            } => {
+                let part = &parts[*sel];
+                (
+                    msg_path.clone(),
+                    *sel,
+                    part.mimetype.clone(),
+                    part.filename.clone(),
+                )
+            }
+            _ => return,
+        };
+        let entries = rmut_core::mailcap::load();
+        let Some((command, copious)) = rmut_core::mailcap::viewer_for(&entries, &mimetype) else {
+            self.error(format!("no mailcap entry for {mimetype}"));
+            return;
+        };
+        let bytes = match rmut_core::message::part_bytes(&msg_path, index) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.error(format!("cannot decode part: {err:#}"));
+                return;
+            }
+        };
+        // %s wants a file: the part's own name (basename only, like
+        // mutt's sanitizer) in a directory of ours.
+        let name = filename
+            .as_deref()
+            .and_then(|n| std::path::Path::new(n).file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("part-{}", index + 1));
+        let dir = std::env::temp_dir().join(format!("rmut-egui-{}", std::process::id()));
+        let temp = dir.join(name);
+        if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&temp, &bytes))
+        {
+            self.error(format!("cannot write {}: {err}", temp.display()));
+            return;
+        }
+        let quoted = format!("'{}'", temp.display().to_string().replace('\'', "'\\''"));
+        let command = command.replace("%s", &quoted);
+        if copious {
+            let shown = run_file_filter(&command, &temp);
+            let _ = std::fs::remove_file(&temp);
+            match shown {
+                Ok(text) => self.part_pager(mimetype, text),
+                Err(err) => self.error(format!("viewer failed: {err:#}")),
+            }
+        } else {
+            self.spawn_terminal(&command, &[], PendingEdit::View { temp });
+        }
+    }
+
+    /// mutt's view-text (T): the decoded bytes as text, whatever the
+    /// type claims.
+    fn view_part_text(&mut self) {
+        let (msg_path, index, mimetype) = match &self.mode {
+            Mode::Attach {
+                msg_path,
+                parts,
+                sel,
+                ..
+            } => (msg_path.clone(), *sel, parts[*sel].mimetype.clone()),
+            _ => return,
+        };
+        match rmut_core::message::part_bytes(&msg_path, index) {
+            Ok(bytes) => self.part_pager(mimetype, String::from_utf8_lossy(&bytes).into_owned()),
+            Err(err) => self.error(format!("cannot decode part: {err:#}")),
         }
     }
 
@@ -1163,6 +1264,12 @@ impl Gui {
                     self.error(format!("{label} failed"));
                 }
                 self.run_requests();
+            }
+            PendingEdit::View { temp } => {
+                let _ = std::fs::remove_file(&temp);
+                if !success {
+                    self.error("viewer failed");
+                }
             }
         }
     }

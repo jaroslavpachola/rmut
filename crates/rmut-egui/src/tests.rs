@@ -38,6 +38,14 @@ fn fixture(subjects: &[&str]) -> (tempfile::TempDir, Gui) {
     (dir, Gui::new(session, Vec::new(), false))
 }
 
+/// MAILCAPS is process-global: every test that sets it holds this
+/// lock for its whole body, so two never race.
+static MAILCAPS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn mailcaps_guard() -> std::sync::MutexGuard<'static, ()> {
+    MAILCAPS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn press(gui: &mut Gui, keys: &str) {
     let events = keys
         .chars()
@@ -235,6 +243,88 @@ fn attachments_list_view_and_save() {
 }
 
 #[test]
+fn attach_menu_views_through_mailcap_and_as_text() {
+    let _guard = mailcaps_guard();
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    // "aGVsbG8gbWFpbGNhcA==" is base64 for "hello mailcap".
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: parts\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <p2@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nhello body\n\
+         --b\nContent-Type: application/octet-stream; name=\"blob.bin\"\n\
+         Content-Disposition: attachment; filename=\"blob.bin\"\n\
+         Content-Transfer-Encoding: base64\n\naGVsbG8gbWFpbGNhcA==\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let mailcap = dir.path().join("mailcap");
+    fs::write(
+        &mailcap,
+        "application/octet-stream; cat %s; copiousoutput\n",
+    )
+    .unwrap();
+    unsafe { std::env::set_var("MAILCAPS", &mailcap) };
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "vj");
+    // T: the bytes as text, whatever the type claims.
+    press(&mut gui, "T");
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("T views the part as text");
+    };
+    assert!(
+        pager.view.body.contains("hello mailcap"),
+        "{}",
+        pager.view.body
+    );
+    press(&mut gui, "q");
+    assert!(matches!(gui.mode, Mode::Attach { .. }), "back to the menu");
+    // m: the mailcap viewer; copiousoutput lands in a part pager.
+    press(&mut gui, "m");
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("m views through mailcap");
+    };
+    assert!(
+        pager.view.body.contains("hello mailcap"),
+        "{}",
+        pager.view.body
+    );
+    press(&mut gui, "q");
+    // Enter on a type that is not text and has no [filters] entry
+    // also goes through mailcap (mutt's view-attach).
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("Enter falls through to mailcap");
+    };
+    assert!(
+        pager.view.body.contains("hello mailcap"),
+        "{}",
+        pager.view.body
+    );
+    press(&mut gui, "q");
+    // With no matching entry, mutt says so and shows text.
+    fs::write(&mailcap, "video/mp4; mpv %s\n").unwrap();
+    key(&mut gui, KeyCode::Enter);
+    let notice = gui.notice().expect("the fallback is said");
+    assert!(
+        notice.text().contains("viewing as text"),
+        "{}",
+        notice.text()
+    );
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("the bytes still show as text");
+    };
+    assert!(
+        pager.view.body.contains("hello mailcap"),
+        "{}",
+        pager.view.body
+    );
+    press(&mut gui, "qq");
+    assert!(matches!(gui.mode, Mode::Index));
+}
+
+#[test]
 fn pager_search_finds_and_toggles() {
     let (_dir, mut gui) = fixture(&["one", "two"]);
     gui.session.sel = 0;
@@ -427,8 +517,7 @@ fn the_builtin_editor_carries_the_compose_flow() {
 
 #[test]
 fn compose_menu_views_an_attachment_as_text_and_through_mailcap() {
-    // One test holds both views so the MAILCAPS override never races
-    // another reader (nothing else in this crate consults mailcap).
+    let _guard = mailcaps_guard();
     let dir = tempfile::tempdir().unwrap();
     for sub in ["cur", "new", "tmp"] {
         fs::create_dir_all(dir.path().join(sub)).unwrap();
