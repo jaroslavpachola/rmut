@@ -399,6 +399,7 @@ fn index_defaults() -> Vec<(KeyPattern, Function)> {
         (KeyPattern::ch('u'), Undelete),
         (KeyPattern::ch('F'), Flag),
         (KeyPattern::ch('N'), ToggleNew),
+        (KeyPattern::alt('a'), MarkAllRead),
         (KeyPattern::ch('$'), Sync),
         (KeyPattern::ch('m'), Compose),
         (KeyPattern::ch('r'), Reply),

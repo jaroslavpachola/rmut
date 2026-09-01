@@ -36,6 +36,9 @@ pub enum Function {
     Undelete,
     Flag,
     ToggleNew,
+    /// Every message in the mailbox marked read, one undo step.
+    /// mutt never had this; asked for (2026-09-01).
+    MarkAllRead,
     Sync,
     Compose,
     Reply,
@@ -138,6 +141,7 @@ impl Function {
             Undelete => "undelete",
             Flag => "flag",
             ToggleNew => "toggle-new",
+            MarkAllRead => "mark-all-read",
             Sync => "sync",
             Compose => "compose",
             Reply => "reply",
@@ -233,6 +237,7 @@ impl Function {
             Undelete => "unmark deletion",
             Flag => "toggle flagged mark",
             ToggleNew => "toggle read/unread",
+            MarkAllRead => "mark every message in the mailbox read",
             Sync => "write changes to the maildir",
             Compose => "compose a new message",
             Reply => "reply to sender",
@@ -330,6 +335,7 @@ impl Function {
             Undelete,
             Flag,
             ToggleNew,
+            MarkAllRead,
             Sync,
             Compose,
             Reply,
@@ -604,6 +610,7 @@ impl Session {
                 m.env.file.flags.seen = !m.env.file.flags.seen;
                 m.env.file.is_new = false;
             }),
+            MarkAllRead => self.mark_all_read(),
             Undo => {
                 // A message still inside its $undo_send window is the
                 // most recent thing done, so it is what undo takes

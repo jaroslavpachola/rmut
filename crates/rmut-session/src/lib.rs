@@ -2764,6 +2764,33 @@ impl Session {
     /// mutt's $mark_old (on by default): when leaving the mailbox,
     /// unread new mail ages to old: moved out of new/ without the
     /// seen flag, shown as O and no longer counted as new.
+    /// mark-all-read (Alt+a): every unread message in the mailbox
+    /// marked seen, one undo step. mutt spells this as tag-pattern
+    /// gymnastics; here it is a function of its own.
+    pub fn mark_all_read(&mut self) {
+        if self.deny_readonly() {
+            return;
+        }
+        let targets: Vec<usize> = (0..self.msgs.len())
+            .filter(|&i| {
+                let f = &self.msgs[i].env.file;
+                !f.flags.seen || f.is_new
+            })
+            .collect();
+        if targets.is_empty() {
+            self.note("no unread messages");
+            return;
+        }
+        self.push_undo("mark all read", &targets);
+        for &i in &targets {
+            let m = &mut self.msgs[i];
+            m.env.file.flags.seen = true;
+            m.env.file.is_new = false;
+            m.dirty = true;
+        }
+        self.note(format!("{} marked read", targets.len()));
+    }
+
     pub fn mark_old_unread(&mut self) {
         if self.read_only || !self.config.mail.mark_old.unwrap_or(true) {
             return;

@@ -2792,3 +2792,28 @@ fn save_advances_like_delete() {
     f.session.copy_message(&spec, true, false, false);
     assert_eq!(f.session.sel, 1, "the last one stays put");
 }
+
+#[test]
+fn mark_all_read_is_one_undo_step() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    for i in 0..3 {
+        f.session.msgs[i].env.file.flags.seen = false;
+    }
+    f.session.msgs[1].env.file.is_new = true;
+    f.session.run_function(Function::MarkAllRead, false, 10);
+    assert!(f.session.msgs.iter().all(|m| m.env.file.flags.seen));
+    assert!(f.session.msgs.iter().all(|m| !m.env.file.is_new));
+    f.session.undo_last();
+    assert!(
+        f.session.msgs.iter().all(|m| !m.env.file.flags.seen),
+        "undo restores every mark at once"
+    );
+    assert!(f.session.msgs[1].env.file.is_new, "new comes back too");
+    // Nothing unread says so instead of pushing an empty undo.
+    for m in &mut f.session.msgs {
+        m.env.file.flags.seen = true;
+        m.env.file.is_new = false;
+    }
+    f.session.run_function(Function::MarkAllRead, false, 10);
+    assert!(f.log.said("no unread"), "{}", f.log.last_text());
+}

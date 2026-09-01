@@ -791,6 +791,7 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Open…", "c");
             item(&mut fire, ui, "Browse folders", "y");
             item(&mut fire, ui, "Limit…", "l");
+            item(&mut fire, ui, "Mark all read", "<alt+a>");
             ui.separator();
             // Window chrome, like About: no key to queue.
             if ui.button("Preferences…").clicked() {
