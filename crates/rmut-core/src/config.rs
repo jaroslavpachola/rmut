@@ -683,6 +683,9 @@ pub struct Gui {
     /// (named colors or `#rrggbb`; a dark gray on off-white unset).
     pub background: Option<String>,
     pub foreground: Option<String>,
+    /// The message body in a proportional face; the index, headers
+    /// and indented (preformatted) lines stay monospace.
+    pub proportional: Option<bool>,
     /// Window-only overrides of `[colors]`, same keys and values
     /// (plus `#rrggbb`): the window can wear its own palette while
     /// the terminal keeps the shared one.

@@ -349,3 +349,11 @@ fn prefs_apply_to_the_live_config() {
     key(&mut gui, KeyCode::Esc);
     assert!(gui.prefs.is_none());
 }
+
+#[test]
+fn proportional_parses_and_rides_the_overlay() {
+    let config: Config = toml::from_str("[gui]\nproportional = true\n").unwrap();
+    assert_eq!(config.gui.proportional, Some(true));
+    let bare: Config = toml::from_str("").unwrap();
+    assert_eq!(bare.gui.proportional, None, "unset means monospace");
+}

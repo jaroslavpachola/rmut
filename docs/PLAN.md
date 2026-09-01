@@ -2497,19 +2497,21 @@ so the clickable layer cannot drift from the keymap.
 Each one small, each one behind a `[gui]` key, none changing the
 TUI.
 
-- [ ] Clickable URLs in the pager (`$url_browser`, then xdg-open)
-- [ ] Proportional font for the body, monospace for the index and
-      for `format=flowed` verbatim blocks. Done early (2026-09-01,
-      asked for): `[gui] size` (points, default 14) and `[gui] font`
-      (a .ttf/.otf path installed as the monospace face), plus
-      egui's Ctrl+= / Ctrl+- / Ctrl+0 whole-window zoom made sure
-      of, and Ctrl+wheel / pinch zoom applied from `zoom_delta`
-      (egui zeroes the scroll delta while the zoom modifier is held,
-      so the wheel never scrolls and zooms at once); the
-      proportional-body half stays open
-- [ ] Native new-mail notification (`notify-rust` or the D-Bus call
-      directly) when the window is unfocused, gated by
-      `$new_mail_command` being unset
+- [x] Clickable URLs in the pager: body rows carrying a URL lay out
+      as segments with real links (trailing sentence punctuation left
+      outside), each opening through xdg-open - spawned by hand,
+      since eframe's own opener wants a webbrowser release crates.io
+      no longer resolves
+- [x] Typography, in two sittings. First (asked for): `[gui] size`
+      and `[gui] font`, keyboard zoom, Ctrl+wheel / pinch zoom from
+      `zoom_delta`. Then `[gui] proportional`: prose rows in a
+      proportional face while the index, headers and indented
+      (preformatted) lines keep the grid; a Preferences checkbox
+      drives it
+- [x] Native new-mail notification: the session's NewMail notice
+      becomes a notify-send when the window is unfocused - only as
+      the fallback with `$new_mail_command` unset, since the session
+      fires that command itself for every front end
 - [ ] A scrollbar and mouse selection in the pager, mouse click to
       select in the index
 - [x] The window's own colors, asked for 2026-09-01: `#rrggbb`

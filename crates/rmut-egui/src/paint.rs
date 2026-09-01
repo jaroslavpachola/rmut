@@ -59,6 +59,12 @@ fn canvas(gui: &Gui) -> (Color32, Color32) {
 /// A front-end style as egui text: bold is left to the color (egui
 /// has no monospace bold face by default), reverse swaps the pair.
 fn format(style: Style, size: f32) -> TextFormat {
+    format_in(style, size, true)
+}
+
+/// The same, choosing the face: the index and headers are always
+/// monospace; the body may go proportional ([gui] proportional).
+fn format_in(style: Style, size: f32, mono: bool) -> TextFormat {
     let (canvas_bg, canvas_fg) = CANVAS.with(|c| c.get());
     let mut fg = color32(style.fg.unwrap_or(Color::Reset), canvas_fg);
     let mut bg = style
@@ -77,7 +83,11 @@ fn format(style: Style, size: f32) -> TextFormat {
         fg = Color32::WHITE.lerp_to_gamma(fg, 0.4);
     }
     TextFormat {
-        font_id: FontId::monospace(size),
+        font_id: if mono {
+            FontId::monospace(size)
+        } else {
+            FontId::proportional(size)
+        },
         color: fg,
         background: bg,
         underline: if style.underline {
@@ -132,6 +142,9 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.end_row();
                     ui.label("Foreground");
                     ui.color_edit_button_srgba(&mut prefs.foreground);
+                    ui.end_row();
+                    ui.label("Body");
+                    ui.checkbox(&mut prefs.proportional, "proportional face for prose");
                     ui.end_row();
                 });
             ui.add_space(8.0);
@@ -738,8 +751,18 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         pager.hide_quoted,
     );
     let header_style = Style::new().fg(gui.theme.header).bold();
+    let proportional = gui.session.config.gui.proportional.unwrap_or(false);
+    ui.spacing_mut().item_spacing.y = 0.0;
     let mut job = LayoutJob::default();
+    let flush = |ui: &mut egui::Ui, job: &mut LayoutJob| {
+        if !job.text.is_empty() {
+            ui.add(egui::Label::new(std::mem::take(job)).extend());
+        }
+    };
     for row in all.iter().skip(pager.scroll).take(rows) {
+        // The face: prose may go proportional; indented lines read
+        // as preformatted and keep the grid.
+        let mono = !proportional || row.text.starts_with([' ', '\t']);
         match row.kind {
             RowKind::Header => match row.text.split_once(": ") {
                 Some((name, value)) => {
@@ -755,19 +778,81 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
                     0 => Style::new(),
                     n => Style::new().fg(gui.theme.quoted[(depth - 1) % n]),
                 };
-                body_line(gui, &mut job, &row.text, style, size);
+                body_row(gui, ui, &mut job, flush, &row.text, style, size, mono);
             }
-            RowKind::Text => body_line(gui, &mut job, &row.text, Style::new(), size),
+            RowKind::Text => body_row(
+                gui,
+                ui,
+                &mut job,
+                flush,
+                &row.text,
+                Style::new(),
+                size,
+                mono,
+            ),
         }
     }
-    ui.add(egui::Label::new(job).extend());
+    flush(ui, &mut job);
+}
+
+/// One body row: straight into the running job, unless it carries a
+/// URL - then the job flushes and the row lays out as segments with
+/// real hyperlinks (eframe opens them in the browser).
+#[allow(clippy::too_many_arguments)]
+fn body_row(
+    gui: &Gui,
+    ui: &mut egui::Ui,
+    job: &mut LayoutJob,
+    flush: impl Fn(&mut egui::Ui, &mut LayoutJob),
+    text: &str,
+    base: Style,
+    size: f32,
+    mono: bool,
+) {
+    if !text.contains("http") {
+        body_line(gui, job, text, base, size, mono);
+        return;
+    }
+    let spans = rmut_front::pager::link_spans(text);
+    flush(ui, job);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (piece, url) in spans {
+            match url {
+                Some(url) => {
+                    let font = if mono {
+                        FontId::monospace(size)
+                    } else {
+                        FontId::proportional(size)
+                    };
+                    // xdg-open, spawned by hand: eframe's own opener
+                    // needs a webbrowser release crates.io no longer
+                    // resolves, and this is one line anyway.
+                    if ui.link(RichText::new(piece).font(font)).clicked() {
+                        let _ = std::process::Command::new("xdg-open")
+                            .arg(&url)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }
+                }
+                None => {
+                    let mut seg = LayoutJob::default();
+                    // Link rows keep the base coloring; the body
+                    // rules and search highlight stay on plain rows.
+                    seg.append(&piece, 0.0, format_in(base, size, mono));
+                    ui.add(egui::Label::new(seg).extend());
+                }
+            }
+        }
+    });
 }
 
 /// [[color_body]] spans laid over the line, the TUI's `body_line`.
-fn body_line(gui: &Gui, job: &mut LayoutJob, text: &str, base: Style, size: f32) {
+fn body_line(gui: &Gui, job: &mut LayoutJob, text: &str, base: Style, size: f32, mono: bool) {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     if chars.is_empty() {
-        job.append("\n", 0.0, format(base, size));
+        job.append("\n", 0.0, format_in(base, size, mono));
         return;
     }
     let mut styles = vec![base; chars.len()];
@@ -794,14 +879,14 @@ fn body_line(gui: &Gui, job: &mut LayoutJob, text: &str, base: Style, size: f32)
     let mut cur_style = styles[0];
     for (i, (_, c)) in chars.iter().enumerate() {
         if styles[i] != cur_style {
-            job.append(&cur, 0.0, format(cur_style, size));
+            job.append(&cur, 0.0, format_in(cur_style, size, mono));
             cur.clear();
             cur_style = styles[i];
         }
         cur.push(*c);
     }
     cur.push('\n');
-    job.append(&cur, 0.0, format(cur_style, size));
+    job.append(&cur, 0.0, format_in(cur_style, size, mono));
 }
 
 pub const INDEX_HELP: &str = "q:Quit Enter:View m:New r:Reply f:Fwd t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs ?:Help";

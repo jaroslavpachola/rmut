@@ -217,6 +217,8 @@ pub struct Gui {
     complete: Option<Complete>,
     /// The zoom factor as last saved, so a change is written once.
     last_zoom: f32,
+    /// The last new-mail text sent as a desktop notification.
+    last_notified: String,
     /// A terminal child ($EDITOR, `!`) and what it was doing; keys
     /// wait until it closes.
     editing: Option<(std::process::Child, PendingEdit)>,
@@ -284,6 +286,7 @@ impl Gui {
             complete: None,
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
+            last_notified: String::new(),
             about: false,
             prefs: None,
             last_poll: Instant::now(),
@@ -2242,6 +2245,26 @@ impl Gui {
                 let _ = std::fs::write(&path, format!("{now}\n"));
             }
         }
+        // The plan's G5 notification: new mail while the window is
+        // unfocused becomes a desktop notice - only as the fallback,
+        // when no $new_mail_command is configured (the session runs
+        // that one itself, whatever the front end).
+        if let Some(n) = self.notice()
+            && n.is_new_mail()
+            && self.session.config.mail.new_mail_command.is_none()
+            && !ctx.input(|i| i.focused)
+        {
+            let text = n.text();
+            if self.last_notified != text {
+                self.last_notified = text.clone();
+                let _ = std::process::Command::new("notify-send")
+                    .arg("rmut")
+                    .arg(&text)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+        }
         let keys = ctx.input(|i| crate::input::keys(&i.events));
         if !keys.is_empty() {
             if self.editing.is_some() {
@@ -2332,6 +2355,7 @@ pub struct Prefs {
     pub terminal: String,
     pub background: eframe::egui::Color32,
     pub foreground: eframe::egui::Color32,
+    pub proportional: bool,
 }
 
 impl Prefs {
@@ -2354,6 +2378,7 @@ impl Prefs {
             terminal: config.gui.terminal.clone().unwrap_or_default(),
             background: color(&config.gui.background, (0x10, 0x10, 0x10)),
             foreground: color(&config.gui.foreground, (0xd8, 0xd8, 0xd8)),
+            proportional: config.gui.proportional.unwrap_or(false),
         }
     }
 }
@@ -2372,6 +2397,7 @@ impl Gui {
         gui.background = Some(hex(prefs.background));
         gui.foreground = Some(hex(prefs.foreground));
         gui.terminal = (!prefs.terminal.trim().is_empty()).then(|| prefs.terminal.clone());
+        gui.proportional = Some(prefs.proportional);
         let font = prefs.font.trim().to_string();
         let font_changed = gui.font.as_deref().unwrap_or("") != font;
         gui.font = (!font.is_empty()).then(|| font.clone());
@@ -2397,6 +2423,9 @@ impl Gui {
         );
         if let Some(size) = gui.size {
             out += &format!("size = {size}\n");
+        }
+        if let Some(proportional) = gui.proportional {
+            out += &format!("proportional = {proportional}\n");
         }
         for (key, value) in [
             ("font", &gui.font),
@@ -2451,6 +2480,9 @@ pub fn load_gui_overlay(config: &mut rmut_core::config::Config) {
     }
     if saved.size.is_some() {
         gui.size = saved.size;
+    }
+    if saved.proportional.is_some() {
+        gui.proportional = saved.proportional;
     }
 }
 
