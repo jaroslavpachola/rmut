@@ -868,6 +868,14 @@ impl Gui {
             self.session.check_new_mail();
             self.refresh_sidebar();
         }
+        // Ctrl+wheel (and a trackpad pinch) zoom the window, on top
+        // of Ctrl+= / Ctrl+- / Ctrl+0. egui splits the wheel itself:
+        // with the zoom modifier held the scroll delta stays zero, so
+        // this never fights the row scrolling.
+        let zoom = ctx.input(|i| i.zoom_delta());
+        if zoom != 1.0 {
+            ctx.set_zoom_factor((ctx.zoom_factor() * zoom).clamp(0.5, 4.0));
+        }
         let keys = ctx.input(|i| crate::input::keys(&i.events));
         if !keys.is_empty() {
             self.keys_this_frame = true;

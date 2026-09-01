@@ -2480,7 +2480,10 @@ TUI.
       asked for): `[gui] size` (points, default 14) and `[gui] font`
       (a .ttf/.otf path installed as the monospace face), plus
       egui's Ctrl+= / Ctrl+- / Ctrl+0 whole-window zoom made sure
-      of; the proportional-body half stays open
+      of, and Ctrl+wheel / pinch zoom applied from `zoom_delta`
+      (egui zeroes the scroll delta while the zoom modifier is held,
+      so the wheel never scrolls and zooms at once); the
+      proportional-body half stays open
 - [ ] Native new-mail notification (`notify-rust` or the D-Bus call
       directly) when the window is unfocused, gated by
       `$new_mail_command` being unset
