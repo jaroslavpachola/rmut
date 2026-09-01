@@ -340,8 +340,12 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     };
                     let mut job = LayoutJob::default();
                     job.append(&text, 0.0, format(style, size));
-                    let response =
-                        ui.add(egui::Label::new(job).truncate().sense(egui::Sense::click()));
+                    let response = ui.add(
+                        egui::Label::new(job)
+                            .truncate()
+                            .selectable(false)
+                            .sense(egui::Sense::click()),
+                    );
                     hover(ui, &response);
                     if response.clicked() {
                         open = Some((i, spec.clone()));
@@ -491,8 +495,12 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         };
                         let mut job = LayoutJob::default();
                         job.append(&format!(" {:>2} {entry}", i + 1), 0.0, format(style, size));
-                        let response =
-                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        let response = ui.add(
+                            egui::Label::new(job)
+                                .extend()
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                        );
                         hover(ui, &response);
                         if response.clicked() {
                             clicked = Some((i, response.double_clicked()));
@@ -525,8 +533,12 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         };
                         let mut job = LayoutJob::default();
                         job.append(text, 0.0, format(style, size));
-                        let response =
-                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        let response = ui.add(
+                            egui::Label::new(job)
+                                .extend()
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                        );
                         hover(ui, &response);
                         if response.clicked() {
                             clicked = Some((i, response.double_clicked()));
@@ -568,8 +580,12 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         };
                         let mut job = LayoutJob::default();
                         job.append(text, 0.0, format(style, size));
-                        let response =
-                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        let response = ui.add(
+                            egui::Label::new(job)
+                                .extend()
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                        );
                         hover(ui, &response);
                         if response.clicked() {
                             clicked = Some((i, response.double_clicked()));
@@ -614,8 +630,12 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                             0.0,
                             format(style, size),
                         );
-                        let response =
-                            ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+                        let response = ui.add(
+                            egui::Label::new(job)
+                                .extend()
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                        );
                         hover(ui, &response);
                         if response.clicked() {
                             open = Some(spec.clone());
@@ -720,7 +740,12 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         }
         let mut job = LayoutJob::default();
         job.append(&format!("{text:<width$}"), 0.0, fmt);
-        let response = ui.add(egui::Label::new(job).extend().sense(egui::Sense::click()));
+        let response = ui.add(
+            egui::Label::new(job)
+                .extend()
+                .selectable(false)
+                .sense(egui::Sense::click()),
+        );
         hover(ui, &response);
         if response.clicked() || response.secondary_clicked() {
             clicked = Some((vi, response.double_clicked()));
