@@ -220,6 +220,28 @@ def scenario_view_and_pager(tmp):
     r.close()
 
 
+def scenario_pager_save_advances(tmp):
+    # mutt's $resolve in the pager (pager.c OP_SAVE): a successful
+    # save opens the next undeleted message instead of staying on the
+    # saved one.
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane", "petr", "ci"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:3")
+    r.keys(b"\r")  # newest (Petr) opens in the pager
+    r.expect("sejdeme se zítra v 9:00")
+    r.keys(b"K")  # back to Jane's lunch question
+    r.expect("Are you free for lunch")
+    r.keys(b"s")
+    r.expect("Save to")
+    r.keys(str(tmp / "archive").encode() + b"\r")
+    # The save advanced, and the pager followed to the next message.
+    r.expect("saved to", "sejdeme se zítra v 9:00")
+    r.keys(b"i")
+    r.keys(b"x")
+    r.close()
+
+
 def scenario_sync_delete_flag_limit(tmp):
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane", "petr", "ci"])
@@ -4425,6 +4447,7 @@ def scenario_small_habits(tmp):
 
 SCENARIOS = [
     scenario_view_and_pager,
+    scenario_pager_save_advances,
     scenario_sync_delete_flag_limit,
     scenario_threads_and_fold,
     scenario_compose_send_postpone,

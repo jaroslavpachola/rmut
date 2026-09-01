@@ -452,6 +452,23 @@ impl App {
         app
     }
 
+    /// A question's answer, with mutt's pager-resolve on top: when
+    /// the finished answer moved the selection while a message pager
+    /// is open (a save's advance), the pager follows it, as mutt's
+    /// pager turns a save into next-undeleted (pager.c OP_SAVE:
+    /// `rc = OP_MAIN_NEXT_UNDELETED`).
+    fn answer_ask(&mut self, what: AskKind, answer: Answer) {
+        let before = self.session.selected_path();
+        let next = self.session.answer(what, answer);
+        self.open_ask(next);
+        if self.prompt.is_none()
+            && matches!(&self.mode, Mode::Pager(p) if p.back.is_none())
+            && self.session.selected_path() != before
+        {
+            self.open_selected();
+        }
+    }
+
     /// Put a session's question on the message line, and carry out
     /// anything it asked the front end to do.
     fn open_ask(&mut self, ask: Option<Ask>) {
@@ -922,8 +939,7 @@ impl App {
                     KeyCode::Enter => Key::Enter,
                     _ => Key::Other,
                 };
-                let next = self.session.answer(what, Answer::Key(key));
-                self.open_ask(next);
+                self.answer_ask(what, Answer::Key(key));
             }
             KeyKind::Recall => match code {
                 KeyCode::Char('r') => self.recall_postponed(),
@@ -1062,10 +1078,7 @@ impl App {
             false => input,
         };
         match kind {
-            LineKind::Ask { what, .. } => {
-                let next = self.session.answer(what, Answer::Line(input));
-                self.open_ask(next);
-            }
+            LineKind::Ask { what, .. } => self.answer_ask(what, Answer::Line(input)),
             LineKind::PagerSearch => {
                 if !input.is_empty() {
                     self.pager_search = Some(pattern::Matcher::new(input));

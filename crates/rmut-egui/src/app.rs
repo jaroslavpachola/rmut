@@ -333,6 +333,22 @@ impl Gui {
         }
     }
 
+    /// A question's answer, with mutt's pager-resolve on top: when
+    /// the finished answer moved the selection while the pager is
+    /// open (a save's advance), the pager follows it (mutt's
+    /// pager.c OP_SAVE: `rc = OP_MAIN_NEXT_UNDELETED`).
+    fn answer_ask(&mut self, what: AskKind, answer: Answer) {
+        let before = self.session.selected_path();
+        let next = self.session.answer(what, answer);
+        self.open_ask(next);
+        if self.prompt.is_none()
+            && matches!(self.mode, Mode::Pager(_))
+            && self.session.selected_path() != before
+        {
+            self.open_selected();
+        }
+    }
+
     fn open_ask(&mut self, ask: Option<Ask>) {
         match ask {
             Some(Ask::Line {
@@ -420,8 +436,7 @@ impl Gui {
                     KeyCode::Enter => Key::Enter,
                     _ => Key::Other,
                 };
-                let next = self.session.answer(what, Answer::Key(answer));
-                self.open_ask(next);
+                self.answer_ask(what, Answer::Key(answer));
             }
             Some(Prompt::Line { edit, .. }) => match edit.key(key) {
                 Edit::Cancel => {
@@ -463,10 +478,7 @@ impl Gui {
             _ => input,
         };
         match kind {
-            LineKind::Ask { what, .. } => {
-                let next = self.session.answer(what, Answer::Line(input));
-                self.open_ask(next);
-            }
+            LineKind::Ask { what, .. } => self.answer_ask(what, Answer::Line(input)),
             LineKind::ChangeDir => {
                 if input.is_empty() {
                     return;
