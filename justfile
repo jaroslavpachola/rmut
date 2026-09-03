@@ -39,5 +39,9 @@ install-desktop:
     mkdir -p "$apps"
     sed "s|^Exec=rmut-egui$|Exec=$bin|; s|^TryExec=rmut-egui$|TryExec=$bin|" \
         crates/rmut-egui/dist/rmut-egui.desktop > "$apps/rmut-egui.desktop"
+    # a rewritten file leaves the directory's mtime alone, and that mtime is
+    # what invalidates GLib's app-info cache: without this a running
+    # gnome-shell keeps serving the entry it read at login
+    touch "$apps"
     command -v update-desktop-database >/dev/null && update-desktop-database "$apps" || true
     echo "installed $apps/rmut-egui.desktop -> $bin"
