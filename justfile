@@ -26,3 +26,18 @@ publish:
     cargo publish -p rmut-front
     cargo publish -p rmut
     cargo publish -p rmut-egui
+
+# the window's desktop entry, Exec pinned to the installed binary:
+# a GUI session rarely has ~/.cargo/bin on PATH
+install-desktop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin="$(command -v rmut-egui || true)"
+    [ -n "$bin" ] || bin="$HOME/.cargo/bin/rmut-egui"
+    [ -x "$bin" ] || { echo "no rmut-egui binary: cargo install rmut-egui" >&2; exit 1; }
+    apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$apps"
+    sed "s|^Exec=rmut-egui$|Exec=$bin|; s|^TryExec=rmut-egui$|TryExec=$bin|" \
+        crates/rmut-egui/dist/rmut-egui.desktop > "$apps/rmut-egui.desktop"
+    command -v update-desktop-database >/dev/null && update-desktop-database "$apps" || true
+    echo "installed $apps/rmut-egui.desktop -> $bin"

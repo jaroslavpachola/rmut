@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=rmut
+GenericName=Mail Client
+Comment=rmut in a window: the egui front end
+Exec=rmut-egui
+TryExec=rmut-egui
+Icon=internet-mail
+Terminal=false
+Categories=Network;Email;
+Keywords=mail;maildir;mbox;imap;mutt;
+StartupNotify=true
+StartupWMClass=rmut-egui

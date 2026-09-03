@@ -70,6 +70,22 @@ turns up it says where it looked, and how to make one:
 mkdir -p ~/Mail/inbox/{cur,new,tmp} && rmut ~/Mail/inbox
 ```
 
+The same mail in a window is `rmut-egui`, the egui front end over the
+same session:
+
+```sh
+cargo install rmut-egui
+just install-desktop                   # and a menu entry for it
+```
+
+`just install-desktop` writes
+`~/.local/share/applications/rmut-egui.desktop` from
+[crates/rmut-egui/dist](crates/rmut-egui/dist), pinning `Exec` to the
+installed binary because a desktop session rarely carries
+`~/.cargo/bin` on its `PATH`; a packager installs the file as it
+stands. The entry claims no `mailto:` handler on purpose — the window
+takes a mailbox, not a draft, and `mailto:` is the terminal binary's.
+
 ## The screen
 
 Four regions, as in mutt: the help bar at the top, the mailbox or the
