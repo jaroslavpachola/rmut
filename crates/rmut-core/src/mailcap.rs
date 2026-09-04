@@ -132,6 +132,9 @@ pub struct Viewer {
     pub command: String,
     /// Writes plain text to stdout rather than taking the terminal.
     pub copious: bool,
+    /// Wants the terminal (`needsterminal`): a curses viewer, not a
+    /// windowed one.
+    pub needsterminal: bool,
     /// The temp file name shape the viewer wants, when it says.
     pub nametemplate: Option<String>,
 }
@@ -149,6 +152,7 @@ pub fn viewer_for(entries: &[Entry], mimetype: &str) -> Option<Viewer> {
         .map(|e| Viewer {
             command: e.command.clone(),
             copious: e.copiousoutput,
+            needsterminal: e.needsterminal,
             nametemplate: e.nametemplate.clone(),
         })
 }

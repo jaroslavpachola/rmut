@@ -118,11 +118,8 @@ pub enum PendingEdit {
         temp: std::path::PathBuf,
         original: Vec<u8>,
     },
-    /// A shell or viewer; nothing to do but say it ended.
+    /// A shell command; nothing to do but say it ended.
     Shell(String),
-    /// A mailcap viewer on a decoded part; the temp file goes when
-    /// it closes.
-    View { temp: std::path::PathBuf },
 }
 
 #[derive(Clone)]
@@ -260,6 +257,13 @@ pub struct Gui {
     /// A terminal child ($EDITOR, `!`) and what it was doing; keys
     /// wait until it closes.
     editing: Option<(std::process::Child, PendingEdit)>,
+    /// Mailcap viewers on their way: a windowed one runs bare, a
+    /// `needsterminal` one in the terminal, and neither holds the
+    /// window's keys - mutt blocks on the viewer only because it
+    /// has one terminal to share. The temp file, when the viewer
+    /// got one, goes when it exits, as mutt unlinks after
+    /// mutt_system.
+    viewers: Vec<(std::process::Child, Option<std::path::PathBuf>)>,
     /// The About overlay is up.
     pub about: bool,
     /// The Preferences dialog and its half-edited values.
@@ -335,6 +339,7 @@ impl Gui {
             complete: None,
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
+            viewers: Vec::new(),
             last_notified: String::new(),
             index_len: 0,
             about: false,
@@ -868,7 +873,7 @@ impl Gui {
                 Err(err) => self.error(format!("viewer failed: {err:#}")),
             }
         } else {
-            self.spawn_terminal(&command, &[], PendingEdit::View { temp });
+            self.spawn_viewer(&command, viewer.needsterminal, Some(temp));
         }
     }
 
@@ -1006,6 +1011,76 @@ impl Gui {
             Ok(child) => self.editing = Some((child, what)),
             Err(err) => self.error(format!("cannot run {term}: {err}")),
         }
+    }
+
+    /// Run a mailcap viewer without taking the keyboard: bare when
+    /// it is a windowed program (a browser, an image viewer - the
+    /// entry says nothing about a terminal), inside the terminal
+    /// when the entry says `needsterminal`. A browser that becomes
+    /// the browser's first instance lives as long as the browser;
+    /// the window has no reason to wait for that.
+    fn spawn_viewer(
+        &mut self,
+        command: &str,
+        needs_terminal: bool,
+        temp: Option<std::path::PathBuf>,
+    ) {
+        let mut cmd = if needs_terminal {
+            let Some(term) = self.terminal_program() else {
+                self.error("no terminal found (set [gui] terminal or $TERMINAL)");
+                if let Some(temp) = temp {
+                    let _ = std::fs::remove_file(temp);
+                }
+                return;
+            };
+            let mut cmd = std::process::Command::new(&term);
+            for flag in terminal_invocation(&term) {
+                cmd.arg(flag);
+            }
+            cmd.arg("sh");
+            cmd
+        } else {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.stdin(std::process::Stdio::null());
+            cmd
+        };
+        cmd.arg("-c").arg(command).arg("rmut-egui");
+        match cmd.spawn() {
+            Ok(child) => self.viewers.push((child, temp)),
+            Err(err) => {
+                self.error(format!("cannot run viewer: {err}"));
+                if let Some(temp) = temp {
+                    let _ = std::fs::remove_file(temp);
+                }
+            }
+        }
+    }
+
+    /// Reap the viewers that closed: their temp file goes, a
+    /// failure is said. Public for the tests, which have no frame.
+    pub fn poll_viewers(&mut self) {
+        let mut failed = 0;
+        self.viewers
+            .retain_mut(|(child, temp)| match child.try_wait() {
+                Ok(None) => true,
+                done => {
+                    if let Some(temp) = temp {
+                        let _ = std::fs::remove_file(temp);
+                    }
+                    if !matches!(done, Ok(Some(status)) if status.success()) {
+                        failed += 1;
+                    }
+                    false
+                }
+            });
+        if failed > 0 {
+            self.error("viewer failed");
+        }
+    }
+
+    /// Viewers still running, for the tests.
+    pub fn viewers_running(&self) -> usize {
+        self.viewers.len()
     }
 
     fn editor_program(&self) -> String {
@@ -1312,12 +1387,6 @@ impl Gui {
                     self.error(format!("{label} failed"));
                 }
                 self.run_requests();
-            }
-            PendingEdit::View { temp } => {
-                let _ = std::fs::remove_file(&temp);
-                if !success {
-                    self.error("viewer failed");
-                }
             }
         }
     }
@@ -1637,8 +1706,7 @@ impl Gui {
                                     Err(err) => self.error(format!("viewer failed: {err:#}")),
                                 }
                             } else {
-                                let label = command.clone();
-                                self.spawn_terminal(&command, &[], PendingEdit::Shell(label));
+                                self.spawn_viewer(&command, viewer.needsterminal, None);
                             }
                         }
                         None => self.error(format!("no mailcap entry for {mimetype}")),
@@ -2701,6 +2769,7 @@ impl Gui {
                 }
             }
         }
+        self.poll_viewers();
         // Keys a menu or context item queued during the last paint.
         if !self.pending_keys.is_empty() {
             self.handle_keys(Vec::new());
@@ -2780,8 +2849,11 @@ impl Gui {
             });
         }
         if !keys.is_empty() {
-            if self.editing.is_some() {
-                self.note("editing in the terminal; close it to continue");
+            if let Some((_, what)) = &self.editing {
+                self.note(match what {
+                    PendingEdit::Shell(_) => "running in the terminal; close it to continue",
+                    _ => "editing in the terminal; close it to continue",
+                });
             } else {
                 self.keys_this_frame = true;
                 self.handle_keys(keys);
@@ -2790,6 +2862,9 @@ impl Gui {
         if self.editing.is_some() {
             // Wake soon to notice the editor closing.
             ctx.request_repaint_after(Duration::from_millis(200));
+        } else if !self.viewers.is_empty() {
+            // A viewer's exit only frees its temp file: no hurry.
+            ctx.request_repaint_after(Duration::from_secs(1));
         }
         crate::paint::draw(self, ui);
         self.keys_this_frame = false;

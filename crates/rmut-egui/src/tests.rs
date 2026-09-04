@@ -624,6 +624,91 @@ fn the_builtin_editor_carries_the_compose_flow() {
 }
 
 #[test]
+fn attach_menu_runs_a_windowed_viewer_outside_the_terminal() {
+    let _guard = mailcaps_guard();
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: parts\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <p3@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nhello body\n\
+         --b\nContent-Type: application/octet-stream; name=\"blob.bin\"\n\
+         Content-Disposition: attachment; filename=\"blob.bin\"\n\
+         Content-Transfer-Encoding: base64\n\naGVsbG8gbWFpbGNhcA==\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    // A viewer that is neither copiousoutput nor needsterminal is a
+    // windowed program: it runs bare, with no terminal wrapped
+    // around it and no hold on the window's keys - a browser handed
+    // a pdf may live as long as the browser does.
+    let out = dir.path().join("seen");
+    let mailcap = dir.path().join("mailcap");
+    fs::write(
+        &mailcap,
+        format!("application/octet-stream; cp %s '{}'\n", out.display()),
+    )
+    .unwrap();
+    unsafe { std::env::set_var("MAILCAPS", &mailcap) };
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "vj");
+    press(&mut gui, "m");
+    assert!(
+        gui.notice().is_none(),
+        "{:?}",
+        gui.notice().map(|n| n.text())
+    );
+    // Nothing opened in the window, and the menu is still the
+    // window's: the keys are not held for the viewer.
+    assert!(matches!(gui.mode, Mode::Attach { .. }));
+    press(&mut gui, "k");
+    press(&mut gui, "j");
+    let temp = std::env::temp_dir()
+        .join(format!("rmut-egui-{}", std::process::id()))
+        .join("blob.bin");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        gui.poll_viewers();
+        if gui.viewers_running() == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the viewer never exits"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(fs::read_to_string(&out).unwrap(), "hello mailcap");
+    // Its temp file went with it, the way mutt unlinks after the
+    // viewer returns.
+    assert!(!temp.exists(), "{} outlives the viewer", temp.display());
+    assert!(
+        gui.notice().is_none(),
+        "{:?}",
+        gui.notice().map(|n| n.text())
+    );
+    // A viewer that fails is said.
+    fs::write(&mailcap, "application/octet-stream; exit 3\n").unwrap();
+    press(&mut gui, "m");
+    loop {
+        gui.poll_viewers();
+        if gui.viewers_running() == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the viewer never exits"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let notice = gui.notice().expect("the failure is said");
+    assert!(notice.text().contains("viewer failed"), "{}", notice.text());
+    press(&mut gui, "q");
+    assert!(matches!(gui.mode, Mode::Index));
+}
+
+#[test]
 fn compose_menu_views_an_attachment_as_text_and_through_mailcap() {
     let _guard = mailcaps_guard();
     let dir = tempfile::tempdir().unwrap();
