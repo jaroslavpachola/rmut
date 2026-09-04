@@ -2313,6 +2313,22 @@ the release alone: view-mailcap honours nametemplate (matched
 against mutt's rfc1524.c), so a browser handed an html part renders
 it instead of sniffing an extensionless temp file into source view.
 
+## 2.6.0 (released 2026-09-04)
+
+Html mail reads without lynx: rmut's own html-to-text in rmut-core
+(entities, blocks, links as `text <url>`, blockquotes as `> `), the
+default for a text/html part nothing else claims, `[pager] html =
+"raw"` keeping mutt's literal view and the window's HTML checkbox
+switching it alone. The attachment menu's Enter shows a text part
+the way the pager would (auto_view first, html rendered), and R
+views through the built-in renderer by name, both fronts. The window
+ships a desktop entry (`just install-desktop`), comes up in front of
+the terminal that launched it (no StartupNotify handshake it never
+completed), and no longer waits on a mailcap viewer: a windowed one
+runs bare, a needsterminal one in the terminal, neither holding the
+keys - a browser opened on a pdf used to park the window until the
+browser closed.
+
 ## After 2.5.0
 
 - [x] The built-in html-to-text, asked for 2026-09-01: an html-only
