@@ -1208,7 +1208,7 @@ fn body_line(gui: &Gui, job: &mut LayoutJob, text: &str, base: Style, size: f32,
 }
 
 pub const INDEX_HELP: &str = "q:Quit Enter:View m:New r:Reply f:Fwd t:Tag s:Save o:Sort l:Limit /:Find c:Mbox y:Fldrs ?:Help";
-const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev h:Headers T:Quoted";
+const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev r:Reply f:Fwd d:Del s:Save h:Headers v:Parts";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const ATTACH_HELP: &str =

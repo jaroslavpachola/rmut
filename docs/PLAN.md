@@ -2604,6 +2604,19 @@ so the clickable layer cannot drift from the keymap.
       in the terminal, the bytes as text either way
 - [x] Every `FrontOp` now acts; the said-once notice survives only
       for suspend (a window minimizes instead) and `:`-bound keys
+- [x] (after the round, 2026-09-06) The pager's own keys were not
+      `FrontOp`s and were left behind by both rounds: save/copy,
+      print/pipe, the compose keys, alias, bounce and list-action all
+      said their round in a hand-written match while the index had
+      them through `Function`. Wired, with the lint's limit written
+      down: an arm can refuse and still satisfy it. With them, the
+      `:` commands the session hands the front (`bind`, `macro`,
+      `push`, and so mark-message, which is a generated macro) and
+      mutt's $pager_stop = no, paging off the end into the next
+      message. The keymap is a snapshot of the key tables, so a bind
+      that arrives without a `:set` behind it now rebuilds it: that
+      one was the terminal's bug too, and its e2e only checked that
+      nothing complained
 
 ### G5: what only a window can do
 

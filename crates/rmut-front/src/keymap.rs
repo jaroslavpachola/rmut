@@ -478,6 +478,26 @@ fn index_defaults() -> Vec<(KeyPattern, Function)> {
     ]
 }
 
+/// An rmut action name or a mutt function name, resolved to the rmut
+/// name the key tables use. None when the menu has no such function.
+/// Both front ends bind keys through this, so `:bind` and `:macro`
+/// accept the same names in the terminal and in the window.
+pub fn resolve_function(menu: rmut_core::command::Menu, name: &str) -> Option<String> {
+    if menu == rmut_core::command::Menu::Index {
+        if Function::from_name(name).is_some() {
+            return Some(name.to_string());
+        }
+        let mapped = rmut_core::muttrc::index_function(name)?;
+        Function::from_name(mapped).map(|_| mapped.to_string())
+    } else {
+        if PagerAction::from_name(name).is_some() {
+            return Some(name.to_string());
+        }
+        let mapped = rmut_core::muttrc::pager_function(name)?;
+        PagerAction::from_name(mapped).map(|_| mapped.to_string())
+    }
+}
+
 fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
     use KeyCode as K;
     use PagerAction::*;

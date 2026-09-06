@@ -20,7 +20,7 @@ use rmut_session::{
 use rmut_front::editor::{Complete, Edit, History, LineEdit};
 use rmut_front::style::rule_style;
 use rmut_front::theme::Theme;
-use rmut_front::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence};
+use rmut_front::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence, resolve_function};
 
 /// neomutt's $abort_noattach_regex default: the words that make a
 /// draft look like it should have carried a file.
@@ -310,24 +310,6 @@ impl App {
     }
 }
 
-/// An rmut action name or a mutt function name, resolved to the rmut
-/// name the key tables use. None when the menu has no such function.
-fn resolve_function(menu: command::Menu, name: &str) -> Option<String> {
-    if menu == command::Menu::Index {
-        if Function::from_name(name).is_some() {
-            return Some(name.to_string());
-        }
-        let mapped = rmut_core::muttrc::index_function(name)?;
-        Function::from_name(mapped).map(|_| mapped.to_string())
-    } else {
-        if PagerAction::from_name(name).is_some() {
-            return Some(name.to_string());
-        }
-        let mapped = rmut_core::muttrc::pager_function(name)?;
-        PagerAction::from_name(mapped).map(|_| mapped.to_string())
-    }
-}
-
 /// Everything the running app derives from [`Config`]: compiled rules,
 /// the theme, and the key tables. Kept in one place so `:` commands can
 /// rebuild it after changing the config, exactly as startup built it.
@@ -524,14 +506,27 @@ impl App {
                 Request::Mailto(mailto) => self.start_mailto(&mailto),
                 Request::EditFile(path) => self.pending_file_edit = Some(path),
                 Request::Command(cmd) => {
+                    // The keymap is a snapshot of the key tables, so
+                    // whatever moves them has to rebuild it. A typed
+                    // `:bind` is followed by a ConfigChanged that
+                    // would, but mark-message (~) arrives as a macro
+                    // on its own.
+                    let rebind = matches!(
+                        &cmd,
+                        command::Command::Bind { .. } | command::Command::Macro { .. }
+                    );
                     let outcome = match &cmd {
                         command::Command::Push(seq) => self.push_command(seq),
                         command::Command::Exec(function) => self.exec_command(function),
                         _ => self.bind_command(&cmd),
                     };
                     match outcome {
-                        Ok(Some(text)) => warnings.push(text),
-                        Ok(None) => {}
+                        Ok(text) => {
+                            warnings.extend(text);
+                            if rebind {
+                                warnings.extend(self.recompile_ui());
+                            }
+                        }
                         Err(err) => self.error(err),
                     }
                 }

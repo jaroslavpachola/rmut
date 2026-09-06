@@ -1203,3 +1203,150 @@ fn r_renders_internally_past_any_filter() {
     );
     assert!(!pager.view.body.contains("FILTERED"), "{}", pager.view.body);
 }
+
+#[test]
+fn the_pager_saves_and_replies() {
+    let (_dir, mut gui) = fixture(&["one", "two"]);
+    let target = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(target.path().join(sub)).unwrap();
+    }
+    gui.session.sel = 0;
+    key(&mut gui, KeyCode::Enter);
+    let first = gui.session.visible[0];
+    press(&mut gui, "s");
+    let Some(crate::app::Prompt::Line { label, .. }) = &gui.prompt else {
+        panic!("s in the pager asks for the mailbox");
+    };
+    assert_eq!(label, "Save to mailbox: ");
+    press(&mut gui, target.path().to_str().unwrap());
+    key(&mut gui, KeyCode::Enter);
+    let saved: Vec<_> = fs::read_dir(target.path().join("cur"))
+        .unwrap()
+        .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(saved.len(), 1, "the message landed in the other maildir");
+    assert!(saved[0].contains("body of one"), "{}", saved[0]);
+    assert!(
+        gui.session.msgs[first].env.file.flags.deleted,
+        "a save marks the original deleted"
+    );
+    // mutt's $resolve on a save: the pager follows to the next
+    // undeleted message rather than sitting on the saved one.
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("the pager stayed open");
+    };
+    assert!(
+        pager.view.body.contains("body of two"),
+        "{}",
+        pager.view.body
+    );
+    // The composing keys reach the same asks from the pager.
+    press(&mut gui, "r");
+    let Some(crate::app::Prompt::Line { label, .. }) = &gui.prompt else {
+        panic!("r in the pager asks for the recipients");
+    };
+    assert!(label.contains("To"), "{label}");
+    key(&mut gui, KeyCode::Esc);
+}
+
+#[test]
+fn mark_message_binds_a_stroke_that_jumps_back() {
+    let (_dir, mut gui) = fixture(&["one", "two", "three"]);
+    gui.session.sel = 0;
+    press(&mut gui, "~");
+    let Some(crate::app::Prompt::Line { label, .. }) = &gui.prompt else {
+        panic!("~ asks for the stroke");
+    };
+    assert!(label.contains("macro stroke"), "{label}");
+    press(&mut gui, "1");
+    key(&mut gui, KeyCode::Enter);
+    // The session reports the binding; the window has to have made
+    // it, not just said so.
+    gui.session.sel = 2;
+    press(&mut gui, "1");
+    assert_eq!(gui.session.sel, 0, "the stroke jumped back to the message");
+}
+
+#[test]
+fn colon_binds_macros_and_pushes_keys() {
+    let (_dir, mut gui) = fixture(&["one", "two", "three"]);
+    gui.session.sel = 0;
+    // bind: the key table moves and the keymap is rebuilt at once.
+    press(&mut gui, ":bind index Z last-entry");
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "Z");
+    assert_eq!(gui.session.sel, 2, ":bind took effect");
+    // macro: a stroke standing for a sequence.
+    press(&mut gui, ":macro index X \"kk\"");
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "X");
+    assert_eq!(gui.session.sel, 0, ":macro replayed both keys");
+    // push: keys into the queue, no binding involved.
+    press(&mut gui, ":push jj");
+    key(&mut gui, KeyCode::Enter);
+    assert_eq!(gui.session.sel, 2, ":push moved the cursor");
+    // A bad name is an error, not a silence.
+    press(&mut gui, ":bind index Q nosuchfunction");
+    key(&mut gui, KeyCode::Enter);
+    let Some(rmut_core::notice::Notice::Error(text)) = gui.notice() else {
+        panic!("an unknown function complains");
+    };
+    assert!(text.contains("nosuchfunction"), "{text}");
+}
+
+#[test]
+fn paging_past_the_end_reads_on() {
+    let (_dir, mut gui) = fixture(&["one", "two"]);
+    gui.session.sel = 0;
+    key(&mut gui, KeyCode::Enter);
+    // mutt's $pager_stop = no: Space on the last page opens the next
+    // message rather than sitting there.
+    for _ in 0..10 {
+        press(&mut gui, " ");
+    }
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("still a pager");
+    };
+    assert!(
+        pager.view.body.contains("body of two"),
+        "{}",
+        pager.view.body
+    );
+    // On the last message it says so and stays.
+    for _ in 0..10 {
+        press(&mut gui, " ");
+    }
+    assert!(matches!(gui.mode, Mode::Pager(_)), "the pager stayed");
+    assert_eq!(
+        gui.notice(),
+        Some(rmut_core::notice::Notice::Error("last message".into()))
+    );
+}
+
+#[test]
+fn pager_stop_keeps_the_last_page() {
+    let config: Config = toml::from_str("[pager]\npager_stop = true\n").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    for (i, subject) in ["one", "two"].iter().enumerate() {
+        write_message(dir.path(), i, subject);
+    }
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    let mut gui = crate::app::Gui::new(session, Vec::new(), false);
+    gui.session.sel = 0;
+    key(&mut gui, KeyCode::Enter);
+    for _ in 0..10 {
+        press(&mut gui, " ");
+    }
+    let Mode::Pager(pager) = &gui.mode else {
+        panic!("still a pager");
+    };
+    assert!(
+        pager.view.body.contains("body of one"),
+        "$pager_stop stayed on the message: {}",
+        pager.view.body
+    );
+}

@@ -3717,6 +3717,11 @@ def scenario_last_keys(tmp):
     r.keys(b"*")   # last message
     r.keys(b"1")   # the hotkey: a search for the Message-ID
     r.expect("Msgs:3", absent=["bad pattern", "not found"])
+    # The stroke has to have moved the cursor, not merely been
+    # reported: the message it opens is the marked one.
+    r.keys(b"\r")
+    r.expect("Message 1/3", "Job 4812 failed.")
+    r.keys(b"q")
     r.keys(b"q")
     r.close()
 

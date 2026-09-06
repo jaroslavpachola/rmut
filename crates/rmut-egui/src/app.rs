@@ -1,6 +1,6 @@
 //! The window's half of rmut: a [`Session`] driven by the shared
 //! keymap, with the modes a reader needs. Writing and sending are
-//! later rounds; what they would do says so instead of doing it.
+//! in; a window minimizes rather than suspends, and says so.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -13,7 +13,9 @@ use rmut_front::pager::{PagerStyle, pager_line_count};
 use rmut_front::status;
 use rmut_front::style::{Style, rule_style};
 use rmut_front::theme::Theme;
-use rmut_front::{KeyCode, KeyEvent, Keymap, PagerAction, parse_sequence};
+use rmut_front::{
+    KeyCode, KeyEvent, Keymap, PagerAction, parse_key, parse_sequence, resolve_function,
+};
 use rmut_session::{
     Answer, Ask, AskKind, Compose, ComposeKind, FrontOp, Function, Key, Outcome, PageSpot, Request,
     Session, SidebarOp, Wants, default_from, draft_full, header_value, write_draft,
@@ -451,10 +453,27 @@ impl Gui {
                         back: None,
                     });
                 }
-                Request::Command(cmd) => match cmd {
-                    rmut_core::command::Command::Exec(name) => self.exec_function(&name),
-                    _ => self.not_yet("key bindings from ':'"),
-                },
+                Request::Command(cmd) => {
+                    // A bind or a macro moves the key tables, and the
+                    // keymap is a snapshot of them: mark-message (~)
+                    // arrives as a macro with no `:set` behind it to
+                    // rebuild anything, so the rebuild happens here.
+                    let rebind = matches!(
+                        &cmd,
+                        rmut_core::command::Command::Bind { .. }
+                            | rmut_core::command::Command::Macro { .. }
+                    );
+                    let outcome = match &cmd {
+                        rmut_core::command::Command::Push(seq) => self.push_command(seq),
+                        rmut_core::command::Command::Exec(function) => self.exec_command(function),
+                        _ => self.bind_command(&cmd),
+                    };
+                    match outcome {
+                        Ok(()) if rebind => warnings.extend(self.recompile_ui()),
+                        Ok(()) => {}
+                        Err(err) => self.error(err),
+                    }
+                }
                 Request::Editor(compose) => self.start_editor(compose),
                 Request::ShowDraft => self.open_compose_menu(),
                 Request::Mailto(mailto) => self.start_mailto(&mailto),
@@ -503,10 +522,104 @@ impl Gui {
         warnings
     }
 
-    fn exec_function(&mut self, name: &str) {
-        match Function::from_name(name) {
-            Some(f) => self.run_index_action(f, false),
-            None => self.error(format!("unknown function {name}")),
+    /// `:bind` and `:macro`, which the session hands over because the
+    /// key tables are the front end's. The config is what is written,
+    /// and the caller rebuilds the keymap from it: mutt key spellings
+    /// (`\Cd`, `<esc>`) and mutt function names both work.
+    fn bind_command(&mut self, cmd: &rmut_core::command::Command) -> Result<(), String> {
+        use rmut_core::command::{Command, Menu};
+        let (menu, key) = match cmd {
+            Command::Bind { menu, key, .. } | Command::Macro { menu, key, .. } => (*menu, key),
+            _ => return Ok(()),
+        };
+        let key = rmut_core::muttrc::convert_key(key).unwrap_or_else(|| key.clone());
+        if parse_key(&key).is_none() {
+            return Err(format!("no such key {key:?}"));
+        }
+        let menus: &[Menu] = match menu {
+            Menu::Generic => &[Menu::Index, Menu::Pager],
+            Menu::Index => &[Menu::Index],
+            Menu::Pager => &[Menu::Pager],
+        };
+        match cmd {
+            Command::Bind { function, .. } => {
+                let mut bound = false;
+                for m in menus {
+                    let Some(action) = resolve_function(*m, function) else {
+                        continue;
+                    };
+                    let table = if *m == Menu::Index {
+                        &mut self.session.config.keys.index
+                    } else {
+                        &mut self.session.config.keys.pager
+                    };
+                    table.insert(action, key.clone());
+                    bound = true;
+                }
+                if !bound {
+                    return Err(format!("no such function {function:?}"));
+                }
+            }
+            Command::Macro { seq, .. } => {
+                if parse_sequence(seq).is_none() {
+                    return Err(format!("bad key sequence {seq:?}"));
+                }
+                for m in menus {
+                    let table = if *m == Menu::Index {
+                        &mut self.session.config.macros.index
+                    } else {
+                        &mut self.session.config.macros.pager
+                    };
+                    table.insert(key.clone(), seq.clone());
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `push SEQUENCE`: keys into the input queue, the same path a
+    /// macro takes.
+    fn push_command(&mut self, seq: &str) -> Result<(), String> {
+        let keys = parse_sequence(seq).ok_or_else(|| format!("bad key sequence {seq:?}"))?;
+        self.replay(keys);
+        Ok(())
+    }
+
+    /// `exec FUNCTION`: run one action straight away, in whichever
+    /// menu is on screen.
+    fn exec_command(&mut self, function: &str) -> Result<(), String> {
+        use rmut_core::command::Menu;
+        match self.mode {
+            Mode::Pager(_) => {
+                let name = resolve_function(Menu::Pager, function)
+                    .ok_or_else(|| format!("no such pager function {function:?}"))?;
+                let action = PagerAction::from_name(&name)
+                    .ok_or_else(|| format!("no such pager function {function:?}"))?;
+                self.run_pager_action(action);
+            }
+            _ => {
+                let name = resolve_function(Menu::Index, function)
+                    .ok_or_else(|| format!("no such index function {function:?}"))?;
+                let action = Function::from_name(&name)
+                    .ok_or_else(|| format!("no such index function {function:?}"))?;
+                self.run_index_action(action, false);
+            }
+        }
+        Ok(())
+    }
+
+    /// Keys back onto the front of the queue, in order: what a macro
+    /// and `push` both do. mutt's guard against a macro that pushes
+    /// itself is a depth limit; this one is a queue length.
+    fn replay(&mut self, seq: Vec<KeyEvent>) {
+        if self.pending_keys.len() + seq.len() > 1000 {
+            self.pending_keys.clear();
+            self.error("macro expansion too deep, stopped");
+            return;
+        }
+        for (i, key) in seq.into_iter().enumerate() {
+            self.pending_keys.insert(i, key);
         }
     }
 
@@ -2139,9 +2252,7 @@ impl Gui {
     fn handle_index_key(&mut self, key: KeyEvent) {
         if let Some(seq) = self.keymap.lookup_index_macro(&key) {
             let seq: Vec<KeyEvent> = seq.to_vec();
-            for k in seq.into_iter().rev() {
-                self.pending_keys.push_front(k);
-            }
+            self.replay(seq);
             return;
         }
         let Some(action) = self.keymap.lookup_index(&key) else {
@@ -2164,7 +2275,10 @@ impl Gui {
 
     /// Every `FrontOp` has an arm here, and the lint keeps it so: a
     /// new one fails this build until the window says what it does
-    /// with it. The writing and sending arms say their round.
+    /// with it. What the lint cannot say is whether the arm acts: a
+    /// `not_yet` satisfies it as well as the real thing, which is how
+    /// the pager's save sat refused for two rounds after the index
+    /// had it.
     #[deny(clippy::wildcard_enum_match_arm)]
     fn run_front_op(&mut self, op: FrontOp) {
         match op {
@@ -2410,9 +2524,7 @@ impl Gui {
     fn handle_pager_key(&mut self, key: KeyEvent) {
         if let Some(seq) = self.keymap.lookup_pager_macro(&key) {
             let seq: Vec<KeyEvent> = seq.to_vec();
-            for k in seq.into_iter().rev() {
-                self.pending_keys.push_front(k);
-            }
+            self.replay(seq);
             return;
         }
         let Some(action) = self.keymap.lookup_pager(&key) else {
@@ -2522,6 +2634,11 @@ impl Gui {
         }
     }
 
+    /// The pager's own dispatch, and the reason a key can work in the
+    /// index while the pager refuses it: the index reaches the
+    /// session generically through `Function`, this match names every
+    /// action by hand.
+    #[deny(clippy::wildcard_enum_match_arm)]
     fn run_pager_action(&mut self, action: PagerAction) {
         let page = self.pager_page();
         let step = page
@@ -2544,7 +2661,28 @@ impl Gui {
                 pager.scroll = (pager.scroll + 1).min(max_scroll);
             }
             PagerAction::Up => pager.scroll = pager.scroll.saturating_sub(1),
-            PagerAction::PageDown => pager.scroll = (pager.scroll + step).min(max_scroll),
+            PagerAction::PageDown => {
+                if pager.scroll < max_scroll {
+                    pager.scroll = (pager.scroll + step).min(max_scroll);
+                } else if let Some(menu) = pager.back.take() {
+                    // A part view: mutt returns to the attachment
+                    // menu rather than reading on into the next
+                    // message.
+                    self.mode = *menu;
+                } else if self.session.config.pager.pager_stop {
+                    // mutt's $pager_stop: stay on the last page.
+                } else {
+                    // mutt's default: paging past the end reads on,
+                    // falling through to next-undeleted.
+                    match self.session.step_message(true, true) {
+                        Some(pos) => {
+                            self.session.sel = pos;
+                            self.open_selected();
+                        }
+                        None => self.error("last message"),
+                    }
+                }
+            }
             PagerAction::PageUp => pager.scroll = pager.scroll.saturating_sub(step),
             PagerAction::HalfDown => pager.scroll = (pager.scroll + page / 2).min(max_scroll),
             PagerAction::HalfUp => pager.scroll = pager.scroll.saturating_sub(page / 2),
@@ -2641,6 +2779,9 @@ impl Gui {
                     return;
                 }
                 if let Some(&i) = self.session.visible.get(self.session.sel) {
+                    // Three actions reach here, so the wildcards below
+                    // stand for toggle-new alone.
+                    #[allow(clippy::wildcard_enum_match_arm)]
                     let what = match action {
                         PagerAction::Undelete => "undelete",
                         PagerAction::Flag => "flag",
@@ -2648,6 +2789,7 @@ impl Gui {
                     };
                     self.session.push_undo(what, &[i]);
                     let file = &mut self.session.msgs[i].env.file;
+                    #[allow(clippy::wildcard_enum_match_arm)]
                     match action {
                         PagerAction::Undelete => file.flags.deleted = false,
                         PagerAction::Flag => file.flags.flagged = !file.flags.flagged,
@@ -2677,18 +2819,49 @@ impl Gui {
             }
             PagerAction::Suspend => self.not_yet("suspend"),
             PagerAction::Attachments => self.open_attachments(),
-            PagerAction::Compose
-            | PagerAction::Reply
-            | PagerAction::GroupReply
-            | PagerAction::ListReply
-            | PagerAction::Forward
-            | PagerAction::Resend
-            | PagerAction::Edit
-            | PagerAction::CreateAlias
-            | PagerAction::Bounce => self.not_yet("composing"),
-            PagerAction::Print | PagerAction::Pipe => self.not_yet("piping"),
-            PagerAction::Save | PagerAction::Copy => self.not_yet("saving"),
-            PagerAction::ListAction => self.not_yet("list actions"),
+            PagerAction::Compose => self.start_compose(ComposeKind::New),
+            PagerAction::Reply => self.start_compose(ComposeKind::Reply),
+            PagerAction::GroupReply => self.start_compose(ComposeKind::GroupReply),
+            PagerAction::ListReply => {
+                let ask = self.session.start_list_reply();
+                self.open_ask(ask);
+            }
+            PagerAction::Forward => self.start_compose(ComposeKind::Forward),
+            PagerAction::Resend => self.resend_current(),
+            PagerAction::Edit => {
+                // The editor replaces the file the pager is showing,
+                // so the pager stands down first, as in the TUI.
+                self.mode = Mode::Index;
+                self.start_raw_edit();
+            }
+            PagerAction::CreateAlias => {
+                let ask = self.session.ask_alias();
+                self.open_ask(ask);
+            }
+            PagerAction::Bounce => {
+                let ask = self.session.ask_bounce(false);
+                self.open_ask(ask);
+            }
+            PagerAction::Print => {
+                let ask = self.session.ask_print(false);
+                self.open_ask(ask);
+            }
+            PagerAction::Pipe => {
+                let ask = self.session.ask_pipe(false);
+                self.open_ask(ask);
+            }
+            PagerAction::Save => {
+                let ask = self.session.ask_copy(true, false);
+                self.open_ask(ask);
+            }
+            PagerAction::Copy => {
+                let ask = self.session.ask_copy(false, false);
+                self.open_ask(ask);
+            }
+            PagerAction::ListAction => {
+                let ask = self.session.ask_list_action();
+                self.open_ask(ask);
+            }
         }
     }
 
