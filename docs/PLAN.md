@@ -2313,6 +2313,26 @@ the release alone: view-mailcap honours nametemplate (matched
 against mutt's rfc1524.c), so a browser handed an html part renders
 it instead of sniffing an extensionless temp file into source view.
 
+## 2.6.1 (released 2026-09-07)
+
+The window's pager keys act. rmut-egui dispatches the index
+generically through `Function`, so an index key works the moment the
+session grows it; the pager is a hand-written match, and G2's three
+refusal buckets ("composing", "piping", "saving") sat there through
+two rounds that never came back to them, leaving a window willing to
+delete mail and unwilling to move it. Save and copy, print and pipe,
+the compose keys, edit, alias, bounce and list-action now call the
+same session asks the terminal's pager calls. With them the `:`
+commands the session hands the front, the key tables being the front
+end's: `bind`, `macro`, `push`, and `exec` resolving pager functions
+when the pager is on screen. mark-message (~) was worse than
+refused: it reported the binding and made none, the keymap being a
+snapshot of the key tables that only a config change rebuilds, which
+a generated macro never sends; both fronts rebuild on a bind or a
+macro now, the terminal included. And $pager_stop = no reaches the
+window: the last page pages into the next undeleted message, a part
+view returning to its attachment menu first.
+
 ## 2.6.0 (released 2026-09-04)
 
 Html mail reads without lynx: rmut's own html-to-text in rmut-core
