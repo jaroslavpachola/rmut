@@ -1468,7 +1468,7 @@ could not touch at all.
       each, the old bytes kept in the step so `z` writes them back.
       Local maildirs only: on IMAP and mbox the real message lives
       elsewhere, so they refuse. Threading needed one fix to make a
-      break stick — a reply's References still names the broken
+      break stick: a reply's References still names the broken
       message's old ancestors, so `thread::link` now refuses to
       reparent a message that carries no references of its own
 - [x] Ctrl+R read-thread and Alt+r read-subthread (mutt's `Esc r`),
@@ -1554,8 +1554,8 @@ printed decoded, and none of it was a setting.
 - [x] Deferred honestly, each its own reason: decrypt-save/copy
       (PGP, with the crypto patterns of R64); `$display_filter` and
       `$prompt_after`; and attachment delete-entry / undelete-entry,
-      which rebuilds the MIME tree and re-encodes — a round of its
-      own, not a rider here. `$copy_decode_weed` and friends fold
+      which rebuilds the MIME tree and re-encodes, a round of its
+      own rather than a rider here. `$copy_decode_weed` and friends fold
       into decode-save's weeding
 - [x] e2e scenario_decode_family, two session tests (decode-save's
       decoded copy and undo, pipe_split's per-message runs)
@@ -1579,7 +1579,7 @@ rider here.
       only add anchors, never take the defaults away; a bad cert in a
       bundle is skipped, an empty file is an error
 - [x] Installed process-wide by `net::set_trust`, beside the
-      timeouts, from the config at startup and on `:set` — the TLS
+      timeouts, from the config at startup and on `:set`, since the TLS
       handshake runs on connection threads that carry an account but
       not a config
 - [x] Importer: `certificate_file` and `ssl_ca_certificates_file`
@@ -1602,7 +1602,7 @@ rider here.
 
 ## R67: the outgoing envelope (done, 1.67)
 
-Goal: the three compose settings hardcoded since the start — the
+Goal: the three compose settings hardcoded since the start: the
 Message-ID host, the User-Agent header, and where the signature
 sits. The rest of the old broad R67 (compose-menu editing keys,
 reply-crypto, DSN, charset) split into R71 and R72 below: they are a
@@ -1634,7 +1634,7 @@ headers, and reply-crypto belongs with R64's deferred `~g`/`~G`.
       `$reply_self`, `$fcc_attach`/`$fcc_clear`, `$forward_edit`; and
       `$send_charset`/`$charset`/`$assumed_charset`
 
-## R68: navigation — jumping, sorting, the sender's address (done, 1.68)
+## R68: jumping, sorting, the sender's address (done, 1.68)
 
 Goal: the mutt navigation keys and sort orders rmut lacked. The rest
 of the old R68 grab-bag (screen knobs, the mark options, the `un*`
@@ -1690,7 +1690,7 @@ R66 because it needed the worker plumbing and the test server grown.
       subscribed-only listing (`$imap_list_subscribed` /
       `$imap_check_subscribed`), Tab toggle-mailboxes, enter-mask /
       `$mask`, `$folder_format`, `$imap_passive`, `$imap_delim_chars`,
-      NAMESPACE, and `account-hook`. `$confirmcreate` too — rmut
+      NAMESPACE, and `account-hook`. `$confirmcreate` too, since rmut
       creates without asking, as it has since R26
 - [x] Unit test at the protocol layer, the IMAP e2e scenario grown to
       create/subscribe/unsubscribe/rename/delete against the fake
@@ -1748,14 +1748,14 @@ draft-assembly plumbing, not a rider.
 
 Goal: the crypto defaults and the charset knobs R67 deferred. The
 gpg-integration key operations and inline-vs-MIME PGP split into R76
-below — they need gpg fixtures and a second PGP encoding path, not a
+below: they need gpg fixtures and a second PGP encoding path, not a
 rider.
 
 - [x] `$crypt_replysign`, `$crypt_replyencrypt`,
       `$crypt_replysignencrypted`: a reply inherits the original's
       protection. A new `pgp::classify` reads the MIME type (and the
-      inline PGP markers) *without running gpg* — the defaults must
-      never decrypt to decide — and `Session::security_for` layers
+      inline PGP markers) *without running gpg* (the defaults must
+      never decrypt to decide), and `Session::security_for` layers
       those on the `sign_by_default` / `encrypt_by_default` base for
       replies only, as mutt does. All three `[pgp]` bools, off by
       default, settable at `:` and imported
@@ -1812,13 +1812,13 @@ Goal: the bare-word search, the most-used of R74's original grab-bag.
 History persistence and the `un*` commands split into R79 below.
 
 - [x] `$simple_search`: `[mail] simple_search` is the template a bare
-      single word (no `~`) expands to, `%s` the word — default `~f %s
+      single word (no `~`) expands to, `%s` the word; default `~f %s
       | ~s %s`, which is exactly what a bare word already did, so the
       default changes nothing; `~f %s | ~s %s | ~b %s` adds the body.
       `Session::compile_search` does the expansion and the three
       interactive parse sites (search, limit, pattern-ops) route
       through it; the config color rules parse raw, as they must.
-      Only a lone word with no `~` expands — a multi-word or
+      Only a lone word with no `~` expands; a multi-word or
       `~`-carrying input is a pattern already
 - [x] Settable at `:`, imported, a session test (the default finds
       the subject only, a `~b` template finds the body, a `~`-input
@@ -1868,7 +1868,7 @@ envelope odds moved to R89 (post-2.0).
 
 ## R76: the PGP odds (post-2.0)
 
-Goal: the crypto pieces R72 deferred — each needs gpg fixtures or a
+Goal: the crypto pieces R72 deferred, each needing gpg fixtures or a
 new encoding path. Not a 2.0 blocker.
 
 - [ ] `$crypt_opportunistic_encrypt` (encrypt when every recipient
@@ -1886,7 +1886,7 @@ Goal: the window-motion keys, the cleanest of R73's leftover keys.
       middle of the visible index page, from `index_offset` (the same
       scroll offset `%P` reads) plus the page height. `bottom-page`
       is an action with no default key, since `L` is list-reply, as
-      in mutt — the index overrides the generic `L` there
+      in mutt; the index overrides the generic `L` there
 - [x] Imported under their mutt names, e2e scenario_page_motion (over
       a 20-message mailbox on a short screen: after jumping to the
       last, `H` lands above the bottom and below the top, `M` between
@@ -1902,7 +1902,7 @@ Goal: the two visible display options, the cleanest of R73's layout
 set. The rest of the layout knobs and the mark options split into R82.
 
 - [x] `$status_on_top`: the status bar and message line move to just
-      under the help bar rather than the bottom — `draw`'s vertical
+      under the help bar rather than the bottom, so `draw`'s vertical
       layout reorders and re-labels its four regions. Off by default
 - [x] `$arrow_cursor`: the selected index row is marked with `->`
       instead of reverse video; `draw_index` prepends the marker and
@@ -1993,7 +1993,7 @@ Goal: the configurable status marker, the cleanest of R82's set. The
 mark/thread options and the remaining layout knobs split into R84.
 
 - [x] `$status_chars`: `[ui] status_chars` sets the characters `%r`
-      shows for the mailbox state — [0] unchanged, [1] changed (needs
+      shows for the mailbox state: [0] unchanged, [1] changed (needs
       sync), [2] read-only. Unset keeps rmut's own (nothing / `*` /
       `%`), so the default look is unchanged; a mutt `set status_chars`
       carries over
@@ -2218,8 +2218,8 @@ Blocking, in order:
 missing the 2.0 cut: yank it, and take 2.0.2 (R90) as the version
 after 2.0.0.
 
-Explicitly not blocking (2.x): R70 (tunnel, TOFU on unknown certs —
-security work is not rushed for a version number), R76 (PGP odds,
+Explicitly not blocking (2.x): R70 (tunnel, TOFU on unknown certs,
+since security work is not rushed for a version number), R76 (PGP odds,
 needs gpg fixtures), R89 (envelope odds), the R42 next/previous-marked
 motion and the R55 remaining blocking calls (quality, not parity), and
 the whole "Beyond mutt" list, which stays frozen.
@@ -2312,6 +2312,17 @@ the message-line handles moved from Rc to Arc. And a bugfix worth
 the release alone: view-mailcap honours nametemplate (matched
 against mutt's rfc1524.c), so a browser handed an html part renders
 it instead of sniffing an extensionless temp file into source view.
+
+## 2.6.2 (released 2026-09-07)
+
+The last em dashes go. Three earlier sweeps took them out of the
+status and error messages, the comments and the doc comments, and
+the README and plan prose; twenty-five had grown back since, in
+README prose, four plan sections, and three doc comments. Each is
+reworded rather than substituted, the way those sweeps did it: a
+colon for an appositive, a semicolon for a joined clause,
+parentheses where the dash pair was already acting as one. Prose
+only, no behaviour: nothing here reaches a string a user sees.
 
 ## 2.6.1 (released 2026-09-07)
 

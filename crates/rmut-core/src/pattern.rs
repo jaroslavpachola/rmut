@@ -101,7 +101,7 @@ pub enum Pattern {
     FromOrTo(Matcher),
     /// `~R`: read (seen).
     Read,
-    /// `~O`: old — unread but not new this session.
+    /// `~O`: old, meaning unread but not new this session.
     Old,
     /// `~Q`: replied to (the Answered flag).
     Replied,

@@ -405,8 +405,8 @@ pub fn load_with(path: &Path, disp: &Display) -> Result<MessageView> {
     Ok(MessageView { brief, all, body })
 }
 
-/// Render a MIME entity that is not a file of its own — the plaintext
-/// gpg hands back for a PGP/MIME message — exactly as the pager
+/// Render a MIME entity that is not a file of its own (the plaintext
+/// gpg hands back for a PGP/MIME message) exactly as the pager
 /// renders a message body: the whole tree, attachments announced,
 /// filters applied. Text that is not MIME at all comes back as it is.
 pub fn render_entity(raw: &[u8], disp: &Display) -> String {

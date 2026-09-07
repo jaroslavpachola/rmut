@@ -5,7 +5,7 @@ built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
 
 ## Status
 
-**2.0** — rmut is a daily-drivable mutt replacement: mutt's index,
+**2.0**: rmut is a daily-drivable mutt replacement: mutt's index,
 pager and compose workflow under mutt's default keys, over maildir,
 mbox and IMAP/SMTP (TLS, OAuth2), with PGP through gpg(1). 2.0 marks
 the parity roadmap finishing, not a break: every default mutt key
@@ -83,7 +83,7 @@ just install-desktop                   # and a menu entry for it
 [crates/rmut-egui/dist](crates/rmut-egui/dist), pinning `Exec` to the
 installed binary because a desktop session rarely carries
 `~/.cargo/bin` on its `PATH`; a packager installs the file as it
-stands. The entry claims no `mailto:` handler on purpose — the window
+stands. The entry claims no `mailto:` handler on purpose: the window
 takes a mailbox, not a draft, and `mailto:` is the terminal binary's.
 
 ## The screen
@@ -173,7 +173,7 @@ body),
 `~p` addressed to me,
 `~P` sent by me, `~A` every message; a bare (single) word with no `~`
 expands through `[mail] simple_search` (mutt's, default `~f %s | ~s %s`,
-so subject or from) — set it to `~f %s | ~s %s | ~b %s` to search the
+so subject or from); set it to `~f %s | ~s %s | ~b %s` to search the
 body too. `x` is a
 case-insensitive regex (`"quotes"` keep spaces; an invalid regex falls
 back to plain substring). `~d` takes a day or range
@@ -193,7 +193,7 @@ groups: `!~D (~f jane | ~t jane) ~d <1m`.
 account's folders via LIST. In the browser, `C` creates a folder
 (type an `imap:account/name` spec for a remote one), `d` deletes the
 selected mailbox (confirmed), `r` renames it, and `s`/`u`
-subscribe/unsubscribe — CREATE / DELETE / RENAME / SUBSCRIBE on the
+subscribe/unsubscribe: CREATE / DELETE / RENAME / SUBSCRIBE on the
 open account, or the filesystem for a local maildir. Messages are mirrored into a cache maildir
 under `~/.cache/rmut/imap/` (headers up front, full bodies fetched on
 first view), so the index is fast and old mail reopens offline. `$`
@@ -269,7 +269,7 @@ original's protection: `reply_sign` signs replies to signed mail,
 `reply_encrypt` encrypts replies to encrypted mail, `reply_sign_encrypted`
 signs replies to encrypted mail too (mutt's `$crypt_replysign` /
 `$crypt_replyencrypt` / `$crypt_replysignencrypted`, all off by
-default). Detection reads the original's MIME type only — it never
+default). Detection reads the original's MIME type only; it never
 decrypts to decide. Passphrases are gpg-agent's
 business; rmut never sees them.
 

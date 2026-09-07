@@ -626,7 +626,7 @@ pub struct Ui {
     /// shows. 0 disables it. 30 by default, as in mutt.
     pub error_history: usize,
     /// mutt's $status_chars: the characters `%r` shows for the
-    /// mailbox state — [0] unchanged, [1] changed (needs sync), [2]
+    /// mailbox state: [0] unchanged, [1] changed (needs sync), [2]
     /// read-only. Unset keeps rmut's own (nothing / `*` / `%`).
     pub status_chars: Option<String>,
     /// mutt's $save_history: entries kept per history bucket in the
