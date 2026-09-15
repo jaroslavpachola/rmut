@@ -48,14 +48,14 @@ def make_maildir(root, name=""):
 MSGS = {
     "jane": (
         "cur/1751790000.1.host:2,S",
-        "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+        "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
         "Subject: Lunch on Friday?\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
         "Message-ID: <msg1@example.com>\r\n\r\n"
-        "Hi Jarda,\r\n\r\nAre you free for lunch on Friday?\r\n\r\nJane\r\n",
+        "Hi Alex,\r\n\r\nAre you free for lunch on Friday?\r\n\r\nJane\r\n",
     ),
     "petr": (
         "new/1751866200.2.host",
-        "From: =?utf-8?q?Petr_Nov=C3=A1k?= <petr@example.com>\r\nTo: jarda@example.com\r\n"
+        "From: =?utf-8?q?Petr_Nov=C3=A1k?= <petr@example.com>\r\nTo: alex@example.com\r\n"
         "Subject: =?utf-8?q?Sch=C5=AFzka_z=C3=ADtra?=\r\nDate: Tue, 7 Jul 2026 08:30:00 +0200\r\n"
         "Message-ID: <msg2@example.com>\r\nMIME-Version: 1.0\r\n"
         'Content-Type: multipart/alternative; boundary="b1"\r\n\r\n'
@@ -72,14 +72,14 @@ MSGS = {
     ),
     "alice": (
         "cur/1751952000.4.host:2,S",
-        "From: Alice <alice@example.com>\r\nTo: jarda@example.com\r\n"
+        "From: Alice <alice@example.com>\r\nTo: alex@example.com\r\n"
         "Subject: Re: Lunch on Friday?\r\nDate: Wed, 8 Jul 2026 09:00:00 +0200\r\n"
         "Message-ID: <msg4@example.com>\r\nIn-Reply-To: <msg1@example.com>\r\n"
         "References: <msg1@example.com>\r\n\r\nCount me in too!\r\nAlice\r\n",
     ),
     "bob": (
         "cur/1752038400.5.host:2,S",
-        "From: Bob <bob@example.com>\r\nTo: jarda@example.com\r\n"
+        "From: Bob <bob@example.com>\r\nTo: alex@example.com\r\n"
         "Subject: Re: Lunch on Friday?\r\nDate: Thu, 9 Jul 2026 09:00:00 +0200\r\n"
         "Message-ID: <msg5@example.com>\r\nIn-Reply-To: <msg4@example.com>\r\n"
         "References: <msg1@example.com> <msg4@example.com>\r\n\r\nSo am I.\r\nBob\r\n",
@@ -194,7 +194,7 @@ def base_env(tmp, extra=None):
     env = {
         "RMUT_CONFIG": os.path.join(tmp, "no-config.toml"),
         "RMUT_ALIASES": os.path.join(tmp, "no-aliases"),
-        "EMAIL": "jarda@example.com",
+        "EMAIL": "alex@example.com",
         # Keep header/mirror caches inside the sandbox, away from the
         # user's real ~/.cache.
         "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
@@ -366,7 +366,7 @@ def scenario_compose_send_postpone(tmp):
     sent = open(sent_file).read()
     assert "To: Petr Novak <petr@example.com>" in sent
     assert "Subject: e2e test" in sent
-    assert "From: jarda@example.com" in sent
+    assert "From: alex@example.com" in sent
     assert "Message-ID:" in sent and "Date:" in sent
     assert "Hello from e2e" in sent
     # reply: accept prefilled To/Subject, include the original
@@ -466,8 +466,8 @@ def scenario_config(tmp):
         f.write(
             f"""
 [identity]
-name = "Jarda"
-email = "jarda@example.com"
+name = "Alex"
+email = "alex@example.com"
 [mail]
 mailboxes = ["{md}"]
 sent = "{os.path.join(tmp, 'Sent')}"
@@ -569,8 +569,8 @@ def scenario_send_via_config_sendmail(tmp):
         f.write(
             f"""
 [identity]
-name = "Jarda"
-email = "jarda@example.com"
+name = "Alex"
+email = "alex@example.com"
 [mail]
 sendmail = "{sendmail}"
 editor = "{editor}"
@@ -588,7 +588,7 @@ editor = "{editor}"
     r.expect("message sent")
     r.settle()
     sent = open(sent_file).read()
-    assert "From: Jarda <jarda@example.com>" in sent
+    assert "From: Alex <alex@example.com>" in sent
     r.keys(b"q")
     r.close()
 
@@ -806,7 +806,7 @@ class FakeSmtp(threading.Thread):
 
 
 IMAP_MSG = (
-    "From: {sender}\r\nTo: jarda@example.com\r\nSubject: {subject}\r\n"
+    "From: {sender}\r\nTo: alex@example.com\r\nSubject: {subject}\r\n"
     "Date: {date}\r\nMessage-ID: <{mid}@remote>\r\n\r\n{body}\r\n"
 )
 
@@ -831,8 +831,8 @@ def scenario_imap(tmp):
         f.write(
             f"""
 [identity]
-name = "Jarda"
-email = "jarda@example.com"
+name = "Alex"
+email = "alex@example.com"
 [mail]
 poll_seconds = 30
 editor = "{editor}"
@@ -894,7 +894,7 @@ smtp_tls = false
     wait_for(lambda: smtp.message is not None, desc="message on the SMTP server")
     assert "Subject: imap send" in smtp.message
     assert "smtp body line" in smtp.message
-    assert any("MAIL FROM:<jarda@example.com>" in c for c in smtp.commands)
+    assert any("MAIL FROM:<alex@example.com>" in c for c in smtp.commands)
     assert any("RCPT TO:<bob@example.org>" in c for c in smtp.commands)
     wait_for(lambda: imap.appended, desc="Fcc APPEND on the IMAP server")
     assert "Subject: imap send" in imap.appended[0]
@@ -1025,7 +1025,7 @@ def scenario_pgp(tmp):
     write_msgs(md, ["jane"])
     with open(os.path.join(md, "cur", "1751900000.7.host:2,S"), "w") as f:
         f.write(
-            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: sealed orders\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
             "Message-ID: <sealed@example.com>\r\nMIME-Version: 1.0\r\n"
             'Content-Type: multipart/encrypted; boundary="b";\r\n'
@@ -1154,7 +1154,7 @@ def scenario_identities(tmp):
     # A message addressed to "me" under a display name, for reverse_name.
     with open(os.path.join(md, "cur", "1751790000.9.host:2,S"), "w") as f:
         f.write("From: Jane Doe <jane@example.com>\r\n"
-                "To: Boss Me <jarda@example.com>\r\n"
+                "To: Boss Me <alex@example.com>\r\n"
                 "Subject: status?\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <rev1@example.com>\r\n\r\nAny update?\r\n")
     write_msgs(md2, ["ci"])
@@ -1162,7 +1162,7 @@ def scenario_identities(tmp):
     md3 = make_maildir(tmp, "md3")
     with open(os.path.join(md3, "cur", "1751790500.7.host:2,S"), "w") as f:
         f.write("From: Tab Test <tab@example.com>\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: Tab landed here\r\nDate: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
                 "Message-ID: <tab1@example.com>\r\n\r\nvia completion\r\n")
     sent_file = os.path.join(tmp, "sent-ids.eml")
@@ -1179,16 +1179,16 @@ def scenario_identities(tmp):
         f.write(
             f"""
 [identity]
-name = "Jarda"
-email = "jarda@example.com"
+name = "Alex"
+email = "alex@example.com"
 reverse_name = true
 [mail]
 sendmail = "{sendmail}"
 editor = "{editor}"
 [[identities]]
 recipient = "*@work.example.com"
-name = "Jarda Work"
-email = "jarda-work@example.com"
+name = "Alex Work"
+email = "alex-work@example.com"
 [[identities]]
 folder = "*md2*"
 email = "second@example.com"
@@ -1202,12 +1202,12 @@ email = "second@example.com"
     r.expect("To:")
     r.keys(b"petr@work.example.com\rreport\ry")
     wait_for(lambda: os.path.exists(sent_file)
-             and "From: Jarda Work <jarda-work@example.com>" in open(sent_file).read(),
+             and "From: Alex Work <alex-work@example.com>" in open(sent_file).read(),
              desc="recipient identity applied")
     # reverse_name: the reply From is the address the mail came to,
     # with the display name the sender used
     r.keys(b"r\r\r\ry")  # the extra Enter answers the include question
-    wait_for(lambda: "From: Boss Me <jarda@example.com>" in open(sent_file).read(),
+    wait_for(lambda: "From: Boss Me <alex@example.com>" in open(sent_file).read(),
              desc="reverse_name applied")
     # folder rule: the same compose from md2 uses its identity
     r.keys(b"c")
@@ -1215,7 +1215,7 @@ email = "second@example.com"
     r.keys(f"{md2}\r".encode())
     r.expect("CI failed on main")
     r.keys(b"mx@y.example.com\rhello\ry")
-    wait_for(lambda: "From: Jarda <second@example.com>" in open(sent_file).read(),
+    wait_for(lambda: "From: Alex <second@example.com>" in open(sent_file).read(),
              desc="folder identity applied")
     # bugfix: a pending flag change (reading new mail, N, F) must not
     # block c/y/ctrl+o; it syncs silently on the way out, like q
@@ -1264,7 +1264,7 @@ def scenario_edit_headers(tmp):
         f.write("attach me\n")
     cfg = os.path.join(tmp, "eh-config.toml")
     with open(cfg, "w") as f:
-        f.write(f'[identity]\nname = "Jarda"\nemail = "jarda@example.com"\n'
+        f.write(f'[identity]\nname = "Alex"\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:1")
@@ -1310,7 +1310,7 @@ def scenario_line_editor(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "le-config.toml")
     with open(cfg, "w") as f:
-        f.write(f'[identity]\nemail = "jarda@example.com"\n'
+        f.write(f'[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:1")
@@ -1354,7 +1354,7 @@ def scenario_pager_search(tmp):
     lines[37] = "the target beta"
     with open(os.path.join(md, "cur/1751790000.9.host:2,S"), "w") as f:
         f.write(
-            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: A long report\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
             "Message-ID: <long@example.com>\r\n\r\n"
             + "\r\n".join(lines) + "\r\n"
@@ -1362,7 +1362,7 @@ def scenario_pager_search(tmp):
     # An older second message, for the cross-message n behavior below.
     with open(os.path.join(md, "cur/1751789000.8.host:2,S"), "w") as f:
         f.write(
-            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: Earlier note\r\nDate: Mon, 6 Jul 2026 09:00:00 +0200\r\n"
             "Message-ID: <early@example.com>\r\n\r\n"
             "gamma filler\r\nthe target gamma\r\n"
@@ -1416,14 +1416,14 @@ def scenario_triage(tmp):
     write_msgs(md, ["jane", "ci"])  # both seen
     with open(os.path.join(md, "cur/1751882400.7.host:2,"), "w") as f:
         f.write(
-            "From: Ops Bot <ops@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Ops Bot <ops@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: Disk almost full\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
             "Message-ID: <msg7@example.com>\r\n\r\n"
             "Please replace the disk before nine.\r\n"
         )
     with open(os.path.join(md, "cur/1752022800.8.host:2,"), "w") as f:
         f.write(
-            "From: Night Runner <night@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Night Runner <night@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: Night build done\r\nDate: Thu, 9 Jul 2026 01:00:00 +0200\r\n"
             "Message-ID: <msg8@example.com>\r\n\r\n"
             "The night build finished green.\r\n"
@@ -1515,7 +1515,7 @@ def scenario_odds(tmp):
     cfg = os.path.join(tmp, "odds-config.toml")
     with open(cfg, "w") as f:
         f.write(
-            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[identity]\nemail = "alex@example.com"\n'
             f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
             f'query_command = "{query} %s"\n'
             f'print = "cat >> {os.path.join(tmp, "printed.out")}"\n'
@@ -1524,7 +1524,7 @@ def scenario_odds(tmp):
     # An attachment to pipe and print.
     with open(os.path.join(md, "cur/1751883000.6.host:2,S"), "w") as f:
         f.write(
-            "From: Sender <sender@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Sender <sender@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: With data\r\nDate: Tue, 7 Jul 2026 13:00:00 +0200\r\n"
             "Message-ID: <att@example.com>\r\nMIME-Version: 1.0\r\n"
             'Content-Type: multipart/mixed; boundary="mx"\r\n\r\n'
@@ -1597,7 +1597,7 @@ def scenario_pager_quotes(tmp):
     quotes1 = "".join(f"> quoted filler {i:02}\r\n" for i in range(1, 36))
     with open(os.path.join(md, "cur/1751790000.1.host:2,S"), "w") as f:
         f.write(
-            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: Quote heavy\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
             "Message-ID: <qh@example.com>\r\n\r\n"
             "intro-line-one\r\n" + quotes1 + "tail-after-quotes\r\n"
@@ -1605,7 +1605,7 @@ def scenario_pager_quotes(tmp):
     quotes2 = "".join(f"> block {i:02}\r\n" for i in range(1, 36))
     with open(os.path.join(md, "cur/1751876400.2.host:2,S"), "w") as f:
         f.write(
-            "From: Petr <petr@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Petr <petr@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: Skip test\r\nDate: Tue, 7 Jul 2026 10:00:00 +0200\r\n"
             "Message-ID: <st@example.com>\r\n\r\n"
             "start-line\r\n" + quotes2 + "after-skip-target\r\n"
@@ -1636,7 +1636,7 @@ def scenario_pager_polish(tmp):
     md = make_maildir(tmp, "md")
     with open(os.path.join(md, "cur/1751790000.1.host:2,S"), "w") as f:
         f.write(
-            "From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
             "Subject: Order test\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
             "X-Topic: budget\r\nMessage-ID: <ot@example.com>\r\n\r\n"
             "alpha beta gamma delta epsilon zeta\r\nplain tail\r\n"
@@ -1735,7 +1735,7 @@ def scenario_compose_round2(tmp):
     cfg = os.path.join(tmp, "c2-config.toml")
     with open(cfg, "w") as f:
         f.write(
-            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[identity]\nemail = "alex@example.com"\n'
             f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
             f'fast_reply = true\nforward = "ask"\n'
         )
@@ -1810,7 +1810,7 @@ def scenario_compose_round2(tmp):
     cfg2 = os.path.join(tmp, "auto-config.toml")
     with open(cfg2, "w") as f:
         f.write(
-            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[identity]\nemail = "alex@example.com"\n'
             f'[mail]\nsendmail = "{sendmail2}"\neditor = "{editor2}"\n'
             f'autoedit = true\nedit_headers = true\n'
         )
@@ -1838,13 +1838,13 @@ def scenario_mutt_flow(tmp):
     with open(os.path.join(md, "cur", "1751790000.9.host:2,S"), "w") as f:
         f.write("From: Jane Doe <jane@example.com>\r\n"
                 "Reply-To: list@example.com\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: via list\r\nDate: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <rt1@example.com>\r\n\r\nshort body\r\n")
     write_msgs(md, ["petr"])  # read via the pager below
     # The newest message stays untouched: the mark_old candidate.
     with open(os.path.join(md, "new", "1751953000.5.host"), "w") as f:
-        f.write("From: quiet@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: quiet@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: never read\r\nDate: Wed, 8 Jul 2026 09:00:00 +0200\r\n"
                 "Message-ID: <mf5@example.com>\r\n\r\nnothing to see\r\n")
     sent_file = os.path.join(tmp, "sent-mf.eml")
@@ -1858,7 +1858,7 @@ def scenario_mutt_flow(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "mf-config.toml")
     with open(cfg, "w") as f:
-        f.write(f'[identity]\nemail = "jarda@example.com"\n'
+        f.write(f'[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:3")
@@ -1969,7 +1969,7 @@ def scenario_message_commands(tmp):
              desc="bounce sent")
     r.expect("message bounced to petr@example.com")
     sent = open(sent_file).read()
-    assert "Resent-From: jarda@example.com" in sent
+    assert "Resent-From: alex@example.com" in sent
     assert "Subject: Lunch on Friday?" in sent  # original kept as-is
     assert "-oi petr@example.com" in open(args_file).read()
     # e resends: the message becomes a fresh draft through the editor
@@ -2027,7 +2027,7 @@ def scenario_import_muttrc(tmp):
     with open(muttrc, "w") as f:
         f.write(
             "set realname = \"Jan Novak\"\n"
-            "set from = jarda@example.com\n"
+            "set from = alex@example.com\n"
             "set folder = ~/Mail\n"
             "set spoolfile = +inbox\n"
             "bind index \\Cd delete-message\n"
@@ -2045,7 +2045,7 @@ def scenario_import_muttrc(tmp):
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
     assert 'name = "Jan Novak"' in out
-    assert 'email = "jarda@example.com"' in out
+    assert 'email = "alex@example.com"' in out
     assert 'mailboxes = ["~/Mail/inbox"]' in out
     assert 'delete = "ctrl+d"' in out
     assert "macro index x" in out  # surfaced as a comment
@@ -2093,7 +2093,7 @@ def scenario_attachment_pager(tmp):
     message (mutt's pager default)."""
     md = make_maildir(tmp, "md")
     with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
-        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: jane@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: with attachment\r\n"
                 "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <ap1@example.com>\r\nMIME-Version: 1.0\r\n"
@@ -2103,7 +2103,7 @@ def scenario_attachment_pager(tmp):
                 "Content-Disposition: attachment; filename=\"notes.txt\"\r\n\r\n"
                 "attached notes text\r\n--b--\r\n")
     with open(os.path.join(md, "cur", "1751790001.2.host:2,S"), "w") as f:
-        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: jane@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: decoy next\r\n"
                 "Date: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
                 "Message-ID: <ap2@example.com>\r\n\r\ndecoy body\r\n")
@@ -2139,7 +2139,7 @@ def scenario_attach_mailcap(tmp):
     with mutt's complaint (view-attach's order)."""
     md = make_maildir(tmp, "md-attmc")
     with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
-        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: jane@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: odd attachments\r\n"
                 "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <am1@example.com>\r\nMIME-Version: 1.0\r\n"
@@ -2246,13 +2246,13 @@ def scenario_patterns_v3(tmp):
     # A message carrying an unusual header, so the limit has something
     # only ~h finds.
     with open(os.path.join(md, "cur", "1751790500.9.host:2,S"), "w") as f:
-        f.write("From: bulk@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: bulk@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: newsletter\r\nDate: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
                 "Message-ID: <msg9@example.com>\r\n"
                 "X-Spam-Score: 9.5\r\n\r\nbody\r\n")
     # A duplicate of jane's message: same Message-ID, different file.
     with open(os.path.join(md, "cur", "1751790600.10.host:2,S"), "w") as f:
-        f.write("From: Jane Doe <jane@example.com>\r\nTo: jarda@example.com\r\n"
+        f.write("From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
                 "Subject: Lunch on Friday? (dup)\r\n"
                 "Date: Mon, 6 Jul 2026 12:00:00 +0200\r\n"
                 "Message-ID: <msg1@example.com>\r\n\r\nsecond copy\r\n")
@@ -2293,7 +2293,7 @@ def scenario_batch_cli(tmp):
         f.write("attached payload\n")
     cfg = os.path.join(tmp, "cli-config.toml")
     with open(cfg, "w") as f:
-        f.write(f'[identity]\nname = "Jarda"\nemail = "jarda@example.com"\n'
+        f.write(f'[identity]\nname = "Alex"\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 f'sent = "{fcc}"\nmailboxes = ["{md}"]\n')
     env = dict(os.environ)
@@ -2314,7 +2314,7 @@ def scenario_batch_cli(tmp):
     assert "To: jane@example.com, petr@example.com" in text
     assert "Cc: cc@example.com" in text
     assert "Bcc: bcc@example.com" in text
-    assert "From: Jarda <jarda@example.com>" in text
+    assert "From: Alex <alex@example.com>" in text
     assert "batch body line" in text
     assert "MIME-Version: 1.0" in text
     assert 'filename="cli-att.txt"' in text
@@ -2331,7 +2331,7 @@ def scenario_batch_cli(tmp):
     assert proc.returncode == 0, proc.stderr
     text = open(sent_file).read()
     assert "body from a file" in text
-    assert "From: Batch Sender <jarda@example.com>" in text
+    assert "From: Batch Sender <alex@example.com>" in text
 
     # a send with no recipients fails instead of sending
     proc = rmut(["-s", "nobody", "--"], stdin=b"x\n")
@@ -2400,7 +2400,7 @@ def scenario_mailing_lists(tmp):
                 "please review\r\n")
     with open(os.path.join(md, "cur", "1751791100.21.host:2,S"), "w") as f:
         f.write("From: Careful Sender <careful@example.com>\r\n"
-                "To: jarda@example.com\r\nCc: petr@example.com\r\n"
+                "To: alex@example.com\r\nCc: petr@example.com\r\n"
                 "Subject: reply here please\r\n"
                 "Date: Mon, 6 Jul 2026 14:00:00 +0200\r\n"
                 "Message-ID: <mft1@example.com>\r\n"
@@ -2417,7 +2417,7 @@ def scenario_mailing_lists(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "lists-config.toml")
     with open(cfg, "w") as f:
-        f.write(f'[identity]\nemail = "jarda@example.com"\n'
+        f.write(f'[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 f'subscribed = ["rmut-dev@lists.example.com"]\n'
                 f'lists = ["announce@lists.example.com"]\n')
@@ -2458,7 +2458,7 @@ def scenario_mailing_lists(tmp):
     assert "dev-person@example.com" not in text.split("\n\n")[0], \
         "a list reply does not go to the author"
     assert "Mail-Followup-To: rmut-dev@lists.example.com" in text
-    assert "jarda@example.com" not in text.split("Mail-Followup-To:")[1].split("\n")[0], \
+    assert "alex@example.com" not in text.split("Mail-Followup-To:")[1].split("\n")[0], \
         "subscribed: my address stays out of Mail-Followup-To"
 
     # a group reply honours the sender's Mail-Followup-To
@@ -2498,14 +2498,14 @@ def scenario_alternates_my_hdr(tmp):
          "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
          "Message-ID: <alt1@example.com>\r\n\r\nhello\r\n"),
         ("1751791100.31.host:2,S",
-         "From: Jarda Old <jp@old.example.com>\r\n"
+         "From: Alex Old <jp@old.example.com>\r\n"
          "To: team@example.com\r\n"
          "Subject: sent by me\r\n"
          "Date: Mon, 6 Jul 2026 11:00:00 +0200\r\n"
          "Message-ID: <mine1@example.com>\r\n\r\nmine\r\n"),
         ("1751791200.32.host:2,S",
          "From: Petr <petr@example.com>\r\n"
-         "To: jarda@example.com, Team <team@example.com>\r\n"
+         "To: alex@example.com, Team <team@example.com>\r\n"
          "Cc: boss@example.com, jp@old.example.com\r\n"
          "Subject: reply to all of us\r\n"
          "Date: Mon, 6 Jul 2026 12:00:00 +0200\r\n"
@@ -2531,10 +2531,10 @@ def scenario_alternates_my_hdr(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "alt-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\nreverse_name = true\n'
+        f.write('[identity]\nemail = "alex@example.com"\nreverse_name = true\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 "alternates = ['jp@old\\.example\\.com']\n"
-                'my_hdr = ["Organization: Acme", "Reply-To: jarda@example.com"]\n'
+                'my_hdr = ["Organization: Acme", "Reply-To: alex@example.com"]\n'
                 'subscribed = ["rmut-dev@lists.example.com"]\n'
                 '[index]\nformat = "[%Z] %s"\n')
     env = base_env(tmp, {"RMUT_CONFIG": cfg})
@@ -2582,12 +2582,12 @@ def scenario_alternates_my_hdr(tmp):
     head = text.split("\n\n")[0]
     assert "To: Petr <petr@example.com>" in head, head
     assert "Cc: Team <team@example.com>, boss@example.com" in head, head
-    assert "jarda@example.com" not in head.split("Cc:")[1].split("\n")[0], \
+    assert "alex@example.com" not in head.split("Cc:")[1].split("\n")[0], \
         "a group reply does not copy me"
     assert "jp@old.example.com" not in head.split("Cc:")[1].split("\n")[0], \
         "an alternate address is me too"
     assert "Organization: Acme" in head, head
-    assert "Reply-To: jarda@example.com" in head, head
+    assert "Reply-To: alex@example.com" in head, head
 
     # reverse_name picks the alternate the mail was addressed to
     os.truncate(sent_file, 0)
@@ -2632,13 +2632,13 @@ def scenario_hooks(tmp):
     write_msgs(md, ["jane"])
     with open(os.path.join(md, "cur", "1751795000.40.host:2,S"), "w") as f:
         f.write("From: Boss <boss@example.com>\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: budget\r\n"
                 "Date: Mon, 6 Jul 2026 18:00:00 +0200\r\n"
                 "Message-ID: <boss1@example.com>\r\n\r\nnumbers\r\n")
     with open(os.path.join(work, "cur", "1751795100.41.host:2,S"), "w") as f:
         f.write("From: Colleague <col@work.example.com>\r\n"
-                "To: jarda@work.example.com\r\n"
+                "To: alex@work.example.com\r\n"
                 "Subject: standup\r\n"
                 "Date: Mon, 6 Jul 2026 19:00:00 +0200\r\n"
                 "Message-ID: <work1@example.com>\r\n\r\nnotes\r\n")
@@ -2653,7 +2653,7 @@ def scenario_hooks(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "hooks-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 f'sent = "{default_sent}"\n'
                 f'mailboxes = ["{md}", "{work}"]\n'
@@ -2665,7 +2665,7 @@ def scenario_hooks(tmp):
                 'command = \'set index_format="BOSS %s"\'\n'
                 '[[reply_hooks]]\n'
                 'pattern = "~f boss@example.com"\n'
-                'command = "set from=jarda@work.example.com"\n'
+                'command = "set from=alex@work.example.com"\n'
                 '[[fcc_hooks]]\n'
                 "pattern = '~t @external\\.example\\.com'\n"
                 f'mailbox = "{ext_sent}"\n')
@@ -2693,7 +2693,7 @@ def scenario_hooks(tmp):
              and "Subject: Re: budget" in open(sent_file).read(),
              desc="reply to the boss sent")
     head = open(sent_file).read().split("\n\n")[0]
-    assert "From: jarda@work.example.com" in head, head
+    assert "From: alex@work.example.com" in head, head
     # and the hook is undone once the draft is built
     r.expect("BOSS budget")
 
@@ -2736,7 +2736,7 @@ def scenario_format_flowed(tmp):
     long_tail = " ".join(f"word{n}" for n in range(1, 13))
     with open(os.path.join(md, "cur", "1751797000.50.host:2,S"), "w") as f:
         f.write("From: Flow Sender <flow@example.com>\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: flowed mail\r\n"
                 "Date: Mon, 6 Jul 2026 20:00:00 +0200\r\n"
                 "Message-ID: <flow1@example.com>\r\n"
@@ -2763,7 +2763,7 @@ def scenario_format_flowed(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "flowed-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 'text_flowed = true\n'
                 '[pager]\nwrap = 40\n')
@@ -2810,7 +2810,7 @@ def scenario_mime_polish(tmp):
     md = make_maildir(tmp, "md-mime")
     with open(os.path.join(md, "cur", "1752000000.10.host:2,S"), "w") as f:
         f.write("From: Alt Sender <alt@example.com>\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: two flavours\r\n"
                 "Date: Wed, 8 Jul 2026 12:00:00 +0200\r\n"
                 "Message-ID: <alt1@example.com>\r\n"
@@ -2824,7 +2824,7 @@ def scenario_mime_polish(tmp):
                 "--b--\r\n")
     with open(os.path.join(md, "cur", "1751900000.11.host:2,S"), "w") as f:
         f.write("From: Odd Sender <odd@example.com>\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: odd parts\r\n"
                 "Date: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
                 "Message-ID: <odd1@example.com>\r\n"
@@ -2857,7 +2857,7 @@ def scenario_mime_polish(tmp):
         # html = "raw": this scenario is about alternative_order and
         # auto_view mechanics, so mutt's literal source view is kept
         # (the built-in renderer has scenario_html_text to itself).
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 '[pager]\nalternative_order = ["text/html"]\nhtml = "raw"\n'
                 '[filters]\n"application/x-thing" = ""\n"video/mpeg" = ""\n')
     env = base_env(tmp, {"RMUT_CONFIG": cfg, "MAILCAPS": mailcap})
@@ -2901,7 +2901,7 @@ def scenario_html_text(tmp):
     [pager] html = "raw" restores mutt's literal source view."""
     md = make_maildir(tmp, "md-html")
     with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
-        f.write("From: jane@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: jane@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: html only\r\n"
                 "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <ht1@example.com>\r\nMIME-Version: 1.0\r\n"
@@ -2921,7 +2921,7 @@ def scenario_html_text(tmp):
 
     cfg = os.path.join(tmp, "raw-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 '[pager]\nhtml = "raw"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:1")
@@ -3018,7 +3018,7 @@ def scenario_undo_send(tmp):
     os.chmod(editor, 0o755)
     cfg = os.path.join(tmp, "undosend-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 'undo_send = 2\ncopy = false\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
@@ -3072,7 +3072,7 @@ def scenario_search_direction(tmp):
     write_msgs(md, ["ci", "jane", "petr", "alice"])
     cfg = os.path.join(tmp, "searchdir-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 '[macros.index]\n'
                 '"." = "/~D<enter>"\n'
                 '"," = "<alt+/>~D<enter>"\n')
@@ -3421,7 +3421,7 @@ def scenario_outgoing_envelope(tmp):
     os.chmod(sendmail, 0o755)
     sig = os.path.join(tmp, "envelope-sig")
     with open(sig, "w") as f:
-        f.write("Jarda\n")
+        f.write("Alex\n")
     cfg = os.path.join(tmp, "envelope-config.toml")
     with open(cfg, "w") as f:
         f.write(f'[mail]\nsignature = "{sig}"\nsig_on_top = true\n'
@@ -3440,8 +3440,8 @@ def scenario_outgoing_envelope(tmp):
     assert "Message-ID:" in sent and "@mail.example.net>" in sent, sent
     assert "User-Agent: rmut/" in sent, sent
     # sig_on_top: the signature sits above the body.
-    assert "-- \nJarda" in sent, sent
-    assert sent.index("Jarda") < sent.index("the body of my reply"), sent
+    assert "-- \nAlex" in sent, sent
+    assert sent.index("Alex") < sent.index("the body of my reply"), sent
     r.keys(b"q")
     r.close()
 
@@ -3843,7 +3843,7 @@ def scenario_subject_threading(tmp):
     for i, hour in enumerate((10, 11, 12)):
         prefix = "" if i == 0 else "Re: "
         with open(os.path.join(md, "cur", f"175179000{i}.{i}.host:2,S"), "w") as f:
-            f.write(f"From: gitlab@example.com\r\nTo: jarda@example.com\r\n"
+            f.write(f"From: gitlab@example.com\r\nTo: alex@example.com\r\n"
                     f"Subject: {prefix}{subject}\r\n"
                     f"Date: Mon, 6 Jul 2026 {hour}:00:00 +0200\r\n"
                     f"Message-ID: <note{i}@example.com>\r\n\r\nnote {i}\r\n")
@@ -3897,7 +3897,7 @@ def scenario_folder_shorthand(tmp):
     write_msgs(md, ["jane", "ci"])
     cfg = os.path.join(tmp, "shorthand-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nfolder = "{root}"\n'
                 'mailboxes = ["=inbox", "=archive"]\n'
                 'trash = "=trash"\n'
@@ -3950,7 +3950,7 @@ def scenario_paper_cuts(tmp):
     for n in range(1, 11):
         with open(os.path.join(md, "cur", f"17520000{n:02d}.9.host:2,S"), "w") as f:
             f.write(f"From: Sender {n} <s{n}@example.com>\r\n"
-                    "To: jarda@example.com\r\n"
+                    "To: alex@example.com\r\n"
                     f"Subject: message number {n}\r\n"
                     f"Date: Mon, 6 Jul 2026 {n:02d}:00:00 +0200\r\n"
                     f"Message-ID: <cut{n}@example.com>\r\n\r\nbody {n}\r\n")
@@ -4029,7 +4029,7 @@ def scenario_attach_reminder(tmp):
         f.write("the actual file\n")
     cfg = os.path.join(tmp, "attach-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
                 'abort_noattach = "ask"\ncopy = false\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
@@ -4116,7 +4116,7 @@ def scenario_getting_started(tmp):
     spool = os.path.join(tmp, "start-spool")
     with open(spool, "w") as f:
         f.write("From jane@example.com Mon Jul  6 10:00:00 2026\n"
-                "From: Jane Doe <jane@example.com>\nTo: jarda@example.com\n"
+                "From: Jane Doe <jane@example.com>\nTo: alex@example.com\n"
                 "Subject: spooled mail\nDate: Mon, 6 Jul 2026 10:00:00 +0200\n\n"
                 "hello from the spool\n\n")
     r = Rmut(None, base_env(tmp, {"HOME": empty, "MAIL": spool, "USER": "nobody"}))
@@ -4157,7 +4157,7 @@ def scenario_control_chars(tmp):
     md = make_maildir(tmp, "md-ctrl")
     with open(os.path.join(md, "cur", "1751790000.1.host:2,S"), "w") as f:
         f.write("From: Tabbed\tSender <t@example.com>\r\n"
-                "To: jarda@example.com\r\n"
+                "To: alex@example.com\r\n"
                 "Subject: before\ttab after\r\n"
                 "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
                 "Message-ID: <ctrl1@example.com>\r\n\r\nbody\r\n")
@@ -4187,7 +4187,7 @@ def scenario_purge_question(tmp):
         md = make_maildir(tmp, name)
         for i in range(1, n + 1):
             with open(os.path.join(md, "cur", f"17517900{i:02d}.{i}.host:2,S"), "w") as f:
-                f.write(f"From: S{i} <s{i}@example.com>\nTo: jarda@example.com\n"
+                f.write(f"From: S{i} <s{i}@example.com>\nTo: alex@example.com\n"
                         f"Subject: purge {i}\nDate: Mon, 6 Jul 2026 1{i}:00:00 +0200\n"
                         f"Message-ID: <pg{i}{name}@x>\n\nbody\n")
         return md
@@ -4265,9 +4265,9 @@ def scenario_network_timeouts(tmp):
     write_msgs(md, ["jane"])
     cfg = os.path.join(tmp, "timeout-config.toml")
     with open(cfg, "w") as f:
-        f.write('[identity]\nemail = "jarda@example.com"\n'
+        f.write('[identity]\nemail = "alex@example.com"\n'
                 '[net]\nconnect_timeout = 2\n'
-                '[[accounts]]\nname = "slow"\nuser = "jarda"\n'
+                '[[accounts]]\nname = "slow"\nuser = "alex"\n'
                 'password = "x"\nimap_host = "203.0.113.1"\nimap_port = 993\n')
     env = dict(os.environ)
     env.update(base_env(tmp, {"RMUT_CONFIG": cfg}))
@@ -4298,7 +4298,7 @@ def scenario_network_abort(tmp):
     with open(cfg, "w") as f:
         f.write(f"""
 [identity]
-email = "jarda@example.com"
+email = "alex@example.com"
 [mail]
 poll_seconds = 600
 [[accounts]]
@@ -4352,7 +4352,7 @@ def scenario_reply_text(tmp):
     cfg = os.path.join(tmp, "reply-text-config.toml")
     with open(cfg, "w") as f:
         f.write(
-            f'[identity]\nemail = "jarda@example.com"\n'
+            f'[identity]\nemail = "alex@example.com"\n'
             f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
             f'attribution = "%n wrote (%{{%Y}}):"\n'
             f'indent_string = "| "\n'
@@ -4377,7 +4377,7 @@ def scenario_reply_text(tmp):
     wait_for(lambda: os.path.exists(sent_file), desc="the reply sent")
     text = open(sent_file).read()
     assert "Jane Doe wrote (20" in text, text
-    assert "| Hi Jarda," in text, text
+    assert "| Hi Alex," in text, text
     assert "Cc: cc@example.com" in text, text
 
     # Forward: the subject comes from $forward_format.
@@ -4402,7 +4402,7 @@ def scenario_reading_habits(tmp):
     write_msgs(md, ["jane", "petr"])
     # A message with one long line, so there is something to wrap.
     with open(os.path.join(md, "cur", "1751790900.4.host:2,S"), "w") as f:
-        f.write("From: long@example.com\r\nTo: jarda@example.com\r\n"
+        f.write("From: long@example.com\r\nTo: alex@example.com\r\n"
                 "Subject: a long one\r\nDate: Wed, 8 Jul 2026 12:00:00 +0200\r\n"
                 "Message-ID: <long1@example.com>\r\n\r\n"
                 + ("wrapped " * 40) + "\r\n")
@@ -4484,7 +4484,7 @@ def scenario_signature_and_send_questions(tmp):
     os.chmod(sendmail, 0o755)
     sig = os.path.join(tmp, "signature")
     with open(sig, "w") as f:
-        f.write("Jarda\nexample.com\n")
+        f.write("Alex\nexample.com\n")
     cfg = os.path.join(tmp, "signature-config.toml")
     with open(cfg, "w") as f:
         f.write(f'[mail]\nsignature = "{sig}"\nforward_quote = true\n'
@@ -4504,8 +4504,8 @@ def scenario_signature_and_send_questions(tmp):
     assert "----- End forwarded message -----" in sent, sent
     # The signature is under the forwarded text, where the editor
     # found it and typed on past it.
-    assert "\n-- \nJarda\nexample.com\n" in sent, sent
-    assert sent.index("-- \nJarda") > sent.index("End forwarded message"), sent
+    assert "\n-- \nAlex\nexample.com\n" in sent, sent
+    assert sent.index("-- \nAlex") > sent.index("End forwarded message"), sent
 
     # $abort_unmodified: an editor that changes nothing is not a
     # message, and the draft never reaches the compose menu.

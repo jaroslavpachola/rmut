@@ -149,6 +149,6 @@ mod tests {
     #[test]
     fn not_a_mailto() {
         assert_eq!(parse("https://example.com"), None);
-        assert_eq!(parse("/home/jarda/Maildir"), None);
+        assert_eq!(parse("/home/alex/Maildir"), None);
     }
 }

@@ -2278,6 +2278,46 @@ Since 2.0.2: G1, G2, G2p, G3 and the G2 leftovers as the sections
 above tell it, and on the shared side the save path's $resolve
 advance (index and pager), verified against mutt's source.
 
+## 2.2.0 (released 2026-09-01)
+
+The window grown up, all at 2.2.0 on crates.io: G4 (the compose flow
+through a spawned terminal, the compose menu, postponed and query
+screens, mailto, resend, -p), G5 (clickable URLs, the proportional
+body, the new-mail notification), the window's own colors (#rrggbb
+everywhere, [gui.colors], the canvas as the whole window's ground
+with the widget theme following its brightness, the zebra derived
+from it), the About overlay and the Preferences dialog with its
+gui.toml overlay.
+
+## 2.2.1 (released 2026-09-01)
+
+The terminal hunt fixed hours after 2.2.0: it knew only foot,
+alacritty, kitty and xterm, so a stock GNOME desktop could not
+compose. It now also finds gnome-terminal (behind --wait, or its
+server "finishes" mid-edit), konsole, xfce4-terminal, terminator and
+x-terminal-emulator, each called its own way.
+
+## After 2.2.1
+
+- [x] The built-in editor, asked for 2026-09-01: `[gui] editor =
+      "builtin"` (a Preferences checkbox; external stays the
+      default, as the G-plan promised) routes the draft, new-mime
+      files and raw-edit into an egui text box under the same file
+      contract as $EDITOR - Ctrl+Enter writes and lands on the
+      compose menu, Esc abandons with the draft kept, the keymap
+      stands down while it is up, and raw bytes that are not clean
+      UTF-8 keep the terminal so nothing is mangled
+
+- [x] Embedded Neovim, asked for the same day: `[gui] editor =
+      "nvim"` (third choice in the Preferences combo) runs the real
+      `nvim --embed` over msgpack-RPC (rmpv), renders its
+      ext_linegrid with the window's own monospace machinery - nvim's
+      colors, cursor, the user's whole config and plugins - and
+      forwards every key in nvim notation; :wq resumes the compose
+      flow exactly as an editor exit does, spawn failure falls back
+      to the terminal, and a test drives the real binary over RPC
+      (no display needed)
+
 ## 2.3.0 (released 2026-09-01)
 
 The editors and the first week's finds: the built-in text box and
@@ -2313,16 +2353,38 @@ the release alone: view-mailcap honours nametemplate (matched
 against mutt's rfc1524.c), so a browser handed an html part renders
 it instead of sniffing an extensionless temp file into source view.
 
-## 2.6.2 (released 2026-09-07)
+## After 2.5.0
 
-The last em dashes go. Three earlier sweeps took them out of the
-status and error messages, the comments and the doc comments, and
-the README and plan prose; twenty-five had grown back since, in
-README prose, four plan sections, and three doc comments. Each is
-reworded rather than substituted, the way those sweeps did it: a
-colon for an appositive, a semicolon for a joined clause,
-parentheses where the dash pair was already acting as one. Prose
-only, no behaviour: nothing here reaches a string a user sees.
+- [x] The built-in html-to-text, asked for 2026-09-01: an html-only
+      message renders readably with no lynx or mailcap at all -
+      rmut's own ~400 lines in rmut-core::html, entities decoded,
+      block elements breaking lines, links kept as `text <url>` (the
+      window clicks them), blockquotes as `> ` so the quote colours
+      and T work on html mail, style/script/head dropped, broken
+      html never a panic. The default for a text/html part nothing
+      else claims (auto_view still consulted first); `[pager] html =
+      "raw"` restores mutt's literal view, and the window's
+      Preferences HTML checkbox switches it alone ([gui] html over
+      [pager] html). Replies quote the rendered text too, since
+      reply text comes from the same body. Still owed if daily use
+      asks: styled runs in the window (bold, headings) and cid:
+      images through the inline-image machinery
+
+## 2.6.0 (released 2026-09-04)
+
+Html mail reads without lynx: rmut's own html-to-text in rmut-core
+(entities, blocks, links as `text <url>`, blockquotes as `> `), the
+default for a text/html part nothing else claims, `[pager] html =
+"raw"` keeping mutt's literal view and the window's HTML checkbox
+switching it alone. The attachment menu's Enter shows a text part
+the way the pager would (auto_view first, html rendered), and R
+views through the built-in renderer by name, both fronts. The window
+ships a desktop entry (`just install-desktop`), comes up in front of
+the terminal that launched it (no StartupNotify handshake it never
+completed), and no longer waits on a mailcap viewer: a windowed one
+runs bare, a needsterminal one in the terminal, neither holding the
+keys - a browser opened on a pdf used to park the window until the
+browser closed.
 
 ## 2.6.1 (released 2026-09-07)
 
@@ -2344,78 +2406,16 @@ macro now, the terminal included. And $pager_stop = no reaches the
 window: the last page pages into the next undeleted message, a part
 view returning to its attachment menu first.
 
-## 2.6.0 (released 2026-09-04)
+## 2.6.2 (released 2026-09-07)
 
-Html mail reads without lynx: rmut's own html-to-text in rmut-core
-(entities, blocks, links as `text <url>`, blockquotes as `> `), the
-default for a text/html part nothing else claims, `[pager] html =
-"raw"` keeping mutt's literal view and the window's HTML checkbox
-switching it alone. The attachment menu's Enter shows a text part
-the way the pager would (auto_view first, html rendered), and R
-views through the built-in renderer by name, both fronts. The window
-ships a desktop entry (`just install-desktop`), comes up in front of
-the terminal that launched it (no StartupNotify handshake it never
-completed), and no longer waits on a mailcap viewer: a windowed one
-runs bare, a needsterminal one in the terminal, neither holding the
-keys - a browser opened on a pdf used to park the window until the
-browser closed.
-
-## After 2.5.0
-
-- [x] The built-in html-to-text, asked for 2026-09-01: an html-only
-      message renders readably with no lynx or mailcap at all -
-      rmut's own ~400 lines in rmut-core::html, entities decoded,
-      block elements breaking lines, links kept as `text <url>` (the
-      window clicks them), blockquotes as `> ` so the quote colours
-      and T work on html mail, style/script/head dropped, broken
-      html never a panic. The default for a text/html part nothing
-      else claims (auto_view still consulted first); `[pager] html =
-      "raw"` restores mutt's literal view, and the window's
-      Preferences HTML checkbox switches it alone ([gui] html over
-      [pager] html). Replies quote the rendered text too, since
-      reply text comes from the same body. Still owed if daily use
-      asks: styled runs in the window (bold, headings) and cid:
-      images through the inline-image machinery
-
-## After 2.2.1
-
-- [x] The built-in editor, asked for 2026-09-01: `[gui] editor =
-      "builtin"` (a Preferences checkbox; external stays the
-      default, as the G-plan promised) routes the draft, new-mime
-      files and raw-edit into an egui text box under the same file
-      contract as $EDITOR - Ctrl+Enter writes and lands on the
-      compose menu, Esc abandons with the draft kept, the keymap
-      stands down while it is up, and raw bytes that are not clean
-      UTF-8 keep the terminal so nothing is mangled
-
-- [x] Embedded Neovim, asked for the same day: `[gui] editor =
-      "nvim"` (third choice in the Preferences combo) runs the real
-      `nvim --embed` over msgpack-RPC (rmpv), renders its
-      ext_linegrid with the window's own monospace machinery - nvim's
-      colors, cursor, the user's whole config and plugins - and
-      forwards every key in nvim notation; :wq resumes the compose
-      flow exactly as an editor exit does, spawn failure falls back
-      to the terminal, and a test drives the real binary over RPC
-      (no display needed)
-
-## 2.2.1 (released 2026-09-01)
-
-The terminal hunt fixed hours after 2.2.0: it knew only foot,
-alacritty, kitty and xterm, so a stock GNOME desktop could not
-compose. It now also finds gnome-terminal (behind --wait, or its
-server "finishes" mid-edit), konsole, xfce4-terminal, terminator and
-x-terminal-emulator, each called its own way.
-
-## 2.2.0 (released 2026-09-01)
-
-The window grown up, all at 2.2.0 on crates.io: G4 (the compose flow
-through a spawned terminal, the compose menu, postponed and query
-screens, mailto, resend, -p), G5 (clickable URLs, the proportional
-body, the new-mail notification), the window's own colors (#rrggbb
-everywhere, [gui.colors], the canvas as the whole window's ground
-with the widget theme following its brightness, the zebra derived
-from it), the About overlay and the Preferences dialog with its
-gui.toml overlay.
+The last em dashes go. Three earlier sweeps took them out of the
+status and error messages, the comments and the doc comments, and
+the README and plan prose; twenty-five had grown back since, in
+README prose, four plan sections, and three doc comments. Each is
+reworded rather than substituted, the way those sweeps did it: a
+colon for an appositive, a semicolon for a joined clause,
+parentheses where the dash pair was already acting as one. Prose
+only, no behaviour: nothing here reaches a string a user sees.
 
 ## Still open inside rounds marked done
 

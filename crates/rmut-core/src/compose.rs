@@ -1028,14 +1028,14 @@ mod tests {
 
     #[test]
     fn followup_to_drops_me_only_when_subscribed() {
-        let addrs = vec!["jarda@example.com".to_string()];
+        let addrs = vec!["alex@example.com".to_string()];
         let me = Me::addresses(&addrs);
         let subscribed = followup_to(
-            "dev@example.com, Jarda <jarda@example.com>",
+            "dev@example.com, Alex <alex@example.com>",
             "",
             me,
             true,
-            "Jarda <jarda@example.com>",
+            "Alex <alex@example.com>",
         );
         assert_eq!(subscribed, "dev@example.com");
         let unsubscribed = followup_to(
@@ -1043,30 +1043,30 @@ mod tests {
             "petr@example.com",
             me,
             false,
-            "Jarda <jarda@example.com>",
+            "Alex <alex@example.com>",
         );
         assert_eq!(
             unsubscribed,
-            "dev@example.com, petr@example.com, Jarda <jarda@example.com>"
+            "dev@example.com, petr@example.com, Alex <alex@example.com>"
         );
         // Already listed: no second copy of my address.
         let once = followup_to(
-            "dev@example.com, jarda@example.com",
+            "dev@example.com, alex@example.com",
             "",
             me,
             false,
-            "Jarda <jarda@example.com>",
+            "Alex <alex@example.com>",
         );
-        assert_eq!(once, "dev@example.com, jarda@example.com");
+        assert_eq!(once, "dev@example.com, alex@example.com");
     }
 
     #[test]
     fn group_reply_drops_me_and_the_sender() {
-        let addrs = vec!["jarda@example.com".to_string()];
+        let addrs = vec!["alex@example.com".to_string()];
         let alternates = vec![crate::pattern::Matcher::new("^jp@old\\.example\\.com$")];
         let me = Me::new(&addrs, &alternates);
         let cc = group_recipients(
-            "Team <team@example.com>, Jarda <jarda@example.com>, jp@old.example.com",
+            "Team <team@example.com>, Alex <alex@example.com>, jp@old.example.com",
             "boss@example.com, team@example.com",
             "Petr <petr@example.com>",
             me,
@@ -1077,13 +1077,13 @@ mod tests {
         assert_eq!(cc, "Team <team@example.com>, boss@example.com");
         // $metoo keeps me on the copy.
         let cc = group_recipients(
-            "team@example.com, jarda@example.com",
+            "team@example.com, alex@example.com",
             "",
             "petr@example.com",
             me,
             true,
         );
-        assert_eq!(cc, "team@example.com, jarda@example.com");
+        assert_eq!(cc, "team@example.com, alex@example.com");
     }
 
     #[test]
