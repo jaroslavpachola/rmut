@@ -166,6 +166,10 @@ The bindings below are the defaults; the
 configuration remaps them, macros may shadow them, and
 .B ?
 always shows the live keymap.
+An Alt key can be typed the way mutt spells it, as Esc and then the
+key: in the index, the pager and the compose menu an Esc waits for the
+next key and makes it the Alt binding however slowly it follows, so
+Esc / is search-reverse like Alt+/. Esc twice is Esc's own binding.
 .SS Index
 .TP 12
 .B j k Up Down
@@ -459,7 +463,7 @@ to
 .B \(dqraw\(dq
 for mutt's literal source view.
 .TP 12
-.B q i Esc
+.B q i\fR, \fBEsc Esc
 back to the index
 .TP
 .B Enter Backspace

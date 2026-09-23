@@ -1350,3 +1350,32 @@ fn pager_stop_keeps_the_last_page() {
         pager.view.body
     );
 }
+
+#[test]
+fn esc_then_a_key_is_the_alt_binding() {
+    let (_dir, mut gui) = fixture(&["one", "two"]);
+    // mutt's Esc / typed as two presses: search-reverse, not search.
+    key(&mut gui, KeyCode::Esc);
+    assert!(gui.prompt.is_none(), "a lone Esc waits for its second key");
+    press(&mut gui, "/");
+    let Some(crate::app::Prompt::Line { label, .. }) = &gui.prompt else {
+        panic!("Esc / opens a search prompt");
+    };
+    assert_eq!(label, "Reverse search: ");
+    key(&mut gui, KeyCode::Esc);
+    assert!(gui.prompt.is_none(), "Esc still cancels a prompt");
+    // The Esc was the prompt's: the / after it is a plain search.
+    press(&mut gui, "/");
+    let Some(crate::app::Prompt::Line { label, .. }) = &gui.prompt else {
+        panic!("/ opens a search prompt");
+    };
+    assert_eq!(label, "Search: ");
+    key(&mut gui, KeyCode::Esc);
+    // In the pager, Esc Esc is Esc's own binding: back to the index.
+    key(&mut gui, KeyCode::Enter);
+    assert!(matches!(gui.mode, Mode::Pager(_)));
+    key(&mut gui, KeyCode::Esc);
+    assert!(matches!(gui.mode, Mode::Pager(_)), "one Esc only waits");
+    key(&mut gui, KeyCode::Esc);
+    assert!(matches!(gui.mode, Mode::Index), "Esc Esc leaves the pager");
+}

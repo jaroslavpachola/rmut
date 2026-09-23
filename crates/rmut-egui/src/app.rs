@@ -232,6 +232,9 @@ pub struct Gui {
     pending_keys: VecDeque<KeyEvent>,
     tag_next: bool,
     what_key: bool,
+    /// An Esc typed in the index, pager or compose menu, waiting for
+    /// the key that makes it mutt's `Esc x`.
+    esc: rmut_front::EscPrefix,
     /// The "not in the GUI yet" notices already said once.
     said: std::collections::HashSet<&'static str>,
     /// Keys were handled this frame, so the index recenters on the
@@ -332,6 +335,7 @@ impl Gui {
             pending_keys: VecDeque::new(),
             tag_next: false,
             what_key: false,
+            esc: rmut_front::EscPrefix::default(),
             said: Default::default(),
             keys_this_frame: false,
             scroll_px: 0.0,
@@ -726,6 +730,20 @@ impl Gui {
             }
             return;
         }
+        // mutt's Esc prefix, in the menus whose keymaps hold Alt keys.
+        let key = if self.prompt.is_none()
+            && matches!(
+                self.mode,
+                Mode::Index | Mode::Pager(_) | Mode::Compose { .. }
+            ) {
+            match self.esc.apply(key) {
+                Some(key) => key,
+                None => return,
+            }
+        } else {
+            self.esc.clear();
+            key
+        };
         if self.prompt.is_some() {
             self.handle_prompt_key(key);
             return;

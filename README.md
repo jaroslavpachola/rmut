@@ -1052,7 +1052,10 @@ reply_sign_encrypted = false   # a reply to encrypted mail, signed too
 
 Key syntax: a character, `ctrl+x`, `alt+x`, or enter/esc/space/tab/
 backspace/up/down/pgup/pgdn/home/end. `?` lists all actions with their
-current keys.
+current keys. An `alt+x` binding also answers to mutt's spelling, Esc
+then x: in the index, the pager and the compose menu an Esc waits for
+the next key, so Esc / is search-reverse however slowly it is typed,
+and Esc Esc is whatever Esc alone is bound to (back, in the pager).
 
 ### Coming from mutt
 

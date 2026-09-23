@@ -4555,6 +4555,48 @@ def scenario_small_habits(tmp):
     assert os.listdir(os.path.join(md, "new")), "the arrival stayed new"
 
 
+def scenario_esc_prefix(tmp):
+    """mutt's Esc x typed as two separate presses: Esc waits for the
+    next key and makes it the Alt binding, as mutt's keymap does; in
+    the pager Esc Esc is Esc's own binding, back to the index; after a
+    run of digits a plain Esc still just cancels the jump."""
+    md = make_maildir(tmp)
+    write_msgs(md, ["jane", "petr"])
+    r = Rmut(md, base_env(tmp))
+    r.expect("Lunch on Friday")
+    # Far longer than a terminal takes between the two bytes of an
+    # Alt key, so the reader cannot merge them itself.
+    r.keys(b"\x1b")
+    time.sleep(0.5)
+    r.buf = ""
+    r.keys(b"/")
+    r.expect("Reverse search:")
+    r.keys(b"\x1b")  # the prompt's Esc: cancel
+    r.settle()
+    # Digits, then Esc: the jump is cancelled and nothing is held.
+    r.keys(b"2")
+    r.expect("Jump to message: 2")
+    r.keys(b"\x1b")
+    time.sleep(0.5)
+    r.buf = ""
+    r.keys(b"/")
+    r.expect("Search:", absent=("Reverse search:",))
+    r.keys(b"\x1b")
+    r.settle()
+    r.keys(b"1\r")
+    r.settle()
+    r.keys(b"\r")
+    r.expect("free for lunch")
+    r.keys(b"\x1b")
+    time.sleep(0.5)
+    r.keys(b"\x1b")
+    r.buf = ""
+    r.repaint()
+    r.expect("Msgs:2")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -4631,6 +4673,7 @@ SCENARIOS = [
     scenario_last_keys,
     scenario_compose_functions,
     scenario_subject_threading,
+    scenario_esc_prefix,
 ]
 
 

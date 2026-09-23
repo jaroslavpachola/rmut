@@ -11,7 +11,7 @@ use rmut_core::config::Config;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::{self, Pattern};
 use rmut_core::{alias, command, compose, maildir, message};
-use rmut_front::{KeyCode, KeyEvent, KeyModifiers};
+use rmut_front::{EscPrefix, KeyCode, KeyEvent, KeyModifiers};
 use rmut_session::{
     Answer, Ask, AskKind, Compose, ComposeKind, FrontOp, Function, Key, Outcome, PageSpot, Request,
     Session, SidebarOp, Wants, default_from, draft_full, expand_tilde, pipe_to, write_draft,
@@ -296,6 +296,9 @@ pub struct App {
     /// mutt's number entry: digits typed in the index accumulate here
     /// until Enter jumps to that message.
     jump_buffer: String,
+    /// An Esc typed in the index, pager or compose menu, waiting for
+    /// the key that makes it mutt's `Esc x`.
+    esc: EscPrefix,
     /// mutt's $ts_enabled: the last terminal title written, so it is
     /// only re-sent when it changes.
     last_title: String,
@@ -420,6 +423,7 @@ impl App {
             pending_suspend: false,
             tag_next: false,
             jump_buffer: String::new(),
+            esc: EscPrefix::default(),
             last_title: String::new(),
             quit: false,
         };
@@ -759,6 +763,23 @@ impl App {
             self.redraw = true;
             return;
         }
+        // mutt's Esc prefix, in the menus whose keymaps hold Alt keys;
+        // a run of digits in the index still ends on a plain Esc.
+        let key = if self.prompt.is_none()
+            && matches!(
+                self.mode,
+                Mode::Index | Mode::Pager(_) | Mode::Compose { .. }
+            )
+            && (self.jump_buffer.is_empty() || self.esc.is_pending())
+        {
+            match self.esc.apply(key) {
+                Some(key) => key,
+                None => return,
+            }
+        } else {
+            self.esc.clear();
+            key
+        };
         if self.prompt.is_some() {
             self.handle_prompt_key(key);
         } else if matches!(self.mode, Mode::Index) {
