@@ -2417,6 +2417,33 @@ colon for an appositive, a semicolon for a joined clause,
 parentheses where the dash pair was already acting as one. Prose
 only, no behaviour: nothing here reaches a string a user sees.
 
+## 2.6.3 (released 2026-09-23)
+
+Real mail, read the way mutt reads it. A corpus sweep (`cargo run
+--release -p rmut-core --example corpus`) runs every message under
+the IMAP cache through the envelope parser, the threader and the
+index format, each inside `catch_unwind`; over the 91,046 messages of
+a working account it found no panic, no parse failure and no message
+lost in threading, and 32 subjects and senders shown with a raw
+`=?utf-8?Q?...?=` in them, one with two U+FFFD for an "í". Both are
+mail out of spec that mutt reads anyway: mailparse takes an encoded
+word only with whitespace either side and converts each word on its
+own, where mutt's `find_encoded_word` asks nothing of the
+surroundings and `rfc2047_decode` converts adjacent words of one
+charset together, so a character split across two of them joins.
+`rfc2047.rs` ports those, unfolding the way `mutt_read_rfc822_line`
+does, and every displayed header goes through it; the header cache
+records which decoder wrote it, since its key only notices a file
+that changed and none of these had.
+
+And Esc then a key is the Alt binding. mutt spells every Alt key
+`Esc x`, and its keymap waits after an Esc for the rest; rmut only
+had Alt when the terminal delivered the two bytes together, so Esc,
+a pause, then / was a forward search and search-reverse needed Alt
+held down. The index, the pager and the compose menu now hold an Esc
+for the next key in both fronts; Esc Esc is Esc's own binding, which
+in the pager is back to the index.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
