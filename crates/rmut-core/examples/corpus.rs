@@ -32,8 +32,14 @@ const DEFAULT_INDEX_FORMAT: &str = "%4C %Z %{%b %d} %-15.15L (%?l?%4l&%4c?) %s";
 
 /// How many offending paths to print per category; the rest are
 /// counted only, since a corpus can disagree thousands of times over
-/// the same one cause.
-const EXAMPLES: usize = 5;
+/// the same one cause. `RMUT_CORPUS_EXAMPLES` raises it when a
+/// category turns out to be worth reading in full.
+fn examples() -> usize {
+    std::env::var("RMUT_CORPUS_EXAMPLES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(5)
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -188,11 +194,12 @@ impl Report {
             }
             let pct = 100.0 * items.len() as f64 / self.seen.max(1) as f64;
             println!("  {label}: {} ({pct:.2}%)", items.len());
-            for item in items.iter().take(EXAMPLES) {
+            let shown = examples();
+            for item in items.iter().take(shown) {
                 println!("      {item}");
             }
-            if items.len() > EXAMPLES {
-                println!("      ... and {} more", items.len() - EXAMPLES);
+            if items.len() > shown {
+                println!("      ... and {} more", items.len() - shown);
             }
         }
         println!();
