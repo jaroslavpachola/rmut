@@ -41,8 +41,17 @@ struct Entry {
     broken: bool,
 }
 
+/// Which header decoding wrote the cache. The key only notices a file
+/// that changed, so a fix to how an unchanged file decodes would never
+/// reach an envelope already cached; a cache from another decoder is
+/// dropped whole and rebuilt instead. 1: mutt's RFC 2047 reading
+/// (`rfc2047`), which pre-1 caches, written through mailparse, lack.
+const DECODER: u32 = 1;
+
 #[derive(Serialize, Deserialize, Default)]
 struct CacheFile {
+    #[serde(default)]
+    decoder: u32,
     /// The mirrored maildir, so `sweep` can drop caches of vanished
     /// mailboxes (absent in pre-1.30 files, which age out on
     /// their next rewrite).
@@ -125,6 +134,7 @@ fn load_envelopes_at(dir: &Path, cache_file: &Path) -> Result<(Vec<Envelope>, us
     let mut cached: HashMap<String, Entry> = std::fs::read_to_string(cache_file)
         .ok()
         .and_then(|text| toml::from_str::<CacheFile>(&text).ok())
+        .filter(|c| c.decoder == DECODER)
         .map(|c| c.entries.into_iter().map(|e| (e.key.clone(), e)).collect())
         .unwrap_or_default();
     let mut envelopes = Vec::new();
@@ -158,6 +168,7 @@ fn load_envelopes_at(dir: &Path, cache_file: &Path) -> Result<(Vec<Envelope>, us
             let _ = std::fs::create_dir_all(parent);
         }
         let out = CacheFile {
+            decoder: DECODER,
             dir: dir.display().to_string(),
             entries: fresh,
         };
@@ -267,6 +278,29 @@ mod tests {
         write_msg(&md.join("cur"), "1.host:2,FS", "changed for real");
         let (envs, _) = load_envelopes_at(&md, &cache).unwrap();
         assert_eq!(envs[0].subject, "changed for real");
+    }
+
+    #[test]
+    fn a_cache_from_another_decoder_is_rebuilt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let md = tmp.path().join("md");
+        for sub in ["cur", "new", "tmp"] {
+            std::fs::create_dir_all(md.join(sub)).unwrap();
+        }
+        write_msg(&md.join("cur"), "1.host:2,S", "=?utf-8?Q?Nov=C3=BD_?=text");
+        let cache = tmp.path().join("headers.toml");
+        load_envelopes_at(&md, &cache).unwrap();
+        // What an older rmut left: the same key, the word undecoded,
+        // and no decoder field.
+        let text = std::fs::read_to_string(&cache).unwrap();
+        let old = text
+            .replace(&format!("decoder = {DECODER}\n"), "")
+            .replace("Nový text", "=?utf-8?Q?Nov=C3=BD_?=text");
+        std::fs::write(&cache, old).unwrap();
+        let (envs, _) = load_envelopes_at(&md, &cache).unwrap();
+        assert_eq!(envs[0].subject, "Nový text");
+        let text = std::fs::read_to_string(&cache).unwrap();
+        assert!(text.contains(&format!("decoder = {DECODER}")), "{text}");
     }
 
     #[test]
