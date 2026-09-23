@@ -862,9 +862,8 @@ pub fn bare_address(field: &str) -> Option<String> {
 
 /// The SMTP envelope sender: the bare address of the From header.
 pub fn from_address(text: &str) -> Option<String> {
-    use mailparse::MailHeaderMap;
     let mail = mailparse::parse_mail(text.as_bytes()).ok()?;
-    bare_address(&mail.get_headers().get_first_value("From")?)
+    bare_address(&crate::rfc2047::first(&mail.get_headers(), "From")?)
 }
 
 fn field_addresses(value: &str, out: &mut Vec<String>) {
@@ -935,7 +934,7 @@ pub fn smtp_envelope(text: &str) -> Result<(Vec<String>, String)> {
     for header in &mail.headers {
         let key = header.get_key();
         if ["to", "cc", "bcc"].contains(&key.to_lowercase().as_str()) {
-            field_addresses(&header.get_value(), &mut rcpts);
+            field_addresses(&crate::rfc2047::value(header), &mut rcpts);
         }
     }
     rcpts.dedup();

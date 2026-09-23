@@ -6,6 +6,7 @@ use chrono::{Local, TimeZone};
 use mailparse::{MailHeaderMap, ParsedMail, parse_mail};
 
 use crate::maildir::MailFile;
+use crate::rfc2047;
 
 /// Summary of one message for the index view.
 #[derive(Debug, Clone)]
@@ -115,14 +116,13 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     let raw = fs::read(&file.path).with_context(|| format!("reading {}", file.path.display()))?;
     let mail = parse_mail(&raw).with_context(|| format!("parsing {}", file.path.display()))?;
     let headers = mail.get_headers();
-    let from_full = one_line(&headers.get_first_value("From").unwrap_or_default());
+    let from_full = one_line(&rfc2047::first(&headers, "From").unwrap_or_default());
     let from = if from_full.trim().is_empty() {
         "(unknown)".into()
     } else {
         short_from(&from_full)
     };
-    let subject = headers
-        .get_first_value("Subject")
+    let subject = rfc2047::first(&headers, "Subject")
         .map(|s| one_line(&s))
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "(no subject)".into());
@@ -133,8 +133,8 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     let msg_id = headers
         .get_first_value("Message-ID")
         .and_then(|v| parse_msg_ids(&v).into_iter().next());
-    let to = field_addresses(&headers.get_all_values("To").join(", "));
-    let cc = field_addresses(&headers.get_all_values("Cc").join(", "));
+    let to = field_addresses(&rfc2047::all(&headers, "To").join(", "));
+    let cc = field_addresses(&rfc2047::all(&headers, "Cc").join(", "));
     let mut references = headers
         .get_first_value("References")
         .map(|v| parse_msg_ids(&v))
@@ -150,12 +150,10 @@ pub fn envelope(file: MailFile) -> Result<Envelope> {
     } else {
         Some(body_lines(&raw))
     };
-    let list = headers
-        .get_first_value("List-Id")
+    let list = rfc2047::first(&headers, "List-Id")
         .and_then(|v| list_name(&v))
         .map(|n| one_line(&n));
-    let label = headers
-        .get_first_value("X-Label")
+    let label = rfc2047::first(&headers, "X-Label")
         .map(|v| one_line(&v))
         .filter(|v| !v.trim().is_empty());
     let broken = headers
@@ -395,7 +393,7 @@ pub fn load_with(path: &Path, disp: &Display) -> Result<MessageView> {
     let all: Vec<(String, String)> = mail
         .headers
         .iter()
-        .map(|h| (h.get_key(), one_line(&h.get_value())))
+        .map(|h| (h.get_key(), one_line(&rfc2047::value(h))))
         .collect();
     let brief = weed(&all, &disp.rules);
     let mut body = String::new();
@@ -477,7 +475,7 @@ fn render(part: &ParsedMail, disp: &Display, out: &mut String) -> bool {
             let all: Vec<(String, String)> = embedded
                 .headers
                 .iter()
-                .map(|h| (h.get_key(), h.get_value()))
+                .map(|h| (h.get_key(), rfc2047::value(h)))
                 .collect();
             for (name, value) in weed(&all, &disp.rules) {
                 out.push_str(&format!("{name}: {value}\n"));
@@ -600,10 +598,8 @@ fn displayable(part: &ParsedMail, filters: &std::collections::HashMap<String, St
 /// `[-- Type: application/pdf, Encoding: base64, Size: 12K --]`
 fn marker(part: &ParsedMail, count: usize, out: &mut String) {
     gap(out);
-    let name = part
-        .get_headers()
-        .get_first_value("Content-Description")
-        .or_else(|| part_filename(part));
+    let name =
+        rfc2047::first(&part.get_headers(), "Content-Description").or_else(|| part_filename(part));
     match name {
         Some(n) => out.push_str(&format!("[-- Attachment #{count}: {n} --]\n")),
         None => out.push_str(&format!("[-- Attachment #{count} --]\n")),
@@ -822,7 +818,7 @@ pub fn with_thread_headers(
 pub fn first_header(path: &Path, name: &str) -> Option<String> {
     let raw = fs::read(path).ok()?;
     let mail = parse_mail(&raw).ok()?;
-    mail.get_headers().get_first_value(name)
+    rfc2047::first(&mail.get_headers(), name)
 }
 
 /// The whole decoded header block as `Name: value` lines, for the
@@ -834,7 +830,7 @@ pub fn header_text(path: &Path) -> Option<String> {
     for header in mail.get_headers() {
         out.push_str(&header.get_key());
         out.push_str(": ");
-        out.push_str(&header.get_value());
+        out.push_str(&rfc2047::value(header));
         out.push('\n');
     }
     Some(out)

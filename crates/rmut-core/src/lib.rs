@@ -18,6 +18,7 @@ pub mod notice;
 pub mod pattern;
 pub mod pgp;
 pub mod remote;
+pub mod rfc2047;
 pub mod smtp;
 pub mod thread;
 
