@@ -2444,6 +2444,20 @@ held down. The index, the pager and the compose menu now hold an Esc
 for the next key in both fronts; Esc Esc is Esc's own binding, which
 in the pager is back to the index.
 
+## 2.6.4 (released 2026-09-23)
+
+Alt in the window. rmut-egui turned a Ctrl/Alt chord into a key
+through egui's key name, taken only when one character long: letters
+and digits, never punctuation, which egui names in words ("Slash").
+Alt+/ was dropped, and because egui-winit withholds a chord's text
+only under Ctrl, the "/" still arrived as text and opened a forward
+search; 2.6.3's Esc prefix was the only way to search-reverse there.
+The chord's character is now egui's symbol for the key. The same
+egui-winit rule sent every Alt letter twice, chord and then text
+(Alt+v folding the thread, then v opening the attachment menu); the
+text an Alt chord brings is dropped when it is that chord's own
+character, and kept otherwise.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
