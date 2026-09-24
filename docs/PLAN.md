@@ -1202,12 +1202,14 @@ wanted": the TUI is what pays for it today.
 - [x] Progress is a notice: the message line says what is running
       from the moment it starts ("fetching the message... (Ctrl+G
       aborts)"), and the connection's own lines replace it
-- [ ] Still waits for the server: opening a mailbox (the first
-      connect and a switch), the folder browser's listing, a
-      server-side `~b` search, and an append (saving to an IMAP
-      folder, an Fcc). Each is one user-initiated action, bounded by
-      R54's connect timeout; the machinery to move them is the same
-      `Pending`, if they prove worth it
+- [x] Still waited for the server until 2.7.0: opening a mailbox
+      (a switch, and a first connect to another account), the folder
+      browser's listing, a server-side `~b` search, and an append
+      (saving to an IMAP folder, an Fcc, write-fcc, an edited copy).
+      All of them are now a `Pending::Then`, a continuation the
+      answer is handed to; see the 2.7.0 notes. The one left is the
+      startup open, before the screen exists, which narrates on the
+      terminal the way mutt's does
 - [x] Bugfix (1.82, 2026-08-27): the answer came back on a channel
       nothing woke the loop for, and the loop slept its full 1s input
       poll on every fetch: 1013ms per IMAP body, measured, from the
@@ -2458,14 +2460,42 @@ egui-winit rule sent every Alt letter twice, chord and then text
 text an Alt chord brings is dropped when it is that chord's own
 character, and kept otherwise.
 
+## 2.7.0 (released 2026-09-24)
+
+R55's leftovers: nothing a user starts waits on the server with the
+screen stopped any more. A switch to another folder of the account is
+a SELECT on the connection's thread; another account, or a SELECT the
+server refuses, connects on a thread of its own, the password asked
+for first on the main thread since a pinentry may want the terminal.
+Meanwhile the old mailbox stays on screen, the message line narrates,
+the keys typed wait for the mailbox that is coming (mutt's typeahead,
+macros included), and Ctrl+G gives up and leaves you where you were.
+A switch that fails part way puts the connection back: the old
+folder's facts return, and the next operation SELECTs it again before
+running, so nothing lands in the folder the abort left selected. The
+folder browser opens at once from the last LIST and fills in when the
+fresh one lands (`Request::FoldersChanged`). A limit, search or
+D/U/T pattern with a `~b` term asks the server first and runs again
+when the answer is in. Saving or copying to a server folder is one
+batch of APPENDs, the deleted marks and the undo step following the
+answer; the Fcc after a send, write-fcc and an edited copy go the
+same way. The window gained Ctrl+G, which it never had.
+
+The machinery: `Pending::Then`, a boxed continuation, beside the old
+named kinds; `deferred` became a queue, and `start` queues behind a
+job in flight rather than overwriting it, which a `$` pressed during
+the poll tick used to do, taking the tick's answer as the sync's. A
+progress line no longer covers something the user was just told
+("created imap:x/Archive"). And the mail still inside its $undo_send
+window survives a mailbox switch: the switch built a fresh session
+and dropped it, unsent.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
 
 - R42: a real next/previous-marked motion, if the macros do not carry
   it
-- R55: opening and switching a mailbox, the browser's LIST, a
-  server-side `~b` search and an APPEND still block the TUI
 - R59: `move` + `mbox` dropped on purpose; stays dropped unless asked
 
 ## The GUI front end (proposed, 2026-08-27)

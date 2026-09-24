@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
+use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +46,10 @@ pub struct Remote {
     /// A way to cut the socket from another thread, kept in step with
     /// every reconnect: mutt's Ctrl+G, from whoever is driving.
     cutoff: net::Cutoff,
+    /// Set by a switch that failed part way: the server may have
+    /// another folder selected, so the next operation selects this
+    /// one first.
+    reselect: bool,
 }
 
 /// How many newest headers a first open fetches synchronously; the
@@ -196,6 +201,7 @@ impl Remote {
             pending_backfill: Vec::new(),
             progress,
             cutoff,
+            reselect: false,
         };
         remote.point_at(mailbox)?;
         Ok(remote)
@@ -216,8 +222,33 @@ impl Remote {
         self.progress = progress;
     }
 
+    ///
+    /// A switch that fails part way (a refused SELECT, a Ctrl+G in
+    /// the reconcile) leaves the connection where it was: the old
+    /// folder's facts come back, and the next operation selects it
+    /// again before it runs, so nothing lands in the wrong folder.
     pub fn switch(&mut self, mailbox: &str) -> Result<()> {
-        self.point_at(mailbox)
+        let before = (
+            self.spec.clone(),
+            self.mailbox.clone(),
+            self.cache.clone(),
+            self.uidvalidity,
+            self.last_uid,
+            self.pending_backfill.clone(),
+        );
+        let switched = self.point_at(mailbox);
+        if switched.is_err() {
+            (
+                self.spec,
+                self.mailbox,
+                self.cache,
+                self.uidvalidity,
+                self.last_uid,
+                self.pending_backfill,
+            ) = before;
+            self.reselect = true;
+        }
+        switched
     }
 
     /// Point the session at `mailbox`: SELECT, cache setup with the
@@ -271,6 +302,14 @@ impl Remote {
         &mut self,
         mut op: impl FnMut(&mut Client, &Path, &mut Progress) -> Result<T>,
     ) -> Result<T> {
+        // A failed switch may have left another folder selected.
+        if mem::take(&mut self.reselect)
+            && self.client.select(&self.mailbox).is_err()
+            && let Err(err) = self.reconnect()
+        {
+            self.reselect = true;
+            return Err(err.context("back to the folder after a failed switch"));
+        }
         match op(&mut self.client, &self.cache, &mut self.progress) {
             // A cut connection is somebody asking for this to stop,
             // so it is not retried; the next job reconnects.

@@ -611,6 +611,8 @@ class FakeImap(threading.Thread):
         self.idle_push = False  # make the idling connection see EXISTS
         self.auth_payloads = []  # SASL responses from AUTHENTICATE
         self.body_delay = 0  # seconds a full-body fetch dawdles
+        self.select_delay = 0  # seconds a SELECT dawdles
+        self.list_delay = 0  # seconds a LIST dawdles
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -690,11 +692,15 @@ class FakeImap(threading.Thread):
                     )
                     conn.sendall(f'* STATUS "{name}" (UNSEEN {unseen})\r\n'.encode())
                 elif up.startswith("SELECT"):
+                    if self.select_delay:
+                        time.sleep(self.select_delay)
                     conn.sendall(
                         f"* {len(self.msgs)} EXISTS\r\n"
                         f"* OK [UIDVALIDITY 7] ok\r\n".encode()
                     )
                 elif up.startswith("LIST"):
+                    if self.list_delay:
+                        time.sleep(self.list_delay)
                     conn.sendall(b'* LIST () "/" "INBOX"\r\n* LIST () "/" "Sent"\r\n')
                 elif up.startswith("UID FETCH"):
                     m = re.match(r"UID FETCH ([\d,:*]+) \((.*)\)", cmd, re.I)
@@ -4333,6 +4339,85 @@ imap_tls = false
 
 
 
+def scenario_network_open(tmp):
+    """R55, the rest: opening a folder, the browser's list and a save
+    to the server no longer stop the screen. Keys typed while a folder
+    opens wait for it, Ctrl+G gives up on the open and leaves the old
+    folder working, and the browser shows up at once, filling in when
+    the server's list lands."""
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="the only one",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="o1", body="an open body"))
+    imap.start()
+    cfg = os.path.join(tmp, "open-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f"""
+[identity]
+email = "alex@example.com"
+[mail]
+poll_seconds = 600
+[[accounts]]
+name = "slow"
+user = "jane"
+password = "x"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+    env = base_env(tmp, {
+        "RMUT_CONFIG": cfg,
+        "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+    })
+    r = Rmut("imap:slow", env)
+    r.expect("imap:slow/INBOX", "Msgs:1", "the only one")
+    # A slow SELECT: the message line says so, and the l typed
+    # meanwhile is held for the folder that is coming.
+    imap.select_delay = 3
+    r.keys(b"c")
+    r.expect("Open mailbox (Tab completes):")
+    r.keys(b"imap:slow/Sent\r")
+    r.expect("opening Sent", "Ctrl+G aborts")
+    r.buf = ""
+    r.keys(b"l")
+    r.settle(1.0)
+    assert "Limit" not in squash(r.buf), "a key ran before the folder opened"
+    r.expect("imap:slow/Sent", "Limit (", timeout=8)
+    r.keys(b"\r")  # an empty limit: all of them
+    # Ctrl+G on an open: this folder stays, and still works.
+    r.keys(b"c")
+    r.expect("Open mailbox (Tab completes):")
+    r.keys(b"imap:slow/INBOX\r")
+    r.expect("opening INBOX")
+    r.keys(b"\x07")
+    r.expect("aborted: opening the folder")
+    imap.select_delay = 0
+    r.repaint()
+    r.expect("imap:slow/Sent")
+    selects = len([c for c in imap.commands if "SELECT" in c.upper()])
+    r.keys(b"\r")
+    r.expect("an open body")
+    # The abort left the server on INBOX's SELECT; the connection went
+    # back to Sent before fetching anything from it.
+    later = [c for c in imap.commands if "SELECT" in c.upper()][selects - 1:]
+    assert any('"Sent"' in c or " Sent" in c for c in later), later
+    r.keys(b"i")
+    # The browser opens at once and fills in when LIST answers.
+    imap.list_delay = 2
+    r.keys(b"y")
+    r.expect("j/k:Move Enter:Open")
+    r.expect("imap:slow/INBOX", timeout=6)
+    r.keys(b"q")
+    # A save to a folder on the server goes the same way.
+    r.keys(b"C")
+    r.expect("Copy to mailbox:")
+    r.keys(b"\x15imap:slow/Archive\r")
+    r.expect("copied to imap:slow/Archive")
+    assert any("an open body" in a for a in imap.appended), imap.appended
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_reply_text(tmp):
     """R56: the three strings mutt users change. $attribution and
     $indent_string shape a quoted reply, $forward_format the subject a
@@ -4651,6 +4736,7 @@ SCENARIOS = [
     scenario_attach_mailcap,
     scenario_network_timeouts,
     scenario_network_abort,
+    scenario_network_open,
     scenario_reply_text,
     scenario_reading_habits,
     scenario_leaving_habits,

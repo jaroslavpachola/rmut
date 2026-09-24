@@ -448,6 +448,8 @@ impl Gui {
                 Request::Quit => self.quit = true,
                 Request::ConfigChanged => warnings.extend(self.recompile_ui()),
                 Request::MailboxesChanged => self.refresh_sidebar(),
+                Request::FoldersChanged => self.folders_changed(),
+                Request::Opened(opened) => self.opened(opened),
                 Request::ShowMessage(view) => {
                     self.mode = Mode::Pager(Pager {
                         view: *view,
@@ -682,7 +684,19 @@ impl Gui {
         for key in keys {
             self.pending_keys.push_back(key);
         }
-        while let Some(key) = self.pending_keys.pop_front() {
+        // mutt's Ctrl+G: whatever the connection is doing, stop,
+        // ahead of anything typed before it.
+        if self.session.busy().is_some()
+            && let Some(at) = self.pending_keys.iter().position(is_abort)
+        {
+            self.pending_keys.remove(at);
+            self.session.abort_network();
+        }
+        // While a mailbox is on its way in, the keys are for that one
+        // and wait for it.
+        while !self.session.holding()
+            && let Some(key) = self.pending_keys.pop_front()
+        {
             self.session.clear_notice();
             self.handle_key(key);
         }
@@ -2214,12 +2228,8 @@ impl Gui {
                 if input.is_empty() {
                     return;
                 }
-                self.open_mailbox_spec(input);
                 // mutt's Alt+c: this one mailbox opens read-only.
-                if read_only {
-                    self.session.read_only = true;
-                    self.note(format!("{} (read-only)", self.session.title));
-                }
+                self.switch_mailbox(input, read_only);
             }
             LineKind::Query => self.run_query(input),
             LineKind::Notmuch => self.notmuch_search(input),
@@ -2398,27 +2408,34 @@ impl Gui {
     }
 
     pub fn open_mailbox_spec(&mut self, spec: &str) {
+        self.switch_mailbox(spec, false);
+    }
+
+    /// Leave for another mailbox. One on the server opens in the
+    /// background, and [`Gui::opened`] finishes the job when the
+    /// session says it is there.
+    fn switch_mailbox(&mut self, spec: &str, read_only: bool) {
         if !self.session.ready_to_leave() {
             self.run_requests();
             return;
         }
-        let progress: rmut_core::remote::Progress = Box::new(|_| {});
-        match self.session.switch_to(spec, progress) {
-            Ok(warnings) => {
-                self.mode = Mode::Index;
-                self.index_offset = 0;
-                self.tag_next = false;
-                if !warnings.is_empty() {
-                    self.note(warnings.join("; "));
-                }
-                self.refresh_sidebar();
-                self.session.maybe_backfill();
-                self.session.run_folder_hooks();
-                self.run_requests();
-            }
-            Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
-        }
+        self.session.switch_to(spec, read_only);
         self.complete = None;
+        self.run_requests();
+    }
+
+    /// The mailbox asked for is open: back to its index, at the top.
+    fn opened(&mut self, warnings: Vec<String>) {
+        self.mode = Mode::Index;
+        self.index_offset = 0;
+        self.tag_next = false;
+        if !warnings.is_empty() {
+            self.note(warnings.join("; "));
+        } else if self.session.read_only && !self.session.read_only_session {
+            self.note(format!("{} (read-only)", self.session.title));
+        }
+        self.refresh_sidebar();
+        self.session.run_folder_hooks();
     }
 
     /// -e on the command line: one config command before the window.
@@ -2491,13 +2508,7 @@ impl Gui {
                 self.session.config.mail.sort_alias.as_deref(),
             )
         } else {
-            let specs = match self.session.folder_candidates() {
-                Ok(specs) => specs,
-                Err(err) => {
-                    self.error(format!("cannot list folders: {err:#}"));
-                    return;
-                }
-            };
+            let specs = self.session.folder_candidates();
             // The typed prefix against the spec as written and
             // tilde-expanded, so both spellings hit.
             let wexp = rmut_session::expand_tilde(&word).display().to_string();
@@ -2526,16 +2537,26 @@ impl Gui {
     }
 
     pub fn open_folder_browser(&mut self) {
-        match self.session.folder_candidates() {
-            Ok(dirs) => {
-                let mut dirs = dirs;
-                rmut_session::sort_browser(
-                    &mut dirs,
-                    self.session.config.ui.sort_browser.as_deref(),
-                );
-                self.mode = Mode::Folders { dirs, sel: 0 };
-            }
-            Err(err) => self.error(format!("cannot list folders: {err:#}")),
+        // The server's list is the last one it gave; a fresh one
+        // follows as FoldersChanged, and the browser takes it in.
+        self.session.refresh_folders();
+        let dirs = self.session.folder_candidates();
+        self.mode = Mode::Folders { dirs, sel: 0 };
+    }
+
+    /// The server's folder list came in: a browser on screen takes
+    /// it, the cursor staying on the same entry.
+    fn folders_changed(&mut self) {
+        if !matches!(self.mode, Mode::Folders { .. }) {
+            return;
+        }
+        let fresh = self.session.folder_candidates();
+        if let Mode::Folders { dirs, sel } = &mut self.mode {
+            let on = dirs.get(*sel).map(|d| d.0.clone());
+            *sel = on
+                .and_then(|on| fresh.iter().position(|d| d.0 == on))
+                .unwrap_or(0);
+            *dirs = fresh;
         }
     }
 
@@ -2961,8 +2982,9 @@ impl Gui {
             }
         }
         self.poll_viewers();
-        // Keys a menu or context item queued during the last paint.
-        if !self.pending_keys.is_empty() {
+        // Keys a menu or context item queued during the last paint,
+        // or typed while a mailbox was on its way in.
+        if !self.pending_keys.is_empty() && !self.session.holding() {
             self.handle_keys(Vec::new());
             self.keys_this_frame = true;
         }
@@ -3071,6 +3093,11 @@ impl Gui {
 
 /// Where the window remembers its zoom: the cache, next to the
 /// header caches, never the user's config.
+/// Whether a key is Ctrl+G, which gives up on the network.
+fn is_abort(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('g') && key.modifiers.contains(rmut_front::KeyModifiers::CONTROL)
+}
+
 pub fn zoom_path() -> Option<std::path::PathBuf> {
     let base = match std::env::var_os("XDG_CACHE_HOME") {
         Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),

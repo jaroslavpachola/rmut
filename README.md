@@ -214,8 +214,14 @@ stop the screen: the index keeps drawing, the keys keep working, the
 message line says what is happening ("fetching the message... (Ctrl+G
 aborts)"), and **Ctrl+G** gives up on it the way mutt's does, after
 which the next operation reconnects. The poll for new mail, `$` sync,
-fetching a message body and the sidebar's unread counts all work this
-way; opening a mailbox and listing folders still wait for the server.
+fetching a message body, the sidebar's unread counts, opening another
+folder or account, the folder browser's list, a server-side `~b`
+search, saving to a server folder and the Fcc of a sent message all
+work this way. While a folder opens, the keys typed meanwhile wait for
+it, as they would in mutt, and Ctrl+G gives up on the open and leaves
+you where you were; the browser opens at once and fills in when the
+server's list arrives. Only the very first connect, before the screen
+comes up, still waits, with its progress on the terminal.
 
 A server that does not answer costs seconds, not the OS default of
 about two minutes with nothing on screen: `[net] connect_timeout` (10s)

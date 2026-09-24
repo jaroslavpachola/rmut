@@ -11,7 +11,8 @@ use std::io::Write as _;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
@@ -288,6 +289,63 @@ enum Pending {
     Again(Again),
     /// The unread counts of these mailboxes, in this order.
     Counts(Vec<String>),
+    /// Anything else: the answer goes to `then`. With `hold` the user
+    /// is waiting on it, so the keys typed meanwhile wait too.
+    Then { hold: bool, then: Then },
+}
+
+impl Pending {
+    fn holds(&self) -> bool {
+        matches!(self, Pending::Then { hold: true, .. })
+    }
+}
+
+/// What a job's answer is handed to, for an operation that is one of
+/// a kind rather than a whole [`Again`].
+type Then = Box<dyn FnOnce(&mut Session, Result<Done>) + Send>;
+
+/// Work waiting for the connection to come free, oldest first.
+enum Deferred {
+    /// An operation that wanted bodies: it runs again from the top.
+    Again(Again),
+    /// A job, sent as it stands.
+    Job(Job, Pending),
+}
+
+impl Deferred {
+    fn holds(&self) -> bool {
+        matches!(self, Deferred::Job(_, pending) if pending.holds())
+    }
+
+    /// Whether a Ctrl+G leaves it be: a copy kept in the background
+    /// (an Fcc) is nobody's wait, so giving up on a wait spares it.
+    fn outlives_abort(&self) -> bool {
+        matches!(self, Deferred::Job(_, Pending::Then { hold: false, .. }))
+    }
+}
+
+/// A mailbox opening on a thread of its own: another account, or the
+/// same one after its connection refused the switch.
+struct Opening {
+    spec: String,
+    read_only: bool,
+    answer: Receiver<Result<(Session, Vec<String>)>>,
+    progress: Arc<Mutex<Option<String>>>,
+}
+
+/// What a save or copy did, for the half that reports it.
+struct Copied {
+    /// The messages that went, by index.
+    copied: Vec<usize>,
+    errors: Vec<String>,
+    /// Files delivered locally, which undo removes.
+    created: Vec<PathBuf>,
+    /// Where they went, as the report names it.
+    target: String,
+    /// What undo has to say about what it cannot take back.
+    note: Option<String>,
+    delete: bool,
+    tagged: bool,
 }
 
 /// An operation that asked for message bodies before it could run.
@@ -375,6 +433,13 @@ pub struct Session {
     /// Server-side `~b` results: term -> matching UIDs, filled when a
     /// limit/search pattern with body terms is submitted on IMAP.
     body_hits: HashMap<String, HashSet<u32>>,
+    /// `~b` terms the server would not search: read locally.
+    body_local: HashSet<String>,
+    /// The open account's folders as the server last listed them,
+    /// for the browser and mailbox completion.
+    server_folders: Option<Vec<(String, usize)>>,
+    /// A LIST is on its way, so asking again waits for it.
+    listing: bool,
     /// Background IDLE watcher for the open IMAP folder.
     pub idle: Option<remote::IdleWatch>,
     /// Background header mirror for the tail of a huge IMAP folder.
@@ -423,13 +488,20 @@ pub struct Session {
     /// The operation waiting for the connection to come back, if
     /// any: at most one, because there is one connection.
     pending: Option<Pending>,
-    /// A user operation that wanted bodies while the poll tick held
-    /// the connection. It goes next, ahead of anything the tick would
-    /// start, without the front end blocking on the tick.
-    deferred: Option<Again>,
+    /// Operations that wanted the connection while something else
+    /// held it. They go next, ahead of anything the tick would start,
+    /// without the front end blocking on the tick.
+    deferred: std::collections::VecDeque<Deferred>,
+    /// A mailbox being opened in the background; this session stays
+    /// on screen until it is ready.
+    opening: Option<Opening>,
     /// Whether the message line is showing a progress line, so it can
     /// be taken back down when the job it belongs to is done.
     progress_noted: bool,
+    /// Whether the message line holds something the user was told
+    /// and has not moved past: a progress line does not cover it.
+    /// Kept here, since a sink need not say what it shows.
+    spoken: bool,
     /// Set by Ctrl+G: the answer that comes back is the abort, not
     /// something to complain about.
     aborted: bool,
@@ -549,6 +621,9 @@ impl Session {
             alternates: config.alternate_matchers(),
             my_addresses: me,
             body_hits: HashMap::new(),
+            body_local: HashSet::new(),
+            server_folders: None,
+            listing: false,
             idle: None,
             backfill: None,
             mailbox_new: HashMap::new(),
@@ -569,8 +644,10 @@ impl Session {
             attach_re: default_attach_re(),
             config,
             pending: None,
-            deferred: None,
+            deferred: std::collections::VecDeque::new(),
+            opening: None,
             progress_noted: false,
+            spoken: false,
             aborted: false,
             quit_default: true,
             setup: None,
@@ -628,15 +705,7 @@ impl Session {
                     .with_context(|| format!("no account {account_name} in config"))?
                     .clone();
                 let password = account_password(&account)?;
-                let remote = Remote::open(&account, mailbox, &password, progress)?;
-                let cache = remote.cache.clone();
-                let (mut session, warnings) = Session::open(&cache, config)?;
-                session.title = remote.spec.clone();
-                // IDLE on a second connection; NOOP polling stays as
-                // the fallback when the server doesn't support it.
-                session.idle = Some(remote::idle_watch(&account, &remote.mailbox, &password));
-                session.imap = Some(Imap::new(remote));
-                Ok((session, warnings))
+                Session::open_remote(&account, mailbox, &password, config, progress)
             }
             None => {
                 let path = expand_tilde(spec);
@@ -646,6 +715,28 @@ impl Session {
                 Session::open(&path, config)
             }
         }
+    }
+
+    /// The network half of opening an `imap:` spec: connect, log in,
+    /// mirror the folder, and put the connection on its thread. The
+    /// password is already in hand, since asking for it may need the
+    /// terminal and this may run on a thread of its own.
+    fn open_remote(
+        account: &Account,
+        mailbox: &str,
+        password: &str,
+        config: Config,
+        progress: remote::Progress,
+    ) -> Result<(Session, Vec<String>)> {
+        let remote = Remote::open(account, mailbox, password, progress)?;
+        let cache = remote.cache.clone();
+        let (mut session, warnings) = Session::open(&cache, config)?;
+        session.title = remote.spec.clone();
+        // IDLE on a second connection; NOOP polling stays as
+        // the fallback when the server doesn't support it.
+        session.idle = Some(remote::idle_watch(account, &remote.mailbox, password));
+        session.imap = Some(Imap::new(remote));
+        Ok((session, warnings))
     }
 
     /// Open an mbox file (e.g. /var/mail/$USER) through its cache
@@ -729,55 +820,143 @@ impl Session {
     /// somewhere else.
     ///
     /// The config, the `-R` flag and the notice sink stay; everything
-    /// about the old mailbox goes. Another folder of the open account
-    /// reuses the live connection (a SELECT) instead of a fresh
-    /// connect and login; a dead session falls through to the full
-    /// open. Warnings come back for the front end to show, as at
-    /// startup.
-    pub fn switch_to(&mut self, spec: &str, progress: remote::Progress) -> Result<Vec<String>> {
-        // One connection, one conversation: whatever the tick has in
-        // flight is collected first, so the answer waited for is this
-        // job's own.
-        self.settle();
-        let reuse = match remote::parse_spec(spec) {
-            Some((account, mailbox))
-                if self
-                    .imap
-                    .as_ref()
-                    .is_some_and(|imap| imap.facts.account.name == account)
-                    && self
-                        .imap
-                        .as_mut()
-                        .is_some_and(|imap| imap.blocking(Job::Switch(mailbox.into())).is_ok()) =>
-            {
-                self.imap.take()
-            }
-            _ => None,
-        };
-        let config = self.config.clone();
-        let (mut next, warnings) = match &reuse {
-            Some(imap) => Session::open(&imap.facts.cache.clone(), config)?,
-            None => Session::open_spec(spec, config, progress)?,
-        };
-        if let Some(imap) = reuse {
-            next.title = imap.facts.spec.clone();
-            // A second connection for IDLE, as the first open makes.
-            if let Ok(password) = account_password(&imap.facts.account) {
-                next.idle = Some(remote::idle_watch(
-                    &imap.facts.account,
-                    &imap.facts.mailbox,
-                    &password,
-                ));
-            }
-            next.imap = Some(imap);
+    /// about the old mailbox goes. A local mailbox opens on the spot.
+    /// One on the server opens in the background while this one stays
+    /// on screen: another folder of the open account reuses the live
+    /// connection (a SELECT) instead of a fresh connect and login, and
+    /// anything else, or a SELECT that fails, connects on a thread of
+    /// its own. Keys typed meanwhile wait ([`Session::holding`]), and
+    /// Ctrl+G gives up. Either way the front end hears
+    /// [`Request::Opened`] with the warnings to show, or an error.
+    ///
+    /// `read_only` is mutt's Alt+c: the mailbox opens, and refuses to
+    /// be written to.
+    pub fn switch_to(&mut self, spec: &str, read_only: bool) {
+        if self.holding() {
+            self.error("still opening the last one (Ctrl+G gives up on it)");
+            return;
         }
+        let Some((account, mailbox)) = remote::parse_spec(spec) else {
+            let config = self.config.clone();
+            match Session::open_spec(spec, config, Box::new(|_| {})) {
+                Ok((next, warnings)) => self.become_(next, warnings, read_only),
+                Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
+            }
+            return;
+        };
+        let same_account = self
+            .imap
+            .as_ref()
+            .is_some_and(|imap| imap.facts.account.name == account);
+        if !same_account {
+            self.open_in_background(spec, read_only);
+            return;
+        }
+        let spec = spec.to_string();
+        self.send_then(
+            Job::Switch(mailbox.into()),
+            true,
+            Box::new(move |session, done| match done {
+                Ok(_) => session.switched(read_only),
+                // A session the server gave up on: the full open,
+                // with a connection of its own.
+                Err(_) => session.open_in_background(&spec, read_only),
+            }),
+        );
+    }
+
+    /// Whether a mailbox is being opened: the keys typed meanwhile
+    /// are for the mailbox that is coming, so a front end holds them
+    /// until this is false. Ctrl+G still goes through, to give up.
+    pub fn holding(&self) -> bool {
+        self.opening.is_some()
+            || self.pending.as_ref().is_some_and(Pending::holds)
+            || self.deferred.iter().any(Deferred::holds)
+    }
+
+    /// The connection has SELECTed the new folder and mirrored it:
+    /// build the session over its cache and take the connection along.
+    fn switched(&mut self, read_only: bool) {
+        let Some(imap) = self.imap.take() else {
+            return;
+        };
+        match Session::open(&imap.facts.cache.clone(), self.config.clone()) {
+            Ok((mut next, warnings)) => {
+                next.title = imap.facts.spec.clone();
+                // A second connection for IDLE, as the first open makes.
+                if let Ok(password) = account_password(&imap.facts.account) {
+                    next.idle = Some(remote::idle_watch(
+                        &imap.facts.account,
+                        &imap.facts.mailbox,
+                        &password,
+                    ));
+                }
+                next.imap = Some(imap);
+                // The copies kept in the background ride the same
+                // connection; they are not the old mailbox's business.
+                next.deferred = mem::take(&mut self.deferred)
+                    .into_iter()
+                    .filter(Deferred::outlives_abort)
+                    .collect();
+                self.become_(next, warnings, read_only);
+            }
+            Err(err) => self.error(format!("cannot open {}: {err:#}", imap.facts.spec)),
+        }
+    }
+
+    /// Connect to `spec` on a thread of its own, the password asked
+    /// for here first. The result lands in [`Session::poll_network`].
+    fn open_in_background(&mut self, spec: &str, read_only: bool) {
+        let Some((account_name, mailbox)) = remote::parse_spec(spec) else {
+            return;
+        };
+        let prepared = self
+            .config
+            .account(account_name)
+            .with_context(|| format!("no account {account_name} in config"))
+            .cloned()
+            .and_then(|account| account_password(&account).map(|password| (account, password)));
+        let (account, password) = match prepared {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                self.error(format!("cannot open {spec}: {err:#}"));
+                return;
+            }
+        };
+        let progress = Arc::new(Mutex::new(None));
+        let (tell, answer) = std::sync::mpsc::channel();
+        let config = self.config.clone();
+        let mailbox = mailbox.to_string();
+        let sink = Imap::progress_sink(&progress);
+        std::thread::spawn(move || {
+            let opened = Session::open_remote(&account, &mailbox, &password, config, sink);
+            // Nobody listening means Ctrl+G: the connection just goes.
+            let _ = tell.send(opened);
+        });
+        self.note_progress("opening the folder... (Ctrl+G aborts)".into());
+        self.opening = Some(Opening {
+            spec: spec.to_string(),
+            read_only,
+            answer,
+            progress,
+        });
+    }
+
+    /// Hand over to the session for the mailbox just opened. What
+    /// belongs to the user rather than to the mailbox comes along:
+    /// the notice sink, `-R`, and the mail still inside its
+    /// $undo_send window, which leaving a mailbox must not cancel.
+    fn become_(&mut self, mut next: Session, warnings: Vec<String>, read_only: bool) {
         // A -R session stays read-only whatever it opens; Alt+c sets
         // read_only for one mailbox and does not survive the switch.
         next.read_only_session = self.read_only_session;
-        next.read_only = self.read_only_session;
+        next.read_only = self.read_only_session || read_only;
         next.notices = mem::replace(&mut self.notices, Box::new(Silence));
+        next.outbox = mem::take(&mut self.outbox);
         *self = next;
-        Ok(warnings)
+        // A huge IMAP folder mirrors its tail in the background.
+        self.maybe_backfill();
+        self.requests.push(Request::Opened(warnings));
     }
 
     /// Hand the session the front end's notice sink. Until this is
@@ -790,6 +969,9 @@ impl Session {
     /// user has moved on.
     pub fn clear_notice(&mut self) {
         self.notices.clear();
+        // Whatever was up went with it.
+        self.progress_noted = false;
+        self.spoken = false;
     }
 
     pub fn new_count(&self) -> usize {
@@ -986,30 +1168,47 @@ impl Session {
             .collect()
     }
 
-    /// On IMAP, ask the server about the pattern's `~b` terms up
-    /// front. Only plain substrings go (regex or non-ASCII terms stay
-    /// local; a server search is a literal match); a failed search
-    /// just falls back to reading bodies locally.
-    pub fn resolve_body_terms(&mut self, patterns: &[Pattern]) {
-        // One connection, one conversation: whatever the tick has in
-        // flight is collected first, so the answer waited for is this
-        // job's own.
-        self.settle();
+    /// On IMAP, the pattern's `~b` terms asked of the server before
+    /// it runs. Only plain substrings go (regex or non-ASCII terms stay
+    /// local; a server search is a literal match), and a term the
+    /// server would not search is read locally instead.
+    ///
+    /// True when every term is settled and the caller can carry on.
+    /// False when a search went off: the caller stops, and `redo`
+    /// runs it again from the top once the answer is in, with the
+    /// keys typed meanwhile held back for it.
+    fn body_terms_ready(
+        &mut self,
+        patterns: &[Pattern],
+        redo: Box<dyn FnOnce(&mut Session) + Send>,
+    ) -> bool {
         if self.imap.is_none() {
-            return;
+            return true;
         }
-        for term in pattern::body_terms(patterns) {
+        let Some(term) = pattern::body_terms(patterns).into_iter().find(|term| {
             let simple = !term
                 .chars()
                 .any(|c| r".*+?[](){}|^$\".contains(c) || !c.is_ascii());
-            if !simple || self.body_hits.contains_key(&term) {
-                continue;
-            }
-            let Some(imap) = &mut self.imap else { return };
-            if let Ok(Done::Uids(uids)) = imap.blocking(Job::SearchBody(term.clone())) {
-                self.body_hits.insert(term, uids.into_iter().collect());
-            }
-        }
+            simple && !self.body_hits.contains_key(term) && !self.body_local.contains(term)
+        }) else {
+            return true;
+        };
+        self.send_then(
+            Job::SearchBody(term.clone()),
+            true,
+            Box::new(move |session, done| {
+                match done {
+                    Ok(Done::Uids(uids)) => {
+                        session.body_hits.insert(term, uids.into_iter().collect());
+                    }
+                    _ => {
+                        session.body_local.insert(term);
+                    }
+                }
+                redo(session);
+            }),
+        );
+        false
     }
 
     /// Re-read the maildir, keeping unsynced flag changes and deletion
@@ -1136,7 +1335,7 @@ impl Session {
         }
         // The server's own counts follow when it gets round to them,
         // unless a user operation is waiting its turn: that goes first.
-        if self.deferred.is_none() {
+        if self.deferred.is_empty() {
             self.refresh_unseen();
         }
     }
@@ -1145,12 +1344,12 @@ impl Session {
     /// operation that was waiting for it. A front end calls this every
     /// time round its loop; it costs nothing when nothing is running.
     pub fn poll_network(&mut self) {
+        self.poll_opening();
         if let Some(line) = self.imap.as_mut().and_then(Imap::take_progress) {
             // After an abort the line is stale news, and picking it
             // up would take the abort's own note off the screen.
             if !self.aborted {
-                self.note(format!("{line} (Ctrl+G aborts)"));
-                self.progress_noted = true;
+                self.note_progress(format!("{line} (Ctrl+G aborts)"));
             }
         }
         let Some(done) = self.imap.as_mut().and_then(Imap::collect) else {
@@ -1164,17 +1363,58 @@ impl Session {
         if let Some(pending) = self.pending.take() {
             self.resume(pending, done);
         }
-        // The connection is free: the operation that stood aside for
-        // the tick gets it now.
-        if self.pending.is_none()
-            && let Some(again) = self.deferred.take()
+        // The connection is free: what stood aside for the tick gets
+        // it now, in the order it asked.
+        while self.pending.is_none()
+            && let Some(next) = self.deferred.pop_front()
         {
-            self.run_again(again);
+            match next {
+                Deferred::Again(again) => self.run_again(again),
+                Deferred::Job(job, pending) => {
+                    self.start(job, pending);
+                }
+            }
+        }
+    }
+
+    /// The background open, carried on: its progress on the message
+    /// line, and the new session in place once it is ready.
+    fn poll_opening(&mut self) {
+        let Some(opening) = &self.opening else {
+            return;
+        };
+        let line = opening
+            .progress
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        let answer = match opening.answer.try_recv() {
+            Ok(answer) => answer,
+            Err(TryRecvError::Empty) => {
+                if let Some(line) = line {
+                    self.note_progress(format!("{line} (Ctrl+G aborts)"));
+                }
+                return;
+            }
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("the connection is gone")),
+        };
+        let Some(opening) = self.opening.take() else {
+            return;
+        };
+        if mem::take(&mut self.progress_noted) {
+            self.clear_notice();
+        }
+        match answer {
+            Ok((next, warnings)) => self.become_(next, warnings, opening.read_only),
+            Err(err) => self.error(format!("cannot open {}: {err:#}", opening.spec)),
         }
     }
 
     /// What the connection is doing, for a front end that says so.
     pub fn busy(&self) -> Option<&'static str> {
+        if self.opening.is_some() {
+            return Some("opening the folder");
+        }
         self.imap.as_ref().and_then(Imap::busy)
     }
 
@@ -1185,12 +1425,21 @@ impl Session {
         let Some(what) = self.busy() else {
             return;
         };
+        if self.opening.take().is_some() {
+            // The thread finishes on its own and finds nobody to
+            // hand the connection to; this session never moved.
+            self.note(format!("aborted: {what}"));
+            self.progress_noted = false;
+            return;
+        }
         if let Some(imap) = &self.imap {
             imap.abort();
         }
         self.note(format!("aborted: {what}"));
-        // Giving up covers what was queued behind it too.
-        self.deferred = None;
+        // Giving up covers what was queued behind it too, but for
+        // the copies kept in the background.
+        self.deferred.retain(Deferred::outlives_abort);
+        self.listing = false;
         // This note replaces the progress line rather than following
         // it, so it must not be swept away when the answer lands.
         self.progress_noted = false;
@@ -1200,7 +1449,17 @@ impl Session {
     /// Send a job off with the operation waiting for it. False when
     /// there is no connection to send it to, and the caller carries
     /// on by itself.
+    ///
+    /// With a job already in flight this one waits its turn, since
+    /// the answers come back in order and each belongs to its own.
     fn start(&mut self, job: Job, pending: Pending) -> bool {
+        if self.imap.is_none() {
+            return false;
+        }
+        if self.pending.is_some() {
+            self.deferred.push_back(Deferred::Job(job, pending));
+            return true;
+        }
         let Some(imap) = &mut self.imap else {
             return false;
         };
@@ -1210,8 +1469,7 @@ impl Session {
                 // Say what is happening before the connection has
                 // anything of its own to report, so a slow server
                 // never looks like a hung one.
-                self.note(format!("{what}... (Ctrl+G aborts)"));
-                self.progress_noted = true;
+                self.note_progress(format!("{what}... (Ctrl+G aborts)"));
                 self.pending = Some(pending);
                 true
             }
@@ -1220,6 +1478,30 @@ impl Session {
                 false
             }
         }
+    }
+
+    /// A progress line on the message line, unless something the
+    /// user has not read yet is there: a progress line only ever
+    /// replaces another, or nothing.
+    fn note_progress(&mut self, line: String) {
+        if self.progress_noted || !self.spoken {
+            self.note(line);
+            self.spoken = false;
+            self.progress_noted = true;
+        }
+    }
+
+    /// Send a job whose answer goes to `then`, which also hears it
+    /// when there is no connection to send it to. `hold`: the user is
+    /// waiting on it (see [`Session::holding`]).
+    fn send_then(&mut self, job: Job, hold: bool, then: Then) {
+        if self.imap.is_none() {
+            then(self, Err(anyhow::anyhow!("not connected")));
+            return;
+        }
+        // start() only refuses when the channel is gone, and has said
+        // so; the operation waiting is dropped with it.
+        self.start(job, Pending::Then { hold, then });
     }
 
     /// Wait for whatever is in flight and carry it on, so the next
@@ -1265,6 +1547,7 @@ impl Session {
                 Err(err) => self.error(format!("cannot fetch message: {err:#}")),
                 Ok(_) => self.run_again(again),
             },
+            Pending::Then { then, .. } => then(self, done),
         }
     }
 
@@ -1307,7 +1590,7 @@ impl Session {
         // poll_network rather than here, so the front end keeps
         // drawing and reading keys meanwhile.
         if self.pending.is_some() {
-            self.deferred = Some(again);
+            self.deferred.push_back(Deferred::Again(again));
             return false;
         }
         !self.start(Job::FetchBodies(missing), Pending::Again(again))
@@ -2270,7 +2553,9 @@ impl Session {
         template.replace("%s", word)
     }
 
-    pub fn apply_pattern(&mut self, input: &str, verb: &'static str, f: impl Fn(&mut Msg)) {
+    pub fn apply_pattern(&mut self, input: &str, op: PatternOp) {
+        let flag_safe = self.config.mail.flag_safe;
+        let verb = op.verb();
         if input.is_empty() {
             return;
         }
@@ -2281,7 +2566,13 @@ impl Session {
                 return;
             }
         };
-        self.resolve_body_terms(&patterns);
+        let redo_input = input.to_string();
+        if !self.body_terms_ready(
+            &patterns,
+            Box::new(move |session| session.apply_pattern(&redo_input, op)),
+        ) {
+            return;
+        }
         let positions = self.positions();
         let mut hits = Vec::new();
         for (i, pos) in positions.iter().enumerate() {
@@ -2295,7 +2586,7 @@ impl Session {
         }
         self.push_undo(&format!("{verb} by pattern"), &hits);
         for &i in &hits {
-            f(&mut self.msgs[i]);
+            op.apply(&mut self.msgs[i], flag_safe);
         }
         self.note(format!("{} {verb}", hits.len()));
     }
@@ -2599,6 +2890,9 @@ impl Session {
         // flight is collected first, so the answer waited for is this
         // job's own.
         self.settle();
+        // Whatever it does, the folder list is not the one the server
+        // last gave: the next browser asks again.
+        self.server_folders = None;
         match &mut self.imap {
             Some(imap) if imap.facts.account.name == account => imap
                 .blocking(Job::Manage(action))
@@ -2608,11 +2902,14 @@ impl Session {
         }
     }
 
-    pub fn folder_candidates(&mut self) -> Result<Vec<(String, usize)>> {
-        // One connection, one conversation: whatever the tick has in
-        // flight is collected first, so the answer waited for is this
-        // job's own.
-        self.settle();
+    /// The mailboxes a folder browser or mailbox completion offers:
+    /// the configured ones, and the open account's folders (or the
+    /// maildirs beside a local one).
+    ///
+    /// The server's folders are its last listing, so this never
+    /// waits: with none yet a LIST goes off, and
+    /// [`Request::FoldersChanged`] says when to ask again.
+    pub fn folder_candidates(&mut self) -> Vec<(String, usize)> {
         // Local entries carry their new/ count; imap: specs of other
         // accounts show without one (no connection just for a count).
         let mut dirs: Vec<(String, usize)> = self
@@ -2630,15 +2927,16 @@ impl Session {
                 (m.clone(), count)
             })
             .collect();
-        match &mut self.imap {
+        match &self.imap {
             Some(imap) => {
                 let account = imap.facts.account.name.clone();
-                if let Done::Folders(folders) = imap.blocking(Job::Folders)? {
-                    dirs.extend(
+                match &self.server_folders {
+                    Some(folders) => dirs.extend(
                         folders
-                            .into_iter()
-                            .map(|(f, unseen)| (format!("imap:{account}/{f}"), unseen)),
-                    );
+                            .iter()
+                            .map(|(f, unseen)| (format!("imap:{account}/{f}"), *unseen)),
+                    ),
+                    None => self.refresh_folders(),
                 }
             }
             None => dirs.extend(
@@ -2672,7 +2970,32 @@ impl Session {
                 false
             }
         });
-        Ok(dirs)
+        dirs
+    }
+
+    /// Ask the server for its folders again, for a browser that is
+    /// opening: it shows the last list at once, and the fresh one
+    /// follows with [`Request::FoldersChanged`].
+    pub fn refresh_folders(&mut self) {
+        if self.imap.is_none() || self.listing {
+            return;
+        }
+        self.listing = true;
+        self.send_then(
+            Job::Folders,
+            false,
+            Box::new(|session, done| {
+                session.listing = false;
+                match done {
+                    Ok(Done::Folders(folders)) => {
+                        session.server_folders = Some(folders);
+                        session.requests.push(Request::FoldersChanged);
+                    }
+                    Ok(_) => {}
+                    Err(err) => session.error(format!("imap: {err:#}")),
+                }
+            }),
+        );
     }
 
     /// How many unread messages a configured mailbox holds, for a
@@ -2722,8 +3045,7 @@ impl Session {
         // One connection, one conversation: whatever the tick has in
         // flight is collected first, so the answer waited for is this
         // job's own.
-        self.settle();
-        match &mut self.imap {
+        match &self.imap {
             Some(imap) => {
                 let Some(flags) = self
                     .visible
@@ -2733,22 +3055,32 @@ impl Session {
                     return;
                 };
                 let mailbox = imap.facts.mailbox.clone();
-                if let Err(err) = imap.blocking(Job::Append {
-                    mailbox: Some(mailbox),
-                    flags,
-                    body: edited.to_vec(),
-                }) {
-                    self.error(format!("cannot store the edited copy: {err:#}"));
-                    return;
-                }
-                let rules = self.delete_rules();
-                if let Some(m) = self.cur_mut()
-                    && rules.mark(m)
-                {
-                    m.dirty = true;
-                }
-                self.check_new_mail();
-                self.note("edited copy appended; original marked deleted ($ purges)");
+                let original = path.to_path_buf();
+                self.send_then(
+                    Job::Append {
+                        mailbox: Some(mailbox),
+                        flags,
+                        body: edited.to_vec(),
+                    },
+                    true,
+                    Box::new(move |session, done| {
+                        if let Err(err) = done {
+                            session.error(format!("cannot store the edited copy: {err:#}"));
+                            return;
+                        }
+                        let rules = session.delete_rules();
+                        if let Some(m) = session
+                            .msgs
+                            .iter_mut()
+                            .find(|m| m.env.file.path == original)
+                            && rules.mark(m)
+                        {
+                            m.dirty = true;
+                        }
+                        session.check_new_mail();
+                        session.note("edited copy appended; original marked deleted ($ purges)");
+                    }),
+                );
             }
             None => {
                 if let Err(err) = std::fs::write(path, edited) {
@@ -2886,22 +3218,83 @@ impl Session {
         ) {
             return;
         }
+        // A folder of the open account: one batch of APPENDs on the
+        // connection's thread, the rest of the save when it answers.
+        if let Some((account, folder)) = remote::parse_spec(input)
+            && self
+                .imap
+                .as_ref()
+                .is_some_and(|imap| imap.facts.account.name == account)
+        {
+            let target = format!("imap:{account}/{folder}");
+            let mut errors: Vec<String> = Vec::new();
+            let mut paths = Vec::new();
+            let mut messages = Vec::new();
+            for &i in &targets {
+                match self.copy_bytes(i, decode) {
+                    Ok(bytes) => {
+                        paths.push(self.msgs[i].env.file.path.clone());
+                        messages.push((self.msgs[i].env.file.flags, bytes));
+                    }
+                    Err(err) => errors.push(err),
+                }
+            }
+            if messages.is_empty() {
+                let verb = if delete { "save" } else { "copy" };
+                self.error(format!("cannot {verb}: {}", errors.join("; ")));
+                return;
+            }
+            let job = Job::AppendAll {
+                mailbox: folder.to_string(),
+                messages,
+            };
+            self.send_then(
+                job,
+                true,
+                Box::new(move |session, done| {
+                    let outcomes = match done {
+                        Ok(Done::Appended(outcomes)) => outcomes,
+                        Ok(_) => Vec::new(),
+                        Err(err) => vec![Err(format!("{err:#}"))],
+                    };
+                    let tried = outcomes.len();
+                    let mut copied = Vec::new();
+                    for (path, outcome) in paths.iter().zip(outcomes) {
+                        match outcome {
+                            // Found again by path: the list may have
+                            // moved while the server was busy.
+                            Ok(()) => copied
+                                .extend(session.msgs.iter().position(|m| m.env.file.path == *path)),
+                            Err(err) => errors.push(err),
+                        }
+                    }
+                    if paths.len() > tried.max(1) {
+                        errors.push(format!("{} not tried", paths.len() - tried.max(1)));
+                    }
+                    let note = Some(format!("the copy in {target} stays"));
+                    session.finish_copy(Copied {
+                        copied,
+                        errors,
+                        created: Vec::new(),
+                        target,
+                        note,
+                        delete,
+                        tagged,
+                    });
+                }),
+            );
+            return;
+        }
         // What the undo of this step has to take back: the copies just
         // delivered, and (for a save) the originals' deleted marks.
         let mut created: Vec<PathBuf> = Vec::new();
-        let mut marks = Vec::new();
         let mut copied = Vec::new();
         let mut errors: Vec<String> = Vec::new();
-        let mut note = None;
         let mut target = String::new();
         for &i in &targets {
             match self.copy_one(i, input, decode, &mut created) {
                 Ok(shown) => {
-                    if shown.starts_with("imap:") {
-                        note = Some(format!("the copy in {shown} stays"));
-                    }
                     target = shown;
-                    marks.push(self.mark(i));
                     copied.push(i);
                 }
                 // One bad message does not undo the good ones: the
@@ -2909,11 +3302,35 @@ impl Session {
                 Err(err) => errors.push(err),
             }
         }
+        self.finish_copy(Copied {
+            copied,
+            errors,
+            created,
+            target,
+            note: None,
+            delete,
+            tagged,
+        });
+    }
+
+    /// The half of a save or copy after the messages have gone: the
+    /// undo step, the deleted marks of a save, and the report.
+    fn finish_copy(&mut self, done: Copied) {
+        let Copied {
+            copied,
+            errors,
+            created,
+            target,
+            note,
+            delete,
+            tagged,
+        } = done;
         let verb = if delete { "save" } else { "copy" };
         if copied.is_empty() {
             self.error(format!("cannot {verb}: {}", errors.join("; ")));
             return;
         }
+        let marks = copied.iter().map(|&i| self.mark(i)).collect();
         self.push_undo_step(UndoStep {
             what: format!("{verb} to {target}"),
             marks,
@@ -2955,9 +3372,23 @@ impl Session {
         }
     }
 
-    /// One message into `spec`: a folder of the open IMAP account, or
-    /// a local maildir path (created if missing). Returns where it
-    /// went, and pushes the delivered file, which undo removes.
+    /// A message's bytes as a save or copy delivers them. mutt's
+    /// decode-save/decode-copy deliver the message as the pager shows
+    /// it (weeded headers, decoded body); plain save keeps the bytes
+    /// verbatim.
+    fn copy_bytes(&mut self, i: usize, decode: bool) -> Result<Vec<u8>, String> {
+        if decode {
+            Ok(self.displayed_text(i)?.into_bytes())
+        } else {
+            self.message_bytes(i)
+                .ok_or_else(|| "cannot read the message".into())
+        }
+    }
+
+    /// One message into `spec`, a local maildir path (created if
+    /// missing): a folder of the open account goes through
+    /// `copy_message`'s batch instead. Returns where it went, and
+    /// pushes the delivered file, which undo removes.
     fn copy_one(
         &mut self,
         i: usize,
@@ -2965,45 +3396,19 @@ impl Session {
         decode: bool,
         created: &mut Vec<PathBuf>,
     ) -> Result<String, String> {
-        // One connection, one conversation: whatever the tick has in
-        // flight is collected first, so the answer waited for is this
-        // job's own.
-        self.settle();
-        let flags = self.msgs[i].env.file.flags;
-        // mutt's decode-save/decode-copy deliver the message as the
-        // pager shows it (weeded headers, decoded body); plain save
-        // keeps the bytes verbatim.
-        let bytes = if decode {
-            self.displayed_text(i)?.into_bytes()
-        } else {
-            self.message_bytes(i).ok_or("cannot read the message")?
-        };
-        match remote::parse_spec(spec) {
-            Some((account, folder)) => match &mut self.imap {
-                Some(imap) if imap.facts.account.name == account => imap
-                    .blocking(Job::Append {
-                        mailbox: Some(folder.to_string()),
-                        flags,
-                        body: bytes,
-                    })
-                    .map(|done| match done {
-                        Done::Folder(folder) => format!("imap:{account}/{folder}"),
-                        _ => format!("imap:{account}/{folder}"),
-                    })
-                    .map_err(|err| format!("{err:#}")),
-                _ => Err("can only save to a folder of the open account".into()),
-            },
-            None => {
-                let dir = expand_tilde(spec);
-                maildir::create(&dir)
-                    .and_then(|()| maildir::deliver(&dir, &bytes, flags))
-                    .map(|path| {
-                        created.push(path);
-                        dir.display().to_string()
-                    })
-                    .map_err(|err| format!("{err:#}"))
-            }
+        if remote::parse_spec(spec).is_some() {
+            return Err("can only save to a folder of the open account".into());
         }
+        let flags = self.msgs[i].env.file.flags;
+        let bytes = self.copy_bytes(i, decode)?;
+        let dir = expand_tilde(spec);
+        maildir::create(&dir)
+            .and_then(|()| maildir::deliver(&dir, &bytes, flags))
+            .map(|path| {
+                created.push(path);
+                dir.display().to_string()
+            })
+            .map_err(|err| format!("{err:#}"))
     }
 
     /// mutt's create-alias: one line appended to the alias file.
@@ -3614,6 +4019,11 @@ impl Session {
     /// Anything due in the outbox goes out; whatever still waits owns
     /// the status line, counting down.
     pub fn tick_outbox(&mut self) {
+        // A mailbox on its way in: the mail goes out from it, a
+        // moment later, rather than from under the switch.
+        if self.holding() {
+            return;
+        }
         while self.outbox.first().is_some_and(|h| h.due <= Instant::now()) {
             let held = self.outbox.remove(0);
             self.deliver(held);
@@ -3690,6 +4100,7 @@ impl Session {
         match send_result {
             Ok(()) => {
                 let mut note = String::from("message sent");
+                let mut fcc_to_server = None;
                 let skip_copy = chosen.as_deref() == Some("")
                     || (chosen.is_none() && self.config.mail.copy == Some(false));
                 if skip_copy {
@@ -3715,18 +4126,9 @@ impl Session {
                     match &mut self.imap {
                         // Fcc goes to the account's Sent folder on the
                         // server.
-                        Some(imap) => match imap.blocking(Job::Append {
-                            mailbox: None,
-                            flags: maildir::Flags {
-                                seen: true,
-                                ..Default::default()
-                            },
-                            body: final_text.clone().into_bytes(),
-                        }) {
-                            Ok(Done::Folder(folder)) => note += &format!(", copy in {folder}"),
-                            Ok(_) => note += ", copy in Sent",
-                            Err(_) => note += ", Fcc to Sent failed",
-                        },
+                        // The server's copy is kept in the background:
+                        // the send is done, and says so now.
+                        Some(_) => fcc_to_server = Some(final_text.clone().into_bytes()),
                         None => {
                             let sent_dir = self
                                 .config
@@ -3766,13 +4168,38 @@ impl Session {
                 if let Some(src) = &compose_state.recall_source {
                     let _ = std::fs::remove_file(src);
                 }
-                self.note(note);
+                match fcc_to_server {
+                    Some(body) => self.fcc_to_sent(note, body),
+                    None => self.note(note),
+                }
             }
             Err(err) => {
                 self.error(format!("send failed: {err:#}"));
                 self.hand_back(compose_state);
             }
         }
+    }
+
+    /// The Fcc of a sent message, into the account's Sent on the
+    /// server. The send has happened; `sent` is what to say about it,
+    /// and the copy's fate follows it onto the message line.
+    fn fcc_to_sent(&mut self, sent: String, body: Vec<u8>) {
+        self.send_then(
+            Job::Append {
+                mailbox: None,
+                flags: maildir::Flags {
+                    seen: true,
+                    ..Default::default()
+                },
+                body,
+            },
+            false,
+            Box::new(move |session, done| match done {
+                Ok(Done::Folder(folder)) => session.note(format!("{sent}, copy in {folder}")),
+                Ok(_) => session.note(format!("{sent}, copy in Sent")),
+                Err(err) => session.error(format!("{sent}, Fcc to Sent failed: {err:#}")),
+            }),
+        );
     }
 
     /// neomutt's attachment reminder: does the body mention one when
@@ -4451,22 +4878,27 @@ impl Session {
         };
         match remote::parse_spec(mailbox) {
             Some((account, folder)) => {
-                let Some(imap) = self
+                if !self
                     .imap
-                    .as_mut()
-                    .filter(|i| i.facts.account.name == account)
-                else {
+                    .as_ref()
+                    .is_some_and(|i| i.facts.account.name == account)
+                {
                     self.error("write-fcc to IMAP needs a folder of the open account");
                     return;
-                };
-                match imap.blocking(Job::Append {
-                    mailbox: Some(folder.to_string()),
-                    flags,
-                    body: text.into_bytes(),
-                }) {
-                    Ok(_) => self.note(format!("Message written to {mailbox}.")),
-                    Err(err) => self.error(format!("write failed: {err:#}")),
                 }
+                let mailbox = mailbox.to_string();
+                self.send_then(
+                    Job::Append {
+                        mailbox: Some(folder.to_string()),
+                        flags,
+                        body: text.into_bytes(),
+                    },
+                    false,
+                    Box::new(move |session, done| match done {
+                        Ok(_) => session.note(format!("Message written to {mailbox}.")),
+                        Err(err) => session.error(format!("write failed: {err:#}")),
+                    }),
+                );
             }
             None => {
                 let dir = expand_tilde(mailbox);
@@ -4578,6 +5010,7 @@ impl Session {
             let _ = out.flush();
         }
         self.notices.notice(notice);
+        self.spoken = true;
     }
 
     /// The last thing said, for the message line and for the callers

@@ -497,6 +497,8 @@ impl App {
                 Request::Shell(command) => self.pending_shell = Some(command),
                 Request::Suspend => self.pending_suspend = true,
                 Request::MailboxesChanged => self.refresh_sidebar(),
+                Request::FoldersChanged => self.folders_changed(),
+                Request::Opened(opened) => self.opened(opened),
                 Request::ShowMessage(view) => {
                     self.mode = Mode::Pager(Pager {
                         view: *view,
@@ -668,9 +670,32 @@ impl App {
             self.run_requests_quietly();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             self.update_title(terminal.size().map(|s| s.height as usize).unwrap_or(0));
-            // Macro-queued keys run first, without waiting for input.
-            let key = match self.pending_keys.pop_front() {
+            // Macro-queued keys run first, without waiting for input,
+            // unless a mailbox is on its way in: they are for that one.
+            let holding = self.session.holding();
+            let queued = if holding {
+                None
+            } else {
+                self.pending_keys.pop_front()
+            };
+            let key = match queued {
                 Some(key) => Some(key),
+                None if holding => {
+                    // Typed ahead, kept for the mailbox that is
+                    // coming; Ctrl+G alone goes through, to give up.
+                    if event::poll(Duration::from_millis(30))?
+                        && let Event::Key(key) = event::read()?
+                        && key.kind == KeyEventKind::Press
+                    {
+                        let key = front_key(key);
+                        if is_ctrl(&key) && key.code == KeyCode::Char('g') {
+                            self.session.abort_network();
+                        } else {
+                            self.pending_keys.push_back(key);
+                        }
+                    }
+                    None
+                }
                 None => {
                     // A network answer lands in a channel nothing
                     // wakes this loop for; while one is due, look
@@ -1055,13 +1080,7 @@ impl App {
                 self.session.config.mail.sort_alias.as_deref(),
             )
         } else {
-            let specs = match self.session.folder_candidates() {
-                Ok(specs) => specs,
-                Err(err) => {
-                    self.error(format!("cannot list folders: {err:#}"));
-                    return;
-                }
-            };
+            let specs = self.session.folder_candidates();
             // Match the typed prefix against the spec as written and
             // tilde-expanded, so ~/Mail and /home/jane/Mail both hit.
             let wexp = expand_tilde(&word).display().to_string();
@@ -2264,14 +2283,11 @@ impl App {
         if !self.session.ready_to_leave() {
             return;
         }
-        let dirs = match self.session.folder_candidates() {
-            Ok(dirs) => dirs,
-            Err(err) => {
-                self.error(format!("cannot list folders: {err:#}"));
-                return;
-            }
-        };
-        if dirs.is_empty() {
+        // The server's list is the last one it gave; a fresh one
+        // follows as FoldersChanged, and the browser takes it in.
+        self.session.refresh_folders();
+        let dirs = self.session.folder_candidates();
+        if dirs.is_empty() && self.session.busy().is_none() {
             self.error("no maildirs found next to this one");
             return;
         }
@@ -2284,6 +2300,22 @@ impl App {
             sel,
             root: None,
         };
+    }
+
+    /// The server's folder list came in: a browser showing the
+    /// candidates takes it, the cursor staying on the same entry.
+    fn folders_changed(&mut self) {
+        if !matches!(self.mode, Mode::Folders { root: None, .. }) {
+            return;
+        }
+        let fresh = self.session.folder_candidates();
+        if let Mode::Folders { dirs, sel, .. } = &mut self.mode {
+            let on = dirs.get(*sel).map(|d| d.0.clone());
+            *sel = on
+                .and_then(|on| fresh.iter().position(|d| d.0 == on))
+                .unwrap_or(0);
+            *dirs = fresh;
+        }
     }
 
     /// mutt's Esc c: open it, then refuse to write to it. `-R` is
@@ -2304,32 +2336,40 @@ impl App {
     }
 
     fn open_mailbox_read_only(&mut self, spec: &str) {
-        self.open_mailbox_spec(spec);
-        self.session.read_only = true;
-        self.note(format!("{} (read-only)", self.session.title));
+        self.switch_mailbox(spec, true);
     }
 
     fn open_mailbox_spec(&mut self, spec: &str) {
+        self.switch_mailbox(spec, false);
+    }
+
+    /// Leave for another mailbox. One on the server opens in the
+    /// background, and [`App::opened`] finishes the job when the
+    /// session says it is there.
+    fn switch_mailbox(&mut self, spec: &str, read_only: bool) {
         self.session.mark_old_unread();
         // Message-hook settings belong to the message being left, not
         // to the config the new mailbox inherits.
         self.session.clear_message_hooks();
-        match self.session.switch_to(spec, Box::new(progress)) {
-            Ok(warnings) => {
-                // Whatever menu asked for the switch is done with: the
-                // new mailbox opens on its index, at the top.
-                self.mode = Mode::Index;
-                self.index_offset = 0;
-                self.tag_next = false;
-                self.complete = None;
-                if !warnings.is_empty() {
-                    self.note(warnings.join("; "));
-                }
-                self.refresh_sidebar();
-                self.session.run_folder_hooks();
-            }
-            Err(err) => self.error(format!("cannot open {spec}: {err:#}")),
+        self.session.switch_to(spec, read_only);
+        self.run_requests_quietly();
+    }
+
+    /// The mailbox asked for is open: whatever menu asked for the
+    /// switch is done with, and the new mailbox opens on its index,
+    /// at the top.
+    fn opened(&mut self, warnings: Vec<String>) {
+        self.mode = Mode::Index;
+        self.index_offset = 0;
+        self.tag_next = false;
+        self.complete = None;
+        if !warnings.is_empty() {
+            self.note(warnings.join("; "));
+        } else if self.session.read_only && !self.session.read_only_session {
+            self.note(format!("{} (read-only)", self.session.title));
         }
+        self.refresh_sidebar();
+        self.session.run_folder_hooks();
     }
 
     // ---- compose ----

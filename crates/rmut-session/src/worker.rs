@@ -42,6 +42,12 @@ pub enum Job {
         flags: Flags,
         body: Vec<u8>,
     },
+    /// Several APPENDs into one folder of the account (a tagged save),
+    /// stopping at the first one refused.
+    AppendAll {
+        mailbox: String,
+        messages: Vec<(Flags, Vec<u8>)>,
+    },
     /// The poll tick: has anything happened on the server?
     CheckNew,
     /// The folder browser's list, with UNSEEN counts.
@@ -76,7 +82,7 @@ impl Job {
             },
             Job::Sync { .. } => "syncing",
             Job::CopyToFolder { .. } => "copying to the trash",
-            Job::Append { .. } => "saving to the server",
+            Job::Append { .. } | Job::AppendAll { .. } => "saving to the server",
             Job::CheckNew => "checking for new mail",
             Job::Folders => "listing folders",
             Job::Manage(_) => "managing folders",
@@ -99,6 +105,9 @@ pub enum Done {
     Uids(Vec<u32>),
     /// Where an append landed.
     Folder(String),
+    /// How far an AppendAll got: one outcome per message tried, in
+    /// order, the last an error when it stopped early.
+    Appended(Vec<Result<(), String>>),
     /// A switch: the facts that came with the new folder. Boxed,
     /// since an Account is far bigger than a count.
     Switched(Box<Facts>),
@@ -323,6 +332,20 @@ fn do_job(remote: &mut Remote, job: Job) -> Result<Done> {
                 None => remote.append_sent(&body)?,
             };
             Ok(Done::Folder(folder))
+        }
+        Job::AppendAll { mailbox, messages } => {
+            let mut outcomes = Vec::new();
+            for (flags, body) in &messages {
+                let outcome = remote.append_to(&mailbox, *flags, body);
+                let failed = outcome.is_err();
+                outcomes.push(outcome.map(drop).map_err(|err| format!("{err:#}")));
+                // After a refusal or an abort the rest are not tried:
+                // a reconnect behind Ctrl+G's back is not what was asked.
+                if failed {
+                    break;
+                }
+            }
+            Ok(Done::Appended(outcomes))
         }
         Job::CheckNew => Ok(Done::Arrived(remote.check_new()?)),
         Job::Folders => Ok(Done::Folders(remote.folders()?)),

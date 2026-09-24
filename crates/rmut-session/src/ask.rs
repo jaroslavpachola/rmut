@@ -203,7 +203,7 @@ pub enum PatternOp {
 
 impl PatternOp {
     /// The word the undo step and the note use.
-    fn verb(self) -> &'static str {
+    pub(crate) fn verb(self) -> &'static str {
         match self {
             PatternOp::Delete => "deleted",
             PatternOp::Undelete => "undeleted",
@@ -222,7 +222,7 @@ impl PatternOp {
         }
     }
 
-    fn apply(self, m: &mut Msg, flag_safe: bool) {
+    pub(crate) fn apply(self, m: &mut Msg, flag_safe: bool) {
         match self {
             PatternOp::Delete => {
                 // mutt's delete-pattern sets the flag and nothing
@@ -259,6 +259,13 @@ pub enum Request {
     /// The mailbox counts moved: a front end showing them (a
     /// sidebar) wants to redraw.
     MailboxesChanged,
+    /// The server's folder list came in: a folder browser on screen
+    /// wants to show it.
+    FoldersChanged,
+    /// Another mailbox is open now, the one asked for with
+    /// [`Session::switch_to`]: back to the index, with these warnings
+    /// to show, and the folder hooks to run.
+    Opened(Vec<String>),
     /// A message is ready to read: show it however messages are
     /// shown (mutt puts it in the pager).
     ShowMessage(Box<rmut_core::message::MessageView>),
@@ -772,7 +779,15 @@ impl Session {
                 if !input.is_empty() {
                     match self.compile_search(input) {
                         Ok(patterns) => {
-                            self.resolve_body_terms(&patterns);
+                            let redo = input.to_string();
+                            if !self.body_terms_ready(
+                                &patterns,
+                                Box::new(move |session| {
+                                    session.answer(AskKind::Search { back }, Answer::Line(&redo));
+                                }),
+                            ) {
+                                return None;
+                            }
                             self.last_search = Some(patterns);
                         }
                         Err(err) => {
@@ -785,8 +800,7 @@ impl Session {
                 None
             }
             (AskKind::Pattern { op }, Answer::Line(input)) => {
-                let flag_safe = self.config.mail.flag_safe;
-                self.apply_pattern(input, op.verb(), |m| op.apply(m, flag_safe));
+                self.apply_pattern(input, op);
                 None
             }
             (
@@ -1165,7 +1179,13 @@ impl Session {
         } else {
             match self.compile_search(input) {
                 Ok(patterns) => {
-                    self.resolve_body_terms(&patterns);
+                    let redo = input.to_string();
+                    if !self.body_terms_ready(
+                        &patterns,
+                        Box::new(move |session| session.set_limit(&redo)),
+                    ) {
+                        return;
+                    }
                     self.limit = Some((input.to_string(), patterns));
                 }
                 Err(err) => {
