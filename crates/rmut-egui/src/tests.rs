@@ -1425,3 +1425,65 @@ fn ctrl_b_in_the_pager_lists_the_message_links() {
         rmut_session::Outcome::Front(rmut_session::FrontOp::Urls)
     ));
 }
+
+/// One frame of a hosted rmut, driven with a plain egui context: the
+/// window saw `window_events`, the host handed rmut `host_events`.
+fn hosted_frame(
+    ctx: &eframe::egui::Context,
+    gui: &mut Gui,
+    window_events: Vec<eframe::egui::Event>,
+    host_events: &[eframe::egui::Event],
+) {
+    use eframe::egui::{Pos2, RawInput, Rect, Vec2};
+    let mut output = ctx.run_ui(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+            events: window_events,
+            ..Default::default()
+        },
+        |ui| gui.frame_hosted(ui, host_events),
+    );
+    output.textures_delta.clear();
+}
+
+/// Hosted, the keys are the host's to hand out: a key the window saw
+/// but the host kept - typed into some other part of its window - does
+/// not move rmut's cursor, and the same key handed over does.
+#[test]
+fn hosted_rmut_hears_only_the_keys_it_is_handed() {
+    use eframe::egui::Event;
+    let (_dir, mut gui) = fixture(&["one", "two", "three"]);
+    let ctx = eframe::egui::Context::default();
+    hosted_frame(&ctx, &mut gui, Vec::new(), &[]);
+    // rmut opens on the newest message, the last row: up is the way
+    // there is to go
+    let before = gui.session.sel;
+    assert!(before > 0, "the fixture opened on the first row");
+
+    hosted_frame(&ctx, &mut gui, vec![Event::Text("k".into())], &[]);
+    assert_eq!(gui.session.sel, before, "a key the host kept reached rmut");
+
+    hosted_frame(&ctx, &mut gui, Vec::new(), &[Event::Text("k".into())]);
+    assert_eq!(
+        gui.session.sel,
+        before - 1,
+        "the key the host handed over was lost"
+    );
+}
+
+/// Hosted, the window's look is the host's: rmut styles its own part
+/// of it and leaves the context's visuals as the host set them.
+#[test]
+fn hosted_rmut_leaves_the_hosts_visuals_alone() {
+    let (_dir, mut gui) = fixture(&["one"]);
+    let ctx = eframe::egui::Context::default();
+    let host_fill = eframe::egui::Color32::from_rgb(1, 2, 3);
+    ctx.global_style_mut(|style| style.visuals.panel_fill = host_fill);
+
+    hosted_frame(&ctx, &mut gui, Vec::new(), &[]);
+    assert_eq!(
+        ctx.global_style().visuals.panel_fill,
+        host_fill,
+        "rmut restyled the host's whole window"
+    );
+}

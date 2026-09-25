@@ -104,6 +104,17 @@ fn mono_line(job: &mut LayoutJob, text: &str, style: Style, size: f32) {
     job.append("\n", 0.0, format(Style::new(), size));
 }
 
+/// A panel's id. egui names a panel by its id alone, window-wide, so
+/// two rmuts in one host's window would share their menu bars and
+/// sidebars; hosted, the id is salted with rmut's own `Ui`.
+fn panel_id(gui: &Gui, root: &egui::Ui, name: &str) -> egui::Id {
+    if gui.hosted {
+        root.id().with(name)
+    } else {
+        egui::Id::new(name)
+    }
+}
+
 pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     let (canvas_bg, canvas_fg) = canvas(gui);
     CANVAS.with(|c| c.set((canvas_bg, canvas_fg)));
@@ -123,7 +134,13 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
         };
         visuals.panel_fill = canvas_bg;
         visuals.window_fill = canvas_bg;
-        root.ctx().set_visuals(visuals);
+        // A host's window is the host's to style: rmut's visuals stay
+        // on its own part of it
+        if gui.hosted {
+            *root.visuals_mut() = visuals;
+        } else {
+            root.ctx().set_visuals(visuals);
+        }
     }
     if gui.prefs.is_some() {
         let mut apply = false;
@@ -243,13 +260,13 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     let row_h = ctx.fonts_mut(|f| f.row_height(&FontId::monospace(size))) + 2.0;
     let bar_style = gui.theme.bar_style();
 
-    egui::Panel::top("menubar").show(root, |ui| {
+    egui::Panel::top(panel_id(gui, root, "menubar")).show(root, |ui| {
         menu_bar(gui, ui);
     });
 
     // The help bar (mutt's $help) across the top.
     if gui.session.config.ui.help.unwrap_or(true) {
-        egui::Panel::top("help").show(root, |ui| {
+        egui::Panel::top(panel_id(gui, root, "help")).show(root, |ui| {
             let help = match gui.mode {
                 Mode::Index => crate::paint::INDEX_HELP,
                 Mode::Pager(_) => PAGER_HELP,
@@ -271,7 +288,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     }
 
     // The message line at the very bottom, the status bar above it.
-    egui::Panel::bottom("message").show(root, |ui| {
+    egui::Panel::bottom(panel_id(gui, root, "message")).show(root, |ui| {
         let text = match &gui.prompt {
             Some(Prompt::Line { label, edit, .. }) => {
                 let i = rmut_front::editor::byte_at(&edit.buf, edit.cursor);
@@ -295,7 +312,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
         );
         ui.add(egui::Label::new(job).truncate());
     });
-    egui::Panel::bottom("status").show(root, |ui| {
+    egui::Panel::bottom(panel_id(gui, root, "status")).show(root, |ui| {
         let width = (ui.available_width() / char_w) as usize;
         let rows = gui.view_size.0;
         let text = match &gui.mode {
@@ -319,7 +336,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
 
     // The sidebar, a left slice of the index view.
     if matches!(gui.mode, Mode::Index) && gui.sidebar_visible {
-        egui::Panel::left("sidebar")
+        egui::Panel::left(panel_id(gui, root, "sidebar"))
             .resizable(false)
             .show(root, |ui| {
                 ui.set_width(char_w * gui.session.config.sidebar.width.clamp(10, 40) as f32);
@@ -823,8 +840,14 @@ const CONTEXT_ITEMS: &[(&str, &str)] = &[
 /// Only the region under the pointer scrolls, so with the mini-index
 /// above the message the wheel moves the part it is over, not both.
 fn wheel_rows(gui: &mut Gui, ui: &egui::Ui, size: f32, region: egui::Rect) -> i64 {
+    // The pointer is global and the region is in the layer's own
+    // coordinates, which differ once a host draws rmut through a
+    // transform (a zoomed or panned canvas); in a window of rmut's own
+    // there is no transform and this is the identity.
+    let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
     let over = ui
         .input(|i| i.pointer.hover_pos())
+        .map(|pos| to_local.map_or(pos, |t| t * pos))
         .is_some_and(|pos| region.contains(pos));
     if !over {
         return 0;

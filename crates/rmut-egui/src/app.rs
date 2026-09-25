@@ -293,6 +293,9 @@ pub struct Gui {
     pub ctx: Option<eframe::egui::Context>,
     last_poll: Instant,
     pub quit: bool,
+    /// rmut is a part of someone else's window, not a window of its
+    /// own: see [`Gui::frame_hosted`].
+    pub hosted: bool,
 }
 
 impl Gui {
@@ -363,6 +366,7 @@ impl Gui {
             ctx: None,
             last_poll: Instant::now(),
             quit: false,
+            hosted: false,
         };
         // -R: the whole session stays read-only, exactly the TUI's.
         gui.session.read_only = read_only;
@@ -3059,6 +3063,31 @@ impl Gui {
     /// the painting, and the next wake-up. Everything but the window
     /// itself, so a test harness can drive it without one.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
+        let keys = ui.ctx().input(|i| crate::input::keys(&i.events));
+        self.frame_with(ui, keys);
+    }
+
+    /// From now on rmut is a part of a host's window rather than a
+    /// window of its own: [`Self::frame_hosted`] is how it is drawn.
+    pub fn set_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    /// One frame inside a host's window. The keys are the ones the
+    /// host hands over - none while rmut does not have the host's
+    /// focus - rather than every key the window saw. The window-wide
+    /// things stay the host's: the zoom (Ctrl+wheel and its saved
+    /// value), egui's widget focus and Tab, and the visuals, which are
+    /// set on rmut's own `Ui` rather than on the whole context.
+    pub fn frame_hosted(&mut self, ui: &mut egui::Ui, events: &[egui::Event]) {
+        self.hosted = true;
+        // image/* parts decode through egui's loaders; installing is a
+        // no-op when the host (or an earlier frame) already has
+        egui_extras::install_image_loaders(ui.ctx());
+        self.frame_with(ui, crate::input::keys(events));
+    }
+
+    fn frame_with(&mut self, ui: &mut egui::Ui, keys: Vec<KeyEvent>) {
         let ctx = ui.ctx().clone();
         // Embedded nvim: apply whatever it drew, and when it quits
         // (:wq, :q!) the flow continues as an editor exit does.
@@ -3112,13 +3141,13 @@ impl Gui {
         // with the zoom modifier held the scroll delta stays zero, so
         // this never fights the row scrolling.
         let zoom = ctx.input(|i| i.zoom_delta());
-        if zoom != 1.0 {
+        if zoom != 1.0 && !self.hosted {
             ctx.set_zoom_factor((ctx.zoom_factor() * zoom).clamp(0.5, 4.0));
         }
         // Whatever changed the zoom (wheel here, egui's own keys),
         // remember it for the next run, once per change.
         let now = ctx.zoom_factor();
-        if (now - self.last_zoom).abs() > f32::EPSILON {
+        if !self.hosted && (now - self.last_zoom).abs() > f32::EPSILON {
             self.last_zoom = now;
             if let Some(path) = zoom_path() {
                 let _ = std::fs::create_dir_all(path.parent().unwrap());
@@ -3145,7 +3174,6 @@ impl Gui {
                     .spawn();
             }
         }
-        let keys = ctx.input(|i| crate::input::keys(&i.events));
         // While the keymap owns the keyboard, egui must not run its
         // own focus traversal: Tab is completion here, not
         // focus-next, or the first menu button quietly takes focus
@@ -3156,7 +3184,7 @@ impl Gui {
         // a dialog) really owns the keys.
         let widgets_own_keys =
             matches!(self.mode, Mode::Edit { .. }) || self.prefs.is_some() || self.about;
-        if !widgets_own_keys {
+        if !widgets_own_keys && !self.hosted {
             ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
                 i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);

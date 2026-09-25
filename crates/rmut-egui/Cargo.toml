@@ -9,6 +9,14 @@ description = "rmut in a window: the egui front end over rmut-session"
 keywords = ["mail", "maildir", "mbox", "imap", "mutt"]
 categories = ["email"]
 
+[lib]
+name = "rmut_egui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rmut-egui"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 eframe = { workspace = true }
