@@ -34,9 +34,8 @@ undo-send, and a man page (`docs/rmut.1`).
 Not there, on purpose: S/MIME, POP3, scoring, MH/MMDF folders,
 compressed-folder hooks, an embedded scripting language and an HTML
 rendering engine. Still to come in 2.x: `$tunnel` and accept-once
-for unknown certificates, the PGP odds (opportunistic encryption,
-inline PGP), and the envelope odds (`$dsn_*`, `$use_envelope_from`,
-`$reply_self`, ...). The round-by-round history is in
+for unknown certificates, and the PGP odds (opportunistic
+encryption, inline PGP). The round-by-round history is in
 [docs/PLAN.md](docs/PLAN.md).
 
 A pty-driven e2e suite (including fake IMAP/SMTP servers and a
@@ -157,7 +156,8 @@ lines carry a leading `+` marker, like mutt. Replies ask mutt's
 ask-yes questions: Reply-To (when the header is set), "No subject,
 abort?", and "Include message in reply?"; Enter takes the yes.
 
-Attachments: `Enter` view a text part, `s` save part to a file.
+Attachments: `Enter` view a text part, `s` save part to a file, `f`
+forward the part (text quoted, anything else attached).
 
 Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
 `~t x` to, `~c x` cc, `~C x` to-or-cc, `~e x` sender, `~h x` any
@@ -439,7 +439,10 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `menu_move_off`, `help`, `error_history`, `sort_browser`,
 `sort_alias`, `shell`, `tmpdir`, `ispell`,
 `reflow_text`, `notmuch`, `sidebar_visible`,
-`sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`.
+`sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`,
+`use_envelope_from` (and its old name `envelope_from`),
+`envelope_from_address`, `dsn_notify`, `dsn_return`, `reply_self`,
+`fcc_attach`, `fcc_clear`, `forward_edit`, `mime_forward_rest`.
 An unknown option, a bad number, an unbindable key, or an unknown
 function reports on the bottom line in the error color and stops the
 rest of the line. Changed settings recompile in place: colors, key
@@ -900,6 +903,20 @@ delete = "ask"               # mutt's $delete: "yes" purges without
 abort_noattach = "no"        # "ask"/"yes": a body that mentions an
                              # attachment with none attached is
                              # questioned before it goes
+use_envelope_from = false    # true: sendmail -f (envelope_from_address,
+                             # else the From); SMTP's MAIL FROM too
+dsn_notify = "failure,delay" # delivery status notifications: sendmail
+dsn_return = "hdrs"          # -N/-R, NOTIFY=/RET= when SMTP offers DSN
+reply_self = false           # true: a reply to my own mail comes back
+                             # to me, not to its recipients
+fcc_attach = "yes"           # "no": the sent copy keeps the text only;
+                             # ask-yes/ask-no ask at send time
+fcc_clear = false            # true: keep the copy of signed/encrypted
+                             # mail in the clear
+forward_edit = "yes"         # "no": a forward skips the editor;
+                             # ask-yes/ask-no ask first
+mime_forward_rest = true     # f in the attachment menu attaches a
+                             # part that is not text; false refuses
 signature = "~/.signature"   # ends every draft; a name ending in |
                              # is a command whose output it is
 sig_dashes = true            # the "-- " line above the signature

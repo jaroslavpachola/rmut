@@ -197,6 +197,8 @@ pub struct ComposeSetup {
     pub subject: Option<String>,
     /// mime_forward = "ask": the question's answer, once given.
     pub fwd_attach: Option<bool>,
+    /// A forward from the attachment menu: the part it forwards.
+    pub part: Option<usize>,
 }
 
 /// PGP treatment for an outgoing draft, chosen at the send prompt.
@@ -246,6 +248,9 @@ pub struct Held {
     /// The Fcc target as it was decided at send time (menu, then
     /// fcc-hook); None means the default sent copy.
     pub fcc: Option<String>,
+    /// The copy to keep, when it is not `text`: mutt's $fcc_attach
+    /// said no, or $fcc_clear keeps it unsigned and unencrypted.
+    pub fcc_text: Option<String>,
     /// What the status line calls it: the subject, or the recipients.
     pub label: String,
     pub due: Instant,
@@ -519,6 +524,11 @@ pub struct Session {
     /// if the first editor pass hands back exactly this, there is no
     /// message to send. Cleared as soon as it has been compared.
     staged: Option<(PathBuf, String)>,
+    /// A forward's draft, built, while $forward_edit asks whether it
+    /// goes to the editor.
+    parked_forward: Option<Compose>,
+    /// $fcc_attach asked, and answered, for the send in progress.
+    fcc_attach_answer: Option<bool>,
     /// The attachment reminder has been answered for this draft: the
     /// next send goes through without asking again.
     attach_confirmed: bool,
@@ -653,6 +663,8 @@ impl Session {
             setup: None,
             draft: None,
             staged: None,
+            parked_forward: None,
+            fcc_attach_answer: None,
             attach_confirmed: false,
             hook_base: None,
             active_message_hooks: Vec::new(),
@@ -3512,14 +3524,23 @@ impl Session {
             &compose::make_message_id(&host),
         );
         let envelope_from = compose::bare_address(&from).unwrap_or_else(|| from.clone());
+        let envelope = self.config.mail.envelope(&envelope_from);
         match self.smtp_account() {
             Some(account) => account_password(&account).and_then(|password| {
-                smtp::send(&account, &password, &envelope_from, rcpts, text.as_bytes())
+                smtp::send(
+                    &account,
+                    &password,
+                    &envelope_from,
+                    rcpts,
+                    text.as_bytes(),
+                    &envelope,
+                )
             }),
             None => run_sendmail(
                 text.as_bytes(),
                 self.config.mail.sendmail.as_deref(),
                 Some(rcpts),
+                &envelope,
             ),
         }
     }
@@ -3825,9 +3846,14 @@ impl Session {
                 .join(", ")
         };
         let from_hdr = get("From");
+        // mutt's $reply_self off: a reply to my own mail goes where
+        // that mail went, not back to me.
+        let from_me = !self.config.mail.reply_self && self.me().wrote(&from_hdr);
         let (reply_to, has_reply_to) = {
             let rt = get("Reply-To");
-            if rt.trim().is_empty() {
+            if from_me && !get("To").trim().is_empty() {
+                (get("To"), false)
+            } else if rt.trim().is_empty() {
                 (from_hdr.clone(), false)
             } else {
                 let differs = rt.trim() != from_hdr.trim();
@@ -4086,17 +4112,26 @@ impl Session {
         let Held {
             state: compose_state,
             text: final_text,
+            fcc_text,
             fcc: chosen,
             ..
         } = held;
+        let envelope = self
+            .config
+            .mail
+            .envelope(&compose::from_address(&final_text).unwrap_or_default());
         let send_result = match self.smtp_account() {
-            Some(account) => send_via_smtp(&account, &final_text),
+            Some(account) => send_via_smtp(&account, &final_text, &envelope),
             None => run_sendmail(
                 final_text.as_bytes(),
                 self.config.mail.sendmail.as_deref(),
                 None,
+                &envelope,
             ),
         };
+        // What the sent copy holds, which $fcc_attach and $fcc_clear
+        // may have made different from what went out.
+        let copy = fcc_text.unwrap_or(final_text);
         match send_result {
             Ok(()) => {
                 let mut note = String::from("message sent");
@@ -4116,7 +4151,7 @@ impl Session {
                         ..Default::default()
                     };
                     if dir.join("cur").is_dir()
-                        && maildir::deliver(&dir, final_text.as_bytes(), flags).is_ok()
+                        && maildir::deliver(&dir, copy.as_bytes(), flags).is_ok()
                     {
                         note += &format!(", copy in {fcc}");
                     } else {
@@ -4128,7 +4163,7 @@ impl Session {
                         // server.
                         // The server's copy is kept in the background:
                         // the send is done, and says so now.
-                        Some(_) => fcc_to_server = Some(final_text.clone().into_bytes()),
+                        Some(_) => fcc_to_server = Some(copy.into_bytes()),
                         None => {
                             let sent_dir = self
                                 .config
@@ -4146,7 +4181,7 @@ impl Session {
                                         seen: true,
                                         ..Default::default()
                                     };
-                                    match maildir::deliver(&sent, final_text.as_bytes(), flags) {
+                                    match maildir::deliver(&sent, copy.as_bytes(), flags) {
                                         Ok(_) => note += ", copy in Sent",
                                         Err(_) => note += ", Fcc to Sent failed",
                                     }
@@ -4456,6 +4491,27 @@ impl Session {
                 }
             }
         }
+        // mutt's $fcc_attach: asked about only when there is an
+        // attachment for the answer to matter to.
+        let keep_attachments = match self.fcc_attach_answer.take() {
+            Some(answer) => answer,
+            None => match self.config.mail.fcc_attach.as_deref().unwrap_or("yes") {
+                "no" => false,
+                ask @ ("ask-yes" | "ask-no")
+                    if compose_state.attach.is_some()
+                        || !compose::extract_attachments(&raw).1.is_empty() =>
+                {
+                    self.draft = Some(compose_state);
+                    return Some(Ask::Key {
+                        label: "Save attachments in Fcc? (y/n): ".into(),
+                        what: AskKind::FccAttach {
+                            default_yes: ask == "ask-yes",
+                        },
+                    });
+                }
+                _ => true,
+            },
+        };
         // mutt's fcc-hook, evaluated on the draft as it stands after
         // the editor; an Fcc picked in the menu still wins.
         let draft_path = self
@@ -4503,12 +4559,35 @@ impl Session {
             },
             None => None,
         };
-        let final_text = match self.secure_message(
-            compose_state.security,
-            final_text,
-            &files,
-            original.as_deref(),
-        ) {
+        // The copy kept differs from what is sent when $fcc_attach
+        // leaves the attachments out or $fcc_clear the crypto.
+        let fcc_security = match self.config.mail.fcc_clear {
+            true => Security::None,
+            false => compose_state.security,
+        };
+        let fcc_text = match (keep_attachments, fcc_security == compose_state.security) {
+            (true, true) => Ok(None),
+            (true, false) => self
+                .secure_message(
+                    fcc_security,
+                    final_text.clone(),
+                    &files,
+                    original.as_deref(),
+                )
+                .map(Some),
+            (false, _) => self
+                .secure_message(fcc_security, final_text.clone(), &[], None)
+                .map(Some),
+        };
+        let final_text = self
+            .secure_message(
+                compose_state.security,
+                final_text,
+                &files,
+                original.as_deref(),
+            )
+            .and_then(|sent| Ok((sent, fcc_text?)));
+        let (final_text, fcc_text) = match final_text {
             Ok(t) => t,
             Err(err) => {
                 self.error(format!("{err:#}; e edits, s changes security"));
@@ -4520,6 +4599,7 @@ impl Session {
         // copy, and $copy = no makes that the default.
         let held = Held {
             text: final_text,
+            fcc_text,
             fcc: compose_state.fcc.clone().or(hook_fcc),
             label: {
                 let head = raw.split_once("\n\n").map_or(raw.as_str(), |(h, _)| h);
@@ -5146,12 +5226,12 @@ pub fn expand_tilde(input: &str) -> PathBuf {
     PathBuf::from(input)
 }
 
-pub fn send_via_smtp(account: &Account, text: &str) -> Result<()> {
+pub fn send_via_smtp(account: &Account, text: &str, envelope: &smtp::Envelope) -> Result<()> {
     let from = compose::from_address(text).context("cannot parse the From address")?;
     let (rcpts, text) = compose::smtp_envelope(text)?;
     anyhow::ensure!(!rcpts.is_empty(), "no recipient addresses");
     let password = account_password(account)?;
-    smtp::send(account, &password, &from, &rcpts, text.as_bytes())
+    smtp::send(account, &password, &from, &rcpts, text.as_bytes(), envelope)
 }
 
 /// Run a shell command with `bytes` on its stdin.
@@ -5182,10 +5262,12 @@ pub fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
 
 /// With `rcpts` the addresses go on the command line (a bounce keeps
 /// its Resent-To out of -t's reach); otherwise -t reads To/Cc/Bcc.
+/// The envelope becomes mutt's `-f`, `-N` and `-R`.
 pub fn run_sendmail(
     bytes: &[u8],
     configured: Option<&str>,
     rcpts: Option<&[String]>,
+    envelope: &smtp::Envelope,
 ) -> Result<()> {
     let command = std::env::var("RMUT_SENDMAIL")
         .ok()
@@ -5205,6 +5287,15 @@ pub fn run_sendmail(
             (p, Vec::new())
         }
     };
+    if let Some(sender) = &envelope.sender {
+        args.extend(["-f".into(), sender.clone()]);
+    }
+    if let Some(notify) = &envelope.notify {
+        args.extend(["-N".into(), notify.clone()]);
+    }
+    if let Some(ret) = &envelope.ret {
+        args.extend(["-R".into(), ret.clone()]);
+    }
     match rcpts {
         Some(rcpts) => {
             args.push("-oi".into());

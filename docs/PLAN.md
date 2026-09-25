@@ -2174,14 +2174,54 @@ where the tests are.
 - [ ] Left for a follow-up: the same for `PagerAction` (44 more
       functions, 326 lines), and `$recall` becoming an `Ask` instead
       of the front end's own quadoption branch
-## R89: the envelope odds (post-2.0)
+## R89: the envelope odds (done, 2.8.0)
 
 Goal: the send-side options split out of R75 so 2.0 does not wait on
 them. Real, but nobody's first-week complaint.
 
-- [ ] `$use_envelope_from` / `$envelope_from_address`, `$dsn_notify` /
-      `$dsn_return`, `$reply_self`, `$fcc_attach` / `$fcc_clear`,
-      `$forward_edit`, `$mime_forward_rest`
+- [x] `$use_envelope_from` / `$envelope_from_address`: sendmail gets
+      `-f`, the address or else the From; over SMTP it replaces the
+      From in MAIL FROM. `$dsn_notify` / `$dsn_return`: sendmail's
+      `-N` / `-R`, and NOTIFY= / RET= to an SMTP server whose EHLO
+      offers DSN (one that does not would refuse them), bounces
+      included. One `smtp::Envelope` carries all three, from
+      `Mail::envelope`
+- [x] `$reply_self`: off (mutt's default) a reply to my own mail goes
+      to its To, and a group reply copies its Cc, where rmut used to
+      address it back to me. One place, `compose_base`
+- [x] `$fcc_attach` (quadoption, asked only when something is
+      attached) and `$fcc_clear`: `Held` carries a second text for
+      the copy when either makes it differ from what was sent
+- [x] `$forward_edit`: no goes from the forward to the compose menu,
+      the ask forms ask "Edit forwarded message?"; autoedit with
+      edit_headers still always edits, as in mutt
+- [x] `$mime_forward_rest` had nothing to govern: rmut's attachment
+      menu could not forward. `f` there now forwards the part under
+      the cursor in both fronts, quoted when it reads as text (or an
+      auto_view filter makes it so), otherwise decoded to a temp file
+      attached with `@unlink`; mime_forward_rest off refuses such a
+      part instead of sending an empty forward. mutt's tagging in
+      that menu (several parts at once) stays out
+- [x] All settable at runtime, `unset` on the two yes-by-default
+      quadoptions meaning no as in mutt, and imported from a muttrc;
+      session tests with a recording sendmail and e2e
+      scenario_send_odds (the envelope, a signed send kept clear, a
+      forward past the editor, a picture forwarded from `v`)
+
+## R91: clickable and copyable URLs (asked for by name, 2026-09-25)
+
+Goal: from "Beyond mutt": links in the terminal pager open with a
+click (OSC 8 hyperlinks), and a URL picker key copies one to the
+clipboard (OSC 52) or opens it, so a link in a mail is not a thing
+to retype. The window already clicks links; this is the terminal's
+half.
+
+## R92: markdown compose (asked for by name, 2026-09-25)
+
+Goal: from "Beyond mutt", opt-in: a draft written in markdown goes
+out as multipart/alternative, the text/plain as typed and a
+text/html generated from it, so the reader's client shows the
+formatting while a plain reader loses nothing.
 
 ## The 2.0 cut (decided 2026-08-27)
 
@@ -2490,6 +2530,27 @@ progress line no longer covers something the user was just told
 window survives a mailbox switch: the switch built a fresh session
 and dropped it, unsent.
 
+## 2.8.0 (released 2026-09-25)
+
+R89, the envelope odds. `$use_envelope_from` / `$envelope_from_address`
+give sendmail `-f` and SMTP's MAIL FROM, `$dsn_notify` / `$dsn_return`
+become `-N` / `-R` or NOTIFY= / RET= where the server offers DSN.
+`$reply_self` off, mutt's default, sends a reply to my own message to
+its recipients; rmut used to send it back to me. `$fcc_attach` can keep
+the sent copy to its text (or ask), `$fcc_clear` keeps it out of the
+signature and the encryption. `$forward_edit` takes a forward past the
+editor, or asks. And `f` in the attachment menu forwards the part under
+the cursor, quoted when it is text and attached when it is not, which
+is what `$mime_forward_rest` decides. The plan also gained R91
+(clickable and copyable URLs) and R92 (markdown compose), both asked
+for by name.
+
+Fixed on the way: the window's embedded-nvim test ran the real nvim
+with the user's own config, and a LazyVim that no longer finishes
+starting under nvim 0.12.5 kept its :wq from arriving; the test now
+runs `nvim --clean` (`Embedded::start_with`), since what it checks is
+rmut's RPC, not anyone's plugins.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
@@ -2782,14 +2843,13 @@ value-per-effort:
   pager instead of a base64 blob; maybe accept/decline replies
 - Attachment reminder: shipped as R46 above (asked for by name,
   2026-08)
-- Clickable/yankable URLs: OSC 8 hyperlinks in the body, OSC 52
-  clipboard yank via a URL picker key
+- Clickable/yankable URLs: asked for by name 2026-09-25, R91 above
 - Inline image preview: kitty/sixel graphics for image parts in the
   pager
 - Auto-harvested address completion: rank by who you actually mail,
   learned from the mail itself
-- Markdown compose (opt-in): text/plain + generated text/html
-  multipart/alternative
+- Markdown compose (opt-in): asked for by name 2026-09-25, R92
+  above
 - Patch-series view: recognize a git series thread, show in order,
   pipe to git am
 - Built-in full-text search: an incremental tantivy index making ~b

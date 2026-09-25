@@ -6,6 +6,9 @@
 //! whatever is drawing the prompts, and it ends by handing the front
 //! end a draft to open an editor on.
 
+use std::path::Path;
+
+use anyhow::Result;
 use rmut_core::{alias, compose, message};
 
 use crate::{
@@ -26,7 +29,7 @@ impl Session {
                 }
             },
         };
-        self.continue_setup(kind, base)
+        self.continue_setup(kind, base, None)
     }
 
     /// `L`: reply to the mailing list. Refuses when the message names
@@ -44,10 +47,53 @@ impl Session {
             });
             return None;
         }
-        self.continue_setup(ComposeKind::ListReply, Some(base))
+        self.continue_setup(ComposeKind::ListReply, Some(base), None)
     }
 
-    fn continue_setup(&mut self, kind: ComposeKind, base: Option<ComposeBase>) -> Option<Ask> {
+    /// mutt's forward-message in the attachment menu, for the part at
+    /// `index` of the selected message: a part that reads as text is
+    /// quoted the way a forward quotes a body, and one that does not
+    /// is attached, as mutt's $mime_forward_rest has it. With that
+    /// off, such a part is refused rather than sent as an empty
+    /// forward. forward = "attach" (mutt's $mime_forward) attaches
+    /// the part whatever it is.
+    pub fn start_forward_part(&mut self, index: usize) -> Option<Ask> {
+        let Some(base) = self.compose_base() else {
+            self.error("no message selected");
+            return None;
+        };
+        let part = match message::parts(&base.path) {
+            Ok(parts) => parts.into_iter().nth(index)?,
+            Err(err) => {
+                self.error(format!("cannot list parts: {err:#}"));
+                return None;
+            }
+        };
+        if !self.part_reads_as_text(&part)
+            && !self.forward_attaches()
+            && !self.config.mail.mime_forward_rest.unwrap_or(true)
+        {
+            self.error(format!(
+                "{} does not read as text, and $mime_forward_rest is off",
+                part.mimetype
+            ));
+            return None;
+        }
+        self.continue_setup(ComposeKind::Forward, Some(base), Some(index))
+    }
+
+    /// Whether a forward can quote this part: text, or a type an
+    /// auto_view filter turns into text.
+    fn part_reads_as_text(&self, part: &message::Part) -> bool {
+        part.is_text || self.display.filters.contains_key(&part.mimetype)
+    }
+
+    fn continue_setup(
+        &mut self,
+        kind: ComposeKind,
+        base: Option<ComposeBase>,
+        part: Option<usize>,
+    ) -> Option<Ask> {
         // mutt's $autoedit (with edit_headers): no prompts, no
         // questions: the defaults land in the draft and the editor
         // opens; everything stays editable there and in the menu.
@@ -74,9 +120,9 @@ impl Session {
                 subject_prefill: None,
                 subject: None,
                 fwd_attach: None,
+                part,
             });
-            self.finish_compose_setup(&subject, true);
-            return None;
+            return self.finish_compose_setup(&subject, true);
         }
         let ask_reply_to = matches!(kind, ComposeKind::Reply | ComposeKind::GroupReply)
             && base.as_ref().is_some_and(|b| b.has_reply_to);
@@ -89,6 +135,7 @@ impl Session {
             subject_prefill: None,
             subject: None,
             fwd_attach: None,
+            part,
         });
         if ask_reply_to {
             // mutt's $reply_to = ask-yes.
@@ -322,14 +369,8 @@ impl Session {
             // mutt's $include: "yes" and "no" decide it, the two
             // ask forms ask, and Enter takes the one they name.
             match self.config.mail.include.as_deref().unwrap_or("ask-yes") {
-                "yes" => {
-                    self.finish_compose_setup(&subject, true);
-                    return None;
-                }
-                "no" => {
-                    self.finish_compose_setup(&subject, false);
-                    return None;
-                }
+                "yes" => return self.finish_compose_setup(&subject, true),
+                "no" => return self.finish_compose_setup(&subject, false),
                 include => {
                     if let Some(setup) = &mut self.setup {
                         setup.subject = Some(subject);
@@ -353,22 +394,28 @@ impl Session {
                 what: AskKind::ForwardAttach,
             });
         }
-        self.finish_compose_setup(&subject, true);
-        None
+        self.finish_compose_setup(&subject, true)
     }
 
-    fn finish_compose_setup(&mut self, subject: &str, include: bool) {
-        let Some(setup) = self.setup.take() else {
-            return;
-        };
+    /// The draft is built and on its way to the editor, or, for a
+    /// forward, possibly past it ($forward_edit), which may take one
+    /// more question.
+    fn finish_compose_setup(&mut self, subject: &str, include: bool) -> Option<Ask> {
+        let setup = self.setup.take()?;
         // mutt's reply-hook: in force while this reply's draft is
         // built, so `set from`, edit_headers and my_hdr all see it.
         let reply_hooks = self.apply_reply_hooks(setup.base.as_ref(), setup.kind);
-        self.finish_compose_draft(setup, subject, include);
+        let ask = self.finish_compose_draft(setup, subject, include);
         self.restore_after_reply_hooks(reply_hooks);
+        ask
     }
 
-    fn finish_compose_draft(&mut self, setup: ComposeSetup, subject: &str, include: bool) {
+    fn finish_compose_draft(
+        &mut self,
+        setup: ComposeSetup,
+        subject: &str,
+        include: bool,
+    ) -> Option<Ask> {
         let asked_cc = setup.cc.clone().filter(|cc| !cc.trim().is_empty());
         let bcc = setup.bcc.clone().filter(|bcc| !bcc.trim().is_empty());
         let mut to = setup.to.unwrap_or_default();
@@ -377,6 +424,7 @@ impl Session {
         let mut references = None;
         let mut body = String::new();
         let mut attach = None;
+        let mut part_line = None;
         if let Some(b) = &setup.base {
             match setup.kind {
                 ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply => {
@@ -424,6 +472,19 @@ impl Session {
                             if !joined.is_empty() {
                                 cc = Some(joined);
                             }
+                        }
+                    }
+                }
+                ComposeKind::Forward if setup.part.is_some() => {
+                    let whole = setup.fwd_attach.unwrap_or_else(|| self.forward_attaches());
+                    match self.forward_part(b, setup.part.unwrap_or_default(), whole) {
+                        Ok((text, line)) => {
+                            body = text;
+                            part_line = line;
+                        }
+                        Err(err) => {
+                            self.error(format!("cannot forward the part: {err:#}"));
+                            return None;
                         }
                     }
                 }
@@ -477,6 +538,7 @@ impl Session {
         if let Some(value) = bcc {
             extra.push(format!("Bcc: {value}"));
         }
+        extra.extend(part_line);
         let text = match extra.is_empty() {
             true => text,
             false => match text.split_once("\n\n") {
@@ -491,17 +553,65 @@ impl Session {
                 let staged = std::fs::read_to_string(&path).unwrap_or_default();
                 self.staged = Some((path.clone(), staged));
                 let security = self.security_for(&setup.kind, setup.base.as_ref());
-                self.requests.push(Request::Editor(Compose {
+                let draft = Compose {
                     path,
                     recall_source: None,
                     security,
                     attach,
                     hidden_head,
                     fcc: None,
-                }));
+                };
+                // mutt's $forward_edit, except that $autoedit with
+                // edit_headers always edits, as in mutt.
+                let forward_edit = match setup.kind {
+                    ComposeKind::Forward if !(self.config.mail.autoedit && self.edit_headers()) => {
+                        self.config.mail.forward_edit.as_deref().unwrap_or("yes")
+                    }
+                    _ => "yes",
+                };
+                match forward_edit {
+                    "no" => self.skip_editor(draft),
+                    ask @ ("ask-yes" | "ask-no") => {
+                        self.parked_forward = Some(draft);
+                        return Some(Ask::Key {
+                            label: "Edit forwarded message? (y/n): ".into(),
+                            what: AskKind::ForwardEdit {
+                                default_yes: ask == "ask-yes",
+                            },
+                        });
+                    }
+                    _ => self.requests.push(Request::Editor(draft)),
+                }
             }
             Err(err) => self.error(format!("cannot write draft: {err:#}")),
         }
+        None
+    }
+
+    /// Straight to the compose menu with the draft as it was built,
+    /// the way the editor hands one back.
+    fn skip_editor(&mut self, draft: Compose) {
+        // Nobody edited it, and that is not $abort_unmodified's case.
+        self.staged = None;
+        self.set_draft(draft);
+        self.requests.push(Request::ShowDraft);
+    }
+
+    /// $forward_edit asked: the parked forward goes to the editor or
+    /// straight to the compose menu. Anything but y or n (or Enter)
+    /// cancels the forward.
+    pub(crate) fn answer_forward_edit(&mut self, edit: Option<bool>) -> Option<Ask> {
+        let draft = self.parked_forward.take()?;
+        match edit {
+            Some(true) => self.requests.push(Request::Editor(draft)),
+            Some(false) => self.skip_editor(draft),
+            None => {
+                let _ = std::fs::remove_file(&draft.path);
+                self.staged = None;
+                self.note("forward cancelled");
+            }
+        }
+        None
     }
 
     /// The Reply-To question is answered: on to the recipient.
@@ -524,8 +634,7 @@ impl Session {
 
     pub(crate) fn answer_include(&mut self, include: bool) -> Option<Ask> {
         let subject = self.parked_subject();
-        self.finish_compose_setup(&subject, include);
-        None
+        self.finish_compose_setup(&subject, include)
     }
 
     pub(crate) fn answer_forward_attach(&mut self, attach: bool) -> Option<Ask> {
@@ -533,8 +642,63 @@ impl Session {
         if let Some(setup) = &mut self.setup {
             setup.fwd_attach = Some(attach);
         }
-        self.finish_compose_setup(&subject, true);
-        None
+        self.finish_compose_setup(&subject, true)
+    }
+
+    /// A forwarded part: the body that quotes it, and the Attach line
+    /// that carries it when it goes as a file (`whole`, or a part that
+    /// does not read as text). The file is the part decoded into the
+    /// temp directory, unlinked once the message is sent.
+    fn forward_part(
+        &self,
+        b: &ComposeBase,
+        index: usize,
+        whole: bool,
+    ) -> Result<(String, Option<String>)> {
+        let part = message::parts(&b.path)?
+            .into_iter()
+            .nth(index)
+            .ok_or_else(|| anyhow::anyhow!("no part {}", index + 1))?;
+        let indent = self.config.mail.forward_quote.then(|| self.indent_string());
+        let quote =
+            |text: &str| compose::forward_body(&b.from_display, b.date, &b.subject, text, indent);
+        if !whole && self.part_reads_as_text(&part) {
+            let text = match self.display.filters.get(&part.mimetype) {
+                Some(command) => message::filter_part(&b.path, index, command)?,
+                None => {
+                    let text = message::part_text(&b.path, index)?;
+                    match part.mimetype == "text/html" && self.display.html_to_text {
+                        true => rmut_core::html::to_text(&text),
+                        false => text,
+                    }
+                }
+            };
+            return Ok((quote(&text), None));
+        }
+        let bytes = message::part_bytes(&b.path, index)?;
+        let dir = std::env::temp_dir().join(format!("rmut-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        // The part's own name, its basename only, as mutt's sanitizer
+        // leaves it; a second forward of the same name gets a prefix
+        // on disk and goes out under the name it came with.
+        let name = part
+            .filename
+            .as_deref()
+            .and_then(|n| Path::new(n).file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("part-{}", index + 1));
+        let mut path = dir.join(&name);
+        let mut n = 1;
+        while path.exists() {
+            n += 1;
+            path = dir.join(format!("{n}-{name}"));
+        }
+        std::fs::write(&path, bytes)?;
+        let mut file = compose::Attachment::of(path);
+        file.mime = Some(part.mimetype.clone());
+        file.name = (n > 1).then_some(name);
+        file.unlink = true;
+        Ok((quote(""), Some(compose::attach_line(&file))))
     }
 
     /// The subject parked while a question was up.

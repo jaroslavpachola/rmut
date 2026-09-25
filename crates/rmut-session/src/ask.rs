@@ -144,6 +144,16 @@ pub enum AskKind {
     },
     /// mime_forward = "ask": forward the original as an attachment?
     ForwardAttach,
+    /// mutt's $forward_edit ask-yes / ask-no: edit the forward before
+    /// the compose menu? `default_yes` is what Enter takes.
+    ForwardEdit {
+        default_yes: bool,
+    },
+    /// mutt's $fcc_attach ask-yes / ask-no: keep the attachments in
+    /// the sent copy? `default_yes` is what Enter takes.
+    FccAttach {
+        default_yes: bool,
+    },
     /// $abort_noattach = ask: the body mentions an attachment and
     /// none is attached. Send it anyway?
     NoAttach,
@@ -977,6 +987,20 @@ impl Session {
                 }
                 None
             }
+            (AskKind::FccAttach { default_yes }, Answer::Key(key)) => {
+                let keep = match key {
+                    Key::Char('y') => true,
+                    Key::Char('n') => false,
+                    Key::Enter => default_yes,
+                    _ => {
+                        self.note("not sent");
+                        self.requests.push(Request::ShowDraft);
+                        return None;
+                    }
+                };
+                self.fcc_attach_answer = Some(keep);
+                self.send_draft()
+            }
             (AskKind::NoAttach, Answer::Key(key)) => match key {
                 // ask-no: Enter goes back to the menu, where `a`
                 // attaches the file that was forgotten.
@@ -1029,6 +1053,14 @@ impl Session {
                     None
                 }
             },
+            (AskKind::ForwardEdit { default_yes }, Answer::Key(key)) => {
+                self.answer_forward_edit(match key {
+                    Key::Char('y') => Some(true),
+                    Key::Char('n') => Some(false),
+                    Key::Enter => Some(default_yes),
+                    _ => None,
+                })
+            }
             (AskKind::BounceTo { tagged }, Answer::Line(input)) => {
                 let to = rmut_core::alias::expand(
                     input,

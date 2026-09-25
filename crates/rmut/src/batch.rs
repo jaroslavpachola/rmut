@@ -114,12 +114,16 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         // The same join the compose menu makes, MIME-Version included.
         format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())
     };
+    let envelope = config
+        .mail
+        .envelope(&compose::from_address(&final_text).unwrap_or_default());
     match smtp_account(config) {
-        Some(account) => rmut_session::send_via_smtp(&account, &final_text)?,
+        Some(account) => rmut_session::send_via_smtp(&account, &final_text, &envelope)?,
         None => rmut_session::run_sendmail(
             final_text.as_bytes(),
             config.mail.sendmail.as_deref(),
             None,
+            &envelope,
         )?,
     }
     let mut note = String::from("message sent");

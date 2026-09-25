@@ -2835,3 +2835,241 @@ fn mark_all_read_is_one_undo_step() {
     f.session.run_function(Function::MarkAllRead, false, 10);
     assert!(f.log.said("no unread"), "{}", f.log.last_text());
 }
+
+#[test]
+fn a_reply_to_my_own_mail_goes_where_it_went() {
+    let mut f = Fixture::with_config(&["x"], reply_config());
+    let mine = "From: Me <me@example.com>\nTo: Bob <bob@example.com>\nCc: carol@example.com\n\
+                Subject: my plan\nDate: Mon, 20 Mar 2024 10:00:00 +0000\nMessage-ID: <mine@x>\n\n\
+                the plan\n";
+    fs::write(f._dir.path().join("cur/0009.rmut:2,S"), mine).unwrap();
+    touch_dirs(f._dir.path());
+    f.session.check_new_mail();
+    f.select("my plan");
+    let to_prefill = |f: &mut Fixture, kind| match f.session.start_compose(kind) {
+        Some(Ask::Line { prefill, .. }) => prefill,
+        _ => panic!("the To prompt"),
+    };
+    // mutt's $reply_self off: back to Bob, not to me.
+    assert_eq!(
+        to_prefill(&mut f, crate::ComposeKind::Reply),
+        "Bob <bob@example.com>"
+    );
+    f.session.cancel_setup();
+    f.session.config.mail.reply_self = true;
+    assert_eq!(
+        to_prefill(&mut f, crate::ComposeKind::Reply),
+        "Me <me@example.com>"
+    );
+}
+
+#[test]
+fn forward_edit_can_skip_the_editor_or_ask_first() {
+    let forward = |f: &mut Fixture| {
+        f.select("Lunch on Friday?");
+        let ask = f.session.start_compose(crate::ComposeKind::Forward);
+        let ask = f.answer_line(ask, "someone@example.com");
+        f.answer_line(ask, "Fwd: Lunch")
+    };
+    let mut config = reply_config();
+    config.mail.forward_edit = Some("no".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    assert!(forward(&mut f).is_none());
+    let requests: Vec<_> = std::iter::from_fn(|| f.session.take_request()).collect();
+    assert!(
+        requests
+            .iter()
+            .all(|r| !matches!(r, crate::Request::Editor(_))),
+        "no editor"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|r| matches!(r, crate::Request::ShowDraft)),
+        "the compose menu instead"
+    );
+    let text = crate::draft_full(f.session.draft().expect("the draft in hand")).unwrap();
+    assert!(text.contains("body of Lunch on Friday?"), "{text}");
+
+    // ask-no: Enter skips the editor, y takes it.
+    let mut config = reply_config();
+    config.mail.forward_edit = Some("ask-no".into());
+    let mut f = Fixture::with_config(&["Lunch on Friday?"], config);
+    let ask = forward(&mut f);
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Edit forwarded message? (y/n): "
+    );
+    assert!(f.answer_enter(ask).is_none());
+    assert!(f.session.draft().is_some(), "straight to the menu");
+    let ask = forward(&mut f);
+    assert!(f.answer_key(ask, 'y').is_none());
+    draft_from_requests(&mut f.session);
+}
+
+/// A sendmail that keeps its arguments and the message it was given,
+/// for looking at afterwards.
+fn recording_sendmail(dir: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("sendmail");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$@\" > {0}/args\ncat > {0}/sent\n",
+            dir.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script.display().to_string()
+}
+
+/// A Sent maildir, the recording sendmail, and a draft in hand with
+/// one file attached.
+fn sending_fixture(config: Config) -> (Fixture, tempfile::TempDir) {
+    let out = tempfile::tempdir().unwrap();
+    let mut config = config;
+    config.mail.sendmail = Some(recording_sendmail(out.path()));
+    let sent = out.path().join("Sent");
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(sent.join(sub)).unwrap();
+    }
+    config.mail.sent = Some(sent.display().to_string());
+    let mut f = Fixture::with_config(&["one"], config);
+    let file = out.path().join("notes.txt");
+    fs::write(&file, "the attached notes\n").unwrap();
+    let path = out.path().join("draft");
+    fs::write(
+        &path,
+        format!(
+            "From: me@example.com\nTo: you@example.com\nSubject: notes\nAttach: {}\n\nsee the file\n",
+            file.display()
+        ),
+    )
+    .unwrap();
+    f.session.set_draft(crate::Compose {
+        path,
+        recall_source: None,
+        security: crate::Security::None,
+        attach: None,
+        hidden_head: None,
+        fcc: None,
+    });
+    (f, out)
+}
+
+fn the_sent_copy(out: &Path) -> String {
+    let cur = out.join("Sent/cur");
+    let mut copies = fs::read_dir(&cur).unwrap().map(|e| e.unwrap().path());
+    let copy = copies.next().expect("a sent copy");
+    assert!(copies.next().is_none(), "one copy");
+    fs::read_to_string(copy).unwrap()
+}
+
+#[test]
+fn the_envelope_reaches_sendmail() {
+    let mut config = reply_config();
+    config.mail.use_envelope_from = true;
+    config.mail.envelope_from_address = Some("bounces@example.com".into());
+    config.mail.dsn_notify = Some("failure,delay".into());
+    config.mail.dsn_return = Some("hdrs".into());
+    let (mut f, out) = sending_fixture(config);
+    assert!(f.session.send_draft().is_none());
+    assert!(f.log.said("message sent"), "{}", f.log.last_text());
+    let args = fs::read_to_string(out.path().join("args")).unwrap();
+    assert_eq!(
+        args.trim(),
+        "-f bounces@example.com -N failure,delay -R hdrs -t -oi"
+    );
+}
+
+#[test]
+fn fcc_attach_no_keeps_the_text_alone() {
+    let mut config = reply_config();
+    config.mail.fcc_attach = Some("no".into());
+    let (mut f, out) = sending_fixture(config);
+    assert!(f.session.send_draft().is_none());
+    let sent = fs::read_to_string(out.path().join("sent")).unwrap();
+    assert!(sent.contains("notes.txt"), "the file went out: {sent}");
+    let copy = the_sent_copy(out.path());
+    assert!(copy.contains("see the file"), "{copy}");
+    assert!(
+        !copy.contains("notes.txt"),
+        "and stayed out of the copy: {copy}"
+    );
+}
+
+#[test]
+fn fcc_attach_ask_asks_and_the_answer_decides() {
+    let mut config = reply_config();
+    config.mail.fcc_attach = Some("ask-yes".into());
+    let (mut f, out) = sending_fixture(config);
+    let ask = f.session.send_draft();
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Save attachments in Fcc? (y/n): "
+    );
+    assert!(f.answer_key(ask, 'n').is_none());
+    assert!(!the_sent_copy(out.path()).contains("notes.txt"));
+
+    // Enter takes the yes that ask-yes leans to.
+    let mut config = reply_config();
+    config.mail.fcc_attach = Some("ask-yes".into());
+    let (mut f, out) = sending_fixture(config);
+    let ask = f.session.send_draft();
+    assert!(f.answer_enter(ask).is_none());
+    assert!(the_sent_copy(out.path()).contains("notes.txt"));
+}
+
+#[test]
+fn a_part_that_is_not_text_forwards_as_an_attachment() {
+    let mut f = Fixture::with_config(&["x"], reply_config());
+    let mixed = "From: Ann <ann@example.com>\nTo: me@example.com\nSubject: the photo\n\
+                 Date: Mon, 20 Mar 2024 10:00:00 +0000\nMessage-ID: <photo@x>\n\
+                 MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=b\n\n\
+                 --b\nContent-Type: text/plain\n\nhere it is\n\
+                 --b\nContent-Type: image/png; name=cat.png\n\
+                 Content-Disposition: attachment; filename=cat.png\n\
+                 Content-Transfer-Encoding: base64\n\niVBORw0K\n--b--\n";
+    fs::write(f._dir.path().join("cur/0009.rmut:2,S"), mixed).unwrap();
+    touch_dirs(f._dir.path());
+    f.session.check_new_mail();
+    f.select("the photo");
+    let forward = |f: &mut Fixture, part| {
+        let ask = f.session.start_forward_part(part);
+        let ask = f.answer_line(ask, "someone@example.com");
+        assert!(f.answer_line(ask, "Fwd: the photo").is_none());
+        crate::draft_full(&draft_from_requests(&mut f.session)).unwrap()
+    };
+    // The text part is quoted, and nothing is attached.
+    let text = forward(&mut f, 0);
+    assert!(text.contains("here it is"), "{text}");
+    assert!(!text.contains("Attach:"), "{text}");
+    // The picture goes along as a file, unlinked once sent.
+    let text = forward(&mut f, 1);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("Attach: "))
+        .expect(&text);
+    assert!(
+        line.contains("cat.png") && line.contains("image/png"),
+        "{line}"
+    );
+    assert!(line.contains("@unlink"), "{line}");
+    let file = compose_attachment(&text);
+    assert_eq!(fs::read(&file).unwrap(), b"\x89PNG\r\n");
+    fs::remove_file(file).unwrap();
+    // $mime_forward_rest off: refused, rather than an empty forward.
+    f.session.config.mail.mime_forward_rest = Some(false);
+    assert!(f.session.start_forward_part(1).is_none());
+    assert!(
+        f.log.last_text().contains("mime_forward_rest"),
+        "{}",
+        f.log.last_text()
+    );
+}
+
+fn compose_attachment(draft: &str) -> PathBuf {
+    let (_, files) = rmut_core::compose::extract_attachments(draft);
+    files.into_iter().next().expect("one attachment").path
+}

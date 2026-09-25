@@ -439,6 +439,16 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "abort_noattach" => Text(&mut cfg.mail.abort_noattach),
         "abort_noattach_regex" => Text(&mut cfg.mail.attach_keyword),
         "wrap" => NumI64Opt(&mut cfg.pager.wrap),
+        // mutt's older name for use_envelope_from is envelope_from.
+        "use_envelope_from" | "envelope_from" => Flag(&mut cfg.mail.use_envelope_from),
+        "envelope_from_address" => Text(&mut cfg.mail.envelope_from_address),
+        "dsn_notify" => Text(&mut cfg.mail.dsn_notify),
+        "dsn_return" => Text(&mut cfg.mail.dsn_return),
+        "reply_self" => Flag(&mut cfg.mail.reply_self),
+        "fcc_attach" => Text(&mut cfg.mail.fcc_attach),
+        "fcc_clear" => Flag(&mut cfg.mail.fcc_clear),
+        "forward_edit" => Text(&mut cfg.mail.forward_edit),
+        "mime_forward_rest" => FlagOpt(&mut cfg.mail.mime_forward_rest),
         _ => return None,
     })
 }
@@ -637,6 +647,17 @@ fn set(cfg: &mut Config, name: &str, value: &str) -> Result<(), String> {
 fn unset(cfg: &mut Config, name: &str) -> Result<(), String> {
     if name == "from" {
         cfg.identity.email = None;
+        return Ok(());
+    }
+    // A quadoption whose default is yes: unset means no, as in mutt,
+    // not back to the default.
+    let quad = match name {
+        "fcc_attach" => Some(&mut cfg.mail.fcc_attach),
+        "forward_edit" => Some(&mut cfg.mail.forward_edit),
+        _ => None,
+    };
+    if let Some(field) = quad {
+        *field = Some("no".into());
         return Ok(());
     }
     match slot(cfg, name).ok_or_else(|| unknown(name))? {
@@ -944,6 +965,40 @@ mod tests {
         assert!(cfg.mail.my_hdr.is_empty());
         assert!(parse("my_hdr Organization").is_err());
         assert!(parse("alternates").is_err());
+    }
+
+    #[test]
+    fn envelope_options_at_the_prompt() {
+        let mut cfg = Config::default();
+        for line in [
+            "set envelope_from",
+            "set envelope_from_address=\"Bounces <bounces@example.com>\"",
+            "set dsn_notify=failure,delay dsn_return=hdrs",
+            "set reply_self fcc_clear",
+            "unset fcc_attach",
+            "unset forward_edit",
+            "set mime_forward_rest=no",
+        ] {
+            for cmd in parse(line).expect(line) {
+                apply(&mut cfg, &cmd).expect(line);
+            }
+        }
+        let mail = &cfg.mail;
+        assert!(mail.use_envelope_from && mail.reply_self && mail.fcc_clear);
+        assert_eq!(mail.fcc_attach.as_deref(), Some("no"));
+        assert_eq!(mail.forward_edit.as_deref(), Some("no"));
+        assert_eq!(mail.mime_forward_rest, Some(false));
+        let envelope = mail.envelope("jane@example.com");
+        assert_eq!(envelope.sender.as_deref(), Some("bounces@example.com"));
+        assert_eq!(envelope.notify.as_deref(), Some("failure,delay"));
+        assert_eq!(envelope.ret.as_deref(), Some("hdrs"));
+        // Without an address of its own the envelope sender is the From;
+        // with use_envelope_from off nobody insists on one.
+        cfg.mail.envelope_from_address = None;
+        let from = cfg.mail.envelope("jane@example.com").sender;
+        assert_eq!(from.as_deref(), Some("jane@example.com"));
+        cfg.mail.use_envelope_from = false;
+        assert_eq!(cfg.mail.envelope("jane@example.com").sender, None);
     }
 
     #[test]

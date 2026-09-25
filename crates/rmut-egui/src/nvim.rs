@@ -83,7 +83,21 @@ impl Embedded {
         rows: usize,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Embedded> {
+        Self::start_with(&[], file, cols, rows, wake)
+    }
+
+    /// `start` with arguments of its own ahead of `--embed`: a test
+    /// passes `--clean`, so it drives nvim itself and not whatever
+    /// the user's config does on startup.
+    pub fn start_with(
+        args: &[&str],
+        file: &std::path::Path,
+        cols: usize,
+        rows: usize,
+        wake: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Embedded> {
         let mut child = Command::new("nvim")
+            .args(args)
             .arg("--embed")
             .arg(file)
             .stdin(Stdio::piped())

@@ -4682,6 +4682,105 @@ def scenario_esc_prefix(tmp):
     r.close()
 
 
+def scenario_send_odds(tmp):
+    """R89: the envelope reaches sendmail (-f, -N, -R), $fcc_clear keeps
+    the copy of a signed message in the clear, $forward_edit = no goes
+    from a forward straight to the compose menu, and f in the
+    attachment menu forwards the part under the cursor, a picture as
+    a file ($mime_forward_rest)."""
+    md = make_maildir(tmp, "md-odds")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751960000.9.host:2,S"), "w") as f:
+        f.write(
+            "From: Ann <ann@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: the photo\r\nDate: Wed, 8 Jul 2026 11:00:00 +0200\r\n"
+            "Message-ID: <photo@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="b"\r\n\r\n'
+            "--b\r\nContent-Type: text/plain\r\n\r\nhere it is\r\n"
+            "--b\r\nContent-Type: image/png; name=cat.png\r\n"
+            "Content-Disposition: attachment; filename=cat.png\r\n"
+            "Content-Transfer-Encoding: base64\r\n\r\niVBORw0K\r\n--b--\r\n"
+        )
+    gpg = os.path.join(tmp, "odds-gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncat >/dev/null\n'
+            'echo "[GNUPG:] SIG_CREATED D 1 8 00 12 FPR" >&2\n'
+            "printf -- '-----BEGIN PGP SIGNATURE-----\\nAAAA\\n"
+            "-----END PGP SIGNATURE-----\\n'\n"
+        )
+    editor = os.path.join(tmp, "odds-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "typed in the editor\\n" >> "$1"\n')
+    sent_file = os.path.join(tmp, "odds-sent.eml")
+    args_file = os.path.join(tmp, "odds-args")
+    sendmail = os.path.join(tmp, "odds-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f'#!/bin/sh\necho "$@" > {args_file}\ncat > {sent_file}\nexit 0\n')
+    for script in (gpg, editor, sendmail):
+        os.chmod(script, 0o755)
+    sent_dir = make_maildir(tmp, "Sent")
+    cfg = os.path.join(tmp, "odds-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\nsent = "{sent_dir}"\ninclude = "no"\n'
+                'use_envelope_from = true\n'
+                'dsn_notify = "failure,delay"\ndsn_return = "hdrs"\n'
+                'fcc_clear = true\nforward_edit = "no"\n'
+                f'[pgp]\ncommand = "{gpg}"\n')
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                                "RMUT_CONFIG": cfg}))
+    r.expect("Msgs:2", "the photo")
+
+    def sent_copies():
+        cur = os.path.join(sent_dir, "cur")
+        return [open(os.path.join(cur, n)).read() for n in sorted(os.listdir(cur))]
+
+    # A signed message: the envelope on sendmail's command line, the
+    # signature on the wire, and none in the copy kept.
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rsigned\r")
+    r.expect("y:Send")
+    r.keys(b"ps")
+    r.keys(b"y")
+    wait_for(lambda: len(sent_copies()) == 1, desc="the signed send and its copy")
+    args = open(args_file).read().split()
+    assert args[:6] == ["-f", "alex@example.com", "-N", "failure,delay", "-R", "hdrs"], args
+    assert "BEGIN PGP SIGNATURE" in open(sent_file).read()
+    copy = sent_copies()[0]
+    assert "typed in the editor" in copy, copy
+    assert "BEGIN PGP SIGNATURE" not in copy, copy
+
+    # forward_edit = no: the forward lands on the compose menu with the
+    # editor never run.
+    r.keys(b"f")
+    r.expect("To:")
+    r.keys(b"bob@example.org\r\r")
+    r.expect("y:Send")
+    r.keys(b"y")
+    wait_for(lambda: len(sent_copies()) == 2, desc="the forward")
+    sent = open(sent_file).read()
+    assert "here it is" in sent, sent
+    assert "typed in the editor" not in sent, sent
+
+    # The attachment menu: f on the picture forwards it as a file.
+    r.keys(b"v")
+    r.expect("image/png")
+    r.keys(b"j")
+    r.keys(b"f")
+    r.expect("To:")
+    r.keys(b"bob@example.org\r\r")
+    r.expect("y:Send", "cat.png")
+    r.keys(b"y")
+    wait_for(lambda: len(sent_copies()) == 3, desc="the forwarded part")
+    sent = open(sent_file).read()
+    assert "Content-Type: image/png" in sent, sent
+    assert 'filename="cat.png"' in sent or "filename=cat.png" in sent, sent
+    assert "iVBORw0K" in sent, sent
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -4760,6 +4859,7 @@ SCENARIOS = [
     scenario_compose_functions,
     scenario_subject_threading,
     scenario_esc_prefix,
+    scenario_send_odds,
 ]
 
 

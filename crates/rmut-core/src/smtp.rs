@@ -8,14 +8,31 @@ use crate::config::{Account, AuthKind};
 use crate::maildir;
 use crate::net::{self, Conn};
 
+/// What a submission says beside the message: mutt's
+/// $use_envelope_from / $envelope_from_address and $dsn_notify /
+/// $dsn_return. The default asks for nothing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Envelope {
+    /// The envelope sender to insist on: sendmail's `-f`, SMTP's MAIL
+    /// FROM in place of the message's From.
+    pub sender: Option<String>,
+    /// DSN NOTIFY, e.g. "failure,delay".
+    pub notify: Option<String>,
+    /// DSN RET, "hdrs" or "full".
+    pub ret: Option<String>,
+}
+
 /// Submit `body` (any line endings; normalized to CRLF on the wire)
 /// for delivery to `rcpts`, authenticating as the account's user.
+/// The DSN requests go along only to a server that offers DSN, as in
+/// mutt; one that does not would refuse the command.
 pub fn send(
     account: &Account,
     password: &str,
     from: &str,
     rcpts: &[String],
     body: &[u8],
+    envelope: &Envelope,
 ) -> Result<()> {
     let host = account
         .smtp_host
@@ -46,16 +63,37 @@ pub fn send(
         caps = ehlo(&mut conn)?;
     }
     authenticate(&mut conn, &caps, account, password).context("SMTP authentication")?;
-    command(&mut conn, &format!("MAIL FROM:<{from}>"), 250)?;
+    let from = envelope.sender.as_deref().unwrap_or(from);
+    let dsn = offers(&caps, "DSN");
+    let mut mail_from = format!("MAIL FROM:<{from}>");
+    if let Some(ret) = envelope.ret.as_deref().filter(|_| dsn) {
+        mail_from += &format!(" RET={}", ret.to_ascii_uppercase());
+    }
+    command(&mut conn, &mail_from, 250)?;
     for rcpt in rcpts {
-        command(&mut conn, &format!("RCPT TO:<{rcpt}>"), 250)
-            .with_context(|| format!("recipient {rcpt}"))?;
+        let mut rcpt_to = format!("RCPT TO:<{rcpt}>");
+        if let Some(notify) = envelope.notify.as_deref().filter(|_| dsn) {
+            rcpt_to += &format!(" NOTIFY={}", notify.to_ascii_uppercase());
+        }
+        command(&mut conn, &rcpt_to, 250).with_context(|| format!("recipient {rcpt}"))?;
     }
     command(&mut conn, "DATA", 354)?;
     conn.write_all(&dot_stuff(body))?;
     expect(&mut conn, 250).context("message rejected after DATA")?;
     let _ = conn.write_all(b"QUIT\r\n");
     Ok(())
+}
+
+/// Whether the EHLO reply (its lines joined by "; ", each starting
+/// with the "250-"/"250 " code) names this extension.
+fn offers(caps: &str, extension: &str) -> bool {
+    caps.split("; ")
+        .filter_map(|line| line.get(4..))
+        .any(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|word| word.eq_ignore_ascii_case(extension))
+        })
 }
 
 fn ehlo(conn: &mut Conn) -> Result<String> {
@@ -234,6 +272,7 @@ mod tests {
             "jane@example.com",
             &["bob@example.org".into(), "carol@example.org".into()],
             b"Subject: hi\n\n.leading dot\nbye\n",
+            &Envelope::default(),
         )
         .unwrap();
         handle.join().unwrap();
@@ -264,9 +303,70 @@ mod tests {
             "jane@example.com",
             &["bob@example.org".into()],
             b"Subject: hi\n\nbody\n",
+            &Envelope::default(),
         )
         .unwrap();
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn envelope_sender_and_dsn_when_offered() {
+        let (port, handle, log) = testserver::smtp(vec![
+            Expect::new("EHLO", "250-x\r\n250-DSN\r\n250 AUTH PLAIN\r\n".into()),
+            Expect::new("AUTH PLAIN", "235 ok\r\n".into()),
+            Expect::new("MAIL FROM:<bounces@example.com>", "250 ok\r\n".into()),
+            Expect::new("RCPT TO:<bob@example.org>", "250 ok\r\n".into()),
+            Expect::new("DATA", "354 go\r\n".into()),
+            Expect::new("QUIT", "221 bye\r\n".into()),
+        ]);
+        let envelope = Envelope {
+            sender: Some("bounces@example.com".into()),
+            notify: Some("failure,delay".into()),
+            ret: Some("hdrs".into()),
+        };
+        send(
+            &oauth_test_account(port),
+            "secret",
+            "jane@example.com",
+            &["bob@example.org".into()],
+            b"Subject: hi\n\nbody\n",
+            &envelope,
+        )
+        .unwrap();
+        handle.join().unwrap();
+        let log = log.lock().unwrap();
+        assert!(log.contains(&"MAIL FROM:<bounces@example.com> RET=HDRS".to_string()));
+        assert!(log.contains(&"RCPT TO:<bob@example.org> NOTIFY=FAILURE,DELAY".to_string()));
+    }
+
+    #[test]
+    fn no_dsn_parameters_to_a_server_without_it() {
+        let (port, handle, log) = testserver::smtp(vec![
+            Expect::new("EHLO", "250-x\r\n250 AUTH PLAIN\r\n".into()),
+            Expect::new("AUTH PLAIN", "235 ok\r\n".into()),
+            Expect::new("MAIL FROM:<jane@example.com>", "250 ok\r\n".into()),
+            Expect::new("RCPT TO:<bob@example.org>", "250 ok\r\n".into()),
+            Expect::new("DATA", "354 go\r\n".into()),
+            Expect::new("QUIT", "221 bye\r\n".into()),
+        ]);
+        let envelope = Envelope {
+            sender: None,
+            notify: Some("never".into()),
+            ret: Some("full".into()),
+        };
+        send(
+            &oauth_test_account(port),
+            "secret",
+            "jane@example.com",
+            &["bob@example.org".into()],
+            b"Subject: hi\n\nbody\n",
+            &envelope,
+        )
+        .unwrap();
+        handle.join().unwrap();
+        let log = log.lock().unwrap();
+        assert!(log.contains(&"MAIL FROM:<jane@example.com>".to_string()));
+        assert!(log.contains(&"RCPT TO:<bob@example.org>".to_string()));
     }
 
     fn oauth_test_account(port: u16) -> crate::config::Account {
@@ -316,7 +416,15 @@ mod tests {
             sent_folder: "Sent".into(),
             identity: None,
         };
-        send(&account, "secret", "jane@x", &["bob@y".into()], b"hi\n").unwrap();
+        send(
+            &account,
+            "secret",
+            "jane@x",
+            &["bob@y".into()],
+            b"hi\n",
+            &Envelope::default(),
+        )
+        .unwrap();
         handle.join().unwrap();
     }
 
@@ -349,7 +457,15 @@ mod tests {
             sent_folder: "Sent".into(),
             identity: None,
         };
-        let err = send(&account, "s", "jane@x", &["bob@y".into()], b"hi").unwrap_err();
+        let err = send(
+            &account,
+            "s",
+            "jane@x",
+            &["bob@y".into()],
+            b"hi",
+            &Envelope::default(),
+        )
+        .unwrap_err();
         assert!(format!("{err:#}").contains("no such user"));
         handle.join().unwrap();
     }

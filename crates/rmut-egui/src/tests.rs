@@ -783,7 +783,9 @@ fn real_nvim_round_trips_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("draft.txt");
     fs::write(&file, "before\n").unwrap();
-    let mut nvim = crate::nvim::Embedded::start(&file, 60, 15, || {}).unwrap();
+    // --clean: the user's own config is theirs to break (a plugin
+    // that prompts at startup keeps :wq from ever arriving).
+    let mut nvim = crate::nvim::Embedded::start_with(&["--clean"], &file, 60, 15, || {}).unwrap();
     nvim.input("ohello from the grid<Esc>:wq<CR>");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !nvim.finished && std::time::Instant::now() < deadline {

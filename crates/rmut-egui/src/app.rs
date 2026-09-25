@@ -818,6 +818,13 @@ impl Gui {
             KeyCode::Char('m') => self.view_part_mailcap(),
             KeyCode::Char('T') => self.view_part_text(),
             KeyCode::Char('R') => self.view_part_rendered(),
+            // mutt's forward-message on the part under the cursor.
+            KeyCode::Char('f') => {
+                if let Mode::Attach { sel, .. } = &self.mode {
+                    let ask = self.session.start_forward_part(*sel);
+                    self.open_ask(ask);
+                }
+            }
             KeyCode::Char('|') => {
                 self.prompt = Some(Prompt::Line {
                     label: "Pipe part to command: ".into(),

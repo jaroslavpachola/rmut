@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.7.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.8.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -335,9 +335,14 @@ Content\-Type lies (not mutt's; added on request),
 .B s
 saves,
 .B |
-pipes the decoded part to a shell command, and
+pipes the decoded part to a shell command,
 .B p
-prints it via print
+prints it via print, and
+.B f
+forwards the part under the cursor: text is quoted as a forward
+quotes a message, anything else goes along as a file, which
+mime_forward_rest = false refuses instead (forward = "attach"
+attaches it whatever it is)
 .TP
 .B Alt+v Alt+V
 fold/unfold current thread; fold/unfold all threads
@@ -620,6 +625,20 @@ forward = "ask" asks "Forward as attachment?" per forward;
 copy = false keeps no sent copy by default; askcc and askbcc add
 those prompts between To and Subject, as mutt's do.
 .PP
+The send-side odds, all mutt's: use_envelope_from hands sendmail
+.B \-f
+with envelope_from_address, or the From when that is unset (over
+SMTP it replaces the From in MAIL FROM); dsn_notify (e.g.
+"failure,delay") and dsn_return ("hdrs" or "full") become sendmail's
+.BR \-N " and " \-R ,
+and NOTIFY= and RET= to an SMTP server that offers DSN. A reply to
+your own message goes to its recipients unless reply_self is set.
+fcc_attach (a quadoption, yes by default) keeps the attachments in
+the sent copy or, at no, the text alone; fcc_clear keeps the copy of
+a signed or encrypted message in the clear. forward_edit (yes by
+default) set to no takes a forward straight to the compose menu, and
+ask\-yes / ask\-no ask "Edit forwarded message?" first.
+.PP
 The quoted reply and the forward subject are format strings over the
 message being answered:
 .B attribution
@@ -704,7 +723,10 @@ sort_alias, shell, tmpdir, ispell,
 sendmail, editor, print_command, query_command, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
-sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt.
+sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt,
+use_envelope_from (and its old name envelope_from),
+envelope_from_address, dsn_notify, dsn_return, reply_self,
+fcc_attach, fcc_clear, forward_edit, mime_forward_rest.
 An unknown option, a bad number, an unbindable key or an unknown
 function reports on the bottom line in the error colour and stops the
 rest of the line. Changed settings recompile in place: colours, key

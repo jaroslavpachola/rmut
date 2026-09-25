@@ -438,6 +438,57 @@ pub struct Mail {
     /// off. A held message is sent when the timer runs out or when
     /// rmut exits; batch sends (-s and friends) never hold.
     pub undo_send: u64,
+    /// mutt's $use_envelope_from: tell sendmail the envelope sender
+    /// (`-f`), which is `envelope_from_address` when set and the
+    /// message's From otherwise. Over SMTP the envelope sender is
+    /// always given; this only decides whether it is the From.
+    pub use_envelope_from: bool,
+    /// mutt's $envelope_from_address: the envelope sender (bounces
+    /// go there) when `use_envelope_from` is on.
+    pub envelope_from_address: Option<String>,
+    /// mutt's $dsn_notify: when delivery status notifications come
+    /// back, e.g. "failure,delay" (or "never"). Passed to sendmail as
+    /// `-N`, and to an SMTP server that offers DSN as NOTIFY=.
+    pub dsn_notify: Option<String>,
+    /// mutt's $dsn_return: how much of the message a notification
+    /// carries back, "hdrs" or "full". sendmail's `-R`, SMTP's RET=.
+    pub dsn_return: Option<String>,
+    /// mutt's $reply_self: a reply to a message I sent goes to me.
+    /// Off (mutt's default), it goes to that message's recipients.
+    pub reply_self: bool,
+    /// mutt's $fcc_attach (a quadoption, "yes" by default): whether
+    /// the sent copy keeps the attachments. "no" keeps the text
+    /// alone; "ask-yes" / "ask-no" ask at send time.
+    pub fcc_attach: Option<String>,
+    /// mutt's $fcc_clear: the sent copy of a signed or encrypted
+    /// message is kept in the clear.
+    pub fcc_clear: bool,
+    /// mutt's $forward_edit (a quadoption, "yes" by default): whether
+    /// a forward opens the editor before the compose menu.
+    pub forward_edit: Option<String>,
+    /// mutt's $mime_forward_rest (on by default): forwarding a part
+    /// that does not read as text from the attachment menu attaches
+    /// it; off, such a part is not forwarded.
+    pub mime_forward_rest: Option<bool>,
+}
+
+impl Mail {
+    /// The envelope a submission carries: the sender sendmail is told
+    /// about, and the DSN requests.
+    pub fn envelope(&self, from: &str) -> crate::smtp::Envelope {
+        let sender = self.use_envelope_from.then(|| {
+            self.envelope_from_address
+                .clone()
+                .filter(|a| !a.trim().is_empty())
+                .map(|a| crate::compose::bare_address(&a).unwrap_or(a))
+                .unwrap_or_else(|| from.to_string())
+        });
+        crate::smtp::Envelope {
+            sender,
+            notify: self.dsn_notify.clone().filter(|v| !v.trim().is_empty()),
+            ret: self.dsn_return.clone().filter(|v| !v.trim().is_empty()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

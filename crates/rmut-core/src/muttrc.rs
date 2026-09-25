@@ -228,6 +228,9 @@ struct State {
     autoedit: bool,
     /// `set nocopy`: skip the sent copy.
     no_copy: bool,
+    /// The envelope and send-side odds (R89), as `[mail]` TOML lines
+    /// keyed by the setting, so a later muttrc line replaces one.
+    send_odds: BTreeMap<&'static str, String>,
     new_mail_command: Option<String>,
     save_default: Option<String>,
     filters: BTreeMap<String, String>,
@@ -507,6 +510,19 @@ pub(crate) fn assignments(tokens: &[String]) -> Vec<(String, String)> {
     }
     out
 }
+
+/// The send-side settings (R89) that carry over under their own names.
+const SEND_ODDS: [&str; 9] = [
+    "use_envelope_from",
+    "envelope_from_address",
+    "dsn_notify",
+    "dsn_return",
+    "reply_self",
+    "fcc_attach",
+    "fcc_clear",
+    "forward_edit",
+    "mime_forward_rest",
+];
 
 pub(crate) fn is_yes(value: &str) -> bool {
     matches!(value, "yes" | "ask-yes" | "true" | "1")
@@ -1341,8 +1357,21 @@ impl State {
                     self.skip(line, "rmut always decodes when quoting a forward");
                 }
             }
-            "mime_forward_rest" => {
-                self.satisfy(line, "the entire original message is attached");
+            // mutt's older name for use_envelope_from is envelope_from.
+            "envelope_from" => self.set("use_envelope_from", value, line),
+            name if SEND_ODDS.contains(&name) => {
+                let key = SEND_ODDS.iter().find(|k| **k == name).copied().unwrap_or_default();
+                let toml = match key {
+                    "envelope_from_address" | "dsn_notify" | "dsn_return" => quote(&v),
+                    "fcc_attach" | "forward_edit" => match v.trim().to_lowercase().as_str() {
+                        want @ ("yes" | "no" | "ask-yes" | "ask-no") => quote(want),
+                        _ => {
+                            return self.skip(line, "a quadoption wants yes / no / ask-yes / ask-no");
+                        }
+                    },
+                    _ => is_yes(&v).to_string(),
+                };
+                self.send_odds.insert(key, toml);
             }
             "imap_peek" => {
                 if is_yes(&v) {
@@ -1823,6 +1852,7 @@ impl State {
             || self.delete.is_some()
             || self.abort_noattach.is_some()
             || self.attach_keyword.is_some()
+            || !self.send_odds.is_empty()
         {
             out += "\n[mail]\n";
             if let Some(f) = &folder_setting {
@@ -2009,6 +2039,9 @@ impl State {
             }
             if self.edit_headers_on {
                 out += "edit_headers = true\n";
+            }
+            for (key, value) in &self.send_odds {
+                out += &format!("{key} = {value}\n");
             }
         }
         if self.index_format.is_some()
@@ -3431,6 +3464,39 @@ mod tests {
         );
         assert_eq!(cfg.mail.user_agent, Some(true));
         assert_eq!(cfg.mail.sig_on_top, Some(true));
+    }
+
+    #[test]
+    fn the_send_odds_carry_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set envelope_from\n",
+            "set envelope_from_address = \"bounces@example.com\"\n",
+            "set dsn_notify = \"failure,delay\"\n",
+            "set dsn_return = hdrs\n",
+            "set reply_self\n",
+            "set fcc_attach = ask-no\n",
+            "set fcc_clear\n",
+            "set forward_edit = no\n",
+            "set nomime_forward_rest\n",
+        ));
+        let mail = &cfg.mail;
+        assert!(mail.use_envelope_from, "{toml}");
+        assert_eq!(
+            mail.envelope_from_address.as_deref(),
+            Some("bounces@example.com")
+        );
+        assert_eq!(mail.dsn_notify.as_deref(), Some("failure,delay"));
+        assert_eq!(mail.dsn_return.as_deref(), Some("hdrs"));
+        assert!(mail.reply_self && mail.fcc_clear);
+        assert_eq!(mail.fcc_attach.as_deref(), Some("ask-no"));
+        assert_eq!(mail.forward_edit.as_deref(), Some("no"));
+        assert_eq!(mail.mime_forward_rest, Some(false));
+        let import = import("set forward_edit = maybe\n", Path::new("/nonexistent"));
+        assert!(
+            import.toml.contains("a quadoption wants"),
+            "{}",
+            import.toml
+        );
     }
 
     #[test]
