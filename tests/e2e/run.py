@@ -4848,6 +4848,74 @@ def scenario_urls(tmp):
     r.close()
 
 
+def scenario_markdown(tmp):
+    """R92: M in the compose menu makes the draft markdown: it goes out
+    as multipart/alternative, the text as typed and html rendered from
+    it, under a PGP signature too; the choice survives a postpone."""
+    md = make_maildir(tmp, "md-markdown")
+    write_msgs(md, ["jane"])
+    gpg = os.path.join(tmp, "md-gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncat >/dev/null\n'
+            'echo "[GNUPG:] SIG_CREATED D 1 8 00 12 FPR" >&2\n'
+            "printf -- '-----BEGIN PGP SIGNATURE-----\\nAAAA\\n"
+            "-----END PGP SIGNATURE-----\\n'\n"
+        )
+    editor = os.path.join(tmp, "md-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "the **plan**, see https://example.com/p\\n" >> "$1"\n')
+    sent_file = os.path.join(tmp, "md-sent.eml")
+    sendmail = os.path.join(tmp, "md-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat > {sent_file}\nexit 0\n")
+    for script in (gpg, editor, sendmail):
+        os.chmod(script, 0o755)
+    drafts = make_maildir(tmp, "Drafts")
+    cfg = os.path.join(tmp, "md-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[mail]\npostponed = "{drafts}"\n[pgp]\ncommand = "{gpg}"\n')
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                                "RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rplan\r")
+    r.expect("y:Send", "Markdown: no")
+    r.keys(b"M")
+    r.expect("Markdown: yes (text and html)")
+    r.keys(b"ps")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="the markdown send")
+    r.expect("message sent")
+    sent = open(sent_file).read()
+    assert "multipart/signed" in sent, sent
+    assert sent.index("multipart/signed") < sent.index("multipart/alternative"), sent
+    assert "the **plan**" in sent, sent
+    assert "<strong>plan</strong>" in sent, sent
+    assert 'href=3D"https://example.com/p"' in sent, sent
+    assert "X-Rmut-Markdown" not in sent, sent
+
+    # Postponed as markdown, recalled as markdown.
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rlater\r")
+    r.expect("y:Send")
+    r.keys(b"M")
+    r.expect("Markdown: yes")
+    r.keys(b"P")
+    r.expect("postponed")
+    r.keys(b"m")
+    r.expect("(r)ecall postponed")
+    r.keys(b"r")
+    r.expect("y:Send", "Markdown: yes (text and html)")
+    r.keys(b"q")
+    r.expect("Postpone this message?")
+    r.keys(b"n")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -4928,6 +4996,7 @@ SCENARIOS = [
     scenario_esc_prefix,
     scenario_send_odds,
     scenario_urls,
+    scenario_markdown,
 ]
 
 

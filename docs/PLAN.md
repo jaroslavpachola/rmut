@@ -2238,12 +2238,34 @@ half.
       rows of a wrapped link, the full stop left out, the list, the
       OSC 52 copy, url_command, set hyperlinks=no)
 
-## R92: markdown compose (asked for by name, 2026-09-25)
+## R92: markdown compose (done, 2.10.0; asked for by name, 2026-09-25)
 
 Goal: from "Beyond mutt", opt-in: a draft written in markdown goes
 out as multipart/alternative, the text/plain as typed and a
 text/html generated from it, so the reader's client shows the
 formatting while a plain reader loses nothing.
+
+- [x] `[mail] markdown` (off by default) and the compose menu's `M`
+      for the one draft, in both fronts. The per-draft choice is an
+      `X-Rmut-Markdown` header in the draft, so it survives postpone
+      and recall and shows under edit_headers; it comes off before
+      the message goes anywhere, like `Attach:`
+- [x] `compose::body_entity`: text/plain first (flowed if
+      $text_flowed), then text/html, quoted-printable because its
+      paragraphs are single lines past SMTP's 998. Attachments put
+      the pair inside multipart/mixed, PGP signs or encrypts it like
+      any entity; batch sends honour the setting
+- [x] The html: pulldown-cmark (the html feature alone: it writes
+      HTML, it does not render any, so "no HTML rendering engines"
+      stands), CommonMark plus tables, strikethrough and task lists.
+      Mail stays mail: raw HTML is shown as text, bare URLs become
+      links by the pager's own rule (`link_spans`, moved to
+      `rmut_core::links`), and the signature keeps its lines rather
+      than joining a paragraph or reading its "-- " as a heading
+      underline
+- [x] Core tests (the renderer, the entity, QP, the header), session
+      sends through a recording sendmail, e2e scenario_markdown (M, a
+      signed markdown send, a postponed one recalled as markdown)
 
 ## The 2.0 cut (decided 2026-08-27)
 
@@ -2585,6 +2607,17 @@ terminal, which reaches the clipboard over ssh with nothing installed,
 the clipboard itself in the window). `[ui] hyperlinks = false` turns
 the links off.
 
+## 2.10.0 (released 2026-09-25)
+
+R92, markdown compose. `M` in the compose menu, or `[mail] markdown =
+true` for every draft, sends the text as multipart/alternative: the
+text/plain as typed and a text/html rendered from it as markdown, so a
+graphical reader sees the formatting and a plain one loses nothing.
+Raw HTML in a draft stays text, a bare URL becomes a link, and the
+signature keeps its lines. Attachments and PGP wrap the pair like any
+body, and a postponed draft remembers the choice. The html comes from
+pulldown-cmark, rmut's one new dependency for it.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:
@@ -2877,13 +2910,14 @@ value-per-effort:
   pager instead of a base64 blob; maybe accept/decline replies
 - Attachment reminder: shipped as R46 above (asked for by name,
   2026-08)
-- Clickable/yankable URLs: asked for by name 2026-09-25, R91 above
+- Clickable/yankable URLs: shipped as R91 above (asked for by
+  name, 2026-09-25)
 - Inline image preview: kitty/sixel graphics for image parts in the
   pager
 - Auto-harvested address completion: rank by who you actually mail,
   learned from the mail itself
-- Markdown compose (opt-in): asked for by name 2026-09-25, R92
-  above
+- Markdown compose (opt-in): shipped as R92 above (asked for by
+  name, 2026-09-25)
 - Patch-series view: recognize a git series thread, show in order,
   pipe to git am
 - Built-in full-text search: an incremental tantivy index making ~b

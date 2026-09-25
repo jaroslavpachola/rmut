@@ -13,6 +13,8 @@ categories = ["email"]
 anyhow = { workspace = true }
 chrono = { workspace = true }
 mailparse = { workspace = true }
+# markdown compose: the text/html half of a markdown draft
+pulldown-cmark = { workspace = true }
 # mailparse's own charset table, for rfc2047
 charset = "0.1"
 libc = { workspace = true }

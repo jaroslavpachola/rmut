@@ -470,6 +470,11 @@ pub struct Mail {
     /// that does not read as text from the attachment menu attaches
     /// it; off, such a part is not forwarded.
     pub mime_forward_rest: Option<bool>,
+    /// Markdown compose (rmut's own, off by default): a draft goes out
+    /// as multipart/alternative, the text/plain as typed and a
+    /// text/html rendered from it as markdown. The compose menu's `M`
+    /// turns it on or off for the one draft.
+    pub markdown: bool,
 }
 
 impl Mail {

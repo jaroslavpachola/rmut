@@ -3073,3 +3073,78 @@ fn compose_attachment(draft: &str) -> PathBuf {
     let (_, files) = rmut_core::compose::extract_attachments(draft);
     files.into_iter().next().expect("one attachment").path
 }
+
+/// The recording sendmail and a draft in hand whose body is markdown,
+/// with `head` added to its header block.
+fn markdown_fixture(config: Config, head: &str) -> (Fixture, tempfile::TempDir) {
+    let out = tempfile::tempdir().unwrap();
+    let mut config = config;
+    config.mail.sendmail = Some(recording_sendmail(out.path()));
+    config.mail.copy = Some(false);
+    let mut f = Fixture::with_config(&["one"], config);
+    let path = out.path().join("draft");
+    fs::write(
+        &path,
+        format!("From: me@example.com\nTo: you@example.com\nSubject: md\n{head}\nthe **plan**\n"),
+    )
+    .unwrap();
+    f.session.set_draft(crate::Compose {
+        path,
+        recall_source: None,
+        security: crate::Security::None,
+        attach: None,
+        hidden_head: None,
+        fcc: None,
+    });
+    (f, out)
+}
+
+#[test]
+fn markdown_goes_out_as_text_and_html() {
+    let mut config = reply_config();
+    config.mail.markdown = true;
+    let (mut f, out) = markdown_fixture(config, "");
+    assert!(f.session.draft_markdown());
+    assert!(f.session.send_draft().is_none());
+    let sent = fs::read_to_string(out.path().join("sent")).unwrap();
+    assert!(sent.contains("MIME-Version: 1.0"), "{sent}");
+    assert!(
+        sent.contains("Content-Type: multipart/alternative"),
+        "{sent}"
+    );
+    assert!(sent.contains("the **plan**"), "the text as typed: {sent}");
+    assert!(sent.contains("<strong>plan</strong>"), "{sent}");
+}
+
+#[test]
+fn the_draft_says_whether_it_is_markdown() {
+    // The config says yes, the draft no: plain, and the header stays
+    // out of what is sent.
+    let mut config = reply_config();
+    config.mail.markdown = true;
+    let (mut f, out) = markdown_fixture(config, "X-Rmut-Markdown: no\n");
+    assert!(!f.session.draft_markdown());
+    assert!(f.session.send_draft().is_none());
+    let sent = fs::read_to_string(out.path().join("sent")).unwrap();
+    assert!(!sent.contains("multipart/alternative"), "{sent}");
+    assert!(!sent.contains("X-Rmut-Markdown"), "{sent}");
+
+    // M turns it on for the one draft, with an attachment beside it:
+    // multipart/mixed around the alternative.
+    let (mut f, out) = markdown_fixture(reply_config(), "");
+    let file = out.path().join("notes.txt");
+    fs::write(&file, "notes\n").unwrap();
+    f.session
+        .set_draft_header("Attach", &file.display().to_string());
+    f.session.toggle_draft_markdown();
+    assert!(f.session.draft_markdown());
+    assert!(f.session.send_draft().is_none());
+    let sent = fs::read_to_string(out.path().join("sent")).unwrap();
+    let mixed = sent.find("multipart/mixed").expect(&sent);
+    let alt = sent.find("multipart/alternative").expect(&sent);
+    assert!(mixed < alt, "{sent}");
+    assert!(
+        sent.contains("notes.txt") && !sent.contains("X-Rmut-Markdown"),
+        "{sent}"
+    );
+}

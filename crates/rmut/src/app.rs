@@ -2593,6 +2593,14 @@ impl App {
             ("Subject", get("Subject")),
             ("Fcc", fcc),
             ("Security", security.to_string()),
+            (
+                "Markdown",
+                match self.session.draft_markdown() {
+                    true => "yes (text and html)",
+                    false => "no",
+                }
+                .to_string(),
+            ),
         ]
     }
 
@@ -2752,6 +2760,8 @@ impl App {
                 let ask = self.session.ask_security();
                 self.open_ask(ask);
             }
+            // Markdown compose, for this draft (rmut's own).
+            KeyCode::Char('M') => self.session.toggle_draft_markdown(),
             KeyCode::Char('P') => {
                 self.mode = Mode::Index;
                 if let Some(draft) = self.session.take_draft() {

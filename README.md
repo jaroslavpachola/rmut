@@ -387,7 +387,12 @@ edit the headers, `F`/`r` edit the From and Reply-To,
 `a` attaches without a trip through the editor, `D` detaches
 the selected file, `p` opens the security menu, `P` postpones, and
 `q` asks "Postpone this message?" (no discards). `$postpone` sets that
-question (yes/no skip it, ask-yes/ask-no pick the default). PGP signing and encryption wrap the whole multipart, attachments
+question (yes/no skip it, ask-yes/ask-no pick the default). `M`
+turns markdown compose on or off for the draft: it goes out as
+multipart/alternative, the text as you typed it plus an html part
+rendered from it as markdown, so a graphical reader sees the
+formatting and a plain one loses nothing (`[mail] markdown = true`
+makes it the default; the choice survives a postpone). PGP signing and encryption wrap the whole multipart, attachments
 included; this also works for forwards with `forward = "attach"`.
 
 With several postponed drafts, recalling (`m`, then `r`) opens a
@@ -448,7 +453,7 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `use_envelope_from` (and its old name `envelope_from`),
 `envelope_from_address`, `dsn_notify`, `dsn_return`, `reply_self`,
 `fcc_attach`, `fcc_clear`, `forward_edit`, `mime_forward_rest`,
-`hyperlinks`, `url_command`.
+`hyperlinks`, `url_command`, `markdown`.
 An unknown option, a bad number, an unbindable key, or an unknown
 function reports on the bottom line in the error color and stops the
 rest of the line. Changed settings recompile in place: colors, key
@@ -902,6 +907,9 @@ alternates = ['jane@old\.example\.com']   # my other addresses
 my_hdr = ["Organization: Acme"]           # on every draft
 metoo = false                # true: a group reply copies me too
 text_flowed = false          # true: send text/plain; format=flowed
+markdown = false             # true: text/plain as typed plus text/html
+                             # rendered from it (M in the compose menu
+                             # decides per draft)
 undo_send = 0                # seconds a sent message waits, so z can
                              # take it back (0 sends at once)
 delete = "ask"               # mutt's $delete: "yes" purges without

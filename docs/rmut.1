@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.9.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.10.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -627,6 +627,10 @@ its content-type (both stored on the Attach: line as
 edits the Fcc (empty keeps no sent copy),
 .B p
 opens the PGP menu (encrypt/sign/both/clear),
+.B M
+turns markdown compose on or off for this draft (see markdown under
+[mail]; the choice rides along as an X\-Rmut\-Markdown header, so a
+postponed draft keeps it, and is taken off before sending),
 .B P
 postpones, and
 .B q
@@ -745,7 +749,7 @@ sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt,
 use_envelope_from (and its old name envelope_from),
 envelope_from_address, dsn_notify, dsn_return, reply_self,
 fcc_attach, fcc_clear, forward_edit, mime_forward_rest, hyperlinks,
-url_command.
+url_command, markdown.
 An unknown option, a bad number, an unbindable key or an unknown
 function reports on the bottom line in the error colour and stops the
 rest of the line. Changed settings recompile in place: colours, key
@@ -1005,6 +1009,16 @@ and space-stuff it (RFC 3676, mutt's $text_flowed), in the plain case,
 under attachments, and inside a PGP layer alike. The paragraphs are
 your editor's doing: a line that continues has to end with a space,
 and rmut adds none of its own.
+.TP
+.B markdown
+Markdown compose (rmut's own, default false): the draft goes out as
+multipart/alternative, text/plain as typed and a text/html rendered
+from it as CommonMark with tables, strikethrough and task lists.
+Mail stays mail: raw HTML in the draft is shown as text, a bare URL
+becomes a link, and the signature keeps its lines. Attachments and
+PGP wrap the pair like any body. The compose menu's
+.B M
+decides it per draft.
 .TP
 .B delete
 mutt's $delete quadoption: what

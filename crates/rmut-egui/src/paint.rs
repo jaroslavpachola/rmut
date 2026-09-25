@@ -1218,7 +1218,7 @@ const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
 const ATTACH_HELP: &str =
     "q:Back j/k:Move Enter:View m:Mailcap T:Text R:Render s:Save |:Pipe p:Print f:Fwd";
-const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP P:Postpone q:Quit";
+const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP M:Markdown P:Postpone q:Quit";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";
 const NVIM_HELP: &str = "nvim owns the keyboard - :wq finishes, :q! abandons";

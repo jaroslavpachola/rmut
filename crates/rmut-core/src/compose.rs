@@ -558,6 +558,107 @@ pub fn text_entity(body: &str, flowed: bool) -> String {
     out
 }
 
+/// The draft's text as a MIME entity: text/plain, or with markdown
+/// compose a multipart/alternative of that text/plain and the
+/// text/html rendered from it. The plain half comes first, so a
+/// reader that shows the last part it can (every graphical one) shows
+/// the html, and a plain one loses nothing.
+pub fn body_entity(body: &str, flowed: bool, markdown: bool) -> String {
+    let plain = text_entity(body, flowed);
+    if !markdown {
+        return plain;
+    }
+    let html = format!(
+        "Content-Type: text/html; charset=utf-8\r\n\
+         Content-Transfer-Encoding: quoted-printable\r\n\r\n{}",
+        quoted_printable(&crate::markdown::to_html(body))
+    );
+    let boundary = {
+        let mut n = 0usize;
+        loop {
+            let b = format!("=-rmut-alt-{}-{n}", std::process::id());
+            if !plain.contains(&b) && !html.contains(&b) {
+                break b;
+            }
+            n += 1;
+        }
+    };
+    let mut out = format!("Content-Type: multipart/alternative; boundary=\"{boundary}\"\r\n\r\n");
+    for part in [plain, html] {
+        out += &format!("--{boundary}\r\n{part}");
+        if !out.ends_with("\r\n") {
+            out += "\r\n";
+        }
+    }
+    out += &format!("--{boundary}--\r\n");
+    out
+}
+
+/// Quoted-printable (RFC 2045), CRLF line ends: the html half's
+/// paragraphs are single lines, often past the 998 bytes SMTP allows.
+pub fn quoted_printable(text: &str) -> String {
+    let mut out = String::new();
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out += "\r\n";
+        }
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let bytes = line.as_bytes();
+        let mut width = 0;
+        for (j, &b) in bytes.iter().enumerate() {
+            let last = j + 1 == bytes.len();
+            let piece = match b {
+                b'=' => "=3D".to_string(),
+                b' ' | b'\t' if last => format!("={b:02X}"),
+                b' ' | b'\t' | 33..=126 => (b as char).to_string(),
+                _ => format!("={b:02X}"),
+            };
+            // A soft break keeps every line within 76, its "=" included.
+            if width + piece.len() > 75 {
+                out += "=\r\n";
+                width = 0;
+            }
+            width += piece.len();
+            out += &piece;
+        }
+    }
+    out
+}
+
+/// The draft header that says whether this draft is markdown: rmut's
+/// own, written by the compose menu's toggle, kept through postpone,
+/// and taken off before the message goes anywhere.
+pub const MARKDOWN_HEADER: &str = "X-Rmut-Markdown";
+
+/// The draft without its markdown header, and what the header said
+/// (None when it has none, and the config decides).
+pub fn take_markdown(draft: &str) -> (String, Option<bool>) {
+    let (head, body) = match draft.split_once("\n\n") {
+        Some((h, b)) => (h, Some(b)),
+        None => (draft, None),
+    };
+    let mut said = None;
+    let kept: Vec<&str> = head
+        .lines()
+        .filter(|line| match line.split_once(':') {
+            Some((k, v)) if k.trim().eq_ignore_ascii_case(MARKDOWN_HEADER) => {
+                said = Some(matches!(
+                    v.trim().to_lowercase().as_str(),
+                    "yes" | "true" | "on"
+                ));
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    let head = kept.join("\n");
+    let text = match body {
+        Some(body) => format!("{head}\n\n{body}"),
+        None => head,
+    };
+    (text, said)
+}
+
 /// mutt's $text_flowed for a message that goes out with no MIME
 /// wrapper at all: declare the body and space-stuff it, in place, on
 /// a finalized draft. One that already carries a Content-Type (the
@@ -588,9 +689,10 @@ pub fn mixed_entity(
     files: &[Attachment],
     original: Option<&[u8]>,
     flowed: bool,
+    markdown: bool,
 ) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
-    parts.push(text_entity(body, flowed));
+    parts.push(body_entity(body, flowed, markdown));
     for a in files {
         let bytes =
             std::fs::read(&a.path).with_context(|| format!("reading {}", a.path.display()))?;
@@ -965,6 +1067,54 @@ pub fn smtp_envelope(text: &str) -> Result<(Vec<String>, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_markdown_body_is_text_and_html() {
+        let entity = body_entity("Hi *Jane*\n", false, true);
+        assert!(
+            entity.starts_with("Content-Type: multipart/alternative; boundary="),
+            "{entity}"
+        );
+        let plain = entity.find("Content-Type: text/plain").expect(&entity);
+        let html = entity.find("Content-Type: text/html").expect(&entity);
+        assert!(plain < html, "the plain half first: {entity}");
+        assert!(
+            entity.contains("\r\nHi *Jane*\r\n"),
+            "the text as typed: {entity}"
+        );
+        assert!(entity.contains("<em>Jane</em>"), "{entity}");
+        assert!(entity.contains("Content-Transfer-Encoding: quoted-printable"));
+        // Off, it is the plain part alone.
+        assert!(body_entity("Hi\n", false, false).starts_with("Content-Type: text/plain"));
+    }
+
+    #[test]
+    fn quoted_printable_keeps_lines_short_and_bytes_safe() {
+        let long = "word ".repeat(40);
+        let qp = quoted_printable(&format!("{long}\na=b \u{17e}luť"));
+        assert!(
+            qp.lines().all(|l| l.trim_end_matches('\r').len() <= 76),
+            "{qp}"
+        );
+        assert!(qp.contains("=\r\n"), "a soft break: {qp}");
+        // The trailing space of the long line is encoded, = is, and
+        // the UTF-8 bytes are.
+        assert!(qp.contains("=20\r\na=3Db =C5=BElu=C5=A5"), "{qp}");
+        let back: String = qp.replace("=\r\n", "");
+        assert!(back.starts_with("word word"), "{back}");
+    }
+
+    #[test]
+    fn the_markdown_header_is_read_and_taken_off() {
+        let (text, said) = take_markdown("To: a@x\nX-Rmut-Markdown: yes\nSubject: s\n\nbody\n");
+        assert_eq!(said, Some(true));
+        assert_eq!(text, "To: a@x\nSubject: s\n\nbody\n");
+        let (_, said) = take_markdown("To: a@x\nx-rmut-markdown: no\n\nbody\n");
+        assert_eq!(said, Some(false));
+        let (text, said) = take_markdown("To: a@x\n\nX-Rmut-Markdown: yes in the body\n");
+        assert_eq!(said, None, "only the header block counts");
+        assert!(text.contains("in the body"));
+    }
 
     #[test]
     fn a_forward_can_come_in_quoted() {
@@ -1427,7 +1577,7 @@ mod tests {
             unlink: false,
         }];
         let orig = b"From: jane@x\r\nSubject: hi\r\n\r\noriginal body\r\n";
-        let entity = mixed_entity("see attached", &files, Some(orig), false).unwrap();
+        let entity = mixed_entity("see attached", &files, Some(orig), false, false).unwrap();
         let mail = mailparse::parse_mail(entity.as_bytes()).unwrap();
         assert_eq!(mail.ctype.mimetype, "multipart/mixed");
         assert_eq!(mail.subparts.len(), 3);
@@ -1463,7 +1613,7 @@ mod tests {
             inline: false,
             unlink: false,
         }];
-        let err = mixed_entity("hi", &files, None, false).unwrap_err();
+        let err = mixed_entity("hi", &files, None, false, false).unwrap_err();
         assert!(err.to_string().contains("/nonexistent/nope.pdf"));
     }
 
@@ -1526,7 +1676,7 @@ mod tests {
         a.inline = true;
         let mut m = Attachment::of(msg.clone());
         m.mime = Some("message/rfc822".into());
-        let entity = mixed_entity("see attached", &[a, m], None, false).unwrap();
+        let entity = mixed_entity("see attached", &[a, m], None, false, false).unwrap();
         assert!(
             entity.contains("Content-Disposition: inline; filename=\"renamed.bin\""),
             "{entity}"

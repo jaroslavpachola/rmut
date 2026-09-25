@@ -4272,6 +4272,7 @@ impl Session {
         text: String,
         files: &[compose::Attachment],
         original: Option<&[u8]>,
+        markdown: bool,
     ) -> Result<String> {
         let cfg = &self.config.pgp;
         // Encrypt to every recipient plus the sender, so the Fcc copy
@@ -4293,7 +4294,7 @@ impl Session {
             Ok(rcpts)
         };
         let flowed = self.config.mail.text_flowed;
-        if files.is_empty() && original.is_none() {
+        if files.is_empty() && original.is_none() && !markdown {
             return match security {
                 // No MIME wrapper at all, so $text_flowed has to
                 // declare the body itself.
@@ -4310,7 +4311,10 @@ impl Session {
             };
         }
         let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
-        let entity = compose::mixed_entity(body, files, original, flowed)?;
+        let entity = match files.is_empty() && original.is_none() {
+            true => compose::body_entity(body, flowed, markdown),
+            false => compose::mixed_entity(body, files, original, flowed, markdown)?,
+        };
         match security {
             Security::None => Ok(format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())),
             Security::Sign => pgp::sign_entity(cfg, head, entity.as_bytes()),
@@ -4521,6 +4525,7 @@ impl Session {
             .unwrap_or_default();
         let hook_fcc = self.fcc_hook_target(&raw, &draft_path);
         let (raw, files) = compose::extract_attachments(&raw);
+        let (raw, markdown) = self.take_markdown(&raw);
         let host = maildir::hostname();
         let from = self
             .current_identity(&[])
@@ -4573,10 +4578,11 @@ impl Session {
                     final_text.clone(),
                     &files,
                     original.as_deref(),
+                    markdown,
                 )
                 .map(Some),
             (false, _) => self
-                .secure_message(fcc_security, final_text.clone(), &[], None)
+                .secure_message(fcc_security, final_text.clone(), &[], None, markdown)
                 .map(Some),
         };
         let final_text = self
@@ -4585,6 +4591,7 @@ impl Session {
                 final_text,
                 &files,
                 original.as_deref(),
+                markdown,
             )
             .and_then(|sent| Ok((sent, fcc_text?)));
         let (final_text, fcc_text) = match final_text {
@@ -4622,6 +4629,32 @@ impl Session {
         }
         self.deliver(held);
         None
+    }
+
+    /// The draft without its markdown header, and whether it goes out
+    /// as markdown: the header's say, else `[mail] markdown`.
+    fn take_markdown(&self, raw: &str) -> (String, bool) {
+        let (raw, said) = compose::take_markdown(raw);
+        (raw, said.unwrap_or(self.config.mail.markdown))
+    }
+
+    /// Whether the draft in hand goes out as markdown, as the compose
+    /// menu shows it.
+    pub fn draft_markdown(&self) -> bool {
+        match header_value(&self.draft_head(), compose::MARKDOWN_HEADER) {
+            Some(v) => matches!(v.trim().to_lowercase().as_str(), "yes" | "true" | "on"),
+            None => self.config.mail.markdown,
+        }
+    }
+
+    /// The compose menu's `M`: markdown on or off for this draft.
+    pub fn toggle_draft_markdown(&mut self) {
+        let on = !self.draft_markdown();
+        self.set_draft_header(compose::MARKDOWN_HEADER, if on { "yes" } else { "no" });
+        self.note(match on {
+            true => "markdown: this draft goes out as text and html",
+            false => "markdown off: this draft goes out as plain text",
+        });
     }
 
     /// The attachment reminder is answered for this draft: the next
@@ -4913,6 +4946,7 @@ impl Session {
     fn outgoing_text(&self, c: &Compose) -> Result<String> {
         let raw = draft_full(c).context("reading the draft")?;
         let (raw, files) = compose::extract_attachments(&raw);
+        let (raw, markdown) = self.take_markdown(&raw);
         let host = maildir::hostname();
         let from = self
             .current_identity(&[])
@@ -4937,7 +4971,7 @@ impl Session {
             Some(path) => Some(std::fs::read(path).context("reading the original")?),
             None => None,
         };
-        self.secure_message(c.security, text, &files, original.as_deref())
+        self.secure_message(c.security, text, &files, original.as_deref(), markdown)
     }
 
     /// mutt's write-fcc (w): the message as it stands into a mailbox

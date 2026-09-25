@@ -104,13 +104,18 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         &compose::rfc2822_now(),
         config.mail.user_agent.unwrap_or(false),
     )?;
-    let final_text = if attachments.is_empty() {
+    let markdown = config.mail.markdown;
+    let final_text = if attachments.is_empty() && !markdown {
         final_text
     } else {
         let (head, body) = final_text
             .split_once("\n\n")
             .context("draft has no header block")?;
-        let entity = compose::mixed_entity(body, &attachments, None, config.mail.text_flowed)?;
+        let flowed = config.mail.text_flowed;
+        let entity = match attachments.is_empty() {
+            true => compose::body_entity(body, flowed, markdown),
+            false => compose::mixed_entity(body, &attachments, None, flowed, markdown)?,
+        };
         // The same join the compose menu makes, MIME-Version included.
         format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())
     };

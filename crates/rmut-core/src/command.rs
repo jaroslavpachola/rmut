@@ -450,6 +450,7 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "forward_edit" => Text(&mut cfg.mail.forward_edit),
         "mime_forward_rest" => FlagOpt(&mut cfg.mail.mime_forward_rest),
         "hyperlinks" => FlagOpt(&mut cfg.ui.hyperlinks),
+        "markdown" => Flag(&mut cfg.mail.markdown),
         "url_command" => Text(&mut cfg.ui.url_command),
         _ => return None,
     })

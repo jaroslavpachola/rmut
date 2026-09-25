@@ -18,7 +18,7 @@ const PAGER_HELP: &str = "?:Help q:Back Enter:Scroll Space/-:Page j/k:Msg /:Find
 const ATTACH_HELP: &str =
     "q:Back j/k:Move Enter:View m:Mailcap T:Text R:Render s:Save |:Pipe p:Print f:Fwd";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open c:Browse C:Create d:Del r:Rename s/u:Sub";
-const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach A:AttMsg n:New D:Detach d:Desc ^T:Type ^O:Name u:Unlink K/J:Move w:Write i:Spell f:Fcc p:PGP P:Postpone q:Quit";
+const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach A:AttMsg n:New D:Detach d:Desc ^T:Type ^O:Name u:Unlink K/J:Move w:Write i:Spell f:Fcc p:PGP M:Markdown P:Postpone q:Quit";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
