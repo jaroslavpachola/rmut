@@ -5234,6 +5234,44 @@ pub fn send_via_smtp(account: &Account, text: &str, envelope: &smtp::Envelope) -
     smtp::send(account, &password, &from, &rcpts, text.as_bytes(), envelope)
 }
 
+impl Session {
+    /// Open a URL with `[ui] url_command` (xdg-open, or open on
+    /// macOS), the URL its last argument or in place of a `%s`. No
+    /// shell, so nothing in the URL is ever run; the opener is left
+    /// to itself and reaped on a thread of its own.
+    pub fn open_url(&mut self, url: &str) {
+        match spawn_url_opener(self.config.ui.url_command.as_deref(), url) {
+            Ok(()) => self.note(format!("opening {url}")),
+            Err(err) => self.error(format!("{err:#}")),
+        }
+    }
+}
+
+/// `[ui] url_command` over a URL, as [`Session::open_url`] runs it,
+/// for a front end that has a URL but not the session to hand.
+pub fn spawn_url_opener(command: Option<&str>, url: &str) -> Result<()> {
+    let default = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let command = command.filter(|c| !c.trim().is_empty()).unwrap_or(default);
+    let mut words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    match words.iter_mut().find(|w| w.contains("%s")) {
+        Some(word) => *word = word.replace("%s", url),
+        None => words.push(url.to_string()),
+    }
+    let mut child = Command::new(&words[0])
+        .args(&words[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("cannot run {}", words[0]))?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 /// Run a shell command with `bytes` on its stdin.
 pub fn pipe_to(command: &str, bytes: &[u8]) -> Result<()> {
     let mut child = Command::new("sh")

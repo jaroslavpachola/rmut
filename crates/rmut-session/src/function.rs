@@ -122,6 +122,9 @@ pub enum Function {
     WhatKey,
     /// mutt's list-action: RFC 2369 List-* actions of the message.
     ListAction,
+    /// The message's links in a list, to open or copy one (rmut's
+    /// own, urlview built in).
+    Urls,
 }
 
 impl Function {
@@ -218,6 +221,7 @@ impl Function {
             ErrorHistory => "error-history",
             WhatKey => "what-key",
             ListAction => "list-action",
+            Urls => "urls",
         }
     }
 
@@ -314,6 +318,7 @@ impl Function {
             ErrorHistory => "show the recent errors",
             WhatKey => "say what a key is (Ctrl+G ends it)",
             ListAction => "act on the message's List-* headers (subscribe, help, ...)",
+            Urls => "list the message's links, to open or copy one",
         }
     }
 
@@ -412,6 +417,7 @@ impl Function {
             ErrorHistory,
             WhatKey,
             ListAction,
+            Urls,
         ]
     }
 
@@ -518,6 +524,8 @@ pub enum FrontOp {
     Help,
     /// mutt's Ctrl+L: repaint.
     Redraw,
+    /// The selected message's links, in a list of their own.
+    Urls,
 }
 
 /// What to do with the mailbox pane.
@@ -619,6 +627,7 @@ impl Session {
             }
             WhatKey => return Outcome::Front(FrontOp::WhatKey),
             ListAction => return self.ask_list_action().into(),
+            Urls => return Outcome::Front(FrontOp::Urls),
             Flag => self.mark_selected(tagged, "flag", |m| {
                 m.env.file.flags.flagged = !m.env.file.flags.flagged
             }),

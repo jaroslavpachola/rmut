@@ -30,6 +30,68 @@ pub enum RowKind {
 pub struct Row {
     pub text: String,
     pub kind: RowKind,
+    /// The URLs on this row, in chars of `text`. A URL the wrap broke
+    /// across rows is a link on each of them, all to the whole URL.
+    pub links: Vec<RowLink>,
+}
+
+/// Where a URL sits on a pager row: chars `start..end` of its text,
+/// and the whole URL they belong to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowLink {
+    pub start: usize,
+    pub end: usize,
+    pub url: String,
+}
+
+/// The URLs of a line as char ranges of it.
+fn url_ranges(line: &str) -> Vec<(usize, usize, String)> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for (text, url) in link_spans(line) {
+        let n = text.chars().count();
+        if let Some(url) = url {
+            out.push((at, at + n, url));
+        }
+        at += n;
+    }
+    out
+}
+
+/// The links of the row holding chars `from..to` of a line whose URLs
+/// are `urls`, shifted right by `offset` (a wrap marker).
+fn row_links(
+    urls: &[(usize, usize, String)],
+    from: usize,
+    to: usize,
+    offset: usize,
+) -> Vec<RowLink> {
+    urls.iter()
+        .filter(|(start, end, _)| *start < to && *end > from)
+        .map(|(start, end, url)| RowLink {
+            start: (*start).max(from) - from + offset,
+            end: (*end).min(to) - from + offset,
+            url: url.clone(),
+        })
+        .collect()
+}
+
+/// Every URL of a message, headers first, each once, in the order
+/// they appear: what the URL list offers.
+pub fn view_urls(view: &MessageView) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let headers = view
+        .brief
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}"));
+    for line in headers.chain(view.body.lines().map(String::from)) {
+        for (_, _, url) in url_ranges(&line) {
+            if !out.contains(&url) {
+                out.push(url);
+            }
+        }
+    }
+    out
 }
 
 /// Quote depth of a body line under $quote_regexp: the number of
@@ -83,14 +145,20 @@ pub fn pager_rows(
     let headers = if full_headers { &view.all } else { &view.brief };
     let mut rows: Vec<Row> = headers
         .iter()
-        .map(|(name, value)| Row {
-            text: format!("{name}: {value}"),
-            kind: RowKind::Header,
+        .map(|(name, value)| {
+            let text = format!("{name}: {value}");
+            let links = row_links(&url_ranges(&text), 0, usize::MAX, 0);
+            Row {
+                text,
+                kind: RowKind::Header,
+                links,
+            }
         })
         .collect();
     rows.push(Row {
         text: String::new(),
         kind: RowKind::Text,
+        links: Vec::new(),
     });
     for line in view.body.lines() {
         // Marker lines like the PGP verdict get the header treatment.
@@ -110,16 +178,22 @@ pub fn pager_rows(
         } else {
             RowKind::Text
         };
-        for (i, wrapped) in wrap_line_with(line, width.saturating_sub(1), style.smart_wrap)
+        let expanded = line.replace('\t', "    ");
+        let chars: Vec<char> = expanded.chars().collect();
+        let urls = url_ranges(&expanded);
+        for (i, (from, to)) in wrap_ranges(&chars, width.saturating_sub(1), style.smart_wrap)
             .into_iter()
             .enumerate()
         {
+            let wrapped: String = chars[from..to].iter().collect();
             // mutt's $markers: a wrapped line says it is one.
-            let text = match i > 0 && style.markers {
+            let marker = i > 0 && style.markers;
+            let text = match marker {
                 true => format!("+{wrapped}"),
                 false => wrapped,
             };
-            rows.push(Row { text, kind });
+            let links = row_links(&urls, from, to, usize::from(marker));
+            rows.push(Row { text, kind, links });
         }
     }
     rows
@@ -155,17 +229,25 @@ pub fn pager_line_count(
 /// The same, with mutt's $smart_wrap: without it a long line breaks
 /// at the column rather than at the last space before it.
 pub fn wrap_line_with(line: &str, width: usize, smart: bool) -> Vec<String> {
-    let width = width.max(4);
     let expanded = line.replace('\t', "    ");
     let chars: Vec<char> = expanded.chars().collect();
+    wrap_ranges(&chars, width, smart)
+        .into_iter()
+        .map(|(from, to)| chars[from..to].iter().collect())
+        .collect()
+}
+
+/// The wrap as char ranges of the (tab-expanded) line, one per row.
+fn wrap_ranges(chars: &[char], width: usize, smart: bool) -> Vec<(usize, usize)> {
+    let width = width.max(4);
     if chars.len() <= width {
-        return vec![expanded];
+        return vec![(0, chars.len())];
     }
     let mut out = Vec::new();
     let mut start = 0;
     while start < chars.len() {
         if chars.len() - start <= width {
-            out.push(chars[start..].iter().collect());
+            out.push((start, chars.len()));
             break;
         }
         let window_end = start + width;
@@ -176,7 +258,7 @@ pub fn wrap_line_with(line: &str, width: usize, smart: bool) -> Vec<String> {
                 .unwrap_or(window_end),
             false => window_end,
         };
-        out.push(chars[start..brk].iter().collect());
+        out.push((start, brk));
         start = if chars.get(brk) == Some(&' ') {
             brk + 1
         } else {
@@ -291,6 +373,59 @@ mod tests {
         assert_eq!(quote_depth("  | indented pipe", &re), 1);
         // A > later in the line is not a quote.
         assert_eq!(quote_depth("2 > 1", &re), 0);
+    }
+
+    #[test]
+    fn a_wrapped_url_links_every_row_to_the_whole_url() {
+        use super::{Row, view_urls};
+        let url = "https://example.com/a/very/long/path/that/wraps";
+        let view = MessageView {
+            brief: vec![("List-Help".into(), "<https://lists.example/help>".into())],
+            all: vec![],
+            body: format!("see {url} now\nsee {url} again"),
+        };
+        let re = default_quote_re();
+        let style = PagerStyle {
+            quote_re: &re,
+            markers: true,
+            smart_wrap: false,
+        };
+        let rows = pager_rows(&view, 21, false, &style, false);
+        let header = &rows[0].links;
+        assert_eq!(header.len(), 1);
+        assert_eq!(
+            &rows[0].text[header[0].start..header[0].end],
+            "https://lists.example/help"
+        );
+        // Every row the URL touches links to all of it; the text the
+        // link covers is what is on the row, after the "+" marker.
+        let body: Vec<&Row> = rows[2..].iter().filter(|r| !r.links.is_empty()).collect();
+        assert!(body.len() >= 4, "{}", body.len());
+        assert!(body.iter().all(|r| r.links.iter().all(|l| l.url == url)));
+        // The first line's rows run up to the one holding " now".
+        let end = rows.iter().position(|r| r.text.contains("now")).unwrap();
+        let covered: String = rows[2..=end]
+            .iter()
+            .flat_map(|r| {
+                r.links.iter().map(|l| {
+                    r.text
+                        .chars()
+                        .skip(l.start)
+                        .take(l.end - l.start)
+                        .collect::<String>()
+                })
+            })
+            .collect();
+        assert_eq!(covered, url);
+        assert_eq!(
+            rows[3].links[0].start, 1,
+            "after the marker: {:?}",
+            rows[3].text
+        );
+        assert_eq!(
+            view_urls(&view),
+            vec!["https://lists.example/help".to_string(), url.to_string()]
+        );
     }
 
     #[test]

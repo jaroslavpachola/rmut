@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.8.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.9.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -445,7 +445,25 @@ next\-unread\-mailbox opens the next configured mailbox holding new
 mail; purge\-message deletes past the trash; error\-history shows the
 recent errors ($error_history of them); what\-key names every key
 until Ctrl+G. Bind them by name, or run them with :exec.
+.B urls
+lists the selected message's links, as it does in the pager (Ctrl+B
+there); in the index it has no key, Ctrl+B being page\-up.
 .SS Pager
+The URLs in the pager are OSC 8 hyperlinks: a terminal that knows
+them (kitty, foot, WezTerm, iTerm2, GNOME Terminal and other VTE
+ones, Windows Terminal) opens one on a click, a URL the pager wrapped
+opening whole from either row. [ui] hyperlinks = false turns them off
+for a terminal that shows the sequence instead.
+.B Ctrl+B
+(urls) lists the message's links, headers first, each once:
+.B Enter
+opens the one under the cursor with [ui] url_command,
+.B y
+copies it to the clipboard through OSC 52 (over ssh too, with
+nothing installed), and
+.B q
+goes back. Neither is mutt's; they are urlview built in.
+.PP
 The body is the whole MIME tree rendered like mutt: text parts and
 [filters]-rendered parts inline, each attachment announced with
 .B [\-\- Attachment #N \-\-]
@@ -726,7 +744,8 @@ reflow_text, notmuch, sidebar_visible,
 sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt,
 use_envelope_from (and its old name envelope_from),
 envelope_from_address, dsn_notify, dsn_return, reply_self,
-fcc_attach, fcc_clear, forward_edit, mime_forward_rest.
+fcc_attach, fcc_clear, forward_edit, mime_forward_rest, hyperlinks,
+url_command.
 An unknown option, a bad number, an unbindable key or an unknown
 function reports on the bottom line in the error colour and stops the
 rest of the line. Changed settings recompile in place: colours, key
@@ -1335,6 +1354,14 @@ grouped, unrelated mail sharing a subject like "hi" included.
 The bottom status line, see
 .B FORMAT STRINGS
 below.
+.TP
+.B hyperlinks
+The pager's URLs as OSC 8 hyperlinks (default true).
+.TP
+.B url_command
+What opens a URL from the link list and the window's pager, the URL
+its last argument or in place of %s (default xdg\-open, open on
+macOS). Run without a shell.
 .TP
 .B beep
 Ring the terminal bell on error statuses (mutt's $beep, default

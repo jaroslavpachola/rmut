@@ -2208,13 +2208,35 @@ them. Real, but nobody's first-week complaint.
       scenario_send_odds (the envelope, a signed send kept clear, a
       forward past the editor, a picture forwarded from `v`)
 
-## R91: clickable and copyable URLs (asked for by name, 2026-09-25)
+## R91: clickable and copyable URLs (done, 2.9.0; asked for by name, 2026-09-25)
 
 Goal: from "Beyond mutt": links in the terminal pager open with a
 click (OSC 8 hyperlinks), and a URL picker key copies one to the
 clipboard (OSC 52) or opens it, so a link in a mail is not a thing
 to retype. The window already clicks links; this is the terminal's
 half.
+
+- [x] Pager rows carry their links (`Row::links`, char ranges and the
+      whole URL), worked out before the wrap, so a URL the pager
+      broke across rows links whole from each of them; the window's
+      pager reads the same, where a click on half a wrapped URL used
+      to open half of it
+- [x] The terminal: ratatui cells cannot hold a hyperlink, so the
+      frame draws as ever and the link cells are written again over
+      it inside OSC 8, through ratatui's own `Backend::draw` so each
+      keeps its style, the cursor saved and restored around it. The
+      rows of one URL share an OSC 8 id. A URL with a control char in
+      it stays plain. `[ui] hyperlinks = false` for a terminal that
+      prints the sequence
+- [x] `urls` (Ctrl+B in the pager, urlview's customary key; unbound
+      in the index, where Ctrl+B is page-up): the message's links,
+      headers first, each once. Enter opens one with `[ui]
+      url_command` (xdg-open, open on macOS; no shell, `%s` or the
+      URL appended), `y` copies it: OSC 52 in the terminal, egui's
+      clipboard in the window. Both fronts
+- [x] Row-link unit test, a window test, e2e scenario_urls (both
+      rows of a wrapped link, the full stop left out, the list, the
+      OSC 52 copy, url_command, set hyperlinks=no)
 
 ## R92: markdown compose (asked for by name, 2026-09-25)
 
@@ -2550,6 +2572,18 @@ with the user's own config, and a LazyVim that no longer finishes
 starting under nvim 0.12.5 kept its :wq from arriving; the test now
 runs `nvim --clean` (`Embedded::start_with`), since what it checks is
 rmut's RPC, not anyone's plugins.
+
+## 2.9.0 (released 2026-09-25)
+
+R91, clickable and copyable URLs. The terminal pager's URLs are OSC 8
+hyperlinks, which kitty, foot, WezTerm, iTerm2, the VTE terminals and
+Windows Terminal open on a click; a URL the pager wrapped links whole
+from each of its rows, in the window too, where half of one used to
+open half a URL. Ctrl+B in the pager lists the message's links: Enter
+opens one with `[ui] url_command`, `y` copies it (OSC 52 in the
+terminal, which reaches the clipboard over ssh with nothing installed,
+the clipboard itself in the window). `[ui] hyperlinks = false` turns
+the links off.
 
 ## Still open inside rounds marked done
 

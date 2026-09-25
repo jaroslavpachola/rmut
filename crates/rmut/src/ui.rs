@@ -1,4 +1,6 @@
 use ratatui::Frame;
+use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -20,8 +22,19 @@ const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:At
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
+const URLS_HELP: &str = "q:Back j/k:Move Enter:Open y:Copy";
+
+/// A URL on screen: `width` cells from (`x`, `y`). The frame is
+/// drawn first; these are written over it as OSC 8 hyperlinks.
+pub struct ScreenLink {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub url: String,
+}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let mut links = Vec::new();
     // mutt's four regions: the help bar, the mailbox or message, the
     // status bar, and the message line under it. The message line is
     // always there, empty when there is nothing to say, so a note
@@ -66,6 +79,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Folders { .. } => FOLDERS_HELP,
         Mode::Postponed { .. } => POSTPONED_HELP,
         Mode::Query { .. } => QUERY_HELP,
+        Mode::Urls { .. } => URLS_HELP,
         Mode::Help { .. } => HELP_HELP,
     };
     if help_rows > 0 {
@@ -94,7 +108,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             content_area
         };
         if let Mode::Pager(pager) = &app.mode {
-            draw_pager(frame, pager_area, app, pager);
+            links = draw_pager(frame, pager_area, app, pager);
         }
     } else {
         // The sidebar takes a left slice of the index view.
@@ -121,11 +135,64 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Mode::Folders { dirs, sel, .. } => draw_folders(frame, content_area, dirs, *sel),
             Mode::Postponed { drafts, sel } => draw_postponed(frame, content_area, drafts, *sel),
             Mode::Query { results, sel } => draw_list(frame, content_area, results, *sel),
+            Mode::Urls { urls, sel, .. } => {
+                draw_list(frame, content_area, urls, *sel);
+                // Each entry is a link itself, after its number.
+                for (i, url) in urls.iter().enumerate().take(content_area.height as usize) {
+                    links.push(ScreenLink {
+                        x: content_area.x + 4,
+                        y: content_area.y + i as u16,
+                        width: (Span::raw(url.as_str()).width() as u16)
+                            .min(content_area.width.saturating_sub(4)),
+                        url: url.clone(),
+                    });
+                }
+            }
             Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
         }
     }
     draw_status_bar(frame, status_area, app, content_area.height);
     draw_message_line(frame, message_area, app);
+    app.screen_links = links;
+}
+
+/// A link's URL and the cells it covers, positions and all.
+pub type LinkCells = (String, Vec<(u16, u16, Cell)>);
+
+/// The cells under each screen link, as the frame left them: what
+/// [`write_hyperlinks`] writes again, inside the link.
+pub fn link_cells(buffer: &Buffer, links: &[ScreenLink]) -> Vec<LinkCells> {
+    links
+        .iter()
+        // A URL that could smuggle a terminal sequence stays plain.
+        .filter(|l| !l.url.chars().any(char::is_control))
+        .map(|l| {
+            let cells = (l.x..l.x.saturating_add(l.width))
+                .filter_map(|x| buffer.cell((x, l.y)).map(|c| (x, l.y, c.clone())))
+                .collect();
+            (l.url.clone(), cells)
+        })
+        .collect()
+}
+
+/// OSC 8 over the frame just drawn: each link's cells written again
+/// between the open and close sequences, in their own styles, with the
+/// cursor put back where the frame left it. The pieces of a URL the
+/// pager wrapped share an id, so a terminal treats them as one link.
+pub fn write_hyperlinks(
+    backend: &mut CrosstermBackend<std::io::Stdout>,
+    links: &[LinkCells],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    write!(backend, "\x1b7")?;
+    for (url, cells) in links {
+        let id = links.iter().position(|(u, _)| u == url).unwrap_or(0);
+        write!(backend, "\x1b]8;id=rmut{id};{url}\x1b\\")?;
+        backend.draw(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
+        write!(backend, "\x1b]8;;\x1b\\")?;
+    }
+    write!(backend, "\x1b8")?;
+    Backend::flush(backend)
 }
 
 /// Mutt's compose menu: header lines, then the attachment table with
@@ -268,7 +335,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
+fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) -> Vec<ScreenLink> {
     let rows = pager_rows(
         &pager.view,
         app.pager_wrap(area.width as usize),
@@ -282,6 +349,30 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
         .take(area.height as usize)
         .map(|row| style_row(row, app))
         .collect();
+    let mut links = Vec::new();
+    for (y, row) in rows
+        .iter()
+        .skip(pager.scroll)
+        .take(area.height as usize)
+        .enumerate()
+    {
+        for link in &row.links {
+            let cols = |from: usize, to: usize| {
+                let text: String = row.text.chars().skip(from).take(to - from).collect();
+                Span::raw(text).width() as u16
+            };
+            let x = cols(0, link.start);
+            if x >= area.width {
+                continue;
+            }
+            links.push(ScreenLink {
+                x: area.x + x,
+                y: area.y + y as u16,
+                width: cols(link.start, link.end).min(area.width - x),
+                url: link.url.clone(),
+            });
+        }
+    }
     // mutt's $tilde: mark the void below end-of-message.
     if app.session.config.pager.tilde {
         while visible.len() < area.height as usize {
@@ -289,6 +380,7 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) {
         }
     }
     frame.render_widget(Paragraph::new(visible), area);
+    links
 }
 
 /// One pager row as styled spans: the base from its kind, then
@@ -483,6 +575,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16
             format!("---rmut: postponed drafts [Found:{}]", drafts.len())
         }
         Mode::Query { results, .. } => format!("---rmut: query results [Found:{}]", results.len()),
+        Mode::Urls { urls, .. } => format!("---rmut: links [URLs:{}]", urls.len()),
         Mode::Help { .. } => "---rmut: help".to_string(),
         Mode::Index => status::index_status(
             &app.session,

@@ -71,6 +71,13 @@ pub enum Mode {
         results: Vec<String>,
         sel: usize,
     },
+    /// The message's links (`urls`): Enter opens one, y copies it.
+    Urls {
+        urls: Vec<String>,
+        sel: usize,
+        /// Pager to return to when the list was opened from there.
+        back: Option<Pager>,
+    },
     /// The built-in editor ([gui] editor = "builtin"): the same file
     /// contract as $EDITOR, in an egui text box.
     Edit {
@@ -779,6 +786,7 @@ impl Gui {
             Mode::Compose { .. } => self.handle_compose_key(key),
             Mode::Postponed { .. } => self.handle_postponed_key(key),
             Mode::Query { .. } => self.handle_query_key(key),
+            Mode::Urls { .. } => self.handle_urls_key(key),
             Mode::Image { .. } => {
                 if matches!(
                     key.code,
@@ -2014,6 +2022,85 @@ impl Gui {
         self.mode = Mode::Query { results, sel: 0 };
     }
 
+    /// The message's links in a list: the pager's message, or the
+    /// selected one from the index. Its entries click like any list,
+    /// a double click opening the link.
+    fn open_urls(&mut self) {
+        let urls = match &self.mode {
+            Mode::Pager(pager) => rmut_front::pager::view_urls(&pager.view),
+            _ => {
+                let Some(&i) = self.session.visible.get(self.session.sel) else {
+                    return;
+                };
+                let path = self.session.msgs[i].env.file.path.clone();
+                match self.session.load_view(&path) {
+                    Ok(view) => rmut_front::pager::view_urls(&view),
+                    Err(err) => {
+                        self.error(format!("cannot open message: {err:#}"));
+                        return;
+                    }
+                }
+            }
+        };
+        if urls.is_empty() {
+            self.error("no URLs in this message");
+            return;
+        }
+        let back = match std::mem::replace(&mut self.mode, Mode::Index) {
+            Mode::Pager(pager) => Some(pager),
+            other => {
+                self.mode = other;
+                None
+            }
+        };
+        self.mode = Mode::Urls { urls, sel: 0, back };
+    }
+
+    fn handle_urls_key(&mut self, key: KeyEvent) {
+        let picked = match &self.mode {
+            Mode::Urls { urls, sel, .. } => urls.get(*sel).cloned(),
+            _ => None,
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Urls { urls, sel, .. } = &mut self.mode {
+                    *sel = (*sel + 1).min(urls.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Urls { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.mode = match std::mem::replace(&mut self.mode, Mode::Index) {
+                    Mode::Urls {
+                        back: Some(pager), ..
+                    } => Mode::Pager(pager),
+                    _ => Mode::Index,
+                };
+            }
+            KeyCode::Enter => {
+                if let Some(url) = picked {
+                    self.session.open_url(&url);
+                }
+            }
+            KeyCode::Char('y') => {
+                if let Some(url) = picked {
+                    // The window has the clipboard itself; no OSC 52.
+                    match &self.ctx {
+                        Some(ctx) => {
+                            ctx.copy_text(url.clone());
+                            self.note(format!("copied {url}"));
+                        }
+                        None => self.error("no clipboard"),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_query_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -2318,6 +2405,7 @@ impl Gui {
     fn run_front_op(&mut self, op: FrontOp) {
         match op {
             FrontOp::Exit => self.quit = true,
+            FrontOp::Urls => self.open_urls(),
             FrontOp::OpenSelected => self.open_selected(),
             FrontOp::Help => {
                 self.mode = Mode::Help {
@@ -2908,6 +2996,7 @@ impl Gui {
                 let ask = self.session.ask_list_action();
                 self.open_ask(ask);
             }
+            PagerAction::Urls => self.open_urls(),
         }
     }
 

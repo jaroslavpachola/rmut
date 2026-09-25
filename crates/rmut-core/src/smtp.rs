@@ -185,7 +185,7 @@ fn dot_stuff(body: &[u8]) -> Vec<u8> {
 
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-pub(crate) fn b64(input: &[u8]) -> String {
+pub fn b64(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b = [

@@ -72,6 +72,13 @@ pub enum Mode {
         results: Vec<String>,
         sel: usize,
     },
+    /// The message's links (`urls`): Enter opens one, y copies it.
+    Urls {
+        urls: Vec<String>,
+        sel: usize,
+        /// Pager to return to when the list was opened from there.
+        back: Option<Pager>,
+    },
     Help {
         lines: Vec<String>,
         scroll: usize,
@@ -261,6 +268,8 @@ pub struct App {
     pub theme: Theme,
     pub keymap: Keymap,
     pending_editor: Option<Compose>,
+    /// The URLs the last frame put on screen, for the OSC 8 overlay.
+    pub screen_links: Vec<crate::ui::ScreenLink>,
     /// Message whose raw bytes go through $EDITOR next loop tick
     /// (mutt's edit function).
     pending_raw_edit: Option<PathBuf>,
@@ -407,6 +416,7 @@ impl App {
             theme,
             keymap,
             pending_editor: None,
+            screen_links: Vec::new(),
             pending_raw_edit: None,
             complete: None,
             pending_keys: std::collections::VecDeque::new(),
@@ -668,7 +678,12 @@ impl App {
             // A send that failed hands its draft back, and the hooks
             // may have asked for something too.
             self.run_requests_quietly();
-            terminal.draw(|frame| crate::ui::draw(frame, self))?;
+            let done = terminal.draw(|frame| crate::ui::draw(frame, self))?;
+            // [ui] hyperlinks: the URLs on screen, clickable.
+            if self.session.config.ui.hyperlinks.unwrap_or(true) && !self.screen_links.is_empty() {
+                let linked = crate::ui::link_cells(done.buffer, &self.screen_links);
+                crate::ui::write_hyperlinks(terminal.backend_mut(), &linked)?;
+            }
             self.update_title(terminal.size().map(|s| s.height as usize).unwrap_or(0));
             // Macro-queued keys run first, without waiting for input,
             // unless a mailbox is on its way in: they are for that one.
@@ -821,6 +836,8 @@ impl App {
             self.handle_postponed_key(key);
         } else if matches!(self.mode, Mode::Query { .. }) {
             self.handle_query_key(key);
+        } else if matches!(self.mode, Mode::Urls { .. }) {
+            self.handle_urls_key(key);
         } else {
             self.handle_folders_key(key);
         }
@@ -1227,6 +1244,7 @@ impl App {
             FrontOp::ErrorHistory(lines) => self.open_error_history(lines),
             FrontOp::WhatKey => self.start_what_key(),
             FrontOp::Redraw => self.redraw = true,
+            FrontOp::Urls => self.open_urls(),
             FrontOp::TagPrefix => self.tag_next = true,
             FrontOp::Query => {
                 self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
@@ -1533,6 +1551,10 @@ impl App {
             PagerAction::ListAction => {
                 let ask = self.session.ask_list_action();
                 self.open_ask(ask);
+                return;
+            }
+            PagerAction::Urls => {
+                self.open_urls();
                 return;
             }
             PagerAction::ErrorHistory => {
@@ -2283,6 +2305,92 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    // ---- the URL list ----
+
+    /// The message's links in a list: the pager's message, or the
+    /// selected one from the index.
+    fn open_urls(&mut self) {
+        let urls = match &self.mode {
+            Mode::Pager(pager) => rmut_front::pager::view_urls(&pager.view),
+            _ => {
+                let Some(&i) = self.session.visible.get(self.session.sel) else {
+                    return;
+                };
+                let path = self.session.msgs[i].env.file.path.clone();
+                match self.session.load_view(&path) {
+                    Ok(view) => rmut_front::pager::view_urls(&view),
+                    Err(err) => {
+                        self.error(format!("cannot open message: {err:#}"));
+                        return;
+                    }
+                }
+            }
+        };
+        if urls.is_empty() {
+            self.error("no URLs in this message");
+            return;
+        }
+        let back = match mem::replace(&mut self.mode, Mode::Index) {
+            Mode::Pager(pager) => Some(pager),
+            other => {
+                self.mode = other;
+                None
+            }
+        };
+        self.mode = Mode::Urls { urls, sel: 0, back };
+    }
+
+    fn handle_urls_key(&mut self, key: KeyEvent) {
+        let picked = match &self.mode {
+            Mode::Urls { urls, sel, .. } => urls.get(*sel).cloned(),
+            _ => None,
+        };
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Urls { urls, sel, .. } = &mut self.mode {
+                    *sel = (*sel + 1).min(urls.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Urls { sel, .. } = &mut self.mode {
+                    *sel = sel.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.mode = match mem::replace(&mut self.mode, Mode::Index) {
+                    Mode::Urls {
+                        back: Some(pager), ..
+                    } => Mode::Pager(pager),
+                    _ => Mode::Index,
+                };
+            }
+            KeyCode::Enter => {
+                if let Some(url) = picked {
+                    self.session.open_url(&url);
+                }
+            }
+            KeyCode::Char('y') => {
+                if let Some(url) = picked {
+                    self.copy_to_clipboard(&url);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// OSC 52: the terminal puts the text on the system clipboard,
+    /// over ssh too, with nothing installed on either end. A terminal
+    /// that does not take OSC 52 ignores it, which is why the note
+    /// says what was sent rather than promising it landed.
+    fn copy_to_clipboard(&mut self, text: &str) {
+        let osc = format!("\x1b]52;c;{}\x07", rmut_core::smtp::b64(text.as_bytes()));
+        let mut out = std::io::stdout();
+        match out.write_all(osc.as_bytes()).and_then(|()| out.flush()) {
+            Ok(()) => self.note(format!("copied {text} (OSC 52)")),
+            Err(err) => self.error(format!("cannot copy: {err}")),
         }
     }
 

@@ -262,6 +262,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::NvimEdit => NVIM_HELP,
                 Mode::Postponed { .. } => POSTPONED_HELP,
                 Mode::Query { .. } => QUERY_HELP,
+                Mode::Urls { .. } => URLS_HELP,
             };
             let mut job = LayoutJob::default();
             job.append(help, 0.0, format(bar_style, size));
@@ -518,13 +519,14 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         }
                     }
                 }
-                Mode::Postponed { .. } | Mode::Query { .. } => {
+                Mode::Postponed { .. } | Mode::Query { .. } | Mode::Urls { .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let (rows_text, sel) = match &gui.mode {
                         Mode::Postponed { drafts, sel } => {
                             (drafts.iter().map(|d| d.1.clone()).collect::<Vec<_>>(), *sel)
                         }
                         Mode::Query { results, sel } => (results.clone(), *sel),
+                        Mode::Urls { urls, sel, .. } => (urls.clone(), *sel),
                         _ => return,
                     };
                     let mut clicked = None;
@@ -551,6 +553,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         match &mut gui.mode {
                             Mode::Postponed { sel, .. } => *sel = i,
                             Mode::Query { sel, .. } => *sel = i,
+                            Mode::Urls { sel, .. } => *sel = i,
                             _ => {}
                         }
                         if open {
@@ -1049,18 +1052,9 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
                     0 => Style::new(),
                     n => Style::new().fg(gui.theme.quoted[(depth - 1) % n]),
                 };
-                body_row(gui, ui, &mut job, flush, &row.text, style, size, mono);
+                body_row(gui, ui, &mut job, flush, row, style, size, mono);
             }
-            RowKind::Text => body_row(
-                gui,
-                ui,
-                &mut job,
-                flush,
-                &row.text,
-                Style::new(),
-                size,
-                mono,
-            ),
+            RowKind::Text => body_row(gui, ui, &mut job, flush, row, Style::new(), size, mono),
         }
     }
     flush(ui, &mut job);
@@ -1115,23 +1109,38 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
 
 /// One body row: straight into the running job, unless it carries a
 /// URL - then the job flushes and the row lays out as segments with
-/// real hyperlinks (eframe opens them in the browser).
+/// real hyperlinks, opened by [ui] url_command. A URL the pager
+/// wrapped opens whole from any of its rows.
 #[allow(clippy::too_many_arguments)]
 fn body_row(
     gui: &Gui,
     ui: &mut egui::Ui,
     job: &mut LayoutJob,
     flush: impl Fn(&mut egui::Ui, &mut LayoutJob),
-    text: &str,
+    row: &rmut_front::pager::Row,
     base: Style,
     size: f32,
     mono: bool,
 ) {
-    if !text.contains("http") {
+    let text = row.text.as_str();
+    if row.links.is_empty() {
         body_line(gui, job, text, base, size, mono);
         return;
     }
-    let spans = rmut_front::pager::link_spans(text);
+    let chars: Vec<char> = text.chars().collect();
+    let piece = |from: usize, to: usize| chars[from..to].iter().collect::<String>();
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for link in &row.links {
+        if link.start > at {
+            spans.push((piece(at, link.start), None));
+        }
+        spans.push((piece(link.start, link.end), Some(link.url.clone())));
+        at = link.end;
+    }
+    if at < chars.len() {
+        spans.push((piece(at, chars.len()), None));
+    }
     flush(ui, job);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -1143,15 +1152,11 @@ fn body_row(
                     } else {
                         FontId::proportional(size)
                     };
-                    // xdg-open, spawned by hand: eframe's own opener
-                    // needs a webbrowser release crates.io no longer
-                    // resolves, and this is one line anyway.
+                    // Spawned by hand: eframe's own opener needs a
+                    // webbrowser release crates.io no longer resolves.
                     if ui.link(RichText::new(piece).font(font)).clicked() {
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg(&url)
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
+                        let command = gui.session.config.ui.url_command.as_deref();
+                        let _ = rmut_session::spawn_url_opener(command, &url);
                     }
                 }
                 None => {
@@ -1218,4 +1223,5 @@ const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";
 const NVIM_HELP: &str = "nvim owns the keyboard - :wq finishes, :q! abandons";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
+const URLS_HELP: &str = "q:Back j/k:Move Enter:Open y:Copy";
 const IMAGE_HELP: &str = "q:Back";

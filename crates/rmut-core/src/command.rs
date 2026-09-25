@@ -449,6 +449,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "fcc_clear" => Flag(&mut cfg.mail.fcc_clear),
         "forward_edit" => Text(&mut cfg.mail.forward_edit),
         "mime_forward_rest" => FlagOpt(&mut cfg.mail.mime_forward_rest),
+        "hyperlinks" => FlagOpt(&mut cfg.ui.hyperlinks),
+        "url_command" => Text(&mut cfg.ui.url_command),
         _ => return None,
     })
 }

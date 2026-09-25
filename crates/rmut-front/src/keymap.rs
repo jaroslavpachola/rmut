@@ -165,6 +165,7 @@ pub enum PagerAction {
     ListAction,
     ErrorHistory,
     WhatKey,
+    Urls,
 }
 
 impl PagerAction {
@@ -218,6 +219,7 @@ impl PagerAction {
             ListAction => "list-action",
             ErrorHistory => "error-history",
             WhatKey => "what-key",
+            Urls => "urls",
         }
     }
 
@@ -271,6 +273,7 @@ impl PagerAction {
             ListAction => "act on the message's List-* headers (subscribe, help, ...)",
             ErrorHistory => "show the recent errors",
             WhatKey => "say what a key is (Ctrl+G ends it)",
+            Urls => "list the message's links, to open or copy one",
         }
     }
 
@@ -324,6 +327,7 @@ impl PagerAction {
             ListAction,
             ErrorHistory,
             WhatKey,
+            Urls,
         ]
     }
 
@@ -558,6 +562,9 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         (KeyPattern::ch(':'), EnterCommand),
         (KeyPattern::ch('?'), Help),
         (KeyPattern::alt('L'), ListAction),
+        // urlview's customary key in a mutt setup; the index has
+        // Ctrl+B for page-up, so `urls` has no key there.
+        (KeyPattern::ctrl('b'), Urls),
     ]
 }
 

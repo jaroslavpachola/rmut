@@ -683,6 +683,13 @@ pub struct Ui {
     /// mutt's $save_history: entries kept per history bucket in the
     /// file. Defaults to 100 (rmut's in-memory cap).
     pub save_history: Option<usize>,
+    /// The terminal pager's URLs as OSC 8 hyperlinks, which a terminal
+    /// that knows them opens on a click (rmut's own; on by default).
+    /// false for a terminal that shows the sequence instead.
+    pub hyperlinks: Option<bool>,
+    /// What opens a URL from the URL list, the URL as its argument:
+    /// "xdg-open" by default ("open" on macOS).
+    pub url_command: Option<String>,
 }
 
 impl Default for Ui {
@@ -706,6 +713,8 @@ impl Default for Ui {
             sort_browser: None,
             error_history: 30,
             status_chars: None,
+            hyperlinks: None,
+            url_command: None,
         }
     }
 }

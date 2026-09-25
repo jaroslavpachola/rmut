@@ -1381,3 +1381,47 @@ fn esc_then_a_key_is_the_alt_binding() {
     key(&mut gui, KeyCode::Esc);
     assert!(matches!(gui.mode, Mode::Index), "Esc Esc leaves the pager");
 }
+
+#[test]
+fn ctrl_b_in_the_pager_lists_the_message_links() {
+    let (dir, _) = fixture(&["plain"]);
+    fs::write(
+        dir.path().join("cur/0009.rmut:2,S"),
+        "From: a@example.com\nSubject: links\nDate: Mon, 20 Mar 2024 10:00:00 +0000\n\n\
+         see https://example.com/one and <https://example.com/two>.\n\
+         again https://example.com/one\n",
+    )
+    .unwrap();
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "*");
+    key(&mut gui, KeyCode::Enter);
+    assert!(matches!(gui.mode, Mode::Pager(_)));
+    gui.handle_keys(vec![KeyEvent::new(
+        KeyCode::Char('b'),
+        KeyModifiers::CONTROL,
+    )]);
+    let Mode::Urls { urls, back, .. } = &gui.mode else {
+        panic!("Ctrl+B lists the links");
+    };
+    assert_eq!(
+        urls,
+        &["https://example.com/one", "https://example.com/two"]
+    );
+    assert!(back.is_some());
+    press(&mut gui, "q");
+    assert!(
+        matches!(gui.mode, Mode::Pager(_)),
+        "q goes back to the message"
+    );
+    // From the index, urls has no key of its own: :exec names it.
+    key(&mut gui, KeyCode::Char('q'));
+    press(&mut gui, "k");
+    let outcome = gui
+        .session
+        .run_function(rmut_session::Function::Urls, false, 10);
+    assert!(matches!(
+        outcome,
+        rmut_session::Outcome::Front(rmut_session::FrontOp::Urls)
+    ));
+}

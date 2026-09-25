@@ -151,7 +151,12 @@ leaving the message, `h` toggle full headers,
 `p` print,
 `s` save, `C`/`|`/`b` copy/pipe/bounce, Alt+s/Alt+C decode-save/copy,
 `e`/Alt+e edit raw/resend,
-`:` run a config command, `q`/`i` back. Space past the end opens the next message and wrapped
+`:` run a config command, Ctrl+B the message's links, `q`/`i` back.
+The URLs in the pager are clickable in a terminal that knows OSC 8
+hyperlinks (kitty, foot, WezTerm, iTerm2, VTE terminals, Windows
+Terminal), a wrapped one opening whole from either row; Ctrl+B lists
+them, Enter opens one with `[ui] url_command`, `y` copies it through
+OSC 52, which works over ssh with nothing installed. Space past the end opens the next message and wrapped
 lines carry a leading `+` marker, like mutt. Replies ask mutt's
 ask-yes questions: Reply-To (when the header is set), "No subject,
 abort?", and "Include message in reply?"; Enter takes the yes.
@@ -442,7 +447,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `sidebar_width`, `pgp_sign_as`, `crypt_autosign`, `crypt_autoencrypt`,
 `use_envelope_from` (and its old name `envelope_from`),
 `envelope_from_address`, `dsn_notify`, `dsn_return`, `reply_self`,
-`fcc_attach`, `fcc_clear`, `forward_edit`, `mime_forward_rest`.
+`fcc_attach`, `fcc_clear`, `forward_edit`, `mime_forward_rest`,
+`hyperlinks`, `url_command`.
 An unknown option, a bad number, an unbindable key, or an unknown
 function reports on the bottom line in the error color and stops the
 rest of the line. Changed settings recompile in place: colors, key
@@ -1007,6 +1013,10 @@ title_format = "rmut: %f"    # its format, the status specifiers again
 history_file = "~/.rmut_history"  # persist prompt history across
                              # sessions (mutt's $history_file); unset
                              # keeps it in-memory only
+hyperlinks = true            # the pager's URLs as OSC 8 links; false
+                             # for a terminal that prints them
+url_command = "xdg-open"     # opens a URL from Ctrl+B's list (%s, or
+                             # the URL appended)
 status_on_top = false        # true puts the status bar near the top
 arrow_cursor = false         # true marks the selection with -> not
                              # reverse video (mutt's $arrow_cursor)

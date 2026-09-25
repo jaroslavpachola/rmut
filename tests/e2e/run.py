@@ -31,7 +31,9 @@ VERSION = re.search(
     r'^version = "(.*)"', open(os.path.join(REPO, "Cargo.toml")).read(), re.M
 ).group(1)
 
-ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[78=>]")
+ANSI = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[78=>]"
+)
 
 
 def squash(raw: str) -> str:
@@ -3541,9 +3543,10 @@ def scenario_title_and_write(tmp):
         f.write('[ui]\nset_title = true\ntitle_format = "rmut: %f [%m]"\n')
     r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
     r.expect("Msgs:2")
-    # The OSC 2 title escape carries the format's output.
-    r.expect("\x1b]", "rmut: ")
-    assert "[2]" in r.buf, r.buf[-200:]
+    # The OSC 2 title escape carries the format's output. The screen
+    # text has escapes stripped, so the raw stream is where it shows.
+    title = re.compile(r"\x1b\][012];rmut: [^\x07\x1b]*\[2\]")
+    wait_for(lambda: (r._drain() or True) and title.search(r.buf), desc="the title escape")
 
     # % marks the mailbox read-only; a delete then refuses.
     r.keys(b"%")
@@ -4781,6 +4784,70 @@ def scenario_send_odds(tmp):
     r.close()
 
 
+def scenario_urls(tmp):
+    """R91: the pager's URLs are OSC 8 hyperlinks, a wrapped one linked
+    whole from each of its rows; Ctrl+B lists the message's links, y
+    copies one through OSC 52 and Enter opens it with url_command;
+    set hyperlinks=no turns the links off."""
+    md = make_maildir(tmp, "md-urls")
+    long_url = "https://example.com/" + "a" * 200
+    with open(os.path.join(md, "cur", "1751960000.9.host:2,S"), "w") as f:
+        f.write(
+            "From: Ann <ann@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: two links\r\nDate: Wed, 8 Jul 2026 11:00:00 +0200\r\n"
+            "Message-ID: <links@example.com>\r\n\r\n"
+            "the docs: https://example.com/docs.\r\n"
+            f"and the long one {long_url}\r\n"
+        )
+    opened = os.path.join(tmp, "opened")
+    opener = os.path.join(tmp, "opener.sh")
+    with open(opener, "w") as f:
+        f.write(f'#!/bin/sh\necho "$1" > {opened}\n')
+    os.chmod(opener, 0o755)
+    cfg = os.path.join(tmp, "urls-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f'[ui]\nurl_command = "{opener}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("two links")
+    r.keys(b"\r")
+    r.expect("the docs")
+    short = "\x1b]8;id=rmut0;https://example.com/docs\x1b\\"
+    wait_for(lambda: (r._drain() or True) and short in r.buf, desc="the docs link")
+    # The long URL wraps at 160 columns: both rows link to all of it,
+    # under the same id.
+    wrapped = f";{long_url}\x1b\\"
+    wait_for(lambda: (r._drain() or True) and r.buf.count(wrapped) >= 2,
+             desc="both rows of the wrapped link")
+    # The link closes right after "docs": the full stop stays out.
+    plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", r.buf)
+    assert "https://example.com/docs\x1b]8;;\x1b\\" in plain, "the full stop stays out"
+
+    r.keys(b"\x02")  # Ctrl+B
+    r.expect("links [URLs:2]", "https://example.com/docs")
+    r.buf = ""
+    r.keys(b"y")
+    b64 = base64.b64encode(b"https://example.com/docs").decode()
+    wait_for(lambda: (r._drain() or True) and f"\x1b]52;c;{b64}\x07" in r.buf,
+             desc="the OSC 52 copy")
+    r.expect("copied https://example.com/docs")
+    r.keys(b"j\r")
+    wait_for(lambda: os.path.exists(opened), desc="url_command run")
+    assert open(opened).read().strip() == long_url
+    r.keys(b"q")
+    r.expect("the docs")
+
+    # Off: a redraw writes no hyperlinks.
+    r.keys(b":set hyperlinks=no\r")
+    r.settle()
+    r.buf = ""
+    r.repaint()
+    r.expect("the docs")
+    assert "\x1b]8;" not in r.buf, "no links once they are off"
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -4860,6 +4927,7 @@ SCENARIOS = [
     scenario_subject_threading,
     scenario_esc_prefix,
     scenario_send_odds,
+    scenario_urls,
 ]
 
 
