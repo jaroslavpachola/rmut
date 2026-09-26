@@ -4961,6 +4961,31 @@ def scenario_private_files(tmp):
     r.close()
 
 
+def scenario_label_after_reopen(tmp):
+    """2.11.1: a label written into a message whose name carries its
+    size (,S=) still shows after a reopen, where the header cache
+    used to hand back the envelope from before the rewrite."""
+    md = make_maildir(tmp, "md-sized")
+    content = MSGS["jane"][1]
+    name = f"1.host,S={len(content.encode())}:2,S"
+    with open(os.path.join(md, "cur", name), "w") as f:
+        f.write(content)
+    cfg = os.path.join(tmp, "sized-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[index]\nformat = "%4C %-10y %s"\n')
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    r = Rmut(md, env)
+    r.expect("Msgs:1")
+    r.keys(b"Yrelabelled\r")
+    r.expect("labelled 1 message(s)", "relabelled")
+    r.keys(b"q")
+    r.close()
+    r = Rmut(md, env)
+    r.expect("Msgs:1", "relabelled")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -5043,6 +5068,7 @@ SCENARIOS = [
     scenario_urls,
     scenario_markdown,
     scenario_private_files,
+    scenario_label_after_reopen,
 ]
 
 

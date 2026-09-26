@@ -104,12 +104,15 @@ impl Entry {
 }
 
 /// Cache identity of one message file: the base name (immutable in
-/// maildir, flags live after ":2,") plus the size scan found for it,
-/// so no second stat per message.
+/// maildir, flags live after ":2,") plus the current byte length.
+/// The length on disk, not the `,S=` in the name: a message rewritten
+/// in place (a label, the threading headers) keeps its name and the
+/// size in it, and must still read as changed.
 fn key_of(file: &MailFile) -> Option<String> {
     let name = file.path.file_name()?.to_str()?;
     let base = name.split(":2,").next()?;
-    Some(format!("{base}\u{1}{}", file.size))
+    let len = std::fs::metadata(&file.path).ok()?.len();
+    Some(format!("{base}\u{1}{len}"))
 }
 
 fn cache_path(dir: &Path) -> PathBuf {
@@ -243,6 +246,22 @@ mod tests {
         std::fs::write(headers.join("gone.toml"), &gone).unwrap();
         sweep_at(&headers);
         assert!(headers.join("gone.toml").exists());
+    }
+
+    #[test]
+    fn a_rewrite_in_place_is_seen_despite_the_size_in_the_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let md = tmp.path().join("md");
+        for sub in ["cur", "new", "tmp"] {
+            std::fs::create_dir_all(md.join(sub)).unwrap();
+        }
+        let cache = tmp.path().join("c.toml");
+        write_msg(&md.join("cur"), "1.host,S=90:2,S", "before");
+        let (first, _) = load_envelopes_at(&md, &cache).unwrap();
+        assert_eq!(first[0].subject, "before");
+        write_msg(&md.join("cur"), "1.host,S=90:2,S", "after, and longer");
+        let (second, _) = load_envelopes_at(&md, &cache).unwrap();
+        assert_eq!(second[0].subject, "after, and longer");
     }
 
     fn write_msg(dir: &Path, name: &str, subject: &str) {

@@ -2296,11 +2296,11 @@ per connection and the DefaultHasher mbox ids stay as they are.
 - [x] mbox: the crash backup is synced before the in-place rewrite,
       and one a failed rewrite left behind stops the next sync with
       its path, instead of being overwritten by the cut-short file
-- [x] maildir scan: one stat per message where there were three
-      (`unwrap_or` ran the metadata call even with `,S=` in the name,
-      and the header cache stat'ed again for its key), and a message
-      another client moved mid-scan is skipped instead of failing the
-      whole mailbox open
+- [x] maildir scan: two stats per message where there were three
+      (`unwrap_or` ran the metadata call even with `,S=` in the name),
+      and a message another client moved mid-scan is skipped instead
+      of failing the whole mailbox open. (2.11.0 took the header
+      cache's stat too, which 2.11.1 put back: see there)
 - [x] Core tests for each, e2e scenario_private_files (the draft's
       mode as the editor sees it, the RFC 2231 names on the wire)
 
@@ -2665,6 +2665,15 @@ it as two commands. Attachment names with quotes or non-ASCII letters
 go out RFC 2231-encoded. An mbox sync that a crash cut short leaves a
 backup the next sync points at instead of overwriting, and opening a
 big maildir does a third of the stat calls it did.
+
+## 2.11.1 (released 2026-09-26)
+
+A fix for 2.11.0, which keyed the header cache on the `,S=` size in a
+message's name to save a stat. A message rewritten in place (a label,
+a thread broken or linked, an edit) keeps its name and that size, so
+after a reopen the index showed the envelope from before the change,
+the label gone. The key is the length on disk again. Found checking
+the rmut-session review; e2e scenario_label_after_reopen.
 
 ## Still open inside rounds marked done
 
