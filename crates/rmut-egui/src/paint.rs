@@ -290,9 +290,9 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
     // The message line at the very bottom, the status bar above it.
     egui::Panel::bottom(panel_id(gui, root, "message")).show(root, |ui| {
         let text = match &gui.prompt {
+            // The marker sits at the cursor, which stays in view.
             Some(Prompt::Line { label, edit, .. }) => {
-                let i = rmut_front::editor::byte_at(&edit.buf, edit.cursor);
-                format!("{label}{}\u{2581}{}", &edit.buf[..i], &edit.buf[i..])
+                rmut_front::editor::prompt_line(label, edit, gui.view_size.1)
             }
             Some(Prompt::Key { label, .. }) => label.clone(),
             None => gui

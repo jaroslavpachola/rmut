@@ -10,6 +10,7 @@ keywords = ["mail", "mutt"]
 categories = ["email"]
 
 [dependencies]
+libc = { workspace = true }
 regex-lite = { workspace = true }
 rmut-core = { workspace = true }
 rmut-session = { workspace = true }

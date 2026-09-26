@@ -2376,6 +2376,43 @@ which want an indexed color in both fronts.
 - [x] Unit tests for each; e2e scenario_prompt_keys (Ctrl+G, Alt+b,
       a bound Delete)
 
+## R96: the rmut review (done, 2.14.0; asked for by name, 2026-09-26)
+
+Goal: act on an outside review of the terminal front end, each
+finding checked against the code first. Not taken: Shift+Tab as
+previous-new (mutt's is Esc Tab, which rmut has as Alt+Tab, and the
+proposed mapping would have gone to the next new message instead),
+and the arrow_cursor "clipping" (the index has no `%>` fill; the arrow
+takes its two columns, as in mutt).
+
+- [x] A part opened with a mailcap viewer is written under its own
+      name inside a fresh private directory
+      (`rmut_core::scratch::write_named`: created new, mode 0700, the
+      file 0600) and both go with the viewer, in both fronts. It was a
+      plain write into `/tmp/rmut-<pid>/`, a directory anyone could
+      have made first, at the default umask: an R93 miss
+- [x] SIGTERM and SIGHUP leave the way q does (`rmut_front::signals`):
+      the mail held for $undo_send and the exit sync still go, where
+      the default action dropped them. A second signal ends it at
+      once. On SIGHUP the handler puts an empty non-blocking pipe in
+      stdin's place: crossterm 0.28 reads a hung-up terminal's
+      end-of-file in a loop that never ends. (Waiting with poll(2)
+      instead lost keys: crossterm's epoll is edge-triggered.) After
+      a hangup nothing is written to the dead terminal (its restore,
+      its Drop, a note), which had ended in an abort. The window
+      takes both too, through its binary only (a host has its own
+      handlers)
+- [x] Pager search (n, N) reads the rows from `RowCache`
+- [x] Y, N and R answer as y, n and r: in the session's questions (the
+      sort question alone reads case) and the fronts' own
+- [x] Control characters are kept out of the terminal title
+- [x] A line prompt longer than the line scrolls, keeping the cursor
+      and a little of what follows it in view (`editor::prompt_line`)
+- [x] Core, front and session tests; the window's viewer test checks
+      the path the viewer was really given; e2e
+      scenario_signals_leave_cleanly (SIGTERM, then the pty closing,
+      each with a message held)
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2769,6 +2806,17 @@ and it wraps CJK and emoji by the columns they take. mutt's bright
 colors import and parse, Delete can be bound, Tab completes the word
 at the cursor, %P reads all / end, and the history file is written
 whole and private.
+
+## 2.14.0 (released 2026-09-26)
+
+R96, the rmut review. A part opened with a mailcap viewer now goes
+into a private directory of its own instead of a guessable one in
+/tmp at the default umask, in both fronts. Closing the terminal
+(SIGHUP) or a SIGTERM leaves the way q does, so a message held by
+undo_send still goes out; before, it died with the process. Y and N
+answer questions like y and n, pager search reuses the laid-out rows,
+the terminal title carries no control characters, and a long line
+prompt scrolls to keep the cursor in view.
 
 ## Still open inside rounds marked done
 

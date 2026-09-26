@@ -1200,6 +1200,24 @@ fn quit_no_refuses_and_ask_yes_asks_first() {
 }
 
 #[test]
+fn uppercase_answers_are_the_lowercase_ones() {
+    let mut config = Config::default();
+    config.mail.quit = Some("ask-no".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    // N stays, as n does, rather than calling the question off.
+    let ask = f.session.leave();
+    f.answer_key(ask, 'N');
+    assert!(f.session.take_request().is_none(), "N stayed");
+    // Y quits, as y does.
+    let ask = f.session.leave();
+    f.answer_key(ask, 'Y');
+    assert!(
+        matches!(f.session.take_request(), Some(crate::Request::Quit)),
+        "Y took the yes"
+    );
+}
+
+#[test]
 fn confirmappend_asks_before_adding_to_a_mailbox_that_exists() {
     let target = tempfile::tempdir().unwrap();
     for sub in ["cur", "new", "tmp"] {

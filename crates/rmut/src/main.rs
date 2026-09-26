@@ -231,6 +231,12 @@ fn run() -> Result<ExitCode> {
     let terminal = ratatui::init();
     app::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = app.run(terminal);
+    // After SIGHUP the terminal is gone: restoring it only fails (and
+    // eprintln panics on it), and nobody is there to read a note or
+    // whatever error the loop ended on.
+    if rmut_front::signals::hung_up() {
+        return Ok(ExitCode::SUCCESS);
+    }
     ratatui::restore();
     // Trouble with a message held by $undo_send and sent on the way
     // out: the status line is gone by now, so say it here.

@@ -157,6 +157,12 @@ impl Boot {
     }
 
     fn step(&mut self, ui: &mut egui::Ui, hosted: Option<&[egui::Event]>) -> bool {
+        // SIGTERM or SIGHUP (a logout) leaves the way q does, in any
+        // state, when the binary installed the handler.
+        if rmut_front::signals::caught() {
+            self.flush();
+            return true;
+        }
         // Whatever the opening thread reported since last frame.
         let mut done = None;
         if let Boot::Opening { rx, last, .. } = &mut *self {
@@ -277,6 +283,9 @@ impl Boot {
                             );
                         });
                     });
+                // Nothing else wakes this screen; a signal should.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(1));
                 close
             }
         }

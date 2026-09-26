@@ -1024,18 +1024,18 @@ impl Gui {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("part-{}", index + 1));
         let name = rmut_core::mailcap::apply_nametemplate(viewer.nametemplate.as_deref(), &name);
-        let dir = std::env::temp_dir().join(format!("rmut-egui-{}", std::process::id()));
-        let temp = dir.join(name);
-        if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&temp, &bytes))
-        {
-            self.error(format!("cannot write {}: {err}", temp.display()));
-            return;
-        }
+        let temp = match rmut_core::scratch::write_named("view", &name, &bytes) {
+            Ok(temp) => temp,
+            Err(err) => {
+                self.error(format!("cannot write the part: {err:#}"));
+                return;
+            }
+        };
         let quoted = format!("'{}'", temp.display().to_string().replace('\'', "'\\''"));
         let command = viewer.command.replace("%s", &quoted);
         if viewer.copious {
             let shown = run_file_filter(&command, &temp);
-            let _ = std::fs::remove_file(&temp);
+            rmut_core::scratch::discard(&temp);
             match shown {
                 Ok(text) => self.part_pager(mimetype, text),
                 Err(err) => self.error(format!("viewer failed: {err:#}")),
@@ -1197,7 +1197,7 @@ impl Gui {
             let Some(term) = self.terminal_program() else {
                 self.error("no terminal found (set [gui] terminal or $TERMINAL)");
                 if let Some(temp) = temp {
-                    let _ = std::fs::remove_file(temp);
+                    rmut_core::scratch::discard(&temp);
                 }
                 return;
             };
@@ -1218,7 +1218,7 @@ impl Gui {
             Err(err) => {
                 self.error(format!("cannot run viewer: {err}"));
                 if let Some(temp) = temp {
-                    let _ = std::fs::remove_file(temp);
+                    rmut_core::scratch::discard(&temp);
                 }
             }
         }
@@ -1233,7 +1233,7 @@ impl Gui {
                 Ok(None) => true,
                 done => {
                     if let Some(temp) = temp {
-                        let _ = std::fs::remove_file(temp);
+                        rmut_core::scratch::discard(temp);
                     }
                     if !matches!(done, Ok(Some(status)) if status.success()) {
                         failed += 1;
@@ -2271,6 +2271,14 @@ impl Gui {
                 let Some(Prompt::Key { kind, .. }) = self.prompt.take() else {
                     return;
                 };
+                // The window's own questions take Y, N and R as y, n
+                // and r (the session's fold its own).
+                let key = match key.code {
+                    KeyCode::Char(c) if !matches!(kind, KeyKind::Ask(_)) => {
+                        KeyEvent::new(KeyCode::Char(c.to_ascii_lowercase()), key.modifiers)
+                    }
+                    _ => key,
+                };
                 match kind {
                     KeyKind::Ask(what) => {
                         let answer = match key.code {
@@ -2770,13 +2778,16 @@ impl Gui {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = rmut_front::pager::pager_text_lines(
+        // The rows the pager shows, from its cache: n and N no longer
+        // lay the whole message out again.
+        let rows = pager.rows.rows(
             &pager.view,
             width,
             pager.full_headers,
             &PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
+        let lines: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
         match rmut_front::pager::search_lines(&lines, &matcher, pager.scroll, forward) {
             Some((hit, wrapped)) => {
                 // The hit becomes the top line even near the end,

@@ -615,7 +615,13 @@ impl App {
         if !self.session.config.ui.set_title.unwrap_or(false) {
             return;
         }
-        let title = rmut_front::status::index_title(&self.session, self.index_offset, rows);
+        // Controls out: the title goes to the terminal inside an escape
+        // sequence, and a folder name (a server's, on IMAP) could end
+        // it early and start one of its own.
+        let title: String = rmut_front::status::index_title(&self.session, self.index_offset, rows)
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
         if title == self.last_title {
             return;
         }
@@ -664,10 +670,32 @@ impl App {
     }
 
     pub fn run(&mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        rmut_front::signals::install();
+        // The way out runs however the loop ended: an error there (a
+        // terminal that went away) must not cost the held mail.
+        let result = self.run_loop(&mut terminal);
+        // Whatever is still inside its $undo_send window goes out now:
+        // quitting is not cancelling.
+        self.exit_notes.extend(self.session.flush_on_exit());
+        self.save_history();
+        // A terminal that hung up is not dropped: its Drop shows the
+        // cursor again and reports failing with eprintln, which panics
+        // on the dead terminal, and the panic hook writes to it too.
+        if rmut_front::signals::hung_up() {
+            std::mem::forget(terminal);
+        }
+        result
+    }
+
+    fn run_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let poll_every =
             Duration::from_secs(self.session.config.mail.poll_seconds.unwrap_or(5).max(1));
         let mut last_poll = Instant::now();
         while !self.quit {
+            // SIGTERM or SIGHUP: leave the way q does.
+            if rmut_front::signals::caught() {
+                break;
+            }
             if PROGRESS_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed)
                 || mem::take(&mut self.redraw)
             {
@@ -701,7 +729,7 @@ impl App {
                 None if holding => {
                     // Typed ahead, kept for the mailbox that is
                     // coming; Ctrl+G alone goes through, to give up.
-                    if event::poll(Duration::from_millis(30))?
+                    if poll_input(30)?
                         && let Event::Key(key) = event::read()?
                         && key.kind == KeyEventKind::Press
                     {
@@ -723,7 +751,7 @@ impl App {
                     } else {
                         1000
                     };
-                    if event::poll(Duration::from_millis(wait))?
+                    if poll_input(wait)?
                         && let Event::Key(key) = event::read()?
                         && key.kind == KeyEventKind::Press
                     {
@@ -746,25 +774,21 @@ impl App {
                 self.check_new_mail();
             }
             if let Some(compose) = self.pending_editor.take() {
-                self.edit_draft(&mut terminal, compose);
+                self.edit_draft(terminal, compose);
             }
             if let Some(path) = self.pending_raw_edit.take() {
-                self.edit_raw(&mut terminal, path);
+                self.edit_raw(terminal, path);
             }
             if let Some(path) = self.pending_file_edit.take() {
-                self.edit_file(&mut terminal, &path);
+                self.edit_file(terminal, &path);
             }
             if let Some(command) = self.pending_shell.take() {
-                self.run_shell(&mut terminal, &command);
+                self.run_shell(terminal, &command);
             }
             if mem::take(&mut self.pending_suspend) {
-                self.suspend(&mut terminal);
+                self.suspend(terminal);
             }
         }
-        // Whatever is still inside its $undo_send window goes out now:
-        // quitting is not cancelling.
-        self.exit_notes.extend(self.session.flush_on_exit());
-        self.save_history();
         Ok(())
     }
 
@@ -1000,6 +1024,14 @@ impl App {
     }
 
     fn run_key_prompt(&mut self, kind: KeyKind, code: KeyCode) {
+        // The front end's own questions take Y, N and R as y, n and r
+        // (the session's fold its own).
+        let code = match code {
+            KeyCode::Char(c) if !matches!(kind, KeyKind::Ask(_)) => {
+                KeyCode::Char(c.to_ascii_lowercase())
+            }
+            other => other,
+        };
         match kind {
             KeyKind::Ask(what) => {
                 let key = match code {
@@ -1706,13 +1738,16 @@ impl App {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = rmut_front::pager::pager_text_lines(
+        // The rows the pager shows, from its cache: n and N no longer
+        // lay the whole message out again.
+        let rows = pager.rows.rows(
             &pager.view,
             width,
             pager.full_headers,
             &rmut_front::pager::PagerStyle::of(&self.session.config, &self.session.quote_re),
             pager.hide_quoted,
         );
+        let lines: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
         let context = self.session.config.pager.search_context;
         match rmut_front::pager::search_lines(&lines, &matcher, pager.scroll, forward) {
             Some((hit, wrapped)) => {
@@ -1933,25 +1968,27 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("part-{}", index + 1));
         let name = rmut_core::mailcap::apply_nametemplate(viewer.nametemplate.as_deref(), &name);
-        let dir = std::env::temp_dir().join(format!("rmut-{}", std::process::id()));
-        let temp = dir.join(name);
-        if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&temp, &bytes))
-        {
-            self.error(format!("cannot write {}: {err}", temp.display()));
-            return;
-        }
+        let temp = match rmut_core::scratch::write_named("view", &name, &bytes) {
+            Ok(temp) => temp,
+            Err(err) => {
+                self.error(format!("cannot write the part: {err:#}"));
+                return;
+            }
+        };
         let quoted = format!("'{}'", temp.display().to_string().replace('\'', "'\\''"));
         let command = viewer.command.replace("%s", &quoted);
         if viewer.copious {
             let shown = run_file_filter(&command, &temp);
-            let _ = std::fs::remove_file(&temp);
+            rmut_core::scratch::discard(&temp);
             match shown {
                 Ok(text) => self.open_part_pager(mimetype, text),
                 Err(err) => self.error(format!("viewer failed: {err:#}")),
             }
         } else {
             // The viewer takes the terminal; the file goes with it.
-            self.pending_shell = Some(format!("{command}; rm -f {quoted}"));
+            let dir = temp.parent().unwrap_or(&temp).display().to_string();
+            let dir = format!("'{}'", dir.replace('\'', "'\\''"));
+            self.pending_shell = Some(format!("{command}; rm -f {quoted}; rmdir {dir}"));
         }
     }
 
@@ -3358,6 +3395,18 @@ enum View {
 
 /// The terminal's key as the front-end vocabulary has it: the
 /// codes rmut binds, the three modifiers it reads, nothing else.
+/// Whether a key is waiting, within `ms`. A signal (SIGTERM, SIGHUP)
+/// cuts the wait short; that is no key, and the loop looks why. (On
+/// SIGHUP the handler also swaps stdin for an empty pipe: crossterm
+/// 0.28 reads a hung-up terminal in a loop that never ends.)
+fn poll_input(ms: u64) -> std::io::Result<bool> {
+    let ready = match event::poll(Duration::from_millis(ms)) {
+        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => Ok(false),
+        other => other,
+    }?;
+    Ok(ready && !rmut_front::signals::caught())
+}
+
 fn front_key(key: ratatui::crossterm::event::KeyEvent) -> KeyEvent {
     use ratatui::crossterm::event::{KeyCode as C, KeyModifiers as M};
     let code = match key.code {

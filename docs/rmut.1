@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.13.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.14.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1073,7 +1073,9 @@ Seconds a sent message waits before anything leaves the machine, so
 can take it back; 0 (the default) sends at once, as mutt does. The
 status line counts down, and cancelling returns the message to its
 compose menu with the draft as it was. The timer running out sends
-it, and so does leaving rmut: quitting is not cancelling. Batch sends
+it, and so does leaving rmut: quitting is not cancelling, and neither
+is SIGTERM or the terminal closing (SIGHUP), which leave the way q
+does. Batch sends
 never hold, having no terminal to press
 .B z
 at. rmut's own; mutt has no equivalent.

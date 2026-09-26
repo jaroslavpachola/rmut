@@ -643,10 +643,15 @@ fn attach_menu_runs_a_windowed_viewer_outside_the_terminal() {
     // around it and no hold on the window's keys - a browser handed
     // a pdf may live as long as the browser does.
     let out = dir.path().join("seen");
+    let given = dir.path().join("given");
     let mailcap = dir.path().join("mailcap");
     fs::write(
         &mailcap,
-        format!("application/octet-stream; cp %s '{}'\n", out.display()),
+        format!(
+            "application/octet-stream; cp %s '{}' && echo %s > '{}'\n",
+            out.display(),
+            given.display()
+        ),
     )
     .unwrap();
     unsafe { std::env::set_var("MAILCAPS", &mailcap) };
@@ -664,9 +669,6 @@ fn attach_menu_runs_a_windowed_viewer_outside_the_terminal() {
     assert!(matches!(gui.mode, Mode::Attach { .. }));
     press(&mut gui, "k");
     press(&mut gui, "j");
-    let temp = std::env::temp_dir()
-        .join(format!("rmut-egui-{}", std::process::id()))
-        .join("blob.bin");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         gui.poll_viewers();
@@ -680,9 +682,12 @@ fn attach_menu_runs_a_windowed_viewer_outside_the_terminal() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert_eq!(fs::read_to_string(&out).unwrap(), "hello mailcap");
-    // Its temp file went with it, the way mutt unlinks after the
-    // viewer returns.
+    // The part had its own name in a private directory, and both went
+    // with the viewer, the way mutt unlinks after the viewer returns.
+    let temp = std::path::PathBuf::from(fs::read_to_string(&given).unwrap().trim());
+    assert_eq!(temp.file_name().unwrap(), "blob.bin");
     assert!(!temp.exists(), "{} outlives the viewer", temp.display());
+    assert!(!temp.parent().unwrap().exists(), "its directory too");
     assert!(
         gui.notice().is_none(),
         "{:?}",

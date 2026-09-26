@@ -373,15 +373,15 @@ pub use rmut_core::links::link_spans;
 /// The pager's text search: the next line matching `m` from `from`,
 /// wrapping around, and whether it wrapped. Both front ends step
 /// their pagers with this.
-pub fn search_lines(
-    lines: &[String],
+pub fn search_lines<S: AsRef<str>>(
+    lines: &[S],
     m: &rmut_core::pattern::Matcher,
     from: usize,
     forward: bool,
 ) -> Option<(usize, bool)> {
     rmut_session::wrap_order(lines.len(), from, forward)
         .into_iter()
-        .find(|&(idx, _)| m.is_match(&lines[idx]))
+        .find(|&(idx, _)| m.is_match(lines[idx].as_ref()))
 }
 
 #[cfg(test)]
@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(search_lines(&lines, &m, 1, false), Some((3, true)));
         // No match, and the empty pager.
         assert_eq!(search_lines(&lines, &Matcher::new("zzz"), 0, true), None);
-        assert_eq!(search_lines(&[], &m, 0, true), None);
+        assert_eq!(search_lines::<&str>(&[], &m, 0, true), None);
         // A regex argument works like the patterns do.
         let re = Matcher::new("^bet.");
         assert_eq!(search_lines(&lines, &re, 0, true), Some((2, false)));

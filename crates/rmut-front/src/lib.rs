@@ -8,6 +8,7 @@ pub mod index;
 pub mod key;
 pub mod keymap;
 pub mod pager;
+pub mod signals;
 pub mod status;
 pub mod style;
 pub mod theme;

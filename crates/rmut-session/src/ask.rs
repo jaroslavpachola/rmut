@@ -779,6 +779,15 @@ impl Session {
 
     /// Hand back an answer. The next question, when there is one.
     pub fn answer(&mut self, what: AskKind, answer: Answer<'_>) -> Option<Ask> {
+        // Y and N are y and n, as in mutt (its yes/no is the locale's
+        // ^[yY]), and Caps Lock does not call a question off. The
+        // sort question alone reads case: uppercase sorts reversed.
+        let answer = match answer {
+            Answer::Key(Key::Char(c)) if !matches!(what, AskKind::Sort) => {
+                Answer::Key(Key::Char(c.to_ascii_lowercase()))
+            }
+            other => other,
+        };
         match (what, answer) {
             (AskKind::Limit, Answer::Line(input)) => {
                 self.set_limit(input);

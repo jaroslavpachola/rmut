@@ -16,6 +16,28 @@ pub fn byte_at(buf: &str, cursor: usize) -> usize {
         .unwrap_or(buf.len())
 }
 
+/// A line prompt as it fits `width` columns: the label, then the text
+/// with the cursor marker (a low bar) in it. When that is wider than
+/// the line, the start is cut away behind a `<` so the cursor stays in
+/// view, with a few columns of what follows it.
+pub fn prompt_line(label: &str, edit: &LineEdit, width: usize) -> String {
+    use unicode_width::UnicodeWidthStr as _;
+    let i = byte_at(&edit.buf, edit.cursor);
+    let before = format!("{label}{}", &edit.buf[..i]);
+    let after = &edit.buf[i..];
+    let room = width.max(8).saturating_sub(1 + after.width().min(4));
+    if before.width() <= room {
+        return format!("{before}\u{2581}{after}");
+    }
+    let mut cut = before.as_str();
+    while 1 + cut.width() > room {
+        let mut chars = cut.chars();
+        chars.next();
+        cut = chars.as_str();
+    }
+    format!("<{cut}\u{2581}{after}")
+}
+
 /// Where the word before `cursor` starts (whitespace skipped first).
 fn word_start(buf: &str, cursor: usize) -> usize {
     let chars: Vec<char> = buf.chars().collect();
@@ -347,6 +369,20 @@ mod tests {
 
     fn ctrl(edit: &mut LineEdit, c: char) -> Edit {
         edit.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    #[test]
+    fn a_long_prompt_scrolls_to_keep_the_cursor_in_view() {
+        let mut e = LineEdit::new("short".into());
+        assert_eq!(prompt_line("To: ", &e, 40), "To: short\u{2581}");
+        e.set(&"x".repeat(50));
+        let line = prompt_line("To: ", &e, 20);
+        assert!(line.starts_with('<'), "{line}");
+        assert!(line.ends_with('\u{2581}'), "the cursor is in view: {line}");
+        assert_eq!(line.chars().count(), 20);
+        // The cursor at the start: nothing to cut, the tail runs off.
+        e.cursor = 0;
+        assert!(prompt_line("To: ", &e, 20).starts_with("To: \u{2581}xxx"));
     }
 
     #[test]

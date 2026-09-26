@@ -48,6 +48,60 @@ pub fn write(what: &str, suffix: &str, bytes: &[u8]) -> Result<PathBuf> {
     )
 }
 
+/// `bytes` in a file called `name` (a part's own name, which tells a
+/// viewer its type) inside a fresh directory of ours: the directory is
+/// created new (never one someone put there first) with mode 0700,
+/// the file inside with 0600. [`discard`] takes both away again.
+pub fn write_named(what: &str, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    // Only the last component: a name from a message must not climb.
+    let name = Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "part".to_string());
+    for _ in 0..100 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "rmut-{what}-{}-{}-{nanos:08x}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+        ));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
+        }
+        let path = dir.join(&name);
+        let written = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut file| file.write_all(bytes));
+        if let Err(e) = written {
+            discard(&path);
+            return Err(e).with_context(|| format!("writing {}", path.display()));
+        }
+        return Ok(path);
+    }
+    bail!(
+        "no free temporary directory name in {}",
+        std::env::temp_dir().display()
+    )
+}
+
+/// Remove a file [`write_named`] made, and its directory with it.
+pub fn discard(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
 /// Replace `path` with `bytes` whole, readable by us alone: written
 /// beside it (mode 0600, synced) and renamed over it, so a crash
 /// leaves the old file or the new one. For what rmut keeps of the
@@ -113,6 +167,30 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         let left: Vec<_> = std::fs::read_dir(dir.path().join("sub")).unwrap().collect();
         assert_eq!(left.len(), 1, "no temporary left behind");
+    }
+
+    #[test]
+    fn named_parts_get_a_private_directory_of_their_own() {
+        let a = write_named("view", "report.pdf", b"%PDF").unwrap();
+        let b = write_named("view", "../../etc/report.pdf", b"%PDF").unwrap();
+        assert_eq!(a.file_name().unwrap(), "report.pdf");
+        assert_eq!(
+            b.file_name().unwrap(),
+            "report.pdf",
+            "only the last component"
+        );
+        assert_ne!(a.parent(), b.parent());
+        let dir_mode = std::fs::metadata(a.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
+        let mode = std::fs::metadata(&a).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let dir = a.parent().unwrap().to_path_buf();
+        discard(&a);
+        discard(&b);
+        assert!(!dir.exists());
     }
 
     #[test]

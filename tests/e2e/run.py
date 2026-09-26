@@ -12,6 +12,7 @@ import os
 import pty
 import re
 import select
+import signal
 import shutil
 import socket
 import struct
@@ -5151,6 +5152,67 @@ def scenario_prompt_keys(tmp):
     r.close()
 
 
+def scenario_signals_leave_cleanly(tmp):
+    """R96: SIGTERM, and SIGHUP from the terminal going away, leave
+    the way q does: a message held by undo_send still goes out, where
+    the default action dropped it with the process."""
+    md = make_maildir(tmp, "md-signals")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-signals.eml")
+    sendmail = os.path.join(tmp, "sendmail-signals.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    editor = os.path.join(tmp, "signals-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "held when the signal came\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "signals-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "alex@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\n'
+                'undo_send = 30\ncopy = false\n')
+
+    def held(subject):
+        r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+        r.expect("Msgs:1")
+        r.keys(b"m")
+        r.expect("To:")
+        r.keys(b"bob@example.org\r")
+        r.settle()
+        r.keys(subject.encode() + b"\r")
+        r.expect("y:Send")
+        r.keys(b"y")
+        r.expect("(z cancels)")
+        return r
+
+    status = {}
+
+    def exited(r):
+        pid, st = os.waitpid(r.pid, os.WNOHANG)
+        if pid == r.pid:
+            status["last"] = st
+        return pid == r.pid
+
+    r = held("held at SIGTERM")
+    os.kill(r.pid, signal.SIGTERM)
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: held at SIGTERM" in open(sent_file).read(),
+             desc="the held message sent on SIGTERM")
+    wait_for(lambda: exited(r), desc="rmut gone after SIGTERM")
+    assert os.WIFEXITED(status["last"]) and os.WEXITSTATUS(status["last"]) == 0, status
+    os.close(r.fd)
+
+    # The terminal closing: the pty's hangup reaches rmut.
+    r = held("held at SIGHUP")
+    os.close(r.fd)
+    wait_for(lambda: "Subject: held at SIGHUP" in open(sent_file).read(),
+             desc="the held message sent on SIGHUP")
+    wait_for(lambda: exited(r), desc="rmut gone after SIGHUP")
+    # A clean exit, not an abort from writing to the dead terminal.
+    assert os.WIFEXITED(status["last"]) and os.WEXITSTATUS(status["last"]) == 0, status
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -5237,6 +5299,7 @@ SCENARIOS = [
     scenario_sync_while_busy,
     scenario_postpone_from_mirror,
     scenario_prompt_keys,
+    scenario_signals_leave_cleanly,
 ]
 
 
