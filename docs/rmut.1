@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.11.1" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.12.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -914,6 +914,13 @@ the open IMAP account, or the filesystem for a local maildir.
 .TP
 .B sent, postponed
 Mailboxes receiving sent copies and postponed drafts.
+Without
+.BR postponed ,
+a draft goes to a Drafts maildir near a local mailbox (or
+.I .rmut\-postponed
+inside it), and from an IMAP, mbox or notmuch mailbox to
+.IR ~/.local/share/rmut/postponed ,
+since those are mirrors in the cache.
 .TP
 .B sendmail
 The delivery command (default
@@ -1724,6 +1731,13 @@ overrides the search path; /etc/mailcap and the rest follow).
 .I ~/.cache/rmut/
 IMAP caches, mbox mirrors and the header cache
 .RB ( $XDG_CACHE_HOME
+overrides the parent).
+.TP
+.I ~/.local/share/rmut/postponed/
+Drafts postponed from an IMAP, mbox or notmuch mailbox when
+.B [mail] postponed
+names nothing
+.RB ( $XDG_DATA_HOME
 overrides the parent).
 .SH ENVIRONMENT
 .TP

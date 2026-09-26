@@ -200,6 +200,8 @@ def base_env(tmp, extra=None):
         # Keep header/mirror caches inside the sandbox, away from the
         # user's real ~/.cache.
         "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+        # And drafts postponed from a mirror away from ~/.local/share.
+        "XDG_DATA_HOME": os.path.join(tmp, "data"),
     }
     env.update(extra or {})
     return env
@@ -615,6 +617,8 @@ class FakeImap(threading.Thread):
         self.body_delay = 0  # seconds a full-body fetch dawdles
         self.select_delay = 0  # seconds a SELECT dawdles
         self.list_delay = 0  # seconds a LIST dawdles
+        self.store_delay = 0  # seconds a UID STORE dawdles
+        self.noop_delay = 0  # seconds a NOOP (the new-mail check) dawdles
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -744,6 +748,7 @@ class FakeImap(threading.Thread):
                                 + b")\r\n"
                             )
                 elif up.startswith("UID STORE"):
+                    time.sleep(self.store_delay)
                     m = re.match(r"UID STORE ([\d,]+) (\+?)FLAGS\.SILENT \((.*)\)", cmd, re.I)
                     flags = set(m.group(3).split())
                     for uid in (int(u) for u in m.group(1).split(",")):
@@ -756,6 +761,7 @@ class FakeImap(threading.Thread):
                     for uid in [u for u, v in self.msgs.items() if "\\Deleted" in v[0]]:
                         del self.msgs[uid]
                 elif up.startswith("NOOP"):
+                    time.sleep(self.noop_delay)
                     if self.announce:
                         self.announce = False
                         conn.sendall(f"* {len(self.msgs)} EXISTS\r\n".encode())
@@ -1979,7 +1985,7 @@ def scenario_message_commands(tmp):
     sent = open(sent_file).read()
     assert "Resent-From: alex@example.com" in sent
     assert "Subject: Lunch on Friday?" in sent  # original kept as-is
-    assert "-oi petr@example.com" in open(args_file).read()
+    assert "-oi -- petr@example.com" in open(args_file).read()
     # e resends: the message becomes a fresh draft through the editor
     # (the same editor script attaches the blob again, hence 2 mixed)
     r.keys(b"\x1bey")  # resend is Alt+e now; e edits the raw message
@@ -4986,6 +4992,127 @@ def scenario_label_after_reopen(tmp):
     r.close()
 
 
+def scenario_sync_while_busy(tmp):
+    """R94: the IMAP sync against keys that keep working. A flag
+    changed while a sync is out still reaches the server; c with
+    changes pending opens its prompt at once; q behind a new-mail
+    check still sends its sync before rmut exits."""
+    imap = FakeImap()
+    for uid, flags, subj in [(1, {"\\Seen"}, "busy one"), (2, set(), "busy two"),
+                             (3, {"\\Seen"}, "busy three")]:
+        imap.add(uid, flags, IMAP_MSG.format(
+            sender=f"{uid}@remote.example", subject=subj,
+            date=f"Mon, {5 + uid} Jul 2026 10:00:00 +0200", mid=f"b{uid}",
+            body=f"body {uid}"))
+    imap.start()
+    cfg = os.path.join(tmp, "busy-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f"""
+[[accounts]]
+name = "test"
+user = "jane"
+auth = "xoauth2"
+token_command = "echo test-token"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+    env = base_env(tmp, {"RMUT_CONFIG": cfg,
+                         "XDG_CACHE_HOME": os.path.join(tmp, "cache")})
+
+    def stores():
+        return [c.split(" ", 1)[1] for c in imap.commands if "UID STORE" in c]
+
+    r = Rmut("imap:test", env)
+    r.expect("Msgs:3", "busy three")
+    # A flag toggled while the sync is out is not written off with it.
+    imap.store_delay = 1.5
+    r.keys(b"=N$")
+    wait_for(lambda: len(stores()) == 1, desc="the first sync's STORE")
+    r.keys(b"jN")
+    r.expect("synced", timeout=8)
+    imap.store_delay = 0
+    r.keys(b"$")
+    wait_for(lambda: len(stores()) == 2, desc="the late change, synced")
+    changed = [uid for uid, (flags, _) in imap.msgs.items()
+               if flags != ({"\\Seen"} if uid != 2 else set())]
+    assert len(changed) == 2, (stores(), imap.msgs)
+
+    # c with a change pending: the prompt comes at once, not on the
+    # second try once the sync is back.
+    imap.store_delay = 1
+    r.keys(b"N")
+    r.keys(b"c")
+    r.expect("Open mailbox")
+    wait_for(lambda: len(stores()) == 3, desc="the sync c asked for")
+    imap.store_delay = 0
+    r.settle(1.5)
+    r.keys(b"\x1b")  # Esc: off the prompt
+    r.settle()
+
+    # q while a new-mail check is out: the sync queued behind it goes
+    # before the exit.
+    imap.noop_delay = 2
+    r.keys(b"N")
+    r.keys(b"G")
+    wait_for(lambda: any("NOOP" in c for c in imap.commands), desc="the check")
+    r.keys(b"q")
+    wait_for(lambda: len(stores()) == 4, timeout=10, desc="the sync q asked for")
+    r.close()
+
+
+def scenario_postpone_from_mirror(tmp):
+    """R94: a draft postponed from an IMAP folder goes to rmut's data
+    dir, not into the folder's cache mirror, and one an older rmut
+    left in the mirror comes along."""
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="mirror one",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="m1", body="body one"))
+    imap.start()
+    editor = os.path.join(tmp, "mirror-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "for later\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "mirror-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f"""
+[mail]
+editor = "{editor}"
+[[accounts]]
+name = "test"
+user = "jane"
+auth = "xoauth2"
+token_command = "echo test-token"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+    env = base_env(tmp, {"RMUT_CONFIG": cfg})
+    legacy = os.path.join(env["XDG_CACHE_HOME"], "rmut", "imap", "test", "INBOX",
+                          ".rmut-postponed")
+    for sub in ("cur", "new", "tmp"):
+        os.makedirs(os.path.join(legacy, sub))
+    with open(os.path.join(legacy, "cur", "1.old:2,DS"), "w") as f:
+        f.write("To: bob@example.org\nSubject: old draft\n\nfrom before\n")
+    kept = os.path.join(env["XDG_DATA_HOME"], "rmut", "postponed", "cur")
+    r = Rmut("imap:test", env)
+    r.expect("Msgs:1", "mirror one")
+    r.keys(b"m")
+    r.expect("(r)ecall postponed")  # the old draft, found and moved
+    assert os.listdir(kept) == ["1.old:2,DS"], os.listdir(kept)
+    assert os.listdir(os.path.join(legacy, "cur")) == []
+    r.keys(b"n")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rnew draft\r")
+    r.expect("y:Send")
+    r.keys(b"P")
+    r.expect("postponed")
+    wait_for(lambda: len(os.listdir(kept)) == 2, desc="the new draft kept")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -5069,6 +5196,8 @@ SCENARIOS = [
     scenario_markdown,
     scenario_private_files,
     scenario_label_after_reopen,
+    scenario_sync_while_busy,
+    scenario_postpone_from_mirror,
 ]
 
 

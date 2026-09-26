@@ -2304,6 +2304,46 @@ per connection and the DefaultHasher mbox ids stay as they are.
 - [x] Core tests for each, e2e scenario_private_files (the draft's
       mode as the editor sees it, the RFC 2231 names on the wire)
 
+## R94: the rmut-session review (done, 2.12.0; asked for by name, 2026-09-26)
+
+Goal: act on an outside review of rmut-session, each finding checked
+against the code and the IMAP ones reproduced on the fake server
+first. Not taken: cutting the socket in `Imap::drop` (the job it
+would abort is the sync `q` just sent), and two small ones left as
+they are (the sort's lowercase copies, a byte budget for the undo
+stack's rewritten messages).
+
+- [x] The IMAP sync applies what it sent and no more. The keys keep
+      working while it is out (R55), and a flag changed or a message
+      marked deleted meanwhile was written off with it and never
+      reached the server; now the job's flags and expunges ride with
+      it (`Sent`), and anything else stays pending for the next sync
+- [x] `c` (and the browser, the sidebar, notmuch) with changes
+      pending on IMAP: the first press did nothing, silently, since
+      the sync had only been sent. Now leaving goes ahead once the
+      sync is queued: a switch on the same connection lands after it,
+      a mailbox opened any other way waits for it before taking over,
+      and a failed sync keeps the mailbox open with its error
+- [x] Leaving for good: `flush_on_exit` (was `flush_outbox`) winds the
+      connection down after the held mail goes. A sync `q` asked for
+      behind a new-mail check, and the copies kept in the background,
+      sat in the session's queue and went with it; now they go out
+      and are waited for, both fronts
+- [x] Messages rewritten in place (a label, the threading headers, an
+      edit, their undo) go through `maildir::replace_content`: tmp/
+      then a rename, so a crash leaves the old message or the new
+      one; a plain write truncated first. The notmuch view's links
+      are followed to the message
+- [x] sendmail gets `--` before the recipients, as mutt passes it
+- [x] A draft postponed from an IMAP, mbox or notmuch mailbox with no
+      `[mail] postponed` went into that mirror in the cache (or the
+      Drafts mirror beside an IMAP folder, which never reaches the
+      server). It goes to `~/.local/share/rmut/postponed` now, and
+      drafts an older rmut left in a mirror move there on first look
+- [x] e2e scenario_sync_while_busy (the fake server's STORE and NOOP
+      can dawdle now), scenario_postpone_from_mirror; the e2e
+      sandbox gets its own XDG_DATA_HOME
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2674,6 +2714,18 @@ a thread broken or linked, an edit) keeps its name and that size, so
 after a reopen the index showed the envelope from before the change,
 the label gone. The key is the length on disk again. Found checking
 the rmut-session review; e2e scenario_label_after_reopen.
+
+## 2.12.0 (released 2026-09-26)
+
+R94, the rmut-session review. On IMAP: a flag changed while a sync
+was out reaches the server on the next one instead of being written
+off; `c` with changes pending opens its prompt on the first press;
+and quitting while a new-mail check is out still sends the sync `q`
+asked for, and the background Fcc copies. A message rewritten in
+place (a label, a thread operation, an edit) is replaced whole, never
+left cut off by a crash. Drafts postponed from an IMAP, mbox or
+notmuch mailbox go to `~/.local/share/rmut/postponed` rather than the
+cache, and sendmail is told where the options end.
 
 ## Still open inside rounds marked done
 

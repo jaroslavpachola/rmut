@@ -298,8 +298,10 @@ account's `identity` and any matching `[[identities]]` rules, with
 `reverse_name` picking the address a replied-to message came to), or
 falls back to `$EMAIL` / `user@hostname`; the draft's own From line
 always wins, and rmut prefills it whenever an identity applies. In
-the compose menu, `P` postpones the draft into a nearby Drafts maildir
-(or `.rmut-postponed`); the next `m` offers to recall it. Sent mail is
+the compose menu, `P` postpones the draft into `[mail] postponed`, a
+nearby Drafts maildir or `.rmut-postponed`, or, from an IMAP, mbox or
+notmuch mailbox (mirrors in the cache), `~/.local/share/rmut/postponed`;
+the next `m` offers to recall it. Sent mail is
 copied to a nearby Sent maildir when one exists (local mailboxes).
 Aliases are read from `[mail] alias_file` (mutt's own setting),
 `$RMUT_ALIASES`, or `~/.config/rmut/aliases`, one mutt-style

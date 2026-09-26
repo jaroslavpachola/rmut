@@ -287,8 +287,8 @@ enum Pending {
     /// The poll tick's look at the server.
     CheckNew,
     /// A `$` sync: the server has taken the flag changes and the
-    /// purge, and the local half follows.
-    Sync { purge: bool },
+    /// purge, and the local half follows, for what was sent alone.
+    Sync { purge: bool, sent: Sent },
     /// The bodies an operation needed are here: run it again, and
     /// this time it finds everything it wants on disk.
     Again(Again),
@@ -303,6 +303,15 @@ impl Pending {
     fn holds(&self) -> bool {
         matches!(self, Pending::Then { hold: true, .. })
     }
+}
+
+/// What a sync handed the server: the flags each message went with,
+/// and the messages it expunged. A change made while the sync was out
+/// is not among them, and stays pending for the next one.
+#[derive(Default)]
+struct Sent {
+    flags: HashMap<PathBuf, maildir::Flags>,
+    deletes: std::collections::HashSet<PathBuf>,
 }
 
 /// What a job's answer is handed to, for an operation that is one of
@@ -959,6 +968,14 @@ impl Session {
     /// the notice sink, `-R`, and the mail still inside its
     /// $undo_send window, which leaving a mailbox must not cancel.
     fn become_(&mut self, mut next: Session, warnings: Vec<String>, read_only: bool) {
+        // The sync leaving asked for goes first; if the server refused
+        // it, the flag changes are still here and so is the user.
+        if self.sync_queued() {
+            self.wind_down();
+            if self.pending_count() > 0 {
+                return; // the sync's own error is on the message line
+            }
+        }
         // A -R session stays read-only whatever it opens; Alt+c sets
         // read_only for one mailbox and does not survive the switch.
         next.read_only_session = self.read_only_session;
@@ -1542,10 +1559,15 @@ impl Session {
                 }
                 self.check_local_mail();
             }
-            Pending::Sync { purge } => match done {
-                // Nothing applied locally: everything stays pending.
-                Err(err) => self.error(format!("sync failed: {err:#}")),
-                Ok(_) => self.finish_sync(purge),
+            Pending::Sync { purge, sent } => match done {
+                // Nothing applied locally: everything stays pending,
+                // and a switch queued behind it is off: leaving would
+                // drop the changes the server never took.
+                Err(err) => {
+                    self.error(format!("sync failed: {err:#}"));
+                    self.deferred.retain(|d| !d.holds());
+                }
+                Ok(_) => self.finish_sync(purge, Some(&sent)),
             },
             Pending::Counts(specs) => {
                 if let Ok(Done::Counts(counts)) = done {
@@ -1811,12 +1833,10 @@ impl Session {
         let mut resort = false;
         for (path, bytes) in &step.rewritten {
             let at = self.msgs.iter().position(|m| &m.env.file.path == path);
-            let put_back = std::fs::write(path, bytes)
-                .map_err(|err| anyhow::anyhow!(err))
-                .and_then(|()| match at {
-                    Some(i) => self.reread(i, bytes.len() as u64),
-                    None => Ok(()),
-                });
+            let put_back = maildir::replace_content(path, bytes).and_then(|()| match at {
+                Some(i) => self.reread(i, bytes.len() as u64),
+                None => Ok(()),
+            });
             match put_back {
                 Ok(()) => resort = true,
                 Err(err) => rewrite_failed.push(format!("{}: {err}", path.display())),
@@ -2278,7 +2298,7 @@ impl Session {
         let path = self.msgs[i].env.file.path.clone();
         let old = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let new = message::with_thread_headers(&old, in_reply_to, references, broken);
-        std::fs::write(&path, &new).with_context(|| format!("writing {}", path.display()))?;
+        maildir::replace_content(&path, &new)?;
         self.reread(i, new.len() as u64)?;
         Ok(old)
     }
@@ -2417,8 +2437,8 @@ impl Session {
                 }
             };
             let bytes = message::with_header(&old, "X-Label", new.as_deref());
-            if let Err(err) = std::fs::write(&path, &bytes) {
-                self.error(format!("edit label: {err}"));
+            if let Err(err) = maildir::replace_content(&path, &bytes) {
+                self.error(format!("edit label: {err:#}"));
                 continue;
             }
             step.rewritten.push((path, old));
@@ -2708,16 +2728,25 @@ impl Session {
             // The server takes it on its own thread; the local half
             // waits for the answer, since nothing may be applied here
             // until the server has it.
-            if self.start(Job::Sync { flags, deletes }, Pending::Sync { purge }) {
+            let sent = Sent {
+                flags: flags.iter().cloned().collect(),
+                deletes: deletes.iter().cloned().collect(),
+            };
+            if self.start(Job::Sync { flags, deletes }, Pending::Sync { purge, sent }) {
                 return;
             }
         }
-        self.finish_sync(purge);
+        self.finish_sync(purge, None);
     }
 
     /// The half of a sync that needs no server: the mbox write-back,
     /// the maildir renames and removals, and what to say about it.
-    fn finish_sync(&mut self, purge: bool) {
+    ///
+    /// `sent`: an IMAP sync applies what the server was sent and no
+    /// more. The keys kept working while it was out, and a message
+    /// marked or changed meanwhile must stay pending, or the server
+    /// never hears of it.
+    fn finish_sync(&mut self, purge: bool, sent: Option<&Sent>) {
         if let Some(mbox) = &mut self.mbox {
             // The wanted end state per message id; untouched messages
             // keep whatever the file already says.
@@ -2748,6 +2777,28 @@ impl Session {
         // real maildir: the server purges IMAP, the mirror mbox.
         let trash = self.config.mail.maildir_trash && self.imap.is_none() && self.mbox.is_none();
         self.msgs.retain_mut(|m| {
+            let path = &m.env.file.path;
+            if let Some(sent) = sent {
+                if sent.deletes.contains(path) {
+                    // Expunged on the server, even if undeleted since.
+                    match maildir::remove(&m.env.file) {
+                        Ok(()) => {
+                            removed += 1;
+                            return false;
+                        }
+                        Err(err) => {
+                            errors.push(err.to_string());
+                            return true;
+                        }
+                    }
+                }
+                if m.env.file.flags.deleted {
+                    return true; // marked meanwhile: the next purge
+                }
+                if m.dirty && sent.flags.get(path) != Some(&m.env.file.flags) {
+                    return true; // changed meanwhile: the next sync
+                }
+            }
             if m.env.file.flags.deleted {
                 if !purge {
                     return true; // stays marked for a later purge
@@ -3095,8 +3146,8 @@ impl Session {
                 );
             }
             None => {
-                if let Err(err) = std::fs::write(path, edited) {
-                    self.error(format!("cannot write message: {err}"));
+                if let Err(err) = maildir::replace_content(path, edited) {
+                    self.error(format!("cannot write message: {err:#}"));
                     return;
                 }
                 self.rescan();
@@ -3179,11 +3230,28 @@ impl Session {
         }
         if self.pending_count() > 0 {
             self.sync(false);
+            // On IMAP the sync is on its way, and the screen does not
+            // wait for it: a switch on this connection queues behind
+            // it, and a mailbox opened any other way waits for it
+            // before taking over (become_). Either way, a failed sync
+            // keeps this mailbox open.
+            if self.sync_queued() {
+                return true;
+            }
             if self.pending_count() > 0 {
                 return false; // sync failed; its status says why
             }
         }
         true
+    }
+
+    /// Whether a sync is out or waiting its turn on the connection.
+    fn sync_queued(&self) -> bool {
+        matches!(self.pending, Some(Pending::Sync { .. }))
+            || self
+                .deferred
+                .iter()
+                .any(|d| matches!(d, Deferred::Job(_, Pending::Sync { .. })))
     }
 
     /// Which account to submit outgoing mail through. Explicit sendmail
@@ -4062,24 +4130,59 @@ impl Session {
         }
     }
 
-    /// Send everything still waiting, on the way out: the messages
-    /// were confirmed, only `z` takes one back.
-    /// Send everything still waiting, on the way out: the messages
-    /// were confirmed, only `z` takes one back. Trouble comes back as
-    /// lines for the front end to print once the terminal is its own
-    /// again, since nobody would see a message line by then.
-    pub fn flush_outbox(&mut self) -> Vec<String> {
+    /// Everything still owed on the way out. The messages held for
+    /// $undo_send go (they were confirmed; only `z` takes one back),
+    /// then whatever the server has yet to hear: see
+    /// [`Session::wind_down`]. Trouble comes back as lines for the
+    /// front end to print once the terminal is its own again, since
+    /// nobody would see a message line by then.
+    pub fn flush_on_exit(&mut self) -> Vec<String> {
         let mut trouble = Vec::new();
         while !self.outbox.is_empty() {
             let held = self.outbox.remove(0);
             let label = held.label.clone();
             self.deliver(held);
-            if let Some(err) = self.notice().filter(|n| n.is_error()).map(|n| n.text()) {
+            if let Some(err) = self.take_error() {
                 trouble.push(format!("{label}: {err}"));
-                self.clear_notice();
             }
         }
+        self.wind_down();
+        if let Some(err) = self.take_error() {
+            trouble.push(err);
+        }
         trouble
+    }
+
+    /// The error on the message line, taken off it.
+    fn take_error(&mut self) -> Option<String> {
+        let err = self.notice().filter(|n| n.is_error()).map(|n| n.text())?;
+        self.clear_notice();
+        Some(err)
+    }
+
+    /// Before this session goes, on quit or with another mailbox
+    /// taking its place: what is in flight is waited for, and the jobs
+    /// queued behind it go out too (a sync `q` asked for behind a
+    /// new-mail check, the copies kept in the background), which were
+    /// dropped with the session. A read, a switch or a poll queued for
+    /// a screen that is going away is not. The screen waits; the
+    /// session is leaving anyway, and each wait has the network
+    /// timeout.
+    pub fn wind_down(&mut self) {
+        loop {
+            self.settle();
+            let Some(next) = self.deferred.pop_front() else {
+                break;
+            };
+            if let Deferred::Job(job, pending) = next
+                && matches!(
+                    pending,
+                    Pending::Sync { .. } | Pending::Then { hold: false, .. }
+                )
+            {
+                self.start(job, pending);
+            }
+        }
     }
 
     /// Hold a sent message for its $undo_send window. It goes out on
@@ -4329,15 +4432,38 @@ impl Session {
     }
 
     pub fn postponed_dir(&self) -> Option<PathBuf> {
-        self.config
+        if let Some(dir) = self
+            .config
             .mail
             .postponed
             .as_deref()
             .map(expand_tilde)
             .filter(|p| p.join("cur").is_dir())
-            .or_else(|| {
-                maildir::find_special(&self.dir, &["drafts", "postponed", "rmut-postponed"])
-            })
+        {
+            return Some(dir);
+        }
+        if !self.in_cache() {
+            return maildir::find_special(&self.dir, &["drafts", "postponed", "rmut-postponed"]);
+        }
+        // An IMAP, mbox or notmuch mirror is a cache: nothing in or
+        // beside it is safe (a clear takes it, and the Drafts beside
+        // an IMAP folder is a mirror the server never hears from).
+        // Drafts older rmut put in one come along on first look.
+        let dir = postponed_fallback();
+        let legacy = self.dir.join(".rmut-postponed");
+        if legacy.join("cur").is_dir() && maildir::create(&dir).is_ok() {
+            for file in maildir::scan(&legacy).unwrap_or_default() {
+                if let Some(name) = file.path.file_name() {
+                    let _ = std::fs::rename(&file.path, dir.join("cur").join(name));
+                }
+            }
+        }
+        Some(dir).filter(|d| d.join("cur").is_dir())
+    }
+
+    /// Whether this mailbox is one of rmut's mirrors under the cache.
+    fn in_cache(&self) -> bool {
+        self.dir.starts_with(remote::cache_base())
     }
 
     pub fn has_postponed(&self) -> bool {
@@ -4352,7 +4478,10 @@ impl Session {
         let target = match self.postponed_dir() {
             Some(d) => Ok(d),
             None => {
-                let d = self.dir.join(".rmut-postponed");
+                let d = match self.in_cache() {
+                    true => postponed_fallback(),
+                    false => self.dir.join(".rmut-postponed"),
+                };
                 maildir::create(&d).map(|()| d)
             }
         };
@@ -5370,7 +5499,9 @@ pub fn run_sendmail(
     }
     match rcpts {
         Some(rcpts) => {
-            args.push("-oi".into());
+            // "--" as mutt passes it: an address that starts with a
+            // dash is still an address, not an option.
+            args.extend(["-oi".into(), "--".into()]);
             args.extend(rcpts.iter().cloned());
         }
         None => args.extend(["-t".into(), "-oi".into()]),
@@ -5549,6 +5680,13 @@ pub fn draft_full(c: &Compose) -> std::io::Result<String> {
         Some(head) => format!("{}\n\n{}", head.trim_end(), text),
         None => text,
     })
+}
+
+/// Where drafts are postponed when `[mail] postponed` names nothing
+/// and the open mailbox is a cache mirror: rmut's data dir, which a
+/// cache clear leaves alone and every folder of every account shares.
+fn postponed_fallback() -> PathBuf {
+    remote::data_base().join("postponed")
 }
 
 /// mutt's $quote_regexp default.

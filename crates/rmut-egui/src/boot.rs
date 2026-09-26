@@ -150,7 +150,7 @@ impl Boot {
     /// closing, so trouble lands on stderr, as the TUI's exit does.
     pub fn flush(&mut self) {
         if let Boot::Ready(gui) = self {
-            for note in gui.session.flush_outbox() {
+            for note in gui.session.flush_on_exit() {
                 eprintln!("rmut-egui: {note}");
             }
         }

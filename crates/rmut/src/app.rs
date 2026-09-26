@@ -760,7 +760,7 @@ impl App {
         }
         // Whatever is still inside its $undo_send window goes out now:
         // quitting is not cancelling.
-        self.exit_notes.extend(self.session.flush_outbox());
+        self.exit_notes.extend(self.session.flush_on_exit());
         self.save_history();
         Ok(())
     }

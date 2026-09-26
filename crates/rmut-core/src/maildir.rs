@@ -159,6 +159,49 @@ pub fn store_flags(file: &MailFile) -> Result<PathBuf> {
     Ok(target)
 }
 
+/// Give a message new content under the name it has. The bytes go
+/// to the maildir's tmp/ first and are renamed over the message, so a
+/// crash leaves the old message or the new one, never a cut-off one
+/// (a plain write truncates first). A symlink, as in the notmuch
+/// view, is followed to the message it stands for.
+pub fn replace_content(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let real = fs::canonicalize(path).with_context(|| format!("reading {}", path.display()))?;
+    let parent = real.parent().context("a message path has a parent")?;
+    // tmp/ beside cur/ and new/, on the same filesystem, as maildir
+    // has it; the message's own directory when there is none.
+    let dir = parent
+        .parent()
+        .map(|d| d.join("tmp"))
+        .filter(|t| t.is_dir())
+        .unwrap_or_else(|| parent.to_path_buf());
+    let tmp = dir.join(format!(
+        ".rmut-rewrite-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let perms = fs::metadata(&real)?.permissions();
+    let written = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.set_permissions(perms)?;
+        file.sync_all()?;
+        fs::rename(&tmp, &real)
+    })();
+    if let Err(err) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("rewriting {}", real.display()));
+    }
+    Ok(())
+}
+
 pub fn remove(file: &MailFile) -> Result<()> {
     fs::remove_file(&file.path).with_context(|| format!("removing {}", file.path.display()))
 }
@@ -295,6 +338,35 @@ mod tests {
         fs::write(tmp.path().join("cur/9.rmut,S=777:2,S"), "tiny").unwrap();
         let files = scan(tmp.path()).unwrap();
         assert_eq!(files[0].size, 777);
+    }
+
+    #[test]
+    fn replace_content_swaps_whole_files_and_follows_links() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        make_maildir(tmp.path());
+        let msg = tmp.path().join("cur/1.host:2,S");
+        fs::write(&msg, "Subject: old\n\nx\n").unwrap();
+        fs::set_permissions(&msg, fs::Permissions::from_mode(0o640)).unwrap();
+        replace_content(&msg, b"Subject: new\n\nx\n").unwrap();
+        assert_eq!(fs::read_to_string(&msg).unwrap(), "Subject: new\n\nx\n");
+        let mode = fs::metadata(&msg).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640, "the message keeps its mode");
+        assert_eq!(fs::read_dir(tmp.path().join("tmp")).unwrap().count(), 0);
+        // Through a link (the notmuch view): the message changes, the
+        // link stays a link.
+        let view = tempfile::tempdir().unwrap();
+        make_maildir(view.path());
+        let link = view.path().join("cur/0001.1.host:2,S");
+        std::os::unix::fs::symlink(&msg, &link).unwrap();
+        replace_content(&link, b"Subject: newer\n\nx\n").unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&msg).unwrap(), "Subject: newer\n\nx\n");
     }
 
     #[test]

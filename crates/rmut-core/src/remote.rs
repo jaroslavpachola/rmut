@@ -111,6 +111,22 @@ pub fn cache_base() -> PathBuf {
     base.join("rmut")
 }
 
+/// `$XDG_DATA_HOME/rmut` (or `~/.local/share/rmut`): what rmut keeps
+/// that is not a cache and must survive one being cleared.
+pub fn data_base() -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".local/share"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("rmut")
+}
+
 /// Where a folder's cache maildir lives:
 /// `$XDG_CACHE_HOME/rmut/imap/<account>/<mailbox>` (percent-encoded).
 pub fn cache_dir(account: &str, mailbox: &str) -> PathBuf {
