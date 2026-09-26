@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.10.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.11.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -146,6 +146,9 @@ kept in the cache during the rewrite) and refuses when the spool
 changed since the mirror \(em refresh with
 .B G
 and sync again.
+A backup left by a rewrite that never finished (a crash, a full disk)
+stops the next sync too, with the copy's path: check the mbox, restore
+the copy over it if messages are missing, then delete the copy.
 .TP
 .IB imap: ACCOUNT [/ FOLDER ]
 An IMAP folder of a configured

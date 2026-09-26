@@ -679,6 +679,37 @@ pub fn flow_plain(text: &str) -> String {
     )
 }
 
+/// The Content-Disposition filename parameter: a plain quoted string
+/// when the name is ASCII without `"` or `\`, else RFC 2231's
+/// `filename*=utf-8''<percent-encoded>`, which carries any name and
+/// which readers decode alike (quoted-pair escapes they often do not).
+/// Control characters (a newline in a file name) become spaces.
+fn filename_param(name: &str) -> String {
+    let name = one_line_value(name);
+    if name.is_ascii() && !name.contains(['"', '\\']) {
+        return format!("filename=\"{name}\"");
+    }
+    let mut out = String::from("filename*=utf-8''");
+    for b in name.bytes() {
+        // RFC 2231's attribute-char: what may stand unencoded.
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out += &format!("%{b:02X}");
+        }
+    }
+    out
+}
+
+/// A header value that stays one header: CR, LF and other controls
+/// become spaces.
+fn one_line_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// The MIME entity (Content-Type header + body, CRLF endings) for a
 /// draft body with attachments: multipart/mixed with the text first,
 /// files base64-encoded, and optionally the forwarded original as
@@ -704,7 +735,7 @@ pub fn mixed_entity(
             let mut p =
                 format!("Content-Type: message/rfc822\r\nContent-Disposition: {disposition}\r\n");
             if let Some(d) = &a.description {
-                p += &format!("Content-Description: {d}\r\n");
+                p += &format!("Content-Description: {}\r\n", one_line_value(d));
             }
             p += "\r\n";
             p += &String::from_utf8_lossy(&crate::pgp::crlf(&bytes));
@@ -712,11 +743,11 @@ pub fn mixed_entity(
             continue;
         }
         let mut p = format!(
-            "Content-Type: {mime}\r\nContent-Disposition: {disposition}; filename=\"{}\"\r\n",
-            a.send_name(),
+            "Content-Type: {mime}\r\nContent-Disposition: {disposition}; {}\r\n",
+            filename_param(a.send_name()),
         );
         if let Some(d) = &a.description {
-            p += &format!("Content-Description: {d}\r\n");
+            p += &format!("Content-Description: {}\r\n", one_line_value(d));
         }
         p += "Content-Transfer-Encoding: base64\r\n\r\n";
         p += &b64_wrapped(&bytes);
@@ -1692,5 +1723,35 @@ mod tests {
             "a message has no filename"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attachment_names_and_descriptions_stay_one_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.bin");
+        std::fs::write(&file, b"xyz").unwrap();
+        let named = |name: &str, desc: &str| {
+            let mut a = Attachment::of(file.clone());
+            a.name = Some(name.into());
+            a.description = Some(desc.into());
+            let entity = mixed_entity("hi", &[a], None, false, false).unwrap();
+            let raw = format!("MIME-Version: 1.0\r\n{entity}");
+            let mail = mailparse::parse_mail(raw.as_bytes()).unwrap();
+            let part = &mail.subparts[1];
+            let filename = part.get_content_disposition().params["filename"].clone();
+            let headers: Vec<String> = part.headers.iter().map(|h| h.get_key()).collect();
+            use mailparse::MailHeaderMap as _;
+            (
+                filename,
+                part.headers.get_first_value("Content-Description"),
+                headers,
+            )
+        };
+        let (name, desc, headers) = named("say \"hi\".txt", "ok\r\nContent-Type: text/html");
+        assert_eq!(name, "say \"hi\".txt");
+        assert_eq!(desc.as_deref(), Some("ok  Content-Type: text/html"));
+        assert_eq!(headers.iter().filter(|k| *k == "Content-Type").count(), 1);
+        let (name, _, _) = named("Příloha č. 1.pdf", "d");
+        assert_eq!(name, "Příloha č. 1.pdf");
     }
 }

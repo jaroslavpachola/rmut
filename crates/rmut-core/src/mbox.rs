@@ -294,6 +294,18 @@ impl Mbox {
     /// state. Runs under an exclusive flock and refuses when the file
     /// changed since the last mirror (refresh first, then sync again).
     pub fn write_back(&mut self, state: &HashMap<String, Option<(Flags, bool)>>) -> Result<()> {
+        // A backup still here means a rewrite never finished: the mbox
+        // may be cut short and that copy the only whole one, so it is
+        // not overwritten with whatever the file holds now.
+        let backup = self.cache.join(".backup");
+        ensure!(
+            !backup.exists(),
+            "an earlier sync of {} did not finish; the mbox as it was is saved in {}: \
+             check the mbox (restore that copy over it if messages are missing), \
+             then delete the copy to sync again",
+            self.path.display(),
+            backup.display()
+        );
         let mut file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -309,8 +321,13 @@ impl Mbox {
         file.read_to_end(&mut data)?;
         // The rewrite happens in place (no temp files in /var/mail):
         // keep a copy in the cache until it lands, in case of a crash.
-        let backup = self.cache.join(".backup");
-        fs::write(&backup, &data).with_context(|| format!("writing {}", backup.display()))?;
+        // Synced before the rewrite starts, or a power cut could take
+        // the copy along with the file.
+        let mut copy =
+            fs::File::create(&backup).with_context(|| format!("writing {}", backup.display()))?;
+        copy.write_all(&data)
+            .and_then(|()| copy.sync_all())
+            .with_context(|| format!("writing {}", backup.display()))?;
         let mut out = Vec::with_capacity(data.len());
         for raw in split(&data) {
             let (flags, old) = match state.get(&raw.id()) {
@@ -424,6 +441,26 @@ mod tests {
         assert_eq!(files.len(), 3);
         let kept = files.iter().find(|f| f.path == new_path).unwrap();
         assert!(kept.flags.flagged, "cache flag lost on re-mirror");
+    }
+
+    #[test]
+    fn write_back_keeps_the_copy_an_unfinished_sync_left() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spool = tmp.path().join("spool");
+        fs::write(&spool, TWO).unwrap();
+        let mut mbox = Mbox::open_at(&spool, tmp.path().join("cache")).unwrap();
+        // A crash mid-rewrite: the spool cut short, the copy whole.
+        let backup = mbox.cache.join(".backup");
+        fs::write(&backup, TWO).unwrap();
+        fs::write(&spool, &TWO[..TWO.len() / 2]).unwrap();
+        mbox.refresh().unwrap();
+        let err = mbox.write_back(&HashMap::new()).unwrap_err().to_string();
+        assert!(err.contains("did not finish"), "{err}");
+        assert!(err.contains(&backup.display().to_string()), "{err}");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), TWO);
+        // Once it is dealt with and removed, syncing works again.
+        fs::remove_file(&backup).unwrap();
+        mbox.write_back(&HashMap::new()).unwrap();
     }
 
     #[test]

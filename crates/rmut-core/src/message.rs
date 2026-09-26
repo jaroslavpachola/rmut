@@ -680,10 +680,7 @@ struct TempPart {
 
 impl TempPart {
     fn new(input: &[u8]) -> Result<TempPart> {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("rmut-part-{}-{n}", std::process::id()));
-        fs::write(&path, input).with_context(|| format!("writing {}", path.display()))?;
+        let path = crate::scratch::write("part", "", input)?;
         Ok(TempPart { path })
     }
 }

@@ -4,7 +4,6 @@
 //! are between gpg and its agent; rmut never sees or stores them.
 
 use std::io::Write as _;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -153,9 +152,7 @@ pub fn decrypt(cfg: &Pgp, data: &[u8]) -> Result<Opened> {
 /// Verify a detached signature over `data` (already in the CRLF form
 /// it was signed in). gpg wants the signature as a file argument.
 pub fn verify_detached(cfg: &Pgp, signature: &[u8], data: &[u8]) -> Result<Sig> {
-    let sigfile = temp_path("sig");
-    std::fs::write(&sigfile, signature)
-        .with_context(|| format!("writing {}", sigfile.display()))?;
+    let sigfile = crate::scratch::write("sig", "", signature)?;
     let result = run(
         cfg,
         &["--verify", &sigfile.display().to_string(), "-"],
@@ -531,16 +528,6 @@ fn boundary(content: &[&[u8]]) -> String {
         }
     }
     unreachable!()
-}
-
-fn temp_path(what: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    std::env::temp_dir().join(format!(
-        "rmut-{what}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed),
-    ))
 }
 
 #[cfg(test)]

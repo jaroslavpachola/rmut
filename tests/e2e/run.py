@@ -4916,6 +4916,51 @@ def scenario_markdown(tmp):
     r.close()
 
 
+def scenario_private_files(tmp):
+    """R93: the draft the editor opens is the user's alone (0600), and
+    attachment names a quoted string cannot carry, a quote or a
+    non-ASCII letter, go out RFC 2231-encoded."""
+    md = make_maildir(tmp, "md-private")
+    write_msgs(md, ["jane"])
+    for name in ('say"hi".txt', "Zpráva.txt"):
+        with open(os.path.join(tmp, name), "w") as f:
+            f.write("x\n")
+    headers = os.path.join(tmp, "private-headers")
+    with open(headers, "w") as f:
+        f.write(f'Attach: {tmp}/say"hi".txt\nAttach: {tmp}/Zpráva.txt notes\n')
+    mode_file = os.path.join(tmp, "private-mode")
+    editor = os.path.join(tmp, "private-editor.sh")
+    with open(editor, "w") as f:
+        f.write(f'#!/bin/sh\nstat -c %a "$1" > {mode_file}\n'
+                f'printf "hello\\n" >> "$1"\nsed -i "1r {headers}" "$1"\n')
+    sent_file = os.path.join(tmp, "private-sent.eml")
+    sendmail = os.path.join(tmp, "private-sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat > {sent_file}\nexit 0\n")
+    for script in (editor, sendmail):
+        os.chmod(script, 0o755)
+    cfg = os.path.join(tmp, "private-config.toml")
+    with open(cfg, "w") as f:
+        f.write("[mail]\nedit_headers = true\n")
+    r = Rmut(md, base_env(tmp, {"EDITOR": editor, "RMUT_SENDMAIL": sendmail,
+                                "RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rfiles\r")
+    r.expect("y:Send", "Zpráva.txt")
+    assert open(mode_file).read().strip() == "600", open(mode_file).read()
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="the send")
+    r.expect("message sent")
+    sent = open(sent_file).read()
+    assert "filename*=utf-8''say%22hi%22.txt" in sent, sent
+    assert "filename*=utf-8''Zpr%C3%A1va.txt" in sent, sent
+    assert "Content-Description: notes" in sent, sent
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -4997,6 +5042,7 @@ SCENARIOS = [
     scenario_send_odds,
     scenario_urls,
     scenario_markdown,
+    scenario_private_files,
 ]
 
 

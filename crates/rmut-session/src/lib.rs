@@ -5556,14 +5556,8 @@ pub fn default_quote_re() -> regex_lite::Regex {
     regex_lite::Regex::new(r"^([ \t]*[|>:}#])+").expect("default quote_regexp compiles")
 }
 
+/// The draft in a private temp file for the editor (mode 0600: it is
+/// the whole message).
 pub fn write_draft(text: &str) -> Result<PathBuf> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "rmut-draft-{}-{}.eml",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed),
-    ));
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
+    rmut_core::scratch::write("draft", ".eml", text.as_bytes())
 }

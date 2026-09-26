@@ -93,10 +93,16 @@ pub fn scan(dir: &Path) -> Result<Vec<MailFile>> {
         for entry in entries {
             let entry = entry?;
             // Through symlinks (the notmuch view is one per hit);
-            // broken links and directories fall out here.
-            if !entry.path().is_file() {
-                continue;
-            }
+            // broken links and directories fall out here, and so does
+            // a message another client moved since read_dir saw it.
+            let meta = match std::fs::metadata(entry.path()) {
+                Ok(meta) if meta.is_file() => meta,
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("reading {}", entry.path().display()));
+                }
+            };
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.starts_with('.') {
@@ -106,7 +112,7 @@ pub fn scan(dir: &Path) -> Result<Vec<MailFile>> {
                 path: entry.path(),
                 is_new,
                 flags: Flags::from_filename(&name),
-                size: size_from_name(&name).unwrap_or(std::fs::metadata(entry.path())?.len()),
+                size: size_from_name(&name).unwrap_or(meta.len()),
             });
         }
     }
@@ -289,6 +295,20 @@ mod tests {
         fs::write(tmp.path().join("cur/9.rmut,S=777:2,S"), "tiny").unwrap();
         let files = scan(tmp.path()).unwrap();
         assert_eq!(files[0].size, 777);
+    }
+
+    #[test]
+    fn scan_skips_what_is_gone_instead_of_failing() {
+        // A dangling link reads like a message another client moved
+        // away between read_dir and the stat: skipped, not an error.
+        let tmp = tempfile::tempdir().unwrap();
+        make_maildir(tmp.path());
+        fs::write(tmp.path().join("cur/1.host:2,S"), "Subject: kept\n\nx\n").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("gone"), tmp.path().join("cur/2.host:2,S"))
+            .unwrap();
+        let files = scan(tmp.path()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size, 17);
     }
 
     #[test]

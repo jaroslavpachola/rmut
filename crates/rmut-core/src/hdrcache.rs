@@ -104,12 +104,12 @@ impl Entry {
 }
 
 /// Cache identity of one message file: the base name (immutable in
-/// maildir, flags live after ":2,") plus the current byte length.
+/// maildir, flags live after ":2,") plus the size scan found for it,
+/// so no second stat per message.
 fn key_of(file: &MailFile) -> Option<String> {
     let name = file.path.file_name()?.to_str()?;
     let base = name.split(":2,").next()?;
-    let len = std::fs::metadata(&file.path).ok()?.len();
-    Some(format!("{base}\u{1}{len}"))
+    Some(format!("{base}\u{1}{}", file.size))
 }
 
 fn cache_path(dir: &Path) -> PathBuf {

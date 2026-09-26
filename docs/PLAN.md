@@ -2267,6 +2267,43 @@ formatting while a plain reader loses nothing.
       sends through a recording sendmail, e2e scenario_markdown (M, a
       signed markdown send, a postponed one recalled as markdown)
 
+## R93: the rmut-core review (done, 2.11.0; asked for by name, 2026-09-26)
+
+Goal: act on an outside review of rmut-core, each finding checked
+against the code first. The IMAP one ("non-ASCII mailbox names break
+SELECT") did not hold: LIST names come back in modified UTF-7, which
+is ASCII and round-trips; only showing them decoded and typing a
+non-ASCII name remain, left for another round. The cert store read
+per connection and the DefaultHasher mbox ids stay as they are.
+
+- [x] Temporary files are private: `rmut_core::scratch` creates each
+      fresh (O_EXCL, so never through a planted link or into someone
+      else's file) with mode 0600, under a name the clock makes hard
+      to guess. The editor's draft, a mailcap `%s` part and gpg's
+      detached signature all go through it; they were plain writes
+      to a predictable `/tmp/rmut-*-<pid>-<n>`, the draft (the whole
+      message) readable to anyone under a 022 umask
+- [x] SMTP: the envelope sender, each recipient and the DSN values
+      are checked before connecting; one with a CR, LF, space or
+      angle bracket (an encoded word in a crafted header decodes to
+      one, and mailparse keeps it in the address) would have started
+      a second command
+- [x] Attachment headers: a filename with a quote, a backslash or a
+      non-ASCII letter goes out RFC 2231-encoded (`filename*=utf-8''`)
+      instead of breaking the quoted string, and control characters
+      in a filename or description become spaces instead of starting
+      a header of their own
+- [x] mbox: the crash backup is synced before the in-place rewrite,
+      and one a failed rewrite left behind stops the next sync with
+      its path, instead of being overwritten by the cut-short file
+- [x] maildir scan: one stat per message where there were three
+      (`unwrap_or` ran the metadata call even with `,S=` in the name,
+      and the header cache stat'ed again for its key), and a message
+      another client moved mid-scan is skipped instead of failing the
+      whole mailbox open
+- [x] Core tests for each, e2e scenario_private_files (the draft's
+      mode as the editor sees it, the RFC 2231 names on the wire)
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2617,6 +2654,17 @@ Raw HTML in a draft stays text, a bare URL becomes a link, and the
 signature keeps its lines. Attachments and PGP wrap the pair like any
 body, and a postponed draft remembers the choice. The html comes from
 pulldown-cmark, rmut's one new dependency for it.
+
+## 2.11.0 (released 2026-09-26)
+
+R93, the rmut-core review. Temporary files (the draft handed to the
+editor, a part for a mailcap viewer, a signature for gpg) are created
+fresh with mode 0600 instead of written to a guessable name in /tmp.
+SMTP refuses an address with a line break in it rather than sending
+it as two commands. Attachment names with quotes or non-ASCII letters
+go out RFC 2231-encoded. An mbox sync that a crash cut short leaves a
+backup the next sync points at instead of overwriting, and opening a
+big maildir does a third of the stat calls it did.
 
 ## Still open inside rounds marked done
 

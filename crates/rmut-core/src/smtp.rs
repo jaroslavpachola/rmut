@@ -39,6 +39,22 @@ pub fn send(
         .as_deref()
         .with_context(|| format!("account {} has no smtp_host", account.name))?;
     ensure!(!rcpts.is_empty(), "no recipients");
+    // Each goes into a command line of its own: a CR or LF (say from an
+    // encoded word in a crafted Reply-To) would start another command.
+    let from = envelope.sender.as_deref().unwrap_or(from);
+    ensure!(
+        from.is_empty() || envelope_address(from),
+        "unusable envelope sender: {from:?}"
+    );
+    for rcpt in rcpts {
+        ensure!(
+            envelope_address(rcpt),
+            "unusable recipient address: {rcpt:?}"
+        );
+    }
+    for dsn in [&envelope.notify, &envelope.ret].into_iter().flatten() {
+        ensure!(dsn_value(dsn), "unusable DSN value: {dsn:?}");
+    }
     // Port 465 is TLS from the first byte; anything else negotiates
     // STARTTLS (unless smtp_tls = false, for tests).
     let implicit_tls = account.smtp_tls && account.smtp_port == 465;
@@ -63,7 +79,6 @@ pub fn send(
         caps = ehlo(&mut conn)?;
     }
     authenticate(&mut conn, &caps, account, password).context("SMTP authentication")?;
-    let from = envelope.sender.as_deref().unwrap_or(from);
     let dsn = offers(&caps, "DSN");
     let mut mail_from = format!("MAIL FROM:<{from}>");
     if let Some(ret) = envelope.ret.as_deref().filter(|_| dsn) {
@@ -82,6 +97,20 @@ pub fn send(
     expect(&mut conn, 250).context("message rejected after DATA")?;
     let _ = conn.write_all(b"QUIT\r\n");
     Ok(())
+}
+
+/// An address that fits in `MAIL FROM:<...>` / `RCPT TO:<...>`: no
+/// spaces, controls or angle brackets. UTF-8 passes, as it did.
+fn envelope_address(addr: &str) -> bool {
+    !addr.is_empty()
+        && !addr
+            .chars()
+            .any(|c| c <= ' ' || c == '\x7f' || c == '<' || c == '>')
+}
+
+/// A DSN keyword list such as "failure,delay" or "hdrs".
+fn dsn_value(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == ',')
 }
 
 /// Whether the EHLO reply (its lines joined by "; ", each starting
@@ -209,6 +238,18 @@ pub fn b64(input: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::testserver::{self, Expect};
+
+    #[test]
+    fn envelope_values_cannot_carry_a_second_command() {
+        assert!(envelope_address("jane@example.org"));
+        assert!(envelope_address("jürgen@example.de"));
+        assert!(!envelope_address(""));
+        assert!(!envelope_address("a\r\nDATA@x.org"));
+        assert!(!envelope_address("a@x.org>\nRCPT TO:<evil@y.org"));
+        assert!(!envelope_address("a b@x.org"));
+        assert!(dsn_value("failure,delay"));
+        assert!(!dsn_value("hdrs\r\nRSET"));
+    }
 
     #[test]
     fn b64_matches_known_vectors() {
