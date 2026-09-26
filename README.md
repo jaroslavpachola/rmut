@@ -6,8 +6,6 @@
 [![CI](https://github.com/jaroslavpachola/rmut/actions/workflows/ci.yml/badge.svg)](https://github.com/jaroslavpachola/rmut/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![rmut's index: a sidebar of mailboxes with new-mail counts, and an inbox with a threaded conversation, new and flagged messages](docs/img/rmut-index.svg)
-
 rmut is a fast, keyboard-first mail client written in Rust. It lives
 in your terminal, and when you would rather have a window, it opens
 one: the same mailboxes, the same keys, the same settings. Threads,
@@ -52,8 +50,6 @@ rmut                       # finds your mail on its own
 - **Tested like it matters.** Every change runs 88 end-to-end
   scenarios that drive the real binary against fake IMAP and SMTP
   servers.
-
-![A message open in rmut: the thread above it, headers, quoted replies in their own color, a numbered plan and a link](docs/img/rmut-message.svg)
 
 ## Two faces, one mailbox
 
