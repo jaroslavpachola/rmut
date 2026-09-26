@@ -753,8 +753,9 @@ pub struct Gui {
     /// (named colors or `#rrggbb`; a dark gray on off-white unset).
     pub background: Option<String>,
     pub foreground: Option<String>,
-    /// "builtin" opens drafts in the window's own text editor;
-    /// anything else (the default) hosts $EDITOR in the terminal.
+    /// "builtin" opens drafts in the window's own text editor, "nvim"
+    /// embeds Neovim in the window; anything else ("external", the
+    /// default) hosts $EDITOR in the terminal.
     pub editor: Option<String>,
     /// The message body in a proportional face; the index, headers
     /// and indented (preformatted) lines stay monospace.

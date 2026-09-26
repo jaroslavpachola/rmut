@@ -83,7 +83,10 @@ just install-desktop                   # and a menu entry for it
 installed binary because a desktop session rarely carries
 `~/.cargo/bin` on its `PATH`; a packager installs the file as it
 stands. The entry claims no `mailto:` handler on purpose: the window
-takes a mailbox, not a draft, and `mailto:` is the terminal binary's.
+takes a mailbox, not a draft, and `mailto:` is the terminal binary's. The
+window's own options and its `[gui]` settings (font, colors, the
+built-in or embedded Neovim editor, inline images) are in
+[rmut-egui(1)](docs/rmut-egui.1).
 
 ## The screen
 

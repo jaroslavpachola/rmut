@@ -98,7 +98,13 @@ def write_msgs(maildir, names):
 
 
 class Rmut:
+    # Every instance a scenario starts: the runner closes and reaps
+    # them after it, however it ended, so a failed scenario leaves no
+    # rmut running into the next.
+    live = []
+
     def __init__(self, maildir, env=None, rows=30, cols=160, args=()):
+        Rmut.live.append(self)
         self.buf = ""
         self.rows, self.cols = rows, cols
         # maildir=None: no positional, so rmut has to find one itself.
@@ -174,14 +180,28 @@ class Rmut:
             self._drain()
 
     def close(self):
+        """Drop the pty (rmut takes the hangup and leaves the way q
+        does), then reap it: waited for a moment, killed after that."""
         try:
             os.close(self.fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
+        deadline = time.time() + 3
+        while True:
+            try:
+                pid, _ = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                return  # reaped already (a scenario waited on it)
+            if pid:
+                return
+            if time.time() >= deadline:
+                try:
+                    os.kill(self.pid, signal.SIGKILL)
+                    os.waitpid(self.pid, 0)
+                except (ProcessLookupError, ChildProcessError):
+                    pass
+                return
+            time.sleep(0.02)
 
 
 def wait_for(cond, timeout=5.0, desc="condition"):
@@ -5346,8 +5366,16 @@ def main():
     if not os.path.exists(RMUT):
         print(f"missing {RMUT}; run `cargo build` first", file=sys.stderr)
         return 1
+    # run.py [NAME...]: only the scenarios whose name holds one of the
+    # words (scenario_urls, or just urls); all of them without any.
+    words = sys.argv[1:]
+    scenarios = [s for s in SCENARIOS
+                 if not words or any(w in s.__name__ for w in words)]
+    if not scenarios:
+        print(f"no scenario matches {' '.join(words)}", file=sys.stderr)
+        return 1
     failed = 0
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         tmp = tempfile.mkdtemp(prefix="rmut-e2e-")
         try:
             scenario(tmp)
@@ -5356,8 +5384,10 @@ def main():
             failed += 1
             print(f"FAIL {scenario.__name__}: {exc}")
         finally:
+            while Rmut.live:
+                Rmut.live.pop().close()
             shutil.rmtree(tmp, ignore_errors=True)
-    print(f"{len(SCENARIOS) - failed}/{len(SCENARIOS)} scenarios passed")
+    print(f"{len(scenarios) - failed}/{len(scenarios)} scenarios passed")
     return 1 if failed else 0
 
 

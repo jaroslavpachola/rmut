@@ -13,9 +13,10 @@ lint:
 fmt:
     cargo fmt --all
 
-e2e:
+# just e2e urls signals: only the scenarios with those words in the name
+e2e *NAMES:
     cargo build
-    python3 tests/e2e/run.py
+    python3 tests/e2e/run.py {{NAMES}}
 
 check: test lint e2e
 

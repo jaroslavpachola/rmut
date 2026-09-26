@@ -2446,6 +2446,28 @@ Every finding held.
 - [x] Window tests for the drop and the save; e2e
       scenario_save_part_no_follow
 
+## R98: the workspace review (done, 2.16.0; asked for by name, 2026-09-26)
+
+Goal: act on an outside review of the workspace (CI, release,
+tooling, docs), each finding checked first. Every one held.
+
+- [x] The release archive carries the window: `rmut-egui`, its
+      desktop entry and its man page beside `rmut`. v2.15.0's asset
+      held the terminal binary alone. egui dlopens the display
+      libraries (ldd lists libc, libm, libgcc_s), so the runner
+      needs nothing more, as CI's just check shows on the same image
+- [x] `docs/rmut-egui.1`: the window's options, what it adds (the
+      mouse, the menus, zoom, Preferences, viewers, how it leaves),
+      the three editors, every `[gui]` key, `gui.toml` and the zoom
+      file. Nothing documented `[gui]` before; rmut(1) and the README
+      point to it, and the config's `editor` comment names nvim
+- [x] `tests/e2e/run.py NAME...` (and `just e2e NAME...`) runs only
+      the scenarios with those words in their names
+- [x] The harness keeps every rmut a scenario starts and closes and
+      reaps them after it, however it ended: a failed scenario's
+      rmut lived on to the end of the run. `close()` waits for the
+      exit (killing after 3 s) instead of reaping without waiting
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2862,6 +2884,15 @@ Ctrl+C in its launching terminal, now sends mail held by undo_send
 instead of dropping it. Bold stays readable on a light canvas, and
 saving a part never writes through a link at the target name, in
 both fronts.
+
+## 2.16.0 (released 2026-09-26)
+
+R98, the workspace review. The release archive now carries the window
+too (`rmut-egui`, its desktop entry and a man page of its own), and
+`rmut-egui(1)` documents the window's options and every `[gui]`
+setting, which nothing did before. For work on rmut itself, the e2e
+runner takes scenario names, and a failed scenario no longer leaves
+its rmut running.
 
 ## Still open inside rounds marked done
 

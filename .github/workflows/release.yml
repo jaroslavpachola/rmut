@@ -13,14 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked -p rmut
+      # Both front ends: the terminal and the window (egui dlopens the
+      # display libraries, so the runner needs nothing extra; CI's
+      # just check builds it on the same image).
+      - run: cargo build --release --locked -p rmut -p rmut-egui
       - name: Package
         run: |
           version="${GITHUB_REF_NAME#v}"
           dir="rmut-$version-x86_64-linux"
           mkdir "$dir"
-          cp target/release/rmut "$dir"/
-          cp docs/rmut.1 README.md LICENSE "$dir"/
+          cp target/release/rmut target/release/rmut-egui "$dir"/
+          cp crates/rmut-egui/dist/rmut-egui.desktop "$dir"/
+          cp docs/rmut.1 docs/rmut-egui.1 README.md LICENSE "$dir"/
           tar czf "$dir.tar.gz" "$dir"
       - name: Create release
         env:

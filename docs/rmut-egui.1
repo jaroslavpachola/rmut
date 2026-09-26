@@ -1,0 +1,228 @@
+.TH RMUT-EGUI 1 "September 2026" "rmut 2.16.0" "User Commands"
+.SH NAME
+rmut\-egui \- rmut, the mutt-like mail client, in a window
+.SH SYNOPSIS
+.B rmut\-egui
+.RB [ \-R ]
+.RB [ \-e
+.IR CMD ]...
+.RB [ \-p | \-y ]
+.RB [ \-z | \-Z ]
+.RB [[ \-f ]
+.IR MAILDIR " | " MBOX " | " imap:ACCOUNT [/ FOLDER ]]
+.br
+.B rmut\-egui
+.B \-V
+.SH DESCRIPTION
+.B rmut\-egui
+is the window front end over the same session as
+.BR rmut (1):
+the same mailboxes, the same keys, the same configuration file and
+muttrc import, drawn with egui instead of a terminal. Everything
+.BR rmut (1)
+says about mailboxes, keys, patterns, hooks, sending and the
+.BR [mail] ", " [pager] " and " [colors]
+sections holds here; this page covers what the window adds or does
+differently.
+.PP
+With no mailbox named it opens the one
+.BR rmut (1)
+would. The window appears at once and the mailbox opens behind a
+progress line; keys typed meanwhile wait for it.
+.SH OPTIONS
+.TP
+.BR \-R ", " \-\-read\-only
+Open the mailbox read-only.
+.TP
+.B \-y
+Start in the folder browser.
+.TP
+.B \-p
+Start by recalling a postponed message.
+.TP
+.BI \-e " CMD"
+Run a configuration command after the configuration is read, as
+.BR rmut (1)
+does; may be given more than once.
+.TP
+.BI \-f " MAILBOX"
+The mailbox to open, as the plain argument names it.
+.TP
+.BR \-z ", " \-Z
+Exit with status 1, before any window opens, when the mailbox holds
+no messages
+.RB ( \-z )
+or no new ones
+.RB ( \-Z ).
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.TP
+.BR \-h ", " \-\-help
+Print the usage.
+.PP
+Send mode
+.RB ( \-s ", " \-a ", " \-c ", " \-b ", " \-i ", " \-\- )
+needs a terminal and is refused here; use
+.BR rmut (1).
+So is a
+.I mailto:
+URL: the window takes a mailbox, not a draft.
+.SH THE WINDOW
+The four regions of
+.BR rmut (1)
+are all here: the help bar, the index or the message, the status
+bar, and the message line with prompts, notes and errors. Around the
+keys, the window adds:
+.TP
+.B The mouse
+A click selects a message, a double click opens it; in a message,
+the mini-index above it switches messages the same way. A URL in a
+message opens with a click
+.RB ( "[ui] url_command" ).
+The scroll wheel scrolls, and the pager's scrollbar drags.
+.TP
+.B Menus
+A menu bar (Mailbox, Message, Tagged, Thread, Sort, Help) offers
+the common functions by name, with their keys, and a right click on a
+message offers what applies to it.
+.TP
+.B Zoom
+Ctrl+= and Ctrl+\- zoom the whole window, Ctrl+0 resets it, and so do
+Ctrl with the wheel and a trackpad pinch. The zoom is remembered.
+.TP
+.B Preferences
+Mailbox \(-> Preferences sets the text size, the font, the canvas
+colors, the editor, the proportional body, inline images and HTML
+rendering, applied at once. Saving writes them to
+.IR gui.toml ,
+never to the hand-written configuration.
+.TP
+.B Viewers
+A part opened with a mailcap viewer is written to a private
+directory of its own; a viewer that needs a terminal runs in the
+.B [gui] terminal
+emulator, and any other runs as a window of its own while the mail
+window carries on. The copy goes when the viewer exits, or when the
+window closes.
+.TP
+.B Leaving
+However the window closes (q, its close button, Alt+F4, the window
+manager, SIGTERM, or Ctrl+C in the terminal it was started from), it
+leaves the way q does: mail still waiting out
+.B undo_send
+goes, and so do the flag changes a quit writes.
+.SH EDITING
+.B [gui] editor
+chooses where a draft is written:
+.TP
+.B external
+(the default) runs
+.B $EDITOR
+in the
+.B [gui] terminal
+emulator, as
+.BR rmut (1)
+runs it in its own terminal.
+.TP
+.B builtin
+edits in a text box inside the window; Ctrl+Enter finishes, Esc
+abandons.
+.TP
+.B nvim
+embeds Neovim
+.RB ( "nvim \-\-embed" ,
+which must be on
+.BR PATH )
+in the window: a full Neovim with your configuration, drawn in the
+message area. Leaving it with :wq goes on to the compose menu;
+:cq, like any editor failing, keeps the draft and says so.
+.SH CONFIGURATION
+The
+.B [gui]
+section of
+.I ~/.config/rmut/config.toml
+belongs to the window; the terminal never reads it. Every key is
+optional.
+.TP
+.B size
+Text size in points (14).
+.TP
+.B font
+A .ttf or .otf file for the monospace face (egui's own when unset).
+.TP
+.B terminal
+The emulator that hosts
+.BR $EDITOR ,
+.B !
+commands and terminal viewers
+.RB ( $TERMINAL ,
+then foot, alacritty, kitty, xterm).
+.TP
+.BR background ", " foreground
+The canvas and its default ink, as color names or
+.BR #rrggbb .
+Bold is drawn by moving the ink away from the canvas, so it reads on
+light canvases and dark ones alike.
+.TP
+.B editor
+.BR external " (default), " builtin " or " nvim ;
+see EDITING.
+.TP
+.B proportional
+The message body in a proportional face; the index, the headers and
+indented (preformatted) lines stay monospace. Off by default.
+.TP
+.B inline_images
+image/* parts drawn in the message, under their
+.B [\-\- Type: image/... \-\-]
+markers. On by default.
+.TP
+.B html
+The window's own say over
+.BR "[pager] html" ,
+so the terminal can keep one way and the window another.
+.TP
+.B [gui.colors]
+Window-only overrides of
+.BR [colors] :
+the same keys and values, plus
+.BR #rrggbb .
+.PP
+.I gui.toml
+beside the configuration file holds what the Preferences dialog
+saved; it is read over the
+.B [gui]
+section, so the dialog wins over the hand-written values it covers.
+.SH FILES
+.TP
+.I ~/.config/rmut/config.toml
+The configuration, shared with
+.BR rmut (1)
+.RB ( $RMUT_CONFIG
+overrides).
+.TP
+.I ~/.config/rmut/gui.toml
+The Preferences dialog's saved values.
+.TP
+.I ~/.cache/rmut/gui-zoom
+The remembered zoom
+.RB ( $XDG_CACHE_HOME
+overrides the parent).
+.TP
+.I rmut-egui.desktop
+The menu entry, in the release archive and in the source's
+.IR crates/rmut-egui/dist ;
+.B just install-desktop
+installs it with
+.B Exec
+pinned to the installed binary.
+.SH EXIT STATUS
+0 when the window closes normally; 1 when the mailbox could not be
+opened, and for
+.BR \-z " and " \-Z
+as above.
+.SH SEE ALSO
+.BR rmut (1),
+.BR mutt (1),
+.BR nvim (1)
