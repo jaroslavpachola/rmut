@@ -146,13 +146,19 @@ impl Boot {
     }
 
     /// On the way out: whatever is still inside its `$undo_send`
-    /// window goes now, since quitting is not cancelling. The window is
-    /// closing, so trouble lands on stderr, as the TUI's exit does.
+    /// window goes now, since quitting is not cancelling, and so does
+    /// the sync; the parts viewers still have open are removed. The
+    /// window is closing, so trouble lands on stderr, as the TUI's
+    /// exit does. Safe to call again: a second time finds nothing.
     pub fn flush(&mut self) {
+        use std::io::Write as _;
         if let Boot::Ready(gui) = self {
             for note in gui.session.flush_on_exit() {
-                eprintln!("rmut-egui: {note}");
+                // Not eprintln: this runs in Drop too, and a closed
+                // stderr must not turn the exit into a panic.
+                let _ = writeln!(std::io::stderr(), "rmut-egui: {note}");
             }
+            gui.discard_viewer_files();
         }
     }
 
@@ -177,17 +183,16 @@ impl Boot {
             }
         }
         if let Some(result) = done {
-            let husk = Boot::Failed {
-                error: String::new(),
-                canvas: (egui::Color32::BLACK, egui::Color32::WHITE),
-            };
+            // Taken out field by field: Boot has a Drop, so it cannot
+            // be pulled apart by a move.
             if let Boot::Opening {
                 plan,
                 failed,
                 canvas,
                 ..
-            } = std::mem::replace(self, husk)
+            } = self
             {
+                let (plan, failed, canvas) = (std::mem::take(plan), failed.clone(), *canvas);
                 match result {
                     Ok((session, warnings)) => {
                         let mut gui = ready_gui(session, warnings, &plan);
@@ -292,9 +297,25 @@ impl Boot {
     }
 }
 
+/// However the window goes (q, the title bar's close button, Alt+F4,
+/// the window manager, a host dropping it), the way out runs: eframe
+/// closes the window without asking the app, and held mail went with
+/// it.
+impl Drop for Boot {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
 impl eframe::App for Boot {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+    }
+
+    /// eframe's own word that the window is going, whichever way; the
+    /// Drop below covers a host that drops rmut without it.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.flush();
     }
 }
 

@@ -32,6 +32,19 @@ fn color32(c: Color, fallback: Color32) -> Color32 {
     }
 }
 
+/// Bold, faked by color (the monospace font has no bold face): the
+/// text moves toward whichever of white and black stands further from
+/// its ground, so a light canvas darkens it instead of washing it out.
+fn embolden(fg: Color32, ground: Color32) -> Color32 {
+    let luma = |c: Color32| 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+    let pole = if luma(ground) > 127.5 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    pole.lerp_to_gamma(fg, 0.4)
+}
+
 const FG: Color32 = Color32::from_rgb(0xd8, 0xd8, 0xd8);
 const BG: Color32 = Color32::from_rgb(0x10, 0x10, 0x10);
 
@@ -80,7 +93,12 @@ fn format_in(style: Style, size: f32, mono: bool) -> TextFormat {
         (fg, bg) = (solid_bg, fg);
     }
     if style.bold {
-        fg = Color32::WHITE.lerp_to_gamma(fg, 0.4);
+        let ground = if bg == Color32::TRANSPARENT {
+            canvas_bg
+        } else {
+            bg
+        };
+        fg = embolden(fg, ground);
     }
     TextFormat {
         font_id: if mono {
@@ -423,7 +441,31 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     let to32 = |c: u32| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
                     let (cursor_row, cursor_col) = nvim.grid.cursor;
                     for (y, row) in nvim.grid.cells.iter().enumerate().take(rows) {
+                        // A run of cells in one look is one section:
+                        // per cell, a screen was two thousand of them.
                         let mut job = LayoutJob::default();
+                        let mut run = String::new();
+                        let mut look: Option<(Color32, Color32, bool)> = None;
+                        let flush = |job: &mut LayoutJob, run: &mut String, look| {
+                            if let Some((fg, bg, underline)) = look {
+                                job.append(
+                                    run,
+                                    0.0,
+                                    TextFormat {
+                                        font_id: FontId::monospace(size),
+                                        color: fg,
+                                        background: bg,
+                                        underline: if underline {
+                                            egui::Stroke::new(1.0, fg)
+                                        } else {
+                                            egui::Stroke::NONE
+                                        },
+                                        ..Default::default()
+                                    },
+                                );
+                            }
+                            run.clear();
+                        };
                         for (x, cell) in row.iter().enumerate() {
                             let attr = nvim.attrs.get(&cell.hl).copied().unwrap_or_default();
                             let mut fg = to32(attr.fg.unwrap_or(nvim.default_fg));
@@ -432,24 +474,16 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                                 std::mem::swap(&mut fg, &mut bg);
                             }
                             if attr.bold {
-                                fg = Color32::WHITE.lerp_to_gamma(fg, 0.4);
+                                fg = embolden(fg, bg);
                             }
-                            job.append(
-                                &cell.text,
-                                0.0,
-                                TextFormat {
-                                    font_id: FontId::monospace(size),
-                                    color: fg,
-                                    background: bg,
-                                    underline: if attr.underline {
-                                        egui::Stroke::new(1.0, fg)
-                                    } else {
-                                        egui::Stroke::NONE
-                                    },
-                                    ..Default::default()
-                                },
-                            );
+                            let this = Some((fg, bg, attr.underline));
+                            if this != look {
+                                flush(&mut job, &mut run, look);
+                                look = this;
+                            }
+                            run.push_str(&cell.text);
                         }
+                        flush(&mut job, &mut run, look);
                         ui.add(egui::Label::new(job).extend());
                     }
                 }
@@ -1249,3 +1283,19 @@ const NVIM_HELP: &str = "nvim owns the keyboard - :wq finishes, :q! abandons";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 const URLS_HELP: &str = "q:Back j/k:Move Enter:Open y:Copy";
 const IMAGE_HELP: &str = "q:Back";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bold_stands_out_on_light_and_dark_canvases() {
+        let luma = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+        // Dark text on a light canvas: bold is darker, not a pale grey.
+        let dark = Color32::from_rgb(0x30, 0x30, 0x30);
+        assert!(luma(embolden(dark, Color32::WHITE)) < luma(dark));
+        // Light text on a dark canvas: bold is lighter, as before.
+        let light = Color32::from_rgb(0xb0, 0xb0, 0xb0);
+        assert!(luma(embolden(light, Color32::from_rgb(0x10, 0x10, 0x10))) > luma(light));
+    }
+}

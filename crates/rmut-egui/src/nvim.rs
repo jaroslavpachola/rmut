@@ -171,6 +171,12 @@ impl Embedded {
         }
     }
 
+    /// Once [`Embedded::finished`]: whether nvim left cleanly. `:cq`
+    /// and a crash do not, and the edit is then the editor failing.
+    pub fn exited_cleanly(&mut self) -> bool {
+        self.child.wait().is_ok_and(|status| status.success())
+    }
+
     /// Drain the reader's channel and apply every redraw batch.
     /// Returns true when anything changed on screen.
     pub fn pump(&mut self) -> bool {
@@ -243,24 +249,27 @@ impl Embedded {
                 self.grid = Grid::new(self.grid.cols, self.grid.rows);
                 true
             }
+            // [grid, row, col]
             "grid_cursor_goto" => {
-                self.grid.cursor = (n(2), n(3)).min((self.grid.rows, self.grid.cols));
-                self.grid.cursor = (n(2), n(3));
+                self.grid.cursor = (n(1), n(2));
                 true
             }
+            // [rgb_fg, rgb_bg, rgb_sp, cterm_fg, cterm_bg]: no grid.
             "default_colors_set" => {
-                if let Some(fg) = args.get(1).and_then(Value::as_u64) {
+                if let Some(fg) = args.first().and_then(Value::as_u64) {
                     self.default_fg = fg as u32;
                 }
-                if let Some(bg) = args.get(2).and_then(Value::as_u64) {
+                if let Some(bg) = args.get(1).and_then(Value::as_u64) {
                     self.default_bg = bg as u32;
                 }
                 true
             }
+            // [id, rgb_attrs, cterm_attrs, info]: the 24-bit map, since
+            // the UI attached with rgb.
             "hl_attr_define" => {
-                let id = n(1);
+                let id = n(0);
                 let mut attr = Attr::default();
-                if let Some(Value::Map(map)) = args.get(2) {
+                if let Some(Value::Map(map)) = args.get(1) {
                     for (key, value) in map {
                         match key.as_str() {
                             Some("foreground") => attr.fg = value.as_u64().map(|v| v as u32),
@@ -412,6 +421,78 @@ pub fn notation(key: &KeyEvent) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An instance around a stand-in child, for feeding it events.
+    fn stand_in(command: &str) -> Embedded {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", command])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let (_tx, rx) = mpsc::channel();
+        Embedded {
+            child,
+            stdin,
+            rx,
+            msgid: 0,
+            grid: Grid::new(40, 5),
+            attrs: HashMap::new(),
+            default_fg: 0,
+            default_bg: 0,
+            finished: false,
+        }
+    }
+
+    #[test]
+    fn redraw_events_read_as_nvim_sends_them() {
+        // The batches nvim 0.12 sends a UI attached with ext_linegrid
+        // and rgb, after "ihello".
+        let mut nvim = stand_in("cat >/dev/null");
+        let event = |name: &str, args: Vec<Value>| {
+            Value::Array(vec![Value::from(name), Value::Array(args)])
+        };
+        nvim.apply(&event(
+            "default_colors_set",
+            vec![
+                Value::from(14738154),
+                Value::from(1316379),
+                Value::from(16711680),
+                Value::from(0),
+                Value::from(0),
+            ],
+        ));
+        assert_eq!((nvim.default_fg, nvim.default_bg), (14738154, 1316379));
+        nvim.apply(&event(
+            "hl_attr_define",
+            vec![
+                Value::from(7),
+                Value::Map(vec![
+                    (Value::from("foreground"), Value::from(0xff0000)),
+                    (Value::from("bold"), Value::from(true)),
+                ]),
+                Value::Map(vec![(Value::from("foreground"), Value::from(9))]),
+                Value::Array(vec![]),
+            ],
+        ));
+        let attr = nvim.attrs[&7];
+        assert_eq!(attr.fg, Some(0xff0000), "the rgb map, not the cterm one");
+        assert!(attr.bold);
+        nvim.apply(&event(
+            "grid_cursor_goto",
+            vec![Value::from(1), Value::from(0), Value::from(5)],
+        ));
+        assert_eq!(nvim.grid.cursor, (0, 5), "row 0, column 5");
+    }
+
+    #[test]
+    fn an_unclean_exit_is_the_editor_failing() {
+        let mut clean = stand_in("exit 0");
+        assert!(clean.exited_cleanly());
+        // :cq exits nonzero.
+        let mut aborted = stand_in("exit 1");
+        assert!(!aborted.exited_cleanly());
+    }
 
     fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)

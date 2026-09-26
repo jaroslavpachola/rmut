@@ -4,7 +4,8 @@
 //! the sync on the way out. The handler only notes which came; the
 //! front end's loop sees it and leaves by the usual way out. A second
 //! one while that way out is still busy ends the process at once.
-//! SIGINT stays as it was: in raw mode Ctrl+C is a key.
+//! The terminal leaves SIGINT as it was (in raw mode Ctrl+C is a
+//! key); the window takes it too.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
@@ -37,7 +38,18 @@ extern "C" fn note(sig: libc::c_int) {
 /// Catch SIGTERM and SIGHUP for [`caught`]. Without SA_RESTART, so a
 /// wait for input wakes up to look.
 pub fn install() {
-    for sig in [libc::SIGTERM, libc::SIGHUP] {
+    catch(&[libc::SIGTERM, libc::SIGHUP]);
+}
+
+/// [`install`], and SIGINT too: for the window, whose launching
+/// terminal stays in cooked mode, so Ctrl+C there is a signal rather
+/// than a key.
+pub fn install_with_interrupt() {
+    catch(&[libc::SIGTERM, libc::SIGHUP, libc::SIGINT]);
+}
+
+fn catch(signals: &[libc::c_int]) {
+    for &sig in signals {
         unsafe {
             let mut act: libc::sigaction = std::mem::zeroed();
             act.sa_sigaction = note as extern "C" fn(libc::c_int) as libc::sighandler_t;

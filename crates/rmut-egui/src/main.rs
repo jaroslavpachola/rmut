@@ -73,7 +73,8 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     let cli = parse_args(std::env::args().skip(1))?;
     // The binary's to decide, not the library's: a host has its own.
-    rmut_front::signals::install();
+    // Ctrl+C in the terminal it was started from is one of them.
+    rmut_front::signals::install_with_interrupt();
     let (config, config_warning) = boot::load_config();
     let spec = match cli.spec.clone() {
         Some(s) => s,

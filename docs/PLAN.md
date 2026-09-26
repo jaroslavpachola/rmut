@@ -2413,6 +2413,39 @@ takes its two columns, as in mutt).
       scenario_signals_leave_cleanly (SIGTERM, then the pty closing,
       each with a message held)
 
+## R97: the rmut-egui review (done, 2.15.0; asked for by name, 2026-09-26)
+
+Goal: act on an outside review of the window, each finding checked
+against the code and the nvim protocol against a real nvim first.
+Every finding held.
+
+- [x] Embedded nvim reads its redraw events where nvim puts them:
+      `grid_cursor_goto` is [grid, row, col] (read as row = col,
+      col = 0, so the cursor sat in column 0 on the wrong row),
+      `default_colors_set` has no grid (the text took the background
+      color, the background the special one) and neither does
+      `hl_attr_define` (every highlight landed on id 0, from the cterm
+      map). The unit test feeds the batches nvim 0.12 sends
+- [x] An nvim that exits unclean (`:cq`, a crash) is the editor
+      failing, as with any editor: the draft is kept and said so
+- [x] Closing the window any way (the title bar, Alt+F4, the window
+      manager, a host dropping it) runs the way out: `Boot` flushes in
+      `on_exit` and in Drop, so mail held by $undo_send and the sync
+      still go. The window's version of R96's SIGHUP
+- [x] The parts still open in a viewer are removed on the way out
+- [x] Ctrl+C in the terminal the window was started from leaves the
+      way q does (`signals::install_with_interrupt`, the window's
+      binary only; the terminal keeps SIGINT a key)
+- [x] Saving a part opens with `create_new`, in both fronts: the
+      `exists()` check read a dangling link as free and the write
+      followed it
+- [x] Bold moves away from its ground (`embolden`): toward white it
+      washed dark text out to grey on a light canvas
+- [x] The nvim painter lays out a run of cells in one look as one
+      section, not one per cell
+- [x] Window tests for the drop and the save; e2e
+      scenario_save_part_no_follow
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2817,6 +2850,18 @@ undo_send still goes out; before, it died with the process. Y and N
 answer questions like y and n, pager search reuses the laid-out rows,
 the terminal title carries no control characters, and a long line
 prompt scrolls to keep the cursor in view.
+
+## 2.15.0 (released 2026-09-26)
+
+R97, the rmut-egui review. The embedded nvim editor read three of its
+screen events one place off, which left its cursor in the first
+column, its default colors wrong and its syntax highlighting gone;
+they read right now, and `:cq` counts as the editor failing. Closing
+the window, by its close button, Alt+F4 or the window manager, or
+Ctrl+C in its launching terminal, now sends mail held by undo_send
+instead of dropping it. Bold stays readable on a light canvas, and
+saving a part never writes through a link at the target name, in
+both fronts.
 
 ## Still open inside rounds marked done
 

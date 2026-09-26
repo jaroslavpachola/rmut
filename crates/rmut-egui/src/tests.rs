@@ -624,6 +624,100 @@ fn the_builtin_editor_carries_the_compose_flow() {
 }
 
 #[test]
+fn saving_a_part_never_writes_through_a_link() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: parts\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <p5@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nhello body\n\
+         --b\nContent-Type: application/octet-stream; name=\"blob.bin\"\n\
+         Content-Disposition: attachment; filename=\"blob.bin\"\n\
+         Content-Transfer-Encoding: base64\n\naGVsbG8gbWFpbGNhcA==\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    // A dangling link where the part is to go: exists() says no, and a
+    // plain write would have created the file it points at.
+    let victim = dir.path().join("victim");
+    let link = dir.path().join("saved.bin");
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "vjs");
+    gui.handle_keys(vec![KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )]);
+    press(&mut gui, link.to_str().unwrap());
+    key(&mut gui, KeyCode::Enter);
+    let said = gui
+        .notice()
+        .map(|n| n.text().to_string())
+        .unwrap_or_default();
+    assert!(said.contains("exists, not overwriting"), "{said}");
+    assert!(!victim.exists(), "the link was written through");
+    // A fresh name saves as before.
+    let fresh = dir.path().join("fresh.bin");
+    press(&mut gui, "s");
+    gui.handle_keys(vec![KeyEvent::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    )]);
+    press(&mut gui, fresh.to_str().unwrap());
+    key(&mut gui, KeyCode::Enter);
+    assert_eq!(fs::read_to_string(&fresh).unwrap(), "hello mailcap");
+}
+
+#[test]
+fn closing_the_window_runs_the_way_out() {
+    // However the window goes, dropping the app runs the way out: here
+    // a viewer still open, whose private copy of the part must go.
+    let _guard = mailcaps_guard();
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: parts\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <p4@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain\n\nhello body\n\
+         --b\nContent-Type: application/octet-stream; name=\"blob.bin\"\n\
+         Content-Disposition: attachment; filename=\"blob.bin\"\n\
+         Content-Transfer-Encoding: base64\n\naGVsbG8gbWFpbGNhcA==\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let given = dir.path().join("given");
+    let mailcap = dir.path().join("mailcap");
+    fs::write(
+        &mailcap,
+        format!(
+            "application/octet-stream; echo %s > '{}' && sleep 3\n",
+            given.display()
+        ),
+    )
+    .unwrap();
+    unsafe { std::env::set_var("MAILCAPS", &mailcap) };
+    let (session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "vj");
+    press(&mut gui, "m");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !given.exists() || fs::read_to_string(&given).unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the viewer never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let temp = std::path::PathBuf::from(fs::read_to_string(&given).unwrap().trim());
+    assert!(temp.exists());
+    assert_eq!(gui.viewers_running(), 1);
+    drop(crate::boot::Boot::Ready(Box::new(gui)));
+    assert!(!temp.exists(), "{} outlives the window", temp.display());
+    assert!(!temp.parent().unwrap().exists(), "its directory too");
+}
+
+#[test]
 fn attach_menu_runs_a_windowed_viewer_outside_the_terminal() {
     let _guard = mailcaps_guard();
     let dir = tempfile::tempdir().unwrap();

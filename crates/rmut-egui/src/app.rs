@@ -1112,12 +1112,23 @@ impl Gui {
             return;
         }
         let target = rmut_session::expand_tilde(input);
-        if target.exists() {
-            self.error(format!("{} exists, not overwriting", target.display()));
-            return;
-        }
+        // Never over something already there: create_new refuses any
+        // name that exists, a link included (exists() is false for a
+        // dangling one, and a plain write would follow it).
         let result = rmut_core::message::part_bytes(&msg_path, index).and_then(|bytes| {
-            std::fs::write(&target, &bytes)?;
+            use std::io::Write as _;
+            let mut file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    anyhow::bail!("{} exists, not overwriting", target.display())
+                }
+                Err(err) => return Err(err.into()),
+            };
+            file.write_all(&bytes)?;
             Ok(bytes.len())
         });
         match result {
@@ -1220,6 +1231,17 @@ impl Gui {
                 if let Some(temp) = temp {
                     rmut_core::scratch::discard(&temp);
                 }
+            }
+        }
+    }
+
+    /// On the way out: the parts the viewers still running were
+    /// handed are removed (a viewer that has one open keeps reading
+    /// it; mutt waits for its viewers, so leaves nothing either).
+    pub fn discard_viewer_files(&mut self) {
+        for (_, temp) in self.viewers.drain(..) {
+            if let Some(temp) = temp {
+                rmut_core::scratch::discard(&temp);
             }
         }
     }
@@ -3117,10 +3139,11 @@ impl Gui {
         if let Some((nvim, _)) = &mut self.nvim {
             nvim.pump();
             if nvim.finished {
-                let (nvim, what) = self.nvim.take().unwrap();
+                let (mut nvim, what) = self.nvim.take().unwrap();
+                let success = nvim.exited_cleanly();
                 drop(nvim);
                 self.mode = Mode::Index;
-                self.editor_done(what, true);
+                self.editor_done(what, success);
             }
         }
         // The terminal child ($EDITOR, `!`): when it closes, its

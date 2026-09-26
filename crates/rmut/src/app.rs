@@ -2096,12 +2096,23 @@ impl App {
             return;
         }
         let target = expand_tilde(input);
-        if target.exists() {
-            self.error(format!("{} exists, not overwriting", target.display()));
-            return;
-        }
+        // Never over something already there: create_new refuses any
+        // name that exists, a link included (exists() is false for a
+        // dangling one, and a plain write would follow it).
         let result = message::part_bytes(&msg_path, index).and_then(|bytes| {
-            std::fs::write(&target, &bytes)?;
+            use std::io::Write as _;
+            let mut file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    anyhow::bail!("{} exists, not overwriting", target.display())
+                }
+                Err(err) => return Err(err.into()),
+            };
+            file.write_all(&bytes)?;
             Ok(bytes.len())
         });
         match result {

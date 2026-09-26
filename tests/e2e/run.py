@@ -5213,6 +5213,43 @@ def scenario_signals_leave_cleanly(tmp):
     assert os.WIFEXITED(status["last"]) and os.WEXITSTATUS(status["last"]) == 0, status
 
 
+def scenario_save_part_no_follow(tmp):
+    """R97: saving a part never writes through a link at the target
+    name; a dangling one read as free and was followed."""
+    md = make_maildir(tmp, "md-save-part")
+    with open(os.path.join(md, "cur", "1.host:2,S"), "w") as f:
+        f.write("From: jane@example.com\nTo: alex@example.com\nSubject: parts\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\nMessage-ID: <sp1@example.com>\n"
+                "MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n"
+                "--b\nContent-Type: text/plain\n\nhello body\n"
+                "--b\nContent-Type: application/octet-stream; name=\"blob.bin\"\n"
+                "Content-Disposition: attachment; filename=\"blob.bin\"\n"
+                "Content-Transfer-Encoding: base64\n\naGVsbG8gcGFydA==\n--b--\n")
+    victim = os.path.join(tmp, "victim")
+    link = os.path.join(tmp, "saved.bin")
+    os.symlink(victim, link)
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:1")
+    r.keys(b"v")
+    r.expect("blob.bin")
+    r.keys(b"j")
+    r.settle()
+    r.keys(b"s")
+    r.expect("Save to file:")
+    r.keys(b"\x15" + link.encode() + b"\r")
+    r.expect("exists, not overwriting")
+    assert not os.path.exists(victim), "the link was written through"
+    fresh = os.path.join(tmp, "fresh.bin")
+    r.keys(b"s")
+    r.expect("Save to file:")
+    r.keys(b"\x15" + fresh.encode() + b"\r")
+    wait_for(lambda: os.path.exists(fresh), desc="the part saved to a new name")
+    assert open(fresh).read() == "hello part"
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -5300,6 +5337,7 @@ SCENARIOS = [
     scenario_postpone_from_mirror,
     scenario_prompt_keys,
     scenario_signals_leave_cleanly,
+    scenario_save_part_no_follow,
 ]
 
 
