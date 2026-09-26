@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "rmut in a window: the egui front end over rmut-session"
+description = "rmut in a native window: the fast, keyboard-first mail client with the mouse, menus, inline images and an embedded Neovim"
 keywords = ["mail", "maildir", "mbox", "imap", "mutt"]
 categories = ["email"]
 

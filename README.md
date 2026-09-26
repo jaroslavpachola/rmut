@@ -1,45 +1,80 @@
 # rmut
 
-A mutt replacement in Rust: terminal mail client with mutt keybindings,
-built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
+**Mail at the speed of your keyboard.**
 
-## Status
+[![crates.io](https://img.shields.io/crates/v/rmut.svg)](https://crates.io/crates/rmut)
+[![CI](https://github.com/jaroslavpachola/rmut/actions/workflows/ci.yml/badge.svg)](https://github.com/jaroslavpachola/rmut/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**2.0**: rmut is a daily-drivable mutt replacement: mutt's index,
-pager and compose workflow under mutt's default keys, over maildir,
-mbox and IMAP/SMTP (TLS, OAuth2), with PGP through gpg(1). 2.0 marks
-the parity roadmap finishing, not a break: every default mutt key
-does something, a muttrc imports (`--import-muttrc`) and loads
-without errors, and every setting in the parity fixture
-(`tests/e2e/muttrc-parity.rc`, the hundred-odd that turn up in every
-dotfiles repo) is carried over or answered by what rmut does
-instead. The config format did not change; a 1.x config is a 2.0
-config.
+![rmut's index: a sidebar of mailboxes with new-mail counts, and an inbox with a threaded conversation, new and flagged messages](docs/img/rmut-index.svg)
 
-What is there, briefly: an index with threads (References and
-In-Reply-To, plus mutt's grouping by subject for mail that carries
-neither, folding, thread operations), mutt's patterns for limit,
-search, tag and delete, sort orders, `%`-format strings for the
-index, status and pager lines, colours by pattern and by depth of
-quoting, a sidebar and a folder browser with new-mail counts, a
-compose menu with attachments (files, messages, renames, dispositions),
-PGP sign/encrypt, postpone and recall, Fcc, identities and hooks
-(folder, message, reply, fcc, crypt), aliases and query_command
-completion, macros and mutt's enter-command (`:set`, `:bind`,
-`:color`, the `un*` family, `reset`), IMAP with a local cache, IDLE,
-transparent reconnect, server-side search and folder management, mbox
-with write-back, notmuch search into a virtual mailbox, undo and
-undo-send, and a man page (`docs/rmut.1`).
+rmut is a fast, keyboard-first mail client written in Rust. It lives
+in your terminal, and when you would rather have a window, it opens
+one: the same mailboxes, the same keys, the same settings. Threads,
+real search, PGP, IMAP with push, a composer that speaks Markdown,
+and an undo key for when you move faster than you meant to.
+Self-contained binaries, no runtime to install.
 
-Not there, on purpose: S/MIME, POP3, scoring, MH/MMDF folders,
-compressed-folder hooks, an embedded scripting language and an HTML
-rendering engine. Still to come in 2.x: `$tunnel` and accept-once
-for unknown certificates, and the PGP odds (opportunistic
-encryption, inline PGP). The round-by-round history is in
-[docs/PLAN.md](docs/PLAN.md).
+```sh
+cargo install rmut         # the terminal client
+cargo install rmut-egui    # the desktop window, if you want it
+rmut                       # finds your mail on its own
+```
 
-A pty-driven e2e suite (including fake IMAP/SMTP servers and a
-stub gpg) lives in `tests/e2e/`.
+## Why rmut
+
+- **A busy inbox, handled in seconds.** Every action is one key away:
+  read, reply, flag, tag a whole thread, file it, move on. Tag by
+  pattern (everything from a sender, older than a month, in a
+  thread) and act on the lot in one stroke.
+- **Quick, even when the server is not.** Headers are cached, IMAP
+  folders are mirrored locally, big folders stream in the
+  background, and new mail arrives by IDLE push. Syncing and fetching
+  happen while you keep working, and Ctrl+G gives up on a slow server.
+- **Mistakes are one key away from undone.** `z` walks back deletes,
+  flags, tags and pattern sweeps, however many messages they touched.
+  With `undo_send`, a sent message waits a few seconds, and `z` brings
+  it back to the composer.
+- **Write the way you like to write.** Your `$EDITOR` in the
+  terminal; in the window, a built-in editor or a full Neovim
+  embedded in place. Write in Markdown and the reader gets formatted
+  HTML, with the plain text you typed alongside it.
+- **Finds what you are looking for.** Search by sender, subject,
+  body, date range, size, thread or flags, and combine them; IMAP
+  searches run on the server, and notmuch covers the whole archive.
+- **Private by default.** TLS with certificate checks, OAuth2 for
+  providers that want it, passwords fetched from `pass` or any other
+  store, PGP signing and encryption through gpg, and temporary files
+  nobody else can read.
+- **Links, attachments, images.** URLs are clickable and copyable,
+  even over ssh; attachments open in your own viewers; the window
+  shows images inline.
+- **Tested like it matters.** Every change runs 88 end-to-end
+  scenarios that drive the real binary against fake IMAP and SMTP
+  servers.
+
+![A message open in rmut: the thread above it, headers, quoted replies in their own color, a numbered plan and a link](docs/img/rmut-message.svg)
+
+## Two faces, one mailbox
+
+`rmut` is the terminal client: it works over ssh, in tmux, on a
+server, anywhere a terminal does. `rmut-egui` is the same client in a
+native window, with the mouse, menus, zoom, a Preferences dialog,
+inline images and an embedded Neovim. Both read the same config and
+open the same maildirs, mbox files and IMAP accounts, so you can move
+between them freely. The window has its own manual,
+[rmut-egui(1)](docs/rmut-egui.1).
+
+## Coming from mutt?
+
+You already know how to drive it. rmut takes mutt's default keys,
+its patterns, its format strings, hooks, macros and `:set`, and
+`rmut --import-muttrc` turns your muttrc into rmut's config. What it
+adds on top (undo, undo send, Markdown compose, clickable links, the
+window, a network layer that never freezes the screen) is waiting
+when you want it. The details are under
+[Scope and mutt compatibility](#scope-and-mutt-compatibility) and
+[Coming from mutt](#coming-from-mutt-1) below.
 
 ## Install & run
 
@@ -51,8 +86,9 @@ cargo install --path crates/rmut
 cargo run -p rmut -- ~/Maildir         # or: just run ~/Maildir
 ```
 
-Tagged releases on GitHub carry a prebuilt x86_64-linux binary with
-the man page; `man docs/rmut.1` previews the manual from a checkout.
+Tagged releases on GitHub carry prebuilt x86_64-linux binaries of
+both, with the desktop entry and the man pages; `man docs/rmut.1`
+previews the manual from a checkout.
 
 ```
 usage: rmut [MAILDIR | MBOX | imap:ACCOUNT[/FOLDER]]   (-V version, -h help)
@@ -1143,6 +1179,44 @@ UTF-8 charset, pgp_auto_decode, ...) are acknowledged under
 account's stored `password`. Alias files need no
 translation: rmut reads mutt-format aliases, so point `$RMUT_ALIASES`
 at your existing file or copy it to `~/.config/rmut/aliases`.
+
+## Scope and mutt compatibility
+
+Since **2.0** rmut is a daily-drivable mutt replacement: mutt's index,
+pager and compose workflow under mutt's default keys, over maildir,
+mbox and IMAP/SMTP (TLS, OAuth2), with PGP through gpg(1). 2.0 marks
+the parity roadmap finishing, not a break: every default mutt key
+does something, a muttrc imports (`--import-muttrc`) and loads
+without errors, and every setting in the parity fixture
+(`tests/e2e/muttrc-parity.rc`, the hundred-odd that turn up in every
+dotfiles repo) is carried over or answered by what rmut does
+instead. The config format did not change; a 1.x config is a 2.0
+config.
+
+What is there, briefly: an index with threads (References and
+In-Reply-To, plus mutt's grouping by subject for mail that carries
+neither, folding, thread operations), mutt's patterns for limit,
+search, tag and delete, sort orders, `%`-format strings for the
+index, status and pager lines, colours by pattern and by depth of
+quoting, a sidebar and a folder browser with new-mail counts, a
+compose menu with attachments (files, messages, renames, dispositions),
+PGP sign/encrypt, postpone and recall, Fcc, identities and hooks
+(folder, message, reply, fcc, crypt), aliases and query_command
+completion, macros and mutt's enter-command (`:set`, `:bind`,
+`:color`, the `un*` family, `reset`), IMAP with a local cache, IDLE,
+transparent reconnect, server-side search and folder management, mbox
+with write-back, notmuch search into a virtual mailbox, undo and
+undo-send, and a man page (`docs/rmut.1`).
+
+Not there, on purpose: S/MIME, POP3, scoring, MH/MMDF folders,
+compressed-folder hooks, an embedded scripting language and an HTML
+rendering engine. Still to come in 2.x: `$tunnel` and accept-once
+for unknown certificates, and the PGP odds (opportunistic
+encryption, inline PGP). The round-by-round history is in
+[docs/PLAN.md](docs/PLAN.md).
+
+A pty-driven e2e suite (including fake IMAP/SMTP servers and a
+stub gpg) lives in `tests/e2e/`.
 
 ## Development
 

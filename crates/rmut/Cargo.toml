@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "rmut: a mutt-like mail client in Rust"
+description = "A fast, keyboard-first mail client for the terminal: threads, search, PGP, IMAP with push, Markdown compose and undo, on mutt's keys"
 keywords = ["mail", "mutt", "maildir", "imap", "tui"]
 categories = ["command-line-utilities", "email"]
 
