@@ -6,7 +6,7 @@
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -48,6 +48,42 @@ pub fn write(what: &str, suffix: &str, bytes: &[u8]) -> Result<PathBuf> {
     )
 }
 
+/// Replace `path` with `bytes` whole, readable by us alone: written
+/// beside it (mode 0600, synced) and renamed over it, so a crash
+/// leaves the old file or the new one. For what rmut keeps of the
+/// user's own, such as the prompt history.
+pub fn save_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = dir {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let name = path
+        .file_name()
+        .with_context(|| format!("{} names no file", path.display()))?;
+    let tmp = path.with_file_name(format!(
+        ".{}.rmut-new-{}-{}",
+        name.to_string_lossy(),
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| -> std::io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("writing {}", path.display()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +100,19 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         let _ = std::fs::remove_file(a);
         let _ = std::fs::remove_file(b);
+    }
+
+    #[test]
+    fn save_private_replaces_whole_and_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub/history");
+        save_private(&path, b"one").unwrap();
+        save_private(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("sub")).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temporary left behind");
     }
 
     #[test]

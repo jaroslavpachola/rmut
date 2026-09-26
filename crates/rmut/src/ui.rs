@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use rmut_core::message::Part;
 
-use rmut_front::pager::{Menu, PagerStyle, Row, RowKind, humanize_size, pager_rows, recenter};
+use rmut_front::pager::{Menu, PagerStyle, Row, RowKind, humanize_size, recenter};
 use rmut_front::status;
 
 use crate::app::{App, Mode, Pager, Prompt};
@@ -301,7 +301,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
     );
     let width = area.width as usize;
     let mut lines = Vec::with_capacity(rows);
-    let id_counts = rmut_front::index::id_counts(&app.session);
+    let id_counts = rmut_front::index::id_counts(&app.session, &app.index_rules);
     for (vi, &mi) in app
         .session
         .visible
@@ -336,7 +336,7 @@ fn draw_index(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) -> Vec<ScreenLink> {
-    let rows = pager_rows(
+    let rows = pager.rows.rows(
         &pager.view,
         app.pager_wrap(area.width as usize),
         pager.full_headers,
@@ -557,6 +557,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16
                 &app.session,
                 &status::PagerView {
                     view: &pager.view,
+                    rows: &pager.rows,
                     scroll: pager.scroll,
                     full_headers: pager.full_headers,
                     hide_quoted: pager.hide_quoted,

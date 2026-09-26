@@ -55,6 +55,9 @@ impl KeyPattern {
             KeyCode::Backspace => "Backspace".into(),
             KeyCode::Up => "Up".into(),
             KeyCode::Down => "Down".into(),
+            KeyCode::Left => "Left".into(),
+            KeyCode::Right => "Right".into(),
+            KeyCode::Delete => "Delete".into(),
             KeyCode::PageUp => "PgUp".into(),
             KeyCode::PageDown => "PgDn".into(),
             KeyCode::Home => "Home".into(),
@@ -96,6 +99,7 @@ pub fn parse_key(input: &str) -> Option<KeyPattern> {
         "space" => KeyCode::Char(' '),
         "tab" => KeyCode::Tab,
         "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
         "left" => KeyCode::Left,
@@ -721,6 +725,14 @@ mod tests {
         assert_eq!(parse_key("x"), Some(KeyPattern::ch('x')));
         assert_eq!(parse_key("X"), Some(KeyPattern::ch('X')));
         assert_eq!(parse_key("ctrl+f"), Some(KeyPattern::ctrl('f')));
+        let del = parse_key("delete").unwrap();
+        assert_eq!(del.code, KeyCode::Delete);
+        assert_eq!(parse_key("Del"), Some(del));
+        assert_eq!(del.display(), "Delete");
+        assert_eq!(
+            parse_sequence("x<delete>").unwrap()[1].code,
+            KeyCode::Delete
+        );
         assert_eq!(parse_key("Alt+v"), Some(KeyPattern::alt('v')));
         assert_eq!(parse_key("space"), Some(KeyPattern::ch(' ')));
         assert_eq!(

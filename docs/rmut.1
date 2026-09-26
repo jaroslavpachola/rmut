@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.12.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.13.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -563,11 +563,15 @@ a mailbox and the folder browser's listing still wait, bounded by
 Every line prompt is a small line editor: Left/Right, Home/End (also
 ctrl+a / ctrl+e), Backspace and Del (ctrl+d) around the cursor,
 ctrl+u kills to the start, ctrl+k to the end, ctrl+w the word before
-the cursor. Up/Down recall the prompt kind's history (patterns,
+the cursor; alt+b and alt+f move a word back and on, alt+d kills to
+the end of the word. Esc or ctrl+g leaves the prompt. Tab completes
+the word before the cursor at an address or mailbox prompt, leaving
+what follows it. Up/Down recall the prompt kind's history (patterns,
 addresses, mailboxes, files, commands), newest first. The history is
 per session unless
 .B "[ui] history_file"
-(mutt's $history_file) names a file to persist it in, up to
+(mutt's $history_file) names a file to persist it in (replaced
+whole, mode 600), up to
 .B save_history
 entries a kind (default 100).
 .SS Compose questions
@@ -1142,7 +1146,8 @@ full list.
 .B format
 mutt's $pager_format for the pager's bottom line: %C message
 number, %m count, %n sender, %s subject, %Z status characters,
-%P percent through the message, %f mailbox, plus the conditional
+%P how far through the message (all, end, or a percentage), %f
+mailbox, plus the conditional
 and %>X machinery. Default: "\-\-\-Message %C/%m: %s \-\- %P".
 .TP
 .B wrap
@@ -1497,8 +1502,8 @@ e.g. sync = "w". Action names appear in the
 .B ?
 help; keys are a single character,
 .BR ctrl+x / alt+x ,
-or a name: enter, esc, space, tab, backspace, up, down, pgup, pgdn,
-home, end.
+or a name: enter, esc, space, tab, backspace, delete, up, down,
+left, right, pgup, pgdn, home, end.
 .SS [macros.index], [macros.pager]
 .IR key " = " sequence
 \(em the key replays the sequence (literal characters plus key names

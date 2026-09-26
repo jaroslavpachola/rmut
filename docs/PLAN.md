@@ -2344,6 +2344,38 @@ stack's rewritten messages).
       can dawdle now), scenario_postpone_from_mirror; the e2e
       sandbox gets its own XDG_DATA_HOME
 
+## R95: the rmut-front review (done, 2.13.0; asked for by name, 2026-09-26)
+
+Goal: act on an outside review of rmut-front, each finding checked
+against the code and the pager's cost measured first. Not taken: a
+kill ring and Ctrl+Y (mutt's line editor has neither; that is
+"Beyond mutt"). Left for a round of its own: mutt's `colorN` names,
+which want an indexed color in both fronts.
+
+- [x] Line prompts: Ctrl+G leaves them as Esc does (mutt's abort key
+      was ignored there), alt+b / alt+f / alt+d are mutt's word
+      motions and kill, and any other Alt+letter no longer types the
+      letter
+- [x] The pager's rows are built once per layout (`RowCache`, kept
+      beside the view in both fronts, keyed by the width, the toggles
+      and the style) instead of twice a frame and again on every
+      motion key: a 20,000-line message cost 33 ms a build, 100,000
+      lines 157 ms
+- [x] mutt's `bright*` colors parse, as written and as the importer
+      writes them (`lightblack` / `lightwhite` were refused)
+- [x] The Delete key binds and goes in macros (`delete` / `del`), and
+      the importer carries `<delete>`, `<left>` and `<right>`
+- [x] The pager wraps by display columns (unicode-width): CJK and
+      emoji take two, so their lines no longer run past the edge
+- [x] Tab completes the word before the cursor and keeps what
+      follows, instead of always the last token of the line
+- [x] The pager's %P is mutt's: all, end, or a percentage
+- [x] The history file is replaced whole, mode 600, its buckets in a
+      fixed order; a hand-edited one loads capped and deduplicated
+- [x] The `~=` Message-ID tally runs only when a color rule has one
+- [x] Unit tests for each; e2e scenario_prompt_keys (Ctrl+G, Alt+b,
+      a bound Delete)
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2726,6 +2758,17 @@ place (a label, a thread operation, an edit) is replaced whole, never
 left cut off by a crash. Drafts postponed from an IMAP, mbox or
 notmuch mailbox go to `~/.local/share/rmut/postponed` rather than the
 cache, and sendmail is told where the options end.
+
+## 2.13.0 (released 2026-09-26)
+
+R95, the rmut-front review. Ctrl+G leaves a line prompt, as in mutt,
+and alt+b / alt+f / alt+d move and kill by words instead of typing a
+letter. The pager builds a message's rows once per layout rather than
+several times a keystroke, so a long patch or log pages without lag,
+and it wraps CJK and emoji by the columns they take. mutt's bright
+colors import and parse, Delete can be bound, Tab completes the word
+at the cursor, %P reads all / end, and the history file is written
+whole and private.
 
 ## Still open inside rounds marked done
 

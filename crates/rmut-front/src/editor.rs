@@ -16,12 +16,38 @@ pub fn byte_at(buf: &str, cursor: usize) -> usize {
         .unwrap_or(buf.len())
 }
 
+/// Where the word before `cursor` starts (whitespace skipped first).
+fn word_start(buf: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = buf.chars().collect();
+    let mut c = cursor.min(chars.len());
+    while c > 0 && chars[c - 1].is_whitespace() {
+        c -= 1;
+    }
+    while c > 0 && !chars[c - 1].is_whitespace() {
+        c -= 1;
+    }
+    c
+}
+
+/// Where the word at or after `cursor` ends (whitespace skipped first).
+fn word_end(buf: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = buf.chars().collect();
+    let mut c = cursor.min(chars.len());
+    while c < chars.len() && chars[c].is_whitespace() {
+        c += 1;
+    }
+    while c < chars.len() && !chars[c].is_whitespace() {
+        c += 1;
+    }
+    c
+}
+
 /// What a key did to the line, or what it asks the front end for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Edit {
     /// The line changed, or the cursor moved. Nothing to do but draw.
     Edited,
-    /// Esc.
+    /// Esc, or mutt's Ctrl+G.
     Cancel,
     /// Enter: the line is the answer.
     Submit,
@@ -66,10 +92,21 @@ impl LineEdit {
     /// The line editor, mutt/readline style.
     pub fn key(&mut self, key: KeyEvent) -> Edit {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         let buf = &mut self.buf;
         let cursor = &mut self.cursor;
         match key.code {
             KeyCode::Esc => return Edit::Cancel,
+            KeyCode::Char('g') if ctrl => return Edit::Cancel,
+            // mutt's backward-word, forward-word and kill-eow. Words
+            // end at whitespace, as Ctrl+W's do.
+            KeyCode::Char('b') if alt => *cursor = word_start(buf, *cursor),
+            KeyCode::Char('f') if alt => *cursor = word_end(buf, *cursor),
+            KeyCode::Char('d') if alt => {
+                let end = word_end(buf, *cursor);
+                let (from, to) = (byte_at(buf, *cursor), byte_at(buf, end));
+                buf.replace_range(from..to, "");
+            }
             KeyCode::Enter => return Edit::Submit,
             KeyCode::Tab => return Edit::Complete,
             KeyCode::Up => return Edit::History(true),
@@ -108,19 +145,13 @@ impl LineEdit {
             }
             KeyCode::Char('w') if ctrl => {
                 // Kill the word before the cursor.
-                let chars: Vec<char> = buf.chars().collect();
-                let mut c = *cursor;
-                while c > 0 && chars[c - 1].is_whitespace() {
-                    c -= 1;
-                }
-                while c > 0 && !chars[c - 1].is_whitespace() {
-                    c -= 1;
-                }
+                let c = word_start(buf, *cursor);
                 let (start, end) = (byte_at(buf, c), byte_at(buf, *cursor));
                 buf.replace_range(start..end, "");
                 *cursor = c;
             }
-            KeyCode::Char(c) if !ctrl => {
+            // Any other Alt+letter is a key, not text to type.
+            KeyCode::Char(c) if !ctrl && !alt => {
                 buf.insert(byte_at(buf, *cursor), c);
                 *cursor += 1;
             }
@@ -198,18 +229,25 @@ impl History {
                 && !entry.is_empty()
                 && let Some(known) = KNOWN_BUCKETS.iter().find(|b| **b == bucket)
             {
-                self.buckets
-                    .entry(known)
-                    .or_default()
-                    .push(entry.to_string());
+                let list = self.buckets.entry(known).or_default();
+                // As push keeps it: no duplicates, 100 deep, even when
+                // the file was edited by hand.
+                if list.len() < 100 && !list.iter().any(|e| e == entry) {
+                    list.push(entry.to_string());
+                }
             }
         }
     }
 
-    /// Write the history back, at most `cap` entries per bucket.
+    /// Write the history back, at most `cap` entries per bucket, the
+    /// buckets in a fixed order. The file is replaced whole and kept
+    /// private: it holds addresses and searches.
     pub fn save(&self, path: &Path, cap: usize) {
         let mut out = String::new();
-        for (bucket, entries) in &self.buckets {
+        for bucket in KNOWN_BUCKETS {
+            let Some(entries) = self.buckets.get(bucket) else {
+                continue;
+            };
             for entry in entries.iter().take(cap) {
                 // A tab or newline in an entry would corrupt the file;
                 // both are vanishingly rare in a prompt, and dropped.
@@ -218,73 +256,84 @@ impl History {
                 }
             }
         }
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, out);
+        let _ = rmut_core::scratch::save_private(path, out.as_bytes());
     }
 }
 
-/// Tab-completion state: candidates for the token at `start`,
-/// `expect` being the whole line after the last insertion (an edit in
+/// Tab-completion state: candidates for the token at `start`, `tail`
+/// the text after the cursor that the completion leaves alone, and
+/// `expect` the whole line after the last insertion (an edit in
 /// between restarts the match).
 #[derive(Clone, Debug)]
 pub struct Complete {
     start: usize,
+    tail: String,
     candidates: Vec<String>,
     index: usize,
     expect: String,
 }
 
 impl Complete {
-    /// Where the token to complete begins, and the token: the text
-    /// after the last comma at an address prompt (mutt's address
-    /// list), the whole line elsewhere, leading space skipped.
-    pub fn token(buf: &str, address_list: bool) -> (usize, String) {
+    /// Where the token to complete begins, and the token: what stands
+    /// before the cursor, after the last comma before it at an
+    /// address prompt (mutt's address list) or from the start of the
+    /// line elsewhere, leading space skipped.
+    pub fn token(buf: &str, cursor: usize, address_list: bool) -> (usize, String) {
+        let head = &buf[..byte_at(buf, cursor)];
         let after_comma = if address_list {
-            buf.rfind(',').map(|i| i + 1).unwrap_or(0)
+            head.rfind(',').map(|i| i + 1).unwrap_or(0)
         } else {
             0
         };
-        let start = after_comma + buf[after_comma..].len() - buf[after_comma..].trim_start().len();
-        (start, buf[start..].trim().to_string())
+        let start =
+            after_comma + head[after_comma..].len() - head[after_comma..].trim_start().len();
+        (start, head[start..].trim().to_string())
     }
 
-    /// Another Tab on an unchanged line: the next candidate, and the
-    /// "match n/m" note. None when the line was edited since, or
-    /// there is only one candidate.
-    pub fn cycle(&mut self, buf: &str) -> Option<(String, String)> {
+    /// The line with this candidate in, and the cursor just after it.
+    fn fill(&self, buf: &str) -> (String, usize) {
+        let head = format!("{}{}", &buf[..self.start], self.candidates[self.index]);
+        let cursor = head.chars().count();
+        (head + &self.tail, cursor)
+    }
+
+    /// Another Tab on an unchanged line: the next candidate (the line
+    /// and the cursor), and the "match n/m" note. None when the line
+    /// was edited since, or there is only one candidate.
+    pub fn cycle(&mut self, buf: &str) -> Option<((String, usize), String)> {
         if self.expect != buf || self.candidates.len() < 2 {
             return None;
         }
         self.index = (self.index + 1) % self.candidates.len();
-        let next = format!("{}{}", &buf[..self.start], self.candidates[self.index]);
-        self.expect = next.clone();
+        let next = self.fill(buf);
+        self.expect = next.0.clone();
         let note = format!("match {}/{}", self.index + 1, self.candidates.len());
         Some((next, note))
     }
 
-    /// A fresh match: the line with the first candidate in, the note
-    /// when there are more, and the state for the next Tab.
-    /// `candidates` is not empty.
+    /// A fresh match for the token [`Complete::token`] found before
+    /// `cursor`: the line with the first candidate in and the cursor
+    /// after it, the note when there are more, and the state for the
+    /// next Tab. What follows the cursor stays. `candidates` is not
+    /// empty.
     pub fn first(
         buf: &str,
+        cursor: usize,
         start: usize,
         candidates: Vec<String>,
-    ) -> (Complete, String, Option<String>) {
-        let next = format!("{}{}", &buf[..start], candidates[0]);
-        let note =
-            (candidates.len() > 1).then(|| format!("match 1/{} (Tab cycles)", candidates.len()));
-        (
-            Complete {
-                start,
-                candidates,
-                index: 0,
-                expect: next.clone(),
-            },
-            next,
-            note,
-        )
+    ) -> (Complete, (String, usize), Option<String>) {
+        let mut state = Complete {
+            start,
+            tail: buf[byte_at(buf, cursor)..].to_string(),
+            candidates,
+            index: 0,
+            expect: String::new(),
+        };
+        let next = state.fill(buf);
+        state.expect = next.0.clone();
+        let note = (state.candidates.len() > 1)
+            .then(|| format!("match 1/{} (Tab cycles)", state.candidates.len()));
+        (state, next, note)
     }
 }
 
@@ -298,6 +347,28 @@ mod tests {
 
     fn ctrl(edit: &mut LineEdit, c: char) -> Edit {
         edit.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    #[test]
+    fn ctrl_g_cancels_and_alt_moves_by_words() {
+        let alt =
+            |e: &mut LineEdit, c: char| e.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT));
+        let mut e = LineEdit::new("one two  three".into());
+        assert_eq!(ctrl(&mut e, 'g'), Edit::Cancel);
+        alt(&mut e, 'b');
+        assert_eq!(e.cursor, 9);
+        alt(&mut e, 'b');
+        assert_eq!(e.cursor, 4);
+        alt(&mut e, 'f');
+        assert_eq!(e.cursor, 7);
+        alt(&mut e, 'd');
+        assert_eq!(e.buf, "one two");
+        e.cursor = 0;
+        alt(&mut e, 'd');
+        assert_eq!(e.buf, " two");
+        // Another Alt+letter types nothing.
+        assert_eq!(alt(&mut e, 'x'), Edit::Ignored);
+        assert_eq!(e.buf, " two");
     }
 
     #[test]
@@ -377,21 +448,35 @@ mod tests {
 
     #[test]
     fn completion_tokens_and_cycling() {
-        assert_eq!(Complete::token("jane, bo", true), (6, "bo".into()));
-        assert_eq!(Complete::token("  =arch", false), (2, "=arch".into()));
+        assert_eq!(Complete::token("jane, bo", 8, true), (6, "bo".into()));
+        assert_eq!(Complete::token("  =arch", 7, false), (2, "=arch".into()));
         let (mut c, line, note) = Complete::first(
             "jane, bo",
+            8,
             6,
             vec!["bob@example.com".into(), "bonnie@example.com".into()],
         );
-        assert_eq!(line, "jane, bob@example.com");
+        assert_eq!(line, ("jane, bob@example.com".to_string(), 21));
         assert_eq!(note.as_deref(), Some("match 1/2 (Tab cycles)"));
-        let (line, note) = c.cycle(&line).unwrap();
-        assert_eq!(line, "jane, bonnie@example.com");
+        let (line, note) = c.cycle(&line.0).unwrap();
+        assert_eq!(line.0, "jane, bonnie@example.com");
         assert_eq!(note, "match 2/2");
         assert!(c.cycle("edited since").is_none());
-        let (mut one, line, note) = Complete::first("x", 0, vec!["xy".into()]);
-        assert_eq!((line.as_str(), note), ("xy", None));
+        let (mut one, line, note) = Complete::first("x", 1, 0, vec!["xy".into()]);
+        assert_eq!((line.0.as_str(), note), ("xy", None));
         assert!(one.cycle("xy").is_none());
+    }
+
+    #[test]
+    fn completion_works_on_the_token_before_the_cursor() {
+        // The cursor back on the first address of a list: that one
+        // completes, and the rest of the line stays as it was.
+        let buf = "ja, carol@example.com";
+        let (start, word) = Complete::token(buf, 2, true);
+        assert_eq!((start, word.as_str()), (0, "ja"));
+        let (_, (line, cursor), _) =
+            Complete::first(buf, 2, start, vec!["jane@example.com".into()]);
+        assert_eq!(line, "jane@example.com, carol@example.com");
+        assert_eq!(cursor, 16);
     }
 }

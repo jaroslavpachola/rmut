@@ -35,6 +35,8 @@ pub struct Pager {
     /// attachment menu to restore on q or paging past the end (mutt
     /// returns to the menu there, never to the next message).
     pub back: Option<Box<Mode>>,
+    /// The view's rows, built once per layout rather than per frame.
+    pub rows: rmut_front::pager::RowCache,
 }
 
 pub enum Mode {
@@ -516,6 +518,7 @@ impl App {
                         full_headers: false,
                         hide_quoted: false,
                         back: None,
+                        rows: Default::default(),
                     });
                 }
                 Request::ShowDraft => self.open_compose_menu(),
@@ -1041,8 +1044,8 @@ impl App {
     /// candidates, and with nothing typed at the c prompt, open the
     /// folder browser instead. Repeated Tab cycles the candidates.
     fn tab_complete(&mut self) {
-        let (buf_now, kind) = match &self.prompt {
-            Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), kind.clone()),
+        let (buf_now, cursor, kind) = match &self.prompt {
+            Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), edit.cursor, kind.clone()),
             _ => return,
         };
         // A session question says what its answer is; the front end's
@@ -1071,9 +1074,10 @@ impl App {
             self.open_folder_browser();
             return;
         }
-        let set_buf = |app: &mut App, text: &str| {
+        let set_buf = |app: &mut App, (text, at): &(String, usize)| {
             if let Some(Prompt::Line { edit, .. }) = &mut app.prompt {
                 edit.set(text);
+                edit.cursor = *at;
             }
         };
         if let Some(c) = &mut self.complete
@@ -1084,7 +1088,7 @@ impl App {
             return;
         }
         self.complete = None;
-        let (start, word) = Complete::token(&buf_now, is_addr);
+        let (start, word) = Complete::token(&buf_now, cursor, is_addr);
         if word.is_empty() {
             self.error("nothing to complete");
             return;
@@ -1113,7 +1117,7 @@ impl App {
             self.error(format!("no matches for {word}"));
             return;
         }
-        let (state, next, note) = Complete::first(&buf_now, start, candidates);
+        let (state, next, note) = Complete::first(&buf_now, cursor, start, candidates);
         set_buf(self, &next);
         if let Some(note) = note {
             self.note(note);
@@ -1583,13 +1587,16 @@ impl App {
         let Mode::Pager(pager) = &mut self.mode else {
             return;
         };
-        let lines = rmut_front::pager::pager_line_count(
-            &pager.view,
-            width,
-            pager.full_headers,
-            &rmut_front::pager::PagerStyle::of(&self.session.config, &self.session.quote_re),
-            pager.hide_quoted,
-        );
+        let lines = pager
+            .rows
+            .rows(
+                &pager.view,
+                width,
+                pager.full_headers,
+                &rmut_front::pager::PagerStyle::of(&self.session.config, &self.session.quote_re),
+                pager.hide_quoted,
+            )
+            .len();
         let max_scroll = lines.saturating_sub(page);
         // mutt's $pager_stop = no: paging past the end opens the next
         // message, except in a part view, which returns to its
@@ -1635,20 +1642,23 @@ impl App {
             PagerAction::ToggleQuoted => {
                 pager.hide_quoted = !pager.hide_quoted;
                 // The row count changed: keep the scroll in range.
-                let lines = rmut_front::pager::pager_line_count(
-                    &pager.view,
-                    width,
-                    pager.full_headers,
-                    &rmut_front::pager::PagerStyle::of(
-                        &self.session.config,
-                        &self.session.quote_re,
-                    ),
-                    pager.hide_quoted,
-                );
+                let lines = pager
+                    .rows
+                    .rows(
+                        &pager.view,
+                        width,
+                        pager.full_headers,
+                        &rmut_front::pager::PagerStyle::of(
+                            &self.session.config,
+                            &self.session.quote_re,
+                        ),
+                        pager.hide_quoted,
+                    )
+                    .len();
                 pager.scroll = pager.scroll.min(lines.saturating_sub(page));
             }
             PagerAction::SkipQuoted => {
-                let rows = rmut_front::pager::pager_rows(
+                let rows = pager.rows.rows(
                     &pager.view,
                     width,
                     pager.full_headers,
@@ -1874,6 +1884,7 @@ impl App {
             full_headers: false,
             hide_quoted: false,
             back: Some(Box::new(menu)),
+            rows: Default::default(),
         });
     }
 

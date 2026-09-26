@@ -3,16 +3,16 @@ resolver = "2"
 members = ["crates/rmut-core", "crates/rmut-session", "crates/rmut-front", "crates/rmut", "crates/rmut-egui"]
 
 [workspace.package]
-version = "2.12.0"
+version = "2.13.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/jaroslavpachola/rmut"
 readme = "README.md"
 
 [workspace.dependencies]
-rmut-core = { path = "crates/rmut-core", version = "2.12.0" }
-rmut-session = { path = "crates/rmut-session", version = "2.12.0" }
-rmut-front = { path = "crates/rmut-front", version = "2.12.0" }
+rmut-core = { path = "crates/rmut-core", version = "2.13.0" }
+rmut-session = { path = "crates/rmut-session", version = "2.13.0" }
+rmut-front = { path = "crates/rmut-front", version = "2.13.0" }
 anyhow = "1"
 ratatui = "0.29"
 egui_extras = { version = "0.36", default-features = false, features = ["image"] }
@@ -20,6 +20,8 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "wayl
 chrono = "0.4"
 mailparse = "0.16"
 regex-lite = "0.1"
+# display columns: the pager wraps CJK and emoji at two apiece
+unicode-width = "0.2"
 rmpv = "1"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 libc = "0.2"

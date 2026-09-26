@@ -13,6 +13,7 @@ categories = ["email"]
 regex-lite = { workspace = true }
 rmut-core = { workspace = true }
 rmut-session = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }

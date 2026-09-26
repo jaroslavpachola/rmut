@@ -9,7 +9,7 @@ use eframe::egui;
 use rmut_core::notice::{Notice, NoticeSink};
 use rmut_core::pattern::Pattern;
 use rmut_front::editor::{Complete, Edit, History, LineEdit};
-use rmut_front::pager::{PagerStyle, pager_line_count};
+use rmut_front::pager::PagerStyle;
 use rmut_front::status;
 use rmut_front::style::{Style, rule_style};
 use rmut_front::theme::Theme;
@@ -29,6 +29,8 @@ pub struct Pager {
     /// Set when this pager shows a single attachment part: the
     /// attachment menu to restore on q (mutt returns to the menu).
     pub back: Option<Box<Mode>>,
+    /// The view's rows, built once per layout rather than per frame.
+    pub rows: rmut_front::pager::RowCache,
 }
 
 pub enum Mode {
@@ -468,6 +470,7 @@ impl Gui {
                         full_headers: false,
                         hide_quoted: false,
                         back: None,
+                        rows: Default::default(),
                     });
                 }
                 Request::Command(cmd) => {
@@ -973,6 +976,7 @@ impl Gui {
             full_headers: false,
             hide_quoted: false,
             back: Some(Box::new(menu)),
+            rows: Default::default(),
         });
     }
 
@@ -2564,8 +2568,8 @@ impl Gui {
     /// prompt, the folder browser opens instead. Repeated Tab
     /// cycles. The TUI's, ported.
     fn tab_complete(&mut self) {
-        let (buf_now, kind) = match &self.prompt {
-            Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), kind.clone()),
+        let (buf_now, cursor, kind) = match &self.prompt {
+            Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), edit.cursor, kind.clone()),
             _ => return,
         };
         let is_addr = matches!(
@@ -2591,9 +2595,10 @@ impl Gui {
             self.open_folder_browser();
             return;
         }
-        let set_buf = |gui: &mut Gui, text: &str| {
+        let set_buf = |gui: &mut Gui, (text, at): &(String, usize)| {
             if let Some(Prompt::Line { edit, .. }) = &mut gui.prompt {
                 edit.set(text);
+                edit.cursor = *at;
             }
         };
         if let Some(c) = &mut self.complete
@@ -2604,7 +2609,7 @@ impl Gui {
             return;
         }
         self.complete = None;
-        let (start, word) = Complete::token(&buf_now, is_addr);
+        let (start, word) = Complete::token(&buf_now, cursor, is_addr);
         if word.is_empty() {
             self.error("nothing to complete");
             return;
@@ -2637,7 +2642,7 @@ impl Gui {
             self.error(format!("no matches for {word}"));
             return;
         }
-        let (state, next, note) = Complete::first(&buf_now, start, candidates);
+        let (state, next, note) = Complete::first(&buf_now, cursor, start, candidates);
         set_buf(self, &next);
         if let Some(note) = note {
             self.note(note);
@@ -2711,13 +2716,16 @@ impl Gui {
             return 0;
         };
         let wrap = rmut_front::status::pager_wrap(&self.session.config, width);
-        pager_line_count(
-            &pager.view,
-            wrap,
-            pager.full_headers,
-            &PagerStyle::of(&self.session.config, &self.session.quote_re),
-            pager.hide_quoted,
-        )
+        pager
+            .rows
+            .rows(
+                &pager.view,
+                wrap,
+                pager.full_headers,
+                &PagerStyle::of(&self.session.config, &self.session.quote_re),
+                pager.hide_quoted,
+            )
+            .len()
     }
 
     fn pager_lines(&self) -> usize {
@@ -2725,13 +2733,16 @@ impl Gui {
             return 0;
         };
         let width = rmut_front::status::pager_wrap(&self.session.config, self.view_size.1);
-        pager_line_count(
-            &pager.view,
-            width,
-            pager.full_headers,
-            &PagerStyle::of(&self.session.config, &self.session.quote_re),
-            pager.hide_quoted,
-        )
+        pager
+            .rows
+            .rows(
+                &pager.view,
+                width,
+                pager.full_headers,
+                &PagerStyle::of(&self.session.config, &self.session.quote_re),
+                pager.hide_quoted,
+            )
+            .len()
     }
 
     /// The pager's own page: the mini-index (pager.index_lines)

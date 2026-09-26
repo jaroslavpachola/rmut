@@ -1673,7 +1673,7 @@ def scenario_pager_polish(tmp):
     r.expect("+delta epsilon zeta")
     # $tilde pads the empty rows; the custom format fills with - up
     # to the right-aligned position.
-    r.expect("~~~~~", "PGRFMT 1/1", "--100%")
+    r.expect("~~~~~", "PGRFMT 1/1", "--all")  # mutt's %P: the message fits
     r.keys(b"q")
     r.keys(b"q")
     r.close()
@@ -5113,6 +5113,44 @@ imap_tls = false
     r.close()
 
 
+def scenario_prompt_keys(tmp):
+    """R95: Ctrl+G leaves a line prompt as Esc does, Alt+b moves back a
+    word instead of typing a b, and Delete can be bound."""
+    md = make_maildir(tmp, "md-prompt-keys")
+    write_msgs(md, ["jane", "petr", "ci"])
+    cfg = os.path.join(tmp, "prompt-keys-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[keys.index]\ndelete = "delete"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:3")
+    # Ctrl+G: the prompt goes, and the next key is a command again.
+    r.keys(b"lzzz")
+    r.expect("zzz")
+    r.keys(b"\x07")
+    r.settle()
+    r.keys(b"V")
+    r.expect(f"rmut {VERSION}")
+    r.settle()
+    # Alt+b (Esc b in a terminal) steps back over "Friday", so the
+    # "on " lands before it: ~s on Friday finds the one message.
+    r.keys(b"l~s Friday")
+    r.settle()
+    r.keys(b"\x1bb")
+    r.settle()
+    r.keys(b"on \r")
+    r.expect("Msgs:1", "Lunch on Friday?")
+    r.keys(b"l\x15\r")
+    r.expect("Msgs:3")
+    r.settle()
+    # The Delete key, bound from the config, marks for deletion.
+    r.keys(b"=\x1b[3~")
+    r.expect("Del:1")
+    r.keys(b"q")
+    r.expect("Purge 1 deleted")
+    r.keys(b"n")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -5198,6 +5236,7 @@ SCENARIOS = [
     scenario_label_after_reopen,
     scenario_sync_while_busy,
     scenario_postpone_from_mirror,
+    scenario_prompt_keys,
 ]
 
 

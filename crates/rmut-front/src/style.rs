@@ -94,7 +94,13 @@ pub fn parse_color(name: &str) -> Option<Color> {
     {
         return Some(Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
     }
-    Some(match name.to_lowercase().as_str() {
+    let name = name.to_lowercase();
+    // mutt's bright* names, which the muttrc importer writes as light*.
+    let name = match name.strip_prefix("bright") {
+        Some(base) => format!("light{base}"),
+        None => name,
+    };
+    Some(match name.as_str() {
         "default" => Color::Reset,
         "black" => Color::Black,
         "red" => Color::Red,
@@ -104,7 +110,8 @@ pub fn parse_color(name: &str) -> Option<Color> {
         "magenta" => Color::Magenta,
         "cyan" => Color::Cyan,
         "white" => Color::White,
-        "gray" | "grey" | "darkgray" | "darkgrey" => Color::DarkGray,
+        "gray" | "grey" | "darkgray" | "darkgrey" | "lightblack" => Color::DarkGray,
+        "lightwhite" => Color::White,
         "lightred" => Color::LightRed,
         "lightgreen" => Color::LightGreen,
         "lightyellow" => Color::LightYellow,
@@ -144,6 +151,16 @@ pub fn rule_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutt_bright_names_parse_as_written_and_as_imported() {
+        assert_eq!(parse_color("brightblack"), Some(Color::DarkGray));
+        assert_eq!(parse_color("lightblack"), Some(Color::DarkGray));
+        assert_eq!(parse_color("brightwhite"), Some(Color::White));
+        assert_eq!(parse_color("lightwhite"), Some(Color::White));
+        assert_eq!(parse_color("BrightRed"), Some(Color::LightRed));
+        assert_eq!(parse_color("brightbogus"), None);
+    }
 
     #[test]
     fn hex_colors_parse_and_bad_ones_do_not() {

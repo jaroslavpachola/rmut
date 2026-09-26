@@ -14,9 +14,19 @@ use crate::style::Style;
 use crate::theme::Theme;
 
 /// How often each Message-ID occurs, for the `~=` (duplicate)
-/// pattern in a color rule. Counted once per draw.
-pub fn id_counts(session: &Session) -> HashMap<&str, usize> {
+/// pattern in a color rule. Counted once per draw, and only when one
+/// of `rules` asks: a big mailbox is milliseconds a frame.
+pub fn id_counts<'a>(
+    session: &'a Session,
+    rules: &[(Vec<Pattern>, Style)],
+) -> HashMap<&'a str, usize> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
+    if !rules
+        .iter()
+        .any(|(patterns, _)| pattern::mentions_duplicate(patterns))
+    {
+        return counts;
+    }
     for m in &session.msgs {
         if let Some(id) = m.env.msg_id.as_deref() {
             *counts.entry(id).or_default() += 1;

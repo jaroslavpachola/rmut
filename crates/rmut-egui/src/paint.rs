@@ -3,7 +3,7 @@
 //! its rows and styles into egui text.
 
 use eframe::egui::{self, Color32, FontId, RichText, TextFormat, text::LayoutJob};
-use rmut_front::pager::{Menu, PagerStyle, RowKind, pager_rows, recenter};
+use rmut_front::pager::{Menu, PagerStyle, RowKind, recenter};
 use rmut_front::status;
 use rmut_front::style::{Color, Style};
 
@@ -320,6 +320,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 &gui.session,
                 &status::PagerView {
                     view: &pager.view,
+                    rows: &pager.rows,
                     scroll: pager.scroll,
                     full_headers: pager.full_headers,
                     hide_quoted: pager.hide_quoted,
@@ -721,7 +722,7 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
     let max_offset = gui.session.visible.len().saturating_sub(rows);
     gui.index_offset = (gui.index_offset as i64 + wheel_rows(gui, ui, size, region))
         .clamp(0, max_offset as i64) as usize;
-    let id_counts = rmut_front::index::id_counts(&gui.session);
+    let id_counts = rmut_front::index::id_counts(&gui.session, &gui.index_rules);
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut clicked: Option<(usize, bool)> = None;
     let mut ctx_fire: Option<(usize, &str)> = None;
@@ -999,7 +1000,7 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         return;
     };
     let wrap = status::pager_wrap(&gui.session.config, width);
-    let all = pager_rows(
+    let all = pager.rows.rows(
         &pager.view,
         wrap,
         pager.full_headers,

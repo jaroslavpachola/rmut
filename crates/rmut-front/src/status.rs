@@ -7,7 +7,7 @@ use rmut_core::format;
 use rmut_core::message::MessageView;
 use rmut_session::Session;
 
-use crate::pager::{PagerStyle, pager_line_count};
+use crate::pager::{PagerStyle, RowCache};
 
 /// mutt's $wrap: the pager's text width at a screen width. Positive
 /// caps it, negative leaves that margin (never under 20 columns).
@@ -22,6 +22,8 @@ pub fn pager_wrap(config: &Config, width: usize) -> usize {
 /// What the pager's status line needs to know about the open message.
 pub struct PagerView<'a> {
     pub view: &'a MessageView,
+    /// The front end's rows for this view: the status line counts them.
+    pub rows: &'a RowCache,
     pub scroll: usize,
     pub full_headers: bool,
     pub hide_quoted: bool,
@@ -154,14 +156,17 @@ pub fn pager_status(
     content_height: usize,
     width: usize,
 ) -> String {
-    let total = pager_line_count(
-        pager.view,
-        pager_wrap(&session.config, width),
-        pager.full_headers,
-        &PagerStyle::of(&session.config, &session.quote_re),
-        pager.hide_quoted,
-    )
-    .max(1);
+    let total = pager
+        .rows
+        .rows(
+            pager.view,
+            pager_wrap(&session.config, width),
+            pager.full_headers,
+            &PagerStyle::of(&session.config, &session.quote_re),
+            pager.hide_quoted,
+        )
+        .len()
+        .max(1);
     let shown = (pager.scroll + content_height).min(total);
     let subject = pager
         .view
@@ -192,7 +197,13 @@ pub fn pager_status(
                 )
             })
             .unwrap_or_default(),
-        'P' => format!("{}%", shown * 100 / total),
+        // mutt's pager: "all" when the message fits, "end" once its
+        // last line is on screen, a percentage until then.
+        'P' => match (pager.scroll, shown >= total) {
+            (0, true) => "all".into(),
+            (_, true) => "end".into(),
+            _ => format!("{}%", shown * 100 / total),
+        },
         'f' => session.title.clone(),
         '%' => "%".to_string(),
         other => format!("%{other}"),

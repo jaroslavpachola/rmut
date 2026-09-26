@@ -134,6 +134,58 @@ impl<'a> PagerStyle<'a> {
     }
 }
 
+/// The rows of the message on show, built once per layout. The pager
+/// draws every frame, its status line counts the rows, and each
+/// motion key needs the count too: rebuilt from the text each time, a
+/// big patch or log (tens of thousands of lines) cost tens of
+/// milliseconds a keystroke. A front end keeps one beside the view it
+/// shows and drops it with that view; anything that changes the rows
+/// (the width, a toggle, a `:set`) is in the key.
+#[derive(Default)]
+pub struct RowCache {
+    built: std::cell::RefCell<Option<(RowKey, std::rc::Rc<Vec<Row>>)>>,
+}
+
+#[derive(PartialEq)]
+struct RowKey {
+    width: usize,
+    full_headers: bool,
+    hide_quoted: bool,
+    markers: bool,
+    smart_wrap: bool,
+    quote_re: String,
+}
+
+impl RowCache {
+    /// [`pager_rows`], from the cache when nothing it depends on moved.
+    pub fn rows(
+        &self,
+        view: &MessageView,
+        width: usize,
+        full_headers: bool,
+        style: &PagerStyle,
+        hide_quoted: bool,
+    ) -> std::rc::Rc<Vec<Row>> {
+        let key = RowKey {
+            width,
+            full_headers,
+            hide_quoted,
+            markers: style.markers,
+            smart_wrap: style.smart_wrap,
+            quote_re: style.quote_re.as_str().to_string(),
+        };
+        let mut built = self.built.borrow_mut();
+        if let Some((k, rows)) = built.as_ref()
+            && *k == key
+        {
+            return rows.clone();
+        }
+        let rows = std::rc::Rc::new(pager_rows(view, width, full_headers, style, hide_quoted));
+        *built = Some((key, rows.clone()));
+        rows
+    }
+}
+
 pub fn pager_rows(
     view: &MessageView,
     width: usize,
@@ -237,20 +289,31 @@ pub fn wrap_line_with(line: &str, width: usize, smart: bool) -> Vec<String> {
         .collect()
 }
 
-/// The wrap as char ranges of the (tab-expanded) line, one per row.
+/// The wrap as char ranges of the (tab-expanded) line, one per row,
+/// each at most `width` display columns: a CJK ideograph or an emoji
+/// takes two, a combining mark none.
 fn wrap_ranges(chars: &[char], width: usize, smart: bool) -> Vec<(usize, usize)> {
+    use unicode_width::UnicodeWidthChar as _;
     let width = width.max(4);
-    if chars.len() <= width {
+    let cols = |c: char| c.width().unwrap_or(0);
+    if chars.iter().map(|&c| cols(c)).sum::<usize>() <= width {
         return vec![(0, chars.len())];
     }
     let mut out = Vec::new();
     let mut start = 0;
     while start < chars.len() {
-        if chars.len() - start <= width {
+        // As many chars as fit, one at least.
+        let mut window_end = start;
+        let mut used = 0;
+        while window_end < chars.len() && used + cols(chars[window_end]) <= width {
+            used += cols(chars[window_end]);
+            window_end += 1;
+        }
+        let window_end = window_end.max(start + 1);
+        if window_end >= chars.len() {
             out.push((start, chars.len()));
             break;
         }
-        let window_end = start + width;
         let brk = match smart {
             true => (start + 1..window_end)
                 .rev()
@@ -339,6 +402,25 @@ mod tests {
         assert_eq!(quote_depth("  | indented pipe", &re), 1);
         // A > later in the line is not a quote.
         assert_eq!(quote_depth("2 > 1", &re), 0);
+    }
+
+    #[test]
+    fn wide_characters_wrap_by_the_columns_they_take() {
+        use unicode_width::UnicodeWidthStr as _;
+        // Ten ideographs are twenty columns: two rows at twelve.
+        let rows = wrap_line_with("日本語のテキストです", 12, false);
+        assert_eq!(rows, ["日本語のテキ", "ストです"]);
+        assert!(rows.iter().all(|r| r.width() <= 12));
+        // Latin text with accents is one column a char, as before.
+        assert_eq!(
+            wrap_line_with("Schůzka zítra ráno", 12, true),
+            ["Schůzka", "zítra ráno"]
+        );
+        // A combining mark adds no width.
+        assert_eq!(
+            wrap_line_with("e\u{301}e\u{301}e\u{301}e\u{301}", 4, false).len(),
+            1
+        );
     }
 
     #[test]

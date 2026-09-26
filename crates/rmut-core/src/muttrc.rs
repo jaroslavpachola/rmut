@@ -2506,8 +2506,11 @@ pub fn convert_key(key: &str) -> Option<String> {
         "<space>" => "space",
         "<tab>" => "tab",
         "<backspace>" => "backspace",
+        "<delete>" => "delete",
         "<up>" => "up",
         "<down>" => "down",
+        "<left>" => "left",
+        "<right>" => "right",
         "<pageup>" => "pgup",
         "<pagedown>" => "pgdn",
         "<home>" => "home",
@@ -2525,7 +2528,7 @@ pub fn convert_key(key: &str) -> Option<String> {
 /// `<key-name>`s rmut knows, and `\`-escapes (`\n` `\t` `\e` `\Cx`).
 /// None when it names mutt functions or exotic keys.
 fn convert_sequence(seq: &str) -> Option<String> {
-    const NAMES: [&str; 15] = [
+    const NAMES: [&str; 18] = [
         "enter",
         "return",
         "esc",
@@ -2533,8 +2536,11 @@ fn convert_sequence(seq: &str) -> Option<String> {
         "space",
         "tab",
         "backspace",
+        "delete",
         "up",
         "down",
+        "left",
+        "right",
         "pgup",
         "pageup",
         "pgdn",
@@ -3840,6 +3846,12 @@ mod tests {
         assert_eq!(convert_key("\\Cx").as_deref(), Some("ctrl+x"));
         assert_eq!(convert_key("\\CX").as_deref(), Some("ctrl+x"));
         assert_eq!(convert_key("\\ev").as_deref(), Some("alt+v"));
+        assert_eq!(convert_key("<delete>").as_deref(), Some("delete"));
+        assert_eq!(convert_key("<left>").as_deref(), Some("left"));
+        assert_eq!(
+            convert_sequence("x<delete><right>").as_deref(),
+            Some("x<delete><right>")
+        );
         assert_eq!(convert_key("<esc>V").as_deref(), Some("alt+V"));
         assert_eq!(convert_key("<Enter>").as_deref(), Some("enter"));
         assert_eq!(convert_key("<PageDown>").as_deref(), Some("pgdn"));
