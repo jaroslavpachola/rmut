@@ -170,6 +170,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
 
 fn run() -> Result<ExitCode> {
     let cli = parse_args(std::env::args().skip(1))?;
+    // Until the full screen takes the terminal, a password_command can
+    // use it: `pass` and a terminal pinentry ask there, in the open.
+    rmut_core::config::let_commands_prompt(true);
     if cli.import {
         return import_muttrc(cli.spec.as_deref(), cli.write);
     }
@@ -228,6 +231,9 @@ fn run() -> Result<ExitCode> {
     if unsafe { libc::isatty(0) } == 0 || unsafe { libc::isatty(1) } == 0 {
         bail!("rmut needs a terminal (use -s ... to send from a script)");
     }
+    // The screen is the UI's from here: a command asking on it would
+    // fight the UI for the keys.
+    rmut_core::config::let_commands_prompt(false);
     let terminal = ratatui::init();
     app::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = app.run(terminal);

@@ -72,6 +72,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -926,17 +927,43 @@ impl AuthKind {
 }
 
 /// First stdout line of a credential command.
+/// Whether a credential command may use the terminal: set by a front
+/// end while the terminal is its own to lend (before a full-screen UI
+/// takes it), so `pass` and a terminal pinentry can ask there.
+static COMMANDS_MAY_PROMPT: AtomicBool = AtomicBool::new(false);
+
+/// Lend the terminal to `password_command` / `token_command` (stdin
+/// and stderr passed through), or take it back.
+pub fn let_commands_prompt(may: bool) {
+    COMMANDS_MAY_PROMPT.store(may, Ordering::Relaxed);
+}
+
 fn first_line_of(command: &str, what: &str, name: &str) -> Result<String> {
-    let out = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
+    use std::process::Stdio;
+    let prompts = COMMANDS_MAY_PROMPT.load(Ordering::Relaxed);
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(command).stdout(Stdio::piped());
+    if prompts {
+        cmd.stdin(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        // No terminal to ask on: the command's complaints are kept
+        // for the error instead.
+        cmd.stdin(Stdio::null()).stderr(Stdio::piped());
+    }
+    let out = cmd
         .output()
         .with_context(|| format!("running {what} for account {name}"))?;
-    ensure!(
-        out.status.success(),
-        "{what} for account {name} exited with {}",
-        out.status
-    );
+    if !out.status.success() {
+        let said = String::from_utf8_lossy(&out.stderr);
+        match said.lines().rev().find(|l| !l.trim().is_empty()) {
+            Some(line) => anyhow::bail!(
+                "{what} for account {name} exited with {}: {}",
+                out.status,
+                line.trim()
+            ),
+            None => anyhow::bail!("{what} for account {name} exited with {}", out.status),
+        }
+    }
     let secret = String::from_utf8_lossy(&out.stdout)
         .lines()
         .next()
@@ -1484,6 +1511,20 @@ mod tests {
         );
         assert!(account("false").password().is_err());
         assert!(account("true").password().is_err()); // empty output
+    }
+
+    #[test]
+    fn a_failing_password_command_says_why() {
+        // What gpg or pass printed on the way down is in the error,
+        // not dropped with the captured stderr.
+        let account = Account {
+            password_command: Some(
+                "echo 'gpg: decryption failed: No secret key' >&2; exit 2".into(),
+            ),
+            ..test_account()
+        };
+        let err = account.password().unwrap_err().to_string();
+        assert!(err.contains("No secret key"), "{err}");
     }
 
     #[test]

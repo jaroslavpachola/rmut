@@ -5270,6 +5270,51 @@ def scenario_save_part_no_follow(tmp):
     r.close()
 
 
+def scenario_password_command_in_the_open(tmp):
+    """2.16.1: a password_command is named while it runs, and before
+    the full screen it has the terminal: what it (pass, gpg's
+    pinentry) says shows, where it used to wait in silence."""
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="behind a password",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="pw1", body="body"))
+    imap.start()
+    slow = os.path.join(tmp, "slow-pass.sh")
+    with open(slow, "w") as f:
+        f.write("#!/bin/sh\necho 'pinentry: waiting for the passphrase' >&2\n"
+                "sleep 1.5\necho secret\n")
+    failing = os.path.join(tmp, "failing-pass.sh")
+    with open(failing, "w") as f:
+        f.write("#!/bin/sh\necho 'gpg: decryption failed: No secret key' >&2\nexit 2\n")
+    for script in (slow, failing):
+        os.chmod(script, 0o755)
+
+    def config(command):
+        cfg = os.path.join(tmp, "pw-config.toml")
+        with open(cfg, "w") as f:
+            f.write(f"""
+[[accounts]]
+name = "work"
+user = "jane"
+password_command = "{command}"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+        return base_env(tmp, {"RMUT_CONFIG": cfg})
+
+    r = Rmut("imap:work", config(slow))
+    # Named while it runs, and its own words on the terminal.
+    r.expect("work: running password_command", "pinentry: waiting for the passphrase")
+    r.expect("Msgs:1", "behind a password", timeout=8)
+    r.keys(b"q")
+    r.close()
+
+    r = Rmut("imap:work", config(failing))
+    r.expect("No secret key")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -5358,6 +5403,7 @@ SCENARIOS = [
     scenario_prompt_keys,
     scenario_signals_leave_cleanly,
     scenario_save_part_no_follow,
+    scenario_password_command_in_the_open,
 ]
 
 

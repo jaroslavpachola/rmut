@@ -2894,6 +2894,18 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.1 (released 2026-09-26)
+
+A fix for a mailbox that seemed to hang on opening: its
+password_command (`pass`, and gpg behind it) was waiting on a
+passphrase prompt, run with no input, its stderr swallowed, and
+before the first progress line, so nothing on screen said so. The
+progress line now names the command while it runs; before the full
+screen starts the command has the terminal, so `pass` and a terminal
+pinentry can ask there; and when one fails, its last complaint is in
+rmut's error. The same goes for token_command. e2e
+scenario_password_command_in_the_open.
+
 ## Still open inside rounds marked done
 
 Easy to lose under a (done, x.y) heading:

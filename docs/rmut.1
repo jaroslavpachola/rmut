@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.16.0" "User Commands"
+.TH RMUT 1 "September 2026" "rmut 2.16.1" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1528,6 +1528,14 @@ The account, opened as imap:name/FOLDER.
 Shell command whose first stdout line is the password (pass(1)-style;
 wins over
 .BR password ).
+The progress line names it while it runs. Before the full screen
+starts, it has the terminal, so pass(1) and a terminal pinentry can
+ask for a passphrase there; later (a reconnect, another folder) its
+input is closed, which leaves a graphical pinentry, and whatever it
+printed on failing ends up in rmut's error. A mailbox that seems stuck
+on opening is often a passphrase dialog behind the window;
+.B GPG_TTY
+unset keeps a terminal pinentry from finding the terminal at all.
 .TP
 .B password
 Plaintext password \(em keep the file at mode 600.

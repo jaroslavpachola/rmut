@@ -710,7 +710,7 @@ impl Session {
     pub fn open_spec(
         spec: &str,
         config: Config,
-        progress: remote::Progress,
+        mut progress: remote::Progress,
     ) -> Result<(Session, Vec<String>)> {
         // Before the first connection, not after: an unreachable
         // server is exactly what the config's patience is for.
@@ -725,7 +725,7 @@ impl Session {
                     .account(account_name)
                     .with_context(|| format!("no account {account_name} in config"))?
                     .clone();
-                let password = account_password(&account)?;
+                let password = account_password_saying(&account, &mut progress)?;
                 Session::open_remote(&account, mailbox, &password, config, progress)
             }
             None => {
@@ -5315,7 +5315,18 @@ fn dir_mtimes(dir: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
 /// Run the account's password command once per session. OAuth tokens
 /// expire, so those are fetched fresh for every connection instead.
 pub fn account_password(account: &Account) -> Result<String> {
+    account_password_saying(account, &mut |_: &str| {})
+}
+
+/// [`account_password`], saying first when a command is about to run
+/// for it: `pass` may wait on a passphrase prompt (a desktop dialog
+/// behind the window, or the terminal), and a wait with no name on
+/// it reads as a hang.
+fn account_password_saying(account: &Account, say: &mut dyn FnMut(&str)) -> Result<String> {
     if !matches!(account.auth_kind()?, rmut_core::config::AuthKind::Password) {
+        if account.token_command.is_some() {
+            say(&format!("{}: running token_command...", account.name));
+        }
         return account.secret();
     }
     static CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
@@ -5323,6 +5334,12 @@ pub fn account_password(account: &Account) -> Result<String> {
     let map = cache.get_or_insert_with(HashMap::new);
     if let Some(password) = map.get(&account.name) {
         return Ok(password.clone());
+    }
+    if account.password_command.is_some() {
+        say(&format!(
+            "{}: running password_command (a passphrase prompt may be waiting)...",
+            account.name
+        ));
     }
     let password = account.password()?;
     map.insert(account.name.clone(), password.clone());
