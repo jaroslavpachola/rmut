@@ -1151,13 +1151,103 @@ def scenario_pgp(tmp):
     r.expect("y:Send")
     r.keys(b"pe")  # security menu -> encrypt
     r.keys(b"y")
+    # The first --encrypt is the probe for the copy kept (2.16.2).
     wait_for(lambda: os.path.exists(recip_log)
-             and "--encrypt" in open(recip_log).read(),
+             and "0xDEADBEEF" in open(recip_log).read(),
              desc="gpg asked to encrypt")
     args = open(recip_log).read()
     assert "--recipient 0xDEADBEEF" in args, args
     assert "--recipient boss@example.com" not in args, args
     r.keys(b"q")  # both messages were already seen, so it quits directly
+    r.close()
+
+
+def scenario_pgp_unreadable_copy(tmp):
+    """2.16.2: your own address resolving to a key whose secret is
+    gone (an old key a keyserver still serves) is asked about before
+    sending, and a message encrypted to such a key says which."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751900000.7.host:2,S"), "w") as f:
+        f.write(
+            "From: Me <me@example.com>\r\nTo: me@example.com\r\n"
+            "Subject: sealed to the old key\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <old@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/encrypted; boundary="b";\r\n'
+            '\tprotocol="application/pgp-encrypted"\r\n\r\n'
+            "--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--b\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nZZZ\r\n-----END PGP MESSAGE-----\r\n"
+            "--b--\r\n"
+        )
+    # me@example.com resolves to OLDKEY, whose secret is not here.
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--list-secret-keys*)\n"
+            '  echo "sec:u:255:22:NEWKEY:1:::u:::scESC:::+:::23::0:" ;;\n'
+            "*--list-only*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] ENC_TO OLDKEY 1 0" >&2\n'
+            "  echo '      \"Me <me@example.com>\"' >&2 ;;\n"
+            "*--decrypt*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] ENC_TO OLDKEY 1 0" >&2\n'
+            '  echo "gpg: encrypted with rsa2048 key, ID OLDKEY, created 2011-10-12" >&2\n'
+            "  echo '      \"Me <me@example.com>\"' >&2\n"
+            '  echo "[GNUPG:] NO_SECKEY OLDKEY" >&2\n'
+            '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
+            '  echo "[GNUPG:] DECRYPTION_FAILED" >&2\n'
+            '  echo "gpg: decryption failed: No secret key" >&2\n'
+            "  exit 2 ;;\n"
+            "*--encrypt*)\n"
+            "  cat >/dev/null\n"
+            "  printf -- '-----BEGIN PGP MESSAGE-----\\nBBBB\\n"
+            "-----END PGP MESSAGE-----\\n' ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write('[identity]\nname = "Me"\nemail = "me@example.com"\n'
+                f'[pgp]\ncommand = "{gpg}"\n')
+    editor = os.path.join(tmp, "editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "for my eyes\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    sent_file = os.path.join(tmp, "sent.eml")
+    sendmail = os.path.join(tmp, "sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    env = base_env(tmp, {
+        "RMUT_CONFIG": config,
+        "EDITOR": editor,
+        "RMUT_SENDMAIL": sendmail,
+    })
+    r = Rmut(md, env)
+    r.expect("Msgs:2", "sealed to the old key")
+    r.keys(b"\r")
+    r.expect("decryption failed: no secret key for OLDKEY (Me <me@example.com>)")
+    r.keys(b"i")
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\rsealed\r")
+    r.expect("y:Send")
+    r.keys(b"pe")  # security menu -> encrypt
+    r.keys(b"y")
+    r.expect("Your copy goes to OLDKEY (Me <me@example.com>), with no secret key here")
+    r.keys(b"n")
+    r.expect("not sent; p changes the encryption", "y:Send")
+    assert not os.path.exists(sent_file)
+    r.keys(b"y")
+    r.expect("you could not read it. Send?")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="sendmail invoked")
+    r.expect("message sent")
+    assert "multipart/encrypted" in open(sent_file).read()
+    r.keys(b"q")
     r.close()
 
 
@@ -5329,6 +5419,7 @@ SCENARIOS = [
     scenario_mbox,
     scenario_trash_and_alias,
     scenario_pgp,
+    scenario_pgp_unreadable_copy,
     scenario_print,
     scenario_edit_headers,
     scenario_mutt_flow,

@@ -2894,6 +2894,18 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.2 (released 2026-10-01)
+
+A fix for an encrypted message its own sender could not read. The
+copy kept is encrypted to the From address too, and gpg picks the key
+by address: with a keyserver in auto-key-locate it fetched an old key
+for it whose secret was long gone. rmut now asks before sending when
+the key for your copy has no secret in the keyring. And a message that
+cannot be decrypted names the key it was encrypted to and its user id
+("no secret key for CF5D9DDDBA7364C9 (...)"), where it showed gpg's
+first line, which only said which key gpg tried. e2e
+scenario_pgp_unreadable_copy.
+
 ## 2.16.1 (released 2026-09-26)
 
 A fix for a mailbox that seemed to hang on opening: its

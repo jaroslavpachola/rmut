@@ -541,6 +541,9 @@ pub struct Session {
     /// The attachment reminder has been answered for this draft: the
     /// next send goes through without asking again.
     attach_confirmed: bool,
+    /// The "you could not read your copy" warning has been answered
+    /// for this draft.
+    unreadable_confirmed: bool,
     /// The config as it was before the active message-hooks changed
     /// it, so leaving the message puts every setting back.
     hook_base: Option<Box<Config>>,
@@ -675,6 +678,7 @@ impl Session {
             parked_forward: None,
             fcc_attach_answer: None,
             attach_confirmed: false,
+            unreadable_confirmed: false,
             hook_base: None,
             active_message_hooks: Vec::new(),
             requests: Vec::new(),
@@ -4603,8 +4607,8 @@ impl Session {
         };
         // neomutt's $abort_noattach: the body says "attached" and
         // nothing is. Asked once per draft; an answered draft sends.
-        if !mem::take(&mut self.attach_confirmed) && self.attachment_forgotten(&raw, &compose_state)
-        {
+        let attach_confirmed = mem::take(&mut self.attach_confirmed);
+        if !attach_confirmed && self.attachment_forgotten(&raw, &compose_state) {
             self.draft = Some(compose_state);
             match self.config.mail.abort_noattach.as_deref() {
                 // neomutt's "yes" aborts outright: attach the file,
@@ -4623,6 +4627,22 @@ impl Session {
                     });
                 }
             }
+        }
+        // The copy kept is encrypted to the sender's address too, and
+        // gpg may pick a key for it whose secret is not here (an old
+        // key a keyserver still serves): ask before sending what
+        // nobody here can read.
+        if !mem::take(&mut self.unreadable_confirmed)
+            && let Some(key) = self.unreadable_copy(&raw, &compose_state)
+        {
+            self.draft = Some(compose_state);
+            self.attach_confirmed = attach_confirmed;
+            return Some(Ask::Key {
+                label: format!(
+                    "Your copy goes to {key}, with no secret key here: you could not read it. Send? (y/n): "
+                ),
+                what: AskKind::Unreadable,
+            });
         }
         // mutt's $fcc_attach: asked about only when there is an
         // attachment for the answer to matter to.
@@ -4790,6 +4810,29 @@ impl Session {
     /// send goes through without asking again.
     fn confirm_attachment(&mut self) {
         self.attach_confirmed = true;
+    }
+
+    /// Sending what you could not read is answered for this draft.
+    fn confirm_unreadable(&mut self) {
+        self.unreadable_confirmed = true;
+    }
+
+    /// The key an encrypted draft's kept copy would go to, when its
+    /// secret is not in this keyring. None when the draft is not
+    /// encrypted, the copy is kept in the clear, or gpg cannot tell
+    /// (the send itself reports that).
+    fn unreadable_copy(&self, raw: &str, compose: &Compose) -> Option<String> {
+        if !matches!(compose.security, Security::Encrypt | Security::Both)
+            || self.config.mail.fcc_clear
+        {
+            return None;
+        }
+        let from = compose::from_address(raw).or_else(|| {
+            let line = self.current_identity(&[]).from_line()?;
+            compose::bare_address(&line)
+        })?;
+        let to = self.crypt_key_for(&from).unwrap_or(from);
+        pgp::missing_secret(&self.config.pgp, &to).ok().flatten()
     }
 
     /// A draft that could not go: back in hand, and back on screen.
