@@ -310,7 +310,9 @@ per message: in the compose menu, `p` opens the security menu with
 (e)ncrypt, (s)ign, (b)oth, (c)lear, and the chosen state shows in the
 menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption
 looks keys up by recipient address and always encrypts to the sender
-too, so the Fcc copy stays readable. A reply can inherit the
+too, so the Fcc copy stays readable. When the key gpg picks for your
+own address has no secret in your keyring (an old key a keyserver
+still serves), rmut asks before sending. A reply can inherit the
 original's protection: `reply_sign` signs replies to signed mail,
 `reply_encrypt` encrypts replies to encrypted mail, `reply_sign_encrypted`
 signs replies to encrypted mail too (mutt's `$crypt_replysign` /

@@ -157,6 +157,9 @@ pub enum AskKind {
     /// $abort_noattach = ask: the body mentions an attachment and
     /// none is attached. Send it anyway?
     NoAttach,
+    /// The sent copy would be encrypted to a key whose secret is not
+    /// here. Send it anyway?
+    Unreadable,
     /// A header of the draft in hand, edited from the compose menu.
     EditHeader {
         name: String,
@@ -1019,6 +1022,17 @@ impl Session {
                 }
                 _ => {
                     self.note("not sent; a attaches a file");
+                    self.requests.push(Request::ShowDraft);
+                    None
+                }
+            },
+            (AskKind::Unreadable, Answer::Key(key)) => match key {
+                Key::Char('y') => {
+                    self.confirm_unreadable();
+                    self.send_draft()
+                }
+                _ => {
+                    self.note("not sent; p changes the encryption");
                     self.requests.push(Request::ShowDraft);
                     None
                 }

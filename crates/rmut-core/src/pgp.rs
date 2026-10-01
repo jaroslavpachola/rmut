@@ -138,7 +138,19 @@ pub fn decrypt(cfg: &Pgp, data: &[u8]) -> Result<Opened> {
     let was_encrypted = out.status.iter().any(|s| s.starts_with("BEGIN_DECRYPTION"));
     let decrypted = out.status.iter().any(|s| s.starts_with("DECRYPTION_OKAY"));
     if was_encrypted && !decrypted {
-        return Err(out.error("decryption failed"));
+        // NO_SECKEY names each key the message was encrypted to that
+        // has no secret here; gpg's first line would only say which
+        // key it tried.
+        let missing = keyids(&out.status, "NO_SECKEY ");
+        if !missing.is_empty() {
+            bail!("no secret key for {}", with_uid(&missing, &out.diag));
+        }
+        // The view says "decryption failed" already; gpg's last line
+        // is its verdict, its first only which key it tried.
+        let last = out.diag.lines().map(str::trim).rfind(|l| !l.is_empty());
+        let reason = last.unwrap_or("gpg gave no reason");
+        let reason = reason.trim_start_matches("gpg: ");
+        bail!("{}", reason.trim_start_matches("decryption failed: "));
     }
     if !was_encrypted && sig.is_none() && !out.success {
         return Err(out.error("gpg failed"));
@@ -147,6 +159,74 @@ pub fn decrypt(cfg: &Pgp, data: &[u8]) -> Result<Opened> {
         plaintext: out.stdout,
         sig,
     })
+}
+
+/// The key ids of the status lines starting with `prefix`.
+fn keyids(status: &[String], prefix: &str) -> Vec<String> {
+    status
+        .iter()
+        .filter_map(|l| l.strip_prefix(prefix))
+        .filter_map(|rest| rest.split(' ').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `ids`, followed by the user id gpg printed (quoted, on the line
+/// under "encrypted with ...") when there was one.
+fn with_uid(ids: &[String], diag: &str) -> String {
+    let uid = diag
+        .lines()
+        .map(str::trim)
+        .find(|l| l.len() > 1 && l.starts_with('"') && l.ends_with('"'));
+    match uid {
+        Some(uid) => format!("{} ({})", ids.join(", "), uid.trim_matches('"')),
+        None => ids.join(", "),
+    }
+}
+
+/// Would a message encrypted to `recipient` be one this keyring can
+/// open? gpg picks the key by address, and that can be a key whose
+/// secret half is gone (an old key that a keyserver still serves).
+/// Encrypts nothing to it, reads which key was used, and returns that
+/// key described when no secret for it is here. Anything gpg refuses
+/// is left for the real encryption to report.
+pub fn missing_secret(cfg: &Pgp, recipient: &str) -> Result<Option<String>> {
+    let probe = run(
+        cfg,
+        &[
+            "--armor",
+            "--encrypt",
+            "--trust-model",
+            "always",
+            "--recipient",
+            recipient,
+        ],
+        b"",
+    )?;
+    if !probe.success || probe.stdout.is_empty() {
+        return Ok(None);
+    }
+    let listed = run(cfg, &["--list-only", "--decrypt"], &probe.stdout)?;
+    let ids = keyids(&listed.status, "ENC_TO ");
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let secret = run(cfg, &["--with-colons", "--list-secret-keys"], b"")?;
+    let secret = String::from_utf8_lossy(&secret.stdout);
+    // sec/ssb lines: field 5 is the key id, field 15 "#" a stub whose
+    // secret is elsewhere (or nowhere).
+    let held = |id: &String| {
+        secret.lines().any(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            matches!(f[0], "sec" | "ssb")
+                && f.get(4).is_some_and(|k| k.eq_ignore_ascii_case(id))
+                && f.get(14) != Some(&"#")
+        })
+    };
+    if ids.iter().any(held) {
+        return Ok(None);
+    }
+    Ok(Some(with_uid(&ids, &listed.diag)))
 }
 
 /// Verify a detached signature over `data` (already in the CRLF form
@@ -634,6 +714,65 @@ exit 2"#,
         );
         let err = decrypt(&cfg, b"armor").unwrap_err();
         assert!(format!("{err:#}").contains("No secret key"), "{err:#}");
+    }
+
+    #[test]
+    fn decrypt_names_the_key_without_a_secret() {
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] ENC_TO 0LDKEY0000000001 1 0" >&2
+echo "gpg: encrypted with rsa2048 key, ID 0LDKEY0000000001, created 2001-01-01" >&2
+echo '      "Jane Doe <jane@x>"' >&2
+echo "[GNUPG:] NO_SECKEY 0LDKEY0000000001" >&2
+echo "[GNUPG:] BEGIN_DECRYPTION" >&2
+echo "[GNUPG:] DECRYPTION_FAILED" >&2
+echo "gpg: decryption failed: No secret key" >&2
+exit 2"#,
+        );
+        let err = decrypt(&cfg, b"armor").unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "no secret key for 0LDKEY0000000001 (Jane Doe <jane@x>)"
+        );
+    }
+
+    /// A stub keyring: `old@x` resolves to the old key OLD, whose
+    /// secret is gone; `new@x` to NEW, whose secret is here.
+    const KEYRING: &str = r#"case "$*" in
+*--list-secret-keys*)
+  echo "sec:u:255:22:NEWPRIMARY:1:::u:::scESC:::+:::23::0:"
+  echo "ssb:u:255:18:NEW:1::::::e:::+:::23:" ;;
+*--list-only*)
+  cat >/dev/null
+  echo "[GNUPG:] ENC_TO $(cat "$D/to") 1 0" >&2
+  echo '      "Jane <old@x>"' >&2 ;;
+*--encrypt*)
+  cat >/dev/null
+  case "$*" in *old@x*) echo OLD > "$D/to" ;; *) echo NEW > "$D/to" ;; esac
+  printf -- '-----BEGIN PGP MESSAGE-----
+P
+-----END PGP MESSAGE-----
+' ;;
+esac"#;
+
+    #[test]
+    fn missing_secret_spots_a_key_with_no_secret_here() {
+        let (_dir, cfg) = stub(KEYRING);
+        assert_eq!(
+            missing_secret(&cfg, "old@x").unwrap().as_deref(),
+            Some("OLD (Jane <old@x>)")
+        );
+        assert_eq!(missing_secret(&cfg, "new@x").unwrap(), None);
+    }
+
+    #[test]
+    fn missing_secret_leaves_refusals_to_the_send() {
+        let (_dir, cfg) = stub(
+            "cat >/dev/null
+echo '[GNUPG:] INV_RECP 0 x' >&2
+exit 2",
+        );
+        assert_eq!(missing_secret(&cfg, "nobody@x").unwrap(), None);
     }
 
     #[test]

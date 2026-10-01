@@ -1,4 +1,4 @@
-.TH RMUT 1 "September 2026" "rmut 2.16.1" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.16.2" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1566,7 +1566,11 @@ identity = { name = "Jane Work", email = "jane@work.example.com" }.
 The gpg executable (default gpg). Decrypt/verify happens
 automatically when a viewed message is PGP; signing and encrypting
 are chosen in the compose menu (p). Passphrases are gpg-agent's business
-\(em rmut never sees them.
+\(em rmut never sees them. An encrypted message goes to your own
+address too, so the sent copy stays readable; when gpg picks a key for
+it whose secret is not in your keyring (an old key a keyserver still
+serves), rmut asks before sending. A message that cannot be decrypted
+names the keys it was encrypted to.
 .TP
 .B sign_key
 Signing key for \-\-local\-user; gpg's default key when unset.
