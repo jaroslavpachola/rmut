@@ -3002,14 +3002,14 @@ fn the_envelope_reaches_sendmail() {
 }
 
 #[test]
-fn a_plain_czech_message_goes_out_declared_and_encoded() {
+fn a_message_not_in_ascii_goes_out_declared_and_encoded() {
     use mailparse::MailHeaderMap;
     let (mut f, out) = sending_fixture(reply_config());
     let path = out.path().join("draft");
     fs::write(
         &path,
         "From: Jana Nováková <jana@example.com>\nTo: you@example.com\n\
-         Subject: Příliš žluťoučký kůň\n\nÚpěl ďábelské ódy.\n",
+         Subject: Отчёт за неделю 🎉\n\nΚαλημέρα κόσμε, 来週の会議.\n",
     )
     .unwrap();
     assert!(f.session.send_draft().is_none());
@@ -3022,10 +3022,13 @@ fn a_plain_czech_message_goes_out_declared_and_encoded() {
         assert!(head.is_ascii(), "{head}");
         let mail = mailparse::parse_mail(message.as_bytes()).unwrap();
         assert_eq!(mail.ctype.charset, "utf-8", "{head}");
-        assert_eq!(mail.get_body().unwrap().trim(), "Úpěl ďábelské ódy.");
+        assert_eq!(
+            mail.get_body().unwrap().trim(),
+            "Καλημέρα κόσμε, 来週の会議."
+        );
         assert_eq!(
             mail.headers.get_first_value("Subject").unwrap(),
-            "Příliš žluťoučký kůň"
+            "Отчёт за неделю 🎉"
         );
         let from = mailparse::addrparse_header(mail.headers.get_first_header("From").unwrap());
         let from = from.unwrap().extract_single_info().unwrap();
