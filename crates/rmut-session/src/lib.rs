@@ -4382,6 +4382,7 @@ impl Session {
         markdown: bool,
     ) -> Result<String> {
         let cfg = &self.config.pgp;
+        let text = compose::encode_headers(&text);
         // Encrypt to every recipient plus the sender, so the Fcc copy
         // stays readable.
         let recipients = |text: &str| -> Result<Vec<String>> {

@@ -659,6 +659,16 @@ pub fn take_markdown(draft: &str) -> (String, Option<bool>) {
     (text, said)
 }
 
+/// A finalized draft with its header block made fit to send: every
+/// header that is not plain ASCII RFC 2047-encoded, as mutt encodes
+/// the envelope before it writes a message out.
+pub fn encode_headers(text: &str) -> String {
+    match text.split_once("\n\n") {
+        Some((head, body)) => format!("{}\n\n{body}", crate::rfc2047::encode_head(head)),
+        None => crate::rfc2047::encode_head(text),
+    }
+}
+
 /// Declare the body of a message that goes out with no MIME wrapper
 /// at all, in place, on a finalized draft: MIME-Version and a utf-8
 /// text/plain, as mutt always writes them (sendlib.c), so no reader
