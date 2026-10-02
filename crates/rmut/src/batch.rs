@@ -106,7 +106,7 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
     )?;
     let markdown = config.mail.markdown;
     let final_text = if attachments.is_empty() && !markdown {
-        final_text
+        compose::declare_plain(&final_text, config.mail.text_flowed)
     } else {
         let (head, body) = final_text
             .split_once("\n\n")

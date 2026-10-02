@@ -659,11 +659,14 @@ pub fn take_markdown(draft: &str) -> (String, Option<bool>) {
     (text, said)
 }
 
-/// mutt's $text_flowed for a message that goes out with no MIME
-/// wrapper at all: declare the body and space-stuff it, in place, on
-/// a finalized draft. One that already carries a Content-Type (the
-/// user wrote their own) is left alone.
-pub fn flow_plain(text: &str) -> String {
+/// Declare the body of a message that goes out with no MIME wrapper
+/// at all, in place, on a finalized draft: MIME-Version and a utf-8
+/// text/plain, as mutt always writes them (sendlib.c), so no reader
+/// has to guess the charset of the 8-bit text. With mutt's
+/// $text_flowed the part is `format=flowed` and the body
+/// space-stuffed. One that already carries a Content-Type (the user
+/// wrote their own) is left alone.
+pub fn declare_plain(text: &str, flowed: bool) -> String {
     let (head, body) = match text.split_once("\n\n") {
         Some(pair) => pair,
         None => return text.to_string(),
@@ -671,11 +674,17 @@ pub fn flow_plain(text: &str) -> String {
     if header_present(head, "Content-Type") {
         return text.to_string();
     }
+    let mut head = head.trim_end().to_string();
+    if !header_present(&head, "MIME-Version") {
+        head += "\nMIME-Version: 1.0";
+    }
+    let (format, body) = match flowed {
+        true => ("; format=flowed", crate::flowed::space_stuff(body)),
+        false => ("", body.to_string()),
+    };
     format!(
-        "{}\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8; format=flowed\n\
-         Content-Transfer-Encoding: 8bit\n\n{}",
-        head.trim_end(),
-        crate::flowed::space_stuff(body),
+        "{head}\nContent-Type: text/plain; charset=utf-8{format}\n\
+         Content-Transfer-Encoding: 8bit\n\n{body}"
     )
 }
 
@@ -1284,14 +1293,23 @@ mod tests {
     }
 
     #[test]
-    fn flow_plain_declares_an_unwrapped_draft() {
+    fn declare_plain_declares_an_unwrapped_draft() {
         let draft = "From: a@x\nTo: b@x\nSubject: s\n\n>quoted line\n";
-        let out = flow_plain(draft);
+        let out = declare_plain(draft, true);
+        assert!(out.contains("\nMIME-Version: 1.0\n"));
         assert!(out.contains("Content-Type: text/plain; charset=utf-8; format=flowed\n"));
         assert!(out.ends_with("\n\n >quoted line\n"), "{out:?}");
+        // Not flowed: still declared, the body as written.
+        let out = declare_plain("To: b@x\n\nGrüße\n>quoted\n", false);
+        assert_eq!(
+            out,
+            "To: b@x\nMIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\
+             Content-Transfer-Encoding: 8bit\n\nGrüße\n>quoted\n"
+        );
         // A draft that declares its own type is left alone.
         let typed = "From: a@x\nContent-Type: text/x-diff\n\nbody\n";
-        assert_eq!(flow_plain(typed), typed);
+        assert_eq!(declare_plain(typed, true), typed);
+        assert_eq!(declare_plain(typed, false), typed);
     }
 
     #[test]
