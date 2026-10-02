@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.16.2" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.16.3" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1023,6 +1023,11 @@ and space-stuff it (RFC 3676, mutt's $text_flowed), in the plain case,
 under attachments, and inside a PGP layer alike. The paragraphs are
 your editor's doing: a line that continues has to end with a space,
 and rmut adds none of its own.
+Flowed or not, outgoing text is always declared
+.I text/plain; charset=utf-8,
+and a header that is not plain ASCII (a subject, a display name) goes
+out RFC 2047-encoded, as mutt sends them. Received text that declares
+no charset is read as UTF-8.
 .TP
 .B markdown
 Markdown compose (rmut's own, default false): the draft goes out as
