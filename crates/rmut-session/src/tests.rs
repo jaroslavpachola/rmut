@@ -3002,6 +3002,38 @@ fn the_envelope_reaches_sendmail() {
 }
 
 #[test]
+fn a_plain_czech_message_goes_out_declared_and_encoded() {
+    use mailparse::MailHeaderMap;
+    let (mut f, out) = sending_fixture(reply_config());
+    let path = out.path().join("draft");
+    fs::write(
+        &path,
+        "From: Jana Nováková <jana@example.com>\nTo: you@example.com\n\
+         Subject: Příliš žluťoučký kůň\n\nÚpěl ďábelské ódy.\n",
+    )
+    .unwrap();
+    assert!(f.session.send_draft().is_none());
+    assert!(f.log.said("message sent"), "{}", f.log.last_text());
+    for message in [
+        fs::read_to_string(out.path().join("sent")).unwrap(),
+        the_sent_copy(out.path()),
+    ] {
+        let (head, _) = message.split_once("\n\n").unwrap();
+        assert!(head.is_ascii(), "{head}");
+        let mail = mailparse::parse_mail(message.as_bytes()).unwrap();
+        assert_eq!(mail.ctype.charset, "utf-8", "{head}");
+        assert_eq!(mail.get_body().unwrap().trim(), "Úpěl ďábelské ódy.");
+        assert_eq!(
+            mail.headers.get_first_value("Subject").unwrap(),
+            "Příliš žluťoučký kůň"
+        );
+        let from = mailparse::addrparse_header(mail.headers.get_first_header("From").unwrap());
+        let from = from.unwrap().extract_single_info().unwrap();
+        assert_eq!(from.display_name.as_deref(), Some("Jana Nováková"));
+    }
+}
+
+#[test]
 fn fcc_attach_no_keeps_the_text_alone() {
     let mut config = reply_config();
     config.mail.fcc_attach = Some("no".into());

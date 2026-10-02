@@ -105,6 +105,7 @@ pub fn send(config: &Config, out: &Outgoing) -> Result<String> {
         config.mail.user_agent.unwrap_or(false),
     )?;
     let markdown = config.mail.markdown;
+    let final_text = compose::encode_headers(&final_text);
     let final_text = if attachments.is_empty() && !markdown {
         compose::declare_plain(&final_text, config.mail.text_flowed)
     } else {

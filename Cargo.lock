@@ -2794,6 +2794,7 @@ name = "rmut-session"
 version = "2.16.2"
 dependencies = [
  "anyhow",
+ "mailparse",
  "regex-lite",
  "rmut-core",
  "tempfile",

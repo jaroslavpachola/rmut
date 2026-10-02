@@ -211,6 +211,285 @@ fn decode_b(text: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+// Encoding, for what rmut sends: mutt's `rfc2047_encode`, with UTF-8
+// the only charset in and out (rmut declares utf-8 everywhere).
+
+const ENCWORD_LEN_MAX: usize = 75;
+/// strlen("=?.?.?.?=")
+const ENCWORD_LEN_MIN: usize = 9;
+const CHARSET: &str = "utf-8";
+/// mutt's RFC822Specials: in a display name they force the encoding to
+/// take them in, since an encoded word cannot sit in a quoted string.
+const RFC822_SPECIALS: &[u8] = b"@.,:;<>[]\\\"()";
+/// mutt's RFC2047Specials: what a Q-encoded word has to escape.
+const RFC2047_SPECIALS: &[u8] = b"@.,;:<>[]\\\"()?/= \t";
+/// The headers mutt's rfc2047_encode_envelope treats as address
+/// lists, whose display names are encoded and addresses left alone.
+const ADDRESS_HEADERS: &[&str] = &[
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "mail-followup-to",
+    "sender",
+];
+
+#[derive(Clone, Copy)]
+enum Encoder {
+    B,
+    Q,
+}
+
+fn continuation(b: u8) -> bool {
+    b & 0xc0 == 0x80
+}
+
+/// What a Q-encoded word writes as =XX (a space is the one-character
+/// `_`).
+fn q_escaped(c: u8) -> bool {
+    !(0x20..0x7f).contains(&c) || c == b'_' || (c != b' ' && RFC2047_SPECIALS.contains(&c))
+}
+
+/// mutt's HSPACE, where the end of the text counts as space.
+fn hspace(u: &[u8], i: usize) -> bool {
+    i >= u.len() || u[i] == b' ' || u[i] == b'\t'
+}
+
+/// mutt's try_block: the encoder and the length of the one encoded
+/// word that holds `d`, or, when none can, an upper bound on how much
+/// of it one could.
+fn try_block(d: &[u8]) -> std::result::Result<(Encoder, usize), usize> {
+    // mutt converts into a buffer this size, less the charset name.
+    let room = ENCWORD_LEN_MAX - ENCWORD_LEN_MIN + 1 - CHARSET.len();
+    if d.len() > room {
+        let mut fits = room;
+        while fits > 0 && continuation(d[fits]) {
+            fits -= 1;
+        }
+        return Err(fits + 1);
+    }
+    let count = d.iter().filter(|&&c| q_escaped(c)).count();
+    let len = ENCWORD_LEN_MIN - 2 + CHARSET.len();
+    let len_b = len + d.len().div_ceil(3) * 4;
+    let len_q = len + d.len() + 2 * count;
+    if len_b < len_q && len_b <= ENCWORD_LEN_MAX {
+        Ok((Encoder::B, len_b))
+    } else if len_q <= ENCWORD_LEN_MAX {
+        Ok((Encoder::Q, len_q))
+    } else {
+        Err(d.len())
+    }
+}
+
+/// mutt's choose_block: how much of `d` goes in one encoded word
+/// starting at column `col`, with its encoder and length.
+fn choose_block(d: &[u8], col: usize) -> (usize, Encoder, usize) {
+    let mut n = d.len();
+    loop {
+        let nn = match try_block(&d[..n]) {
+            Ok((encoder, wlen)) if col + wlen <= ENCWORD_LEN_MAX + 1 || n <= 1 => {
+                return (n, encoder, wlen);
+            }
+            Ok(_) => 0,
+            Err(nn) => nn,
+        };
+        n = if nn > 0 { nn } else { n } - 1;
+        while n > 1 && continuation(d[n]) {
+            n -= 1;
+        }
+    }
+}
+
+fn encode_block(d: &[u8], encoder: Encoder) -> String {
+    let text = match encoder {
+        Encoder::B => crate::smtp::b64(d),
+        Encoder::Q => d
+            .iter()
+            .map(|&c| match c {
+                b' ' => "_".to_string(),
+                c if q_escaped(c) => format!("={c:02X}"),
+                c => char::from(c).to_string(),
+            })
+            .collect(),
+    };
+    let tag = match encoder {
+        Encoder::B => 'B',
+        Encoder::Q => 'Q',
+    };
+    format!("=?{CHARSET}?{tag}?{text}?=")
+}
+
+/// mutt's rfc2047_encode: the stretch of `s` from the first word that
+/// needs it (non-ASCII, or what would read as an encoded word) to the
+/// last, as encoded words of at most 75 characters folded onto lines
+/// of their own; the ASCII either side as it stands. With `specials`,
+/// those characters are taken into the stretch too. `col` is the
+/// column the text starts in.
+fn encode_text(s: &str, mut col: usize, specials: &[u8]) -> String {
+    let u = s.as_bytes();
+    let ulen = u.len();
+    let (mut t0, mut t1, mut s0, mut s1) = (None, None, None, None);
+    for t in 0..ulen {
+        if u[t] & 0x80 != 0
+            || (u[t] == b'=' && u.get(t + 1) == Some(&b'?') && (t == 0 || hspace(u, t - 1)))
+        {
+            t0.get_or_insert(t);
+            t1 = Some(t);
+        } else if specials.contains(&u[t]) {
+            s0.get_or_insert(t);
+            s1 = Some(t);
+        }
+    }
+    let (Some(mut t0), Some(mut t1)) = (t0, t1) else {
+        return s.to_string();
+    };
+    if let Some(s0) = s0 {
+        t0 = t0.min(s0);
+    }
+    if let Some(s1) = s1 {
+        t1 = t1.max(s1);
+    }
+    // Take in ASCII before the stretch that would not fit on the line.
+    t0 = t0.min((ENCWORD_LEN_MAX + 1).saturating_sub(col + ENCWORD_LEN_MIN));
+    // Back to the start of a word.
+    while t0 > 0 {
+        if hspace(u, t0 - 1) {
+            let mut t = t0 + 1;
+            while t < ulen && continuation(u[t]) {
+                t += 1;
+            }
+            if let Ok((_, wlen)) = try_block(&u[t0..t])
+                && col + t0 + wlen <= ENCWORD_LEN_MAX + 1
+            {
+                break;
+            }
+        }
+        t0 -= 1;
+    }
+    // On to the end of a word.
+    while t1 < ulen {
+        if hspace(u, t1) {
+            let mut t = t1 - 1;
+            while continuation(u[t]) {
+                t -= 1;
+            }
+            if let Ok((_, wlen)) = try_block(&u[t..t1])
+                && 1 + wlen + (ulen - t1) <= ENCWORD_LEN_MAX + 1
+            {
+                break;
+            }
+        }
+        t1 += 1;
+    }
+    // Encode [t0, t1).
+    let mut out = s[..t0].to_string();
+    col += t0;
+    let mut t = t0;
+    loop {
+        let (mut n, mut encoder, wlen) = choose_block(&u[t..t1], col);
+        if n == t1 - t {
+            // The ASCII after it fits on the line too: done.
+            if col + wlen + (ulen - t1) <= ENCWORD_LEN_MAX + 1 {
+                out += &encode_block(&u[t..t1], encoder);
+                break;
+            }
+            n = t1 - t - 1;
+            while continuation(u[t + n]) {
+                n -= 1;
+            }
+            if n == 0 {
+                // One character is all that needs encoding, with too
+                // much after it for one word: take the next word in.
+                t1 += 1;
+                while t1 < ulen && !hspace(u, t1) {
+                    t1 += 1;
+                }
+                continue;
+            }
+            (n, encoder, _) = choose_block(&u[t..t + n], col);
+        }
+        out += &encode_block(&u[t..t + n], encoder);
+        out += "\n\t";
+        col = 1;
+        t += n;
+    }
+    out += &s[t1..];
+    out
+}
+
+/// One display name as it goes out: encoded if it has to be, quoted
+/// if it holds specials, else as it stands.
+fn encode_phrase(name: &str, col: usize) -> String {
+    if !name.is_ascii() {
+        return encode_text(name, col, RFC822_SPECIALS);
+    }
+    if name.bytes().any(|c| RFC822_SPECIALS.contains(&c)) {
+        return format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""));
+    }
+    name.to_string()
+}
+
+/// mutt's rfc2047_encode_adrlist over a header's value: each display
+/// name encoded, starting where mutt has it start (the tag's width),
+/// the addresses as they are. A value that will not parse goes out as
+/// it stands.
+fn encode_addresses(name: &str, value: &str) -> String {
+    let Ok(list) = mailparse::addrparse(value) else {
+        return value.to_string();
+    };
+    let col = name.len() + 2;
+    let single = |a: &mailparse::SingleInfo| match a.display_name.as_deref() {
+        Some(n) if !n.is_empty() => format!("{} <{}>", encode_phrase(n, col), a.addr),
+        _ => a.addr.clone(),
+    };
+    list.iter()
+        .map(|entry| match entry {
+            mailparse::MailAddr::Single(a) => single(a),
+            mailparse::MailAddr::Group(g) => format!(
+                "{}: {};",
+                encode_phrase(&g.group_name, col),
+                g.addrs.iter().map(single).collect::<Vec<_>>().join(", ")
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A finalized draft's header block made fit to send, the way mutt's
+/// rfc2047_encode_envelope and encode_headers prepare one: every
+/// header whose value is not plain ASCII is unfolded and encoded, the
+/// display names of an address list, anything else as text from
+/// column 32 (mutt's rfc2047_encode_string). ASCII headers are left
+/// as written, folding and all.
+pub fn encode_head(head: &str) -> String {
+    let mut fields: Vec<String> = Vec::new();
+    for line in head.lines() {
+        match fields.last_mut() {
+            Some(field) if line.starts_with([' ', '\t']) => {
+                field.push('\n');
+                field.push_str(line);
+            }
+            _ => fields.push(line.to_string()),
+        }
+    }
+    let encoded: Vec<String> = fields
+        .into_iter()
+        .map(|field| {
+            let Some((name, value)) = field.split_once(':').filter(|_| !field.is_ascii()) else {
+                return field;
+            };
+            let value = unfold(value.as_bytes());
+            let value = match ADDRESS_HEADERS.contains(&name.trim().to_ascii_lowercase().as_str()) {
+                true => encode_addresses(name, &value),
+                false => encode_text(&value, 32, &[]),
+            };
+            format!("{name}: {value}")
+        })
+        .collect();
+    encoded.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +560,104 @@ mod tests {
         assert_eq!(value(&h), "Re: hello");
         let (h, _) = mailparse::parse_header(b"Subject: a  \r\n\t  b\r\n").unwrap();
         assert_eq!(value(&h), "a b");
+    }
+
+    /// The header block parsed back, each value decoded by mailparse:
+    /// what a strict reader makes of what rmut sends.
+    fn sent(head: &str) -> Vec<(String, String)> {
+        let raw = format!("{}\n\nbody\n", encode_head(head));
+        let (headers, _) = mailparse::parse_headers(raw.as_bytes()).unwrap();
+        headers
+            .iter()
+            .map(|h| (h.get_key(), h.get_value()))
+            .collect()
+    }
+
+    #[test]
+    fn a_subject_goes_out_encoded_and_comes_back() {
+        let out = encode_head("Subject: Příliš žluťoučký kůň");
+        assert!(out.is_ascii(), "{out}");
+        assert!(out.starts_with("Subject: =?utf-8?"), "{out}");
+        assert_eq!(
+            sent("Subject: Příliš žluťoučký kůň")[0].1,
+            "Příliš žluťoučký kůň"
+        );
+        // ASCII before and after the stretch stays readable.
+        let out = encode_head("Subject: Re: Fwd: Grüße of it all");
+        assert!(out.starts_with("Subject: Re: Fwd: =?utf-8?"), "{out}");
+        assert!(out.ends_with("?= of it all"), "{out}");
+        assert_eq!(
+            sent("Subject: Re: Fwd: Grüße of it all")[0].1,
+            "Re: Fwd: Grüße of it all"
+        );
+    }
+
+    #[test]
+    fn a_long_subject_folds_into_words_a_reader_joins() {
+        let subject = "Příliš žluťoučký kůň úpěl ďábelské ódy, ".repeat(6);
+        let subject = subject.trim_end();
+        let out = encode_head(&format!("Subject: {subject}"));
+        assert!(out.is_ascii(), "{out}");
+        for word in out.split_whitespace().filter(|w| w.starts_with("=?")) {
+            assert!(word.len() <= 75, "{word}");
+        }
+        for line in out.lines() {
+            assert!(line.len() <= 78, "{line}");
+        }
+        assert_eq!(sent(&format!("Subject: {subject}"))[0].1, subject);
+        // mutt's decoder too, whitespace between the words dropped.
+        let (_, value) = out.split_once(": ").unwrap();
+        assert_eq!(decode(&unfold(value.as_bytes())), subject);
+    }
+
+    #[test]
+    fn only_display_names_are_encoded_in_an_address_list() {
+        let head = "From: Jana Nováková <jana@example.com>\n\
+                    To: \"Dvořák, Jan\" <jan@example.com>, plain@example.com,\n\
+                    \tJohn Doe <john@example.com>";
+        let out = encode_head(head);
+        assert!(out.is_ascii(), "{out}");
+        assert!(out.contains("<jana@example.com>"), "{out}");
+        assert!(out.contains("plain@example.com"), "{out}");
+        let raw = format!("{out}\n\nbody\n");
+        let (headers, _) = mailparse::parse_headers(raw.as_bytes()).unwrap();
+        let from = mailparse::addrparse_header(&headers[0]).unwrap();
+        assert_eq!(
+            from.extract_single_info().unwrap().display_name.as_deref(),
+            Some("Jana Nováková")
+        );
+        let to = mailparse::addrparse_header(&headers[1]).unwrap();
+        let names: Vec<_> = to
+            .iter()
+            .map(|a| match a {
+                mailparse::MailAddr::Single(s) => (s.display_name.clone(), s.addr.clone()),
+                mailparse::MailAddr::Group(_) => panic!("no group here"),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (
+                    Some("Dvořák, Jan".to_string()),
+                    "jan@example.com".to_string()
+                ),
+                (None, "plain@example.com".to_string()),
+                (Some("John Doe".to_string()), "john@example.com".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ascii_headers_are_left_as_written() {
+        let head = "To: Jane <jane@example.com>,\n\tjohn@example.com\nSubject: hi =? there\nX-Note: =?not encoded";
+        assert_eq!(encode_head(head), head);
+    }
+
+    #[test]
+    fn what_would_read_as_an_encoded_word_is_encoded() {
+        // Non-ASCII elsewhere makes the header one to encode; a literal
+        // =? starting a word inside the stretch must not be decoded.
+        let head = "Subject: =?utf-8?Q?x?= café";
+        assert_eq!(sent(head)[0].1, "=?utf-8?Q?x?= café");
     }
 }

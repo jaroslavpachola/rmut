@@ -15,4 +15,5 @@ regex-lite = { workspace = true }
 rmut-core = { workspace = true }
 
 [dev-dependencies]
+mailparse = { workspace = true }
 tempfile = "3"
