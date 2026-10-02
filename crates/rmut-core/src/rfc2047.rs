@@ -592,28 +592,67 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_long_subject_folds_into_words_a_reader_joins() {
-        let subject = "Příliš žluťoučký kůň úpěl ďábelské ódy, ".repeat(6);
-        let subject = subject.trim_end();
+    /// `subject` encoded: all ASCII, no word over 75 or line over 78,
+    /// no character split between two words (each decodes to UTF-8 on
+    /// its own, which a strict reader needs), and back whole through
+    /// mailparse and mutt's decoder both. The encoded words come back.
+    fn folds_cleanly(subject: &str) -> Vec<String> {
         let out = encode_head(&format!("Subject: {subject}"));
         assert!(out.is_ascii(), "{out}");
-        for word in out.split_whitespace().filter(|w| w.starts_with("=?")) {
-            assert!(word.len() <= 75, "{word}");
-        }
         for line in out.lines() {
             assert!(line.len() <= 78, "{line}");
+        }
+        let words: Vec<String> = out
+            .split_whitespace()
+            .filter(|w| w.starts_with("=?"))
+            .map(str::to_string)
+            .collect();
+        for word in &words {
+            assert!(word.len() <= 75, "{word}");
+            let (_, bytes) = decode_word(word).expect("an encoded word");
+            assert!(
+                String::from_utf8(bytes).is_ok(),
+                "a split character: {word}"
+            );
         }
         assert_eq!(sent(&format!("Subject: {subject}"))[0].1, subject);
         // mutt's decoder too, whitespace between the words dropped.
         let (_, value) = out.split_once(": ").unwrap();
         assert_eq!(decode(&unfold(value.as_bytes())), subject);
+        words
+    }
+
+    #[test]
+    fn a_long_subject_folds_into_words_a_reader_joins() {
+        // Each word takes whichever encoder is shorter for it, as
+        // mutt's try_block measures it, so B and Q may mix. A few
+        // two-byte characters among ASCII: Q comes into it.
+        let mostly_ascii = "Schöne Grüße aus Köln, the report follows. ".repeat(6);
+        let words = folds_cleanly(mostly_ascii.trim_end());
+        assert!(words.len() > 1, "{words:?}");
+        assert!(words.iter().any(|w| w.contains("?Q?")), "{words:?}");
+        // Dense with diacritics, B comes out shorter.
+        let dense = "Příliš žluťoučký kůň úpěl ďábelské ódy, ".repeat(6);
+        let words = folds_cleanly(dense.trim_end());
+        assert!(words.iter().any(|w| w.contains("?B?")), "{words:?}");
+        // Three-byte characters and no spaces to break at: B, and the
+        // splits have to fall between characters.
+        let cjk = "東京で来週の会議の議事録と資料をまとめて送ります".repeat(4);
+        let words = folds_cleanly(&cjk);
+        assert!(words.len() > 2, "{words:?}");
+        assert!(words.iter().all(|w| w.contains("?B?")), "{words:?}");
+        // Four-byte characters.
+        let emoji = format!("Release done {}", "🎉🚀✨👍".repeat(12));
+        let words = folds_cleanly(&emoji);
+        assert!(words.len() > 2, "{words:?}");
+        // Cyrillic, words and spaces.
+        folds_cleanly("Отчёт о работе за прошлую неделю ".repeat(5).trim_end());
     }
 
     #[test]
     fn only_display_names_are_encoded_in_an_address_list() {
         let head = "From: Jana Nováková <jana@example.com>\n\
-                    To: \"Dvořák, Jan\" <jan@example.com>, plain@example.com,\n\
+                    To: \"Петров, Иван\" <ivan@example.com>, plain@example.com,\n\
                     \tJohn Doe <john@example.com>";
         let out = encode_head(head);
         assert!(out.is_ascii(), "{out}");
@@ -638,8 +677,8 @@ mod tests {
             names,
             [
                 (
-                    Some("Dvořák, Jan".to_string()),
-                    "jan@example.com".to_string()
+                    Some("Петров, Иван".to_string()),
+                    "ivan@example.com".to_string()
                 ),
                 (None, "plain@example.com".to_string()),
                 (Some("John Doe".to_string()), "john@example.com".to_string()),

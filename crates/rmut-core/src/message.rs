@@ -1339,12 +1339,28 @@ mod tests {
 
     #[test]
     fn an_undeclared_charset_is_read_as_utf8() {
-        // No Content-Type at all, as an old rmut sent plain mail.
-        let bare = "From: jane@example.com\r\nSubject: hi\r\n\r\nPříliš žluťoučký kůň\r\n";
-        assert!(render_entity(bare.as_bytes(), &Display::default()).contains("Příliš žluťoučký kůň"));
+        let undeclared = |entity: &str, text: &str| {
+            let body = render_entity(entity.as_bytes(), &Display::default());
+            assert!(body.contains(text), "{body}");
+        };
+        // No Content-Type at all, as an old rmut sent plain mail; a
+        // character of each width UTF-8 has.
+        for text in [
+            "Καλημέρα κόσμε",
+            "Příliš žluťoučký kůň",
+            "来週の会議",
+            "done 🎉",
+        ] {
+            undeclared(
+                &format!("From: jane@example.com\r\nSubject: hi\r\n\r\n{text}\r\n"),
+                text,
+            );
+        }
         // A Content-Type with no charset parameter: the same.
-        let typed = "Content-Type: text/plain\r\n\r\nPříliš žluťoučký kůň\r\n";
-        assert!(render_entity(typed.as_bytes(), &Display::default()).contains("Příliš žluťoučký kůň"));
+        undeclared(
+            "Content-Type: text/plain\r\n\r\nΚαλημέρα κόσμε\r\n",
+            "Καλημέρα κόσμε",
+        );
         // A declared charset is still honoured.
         let latin = b"Content-Type: text/plain; charset=iso-8859-1\r\n\r\nse\xf1or\r\n";
         assert!(render_entity(latin, &Display::default()).contains("señor"));
