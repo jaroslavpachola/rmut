@@ -4403,10 +4403,9 @@ impl Session {
         let flowed = self.config.mail.text_flowed;
         if files.is_empty() && original.is_none() && !markdown {
             return match security {
-                // No MIME wrapper at all, so $text_flowed has to
-                // declare the body itself.
-                Security::None if flowed => Ok(compose::flow_plain(&text)),
-                Security::None => Ok(text),
+                // No MIME wrapper at all, so the body has to be
+                // declared in the message's own header.
+                Security::None => Ok(compose::declare_plain(&text, flowed)),
                 Security::Sign => pgp::sign_message(cfg, &text, flowed),
                 Security::Encrypt | Security::Both => pgp::encrypt_message(
                     cfg,
