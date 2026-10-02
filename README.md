@@ -621,6 +621,11 @@ PGP signature or encryption alike. The paragraphs themselves are your
 editor's doing, exactly as in mutt: a line that continues has to end
 with a space, and rmut adds none of its own.
 
+Flowed or not, outgoing text is always declared `text/plain;
+charset=utf-8`, and a header that is not plain ASCII (a subject, a
+display name) goes out RFC 2047-encoded, as mutt sends them. Received
+text that declares no charset is read as UTF-8.
+
 ## Mailbox names: `=` and `+`
 
 Set `[mail] folder` and a mailbox can be named under it, the way mutt

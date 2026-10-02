@@ -2894,6 +2894,23 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.3 (released 2026-10-02)
+
+Fixes for mail that is not plain ASCII, in both directions. A plain
+message (no attachment, no PGP, no markdown) went out with no
+MIME-Version or Content-Type unless text_flowed was on, its 8-bit
+UTF-8 undeclared, and no header was ever RFC 2047-encoded, so a
+subject or a display name with an accent went out raw; a reader that
+does not guess UTF-8 showed both garbled. Now the text is always
+declared utf-8, and every header that is not ASCII is encoded as
+mutt's rfc2047_encode_envelope and encode_headers do it (rfc2047.rs
+ports mutt's encoder: encoded words of at most 75 characters, never a
+character split between two, display names only in an address list).
+And rmut read an undeclared body as us-ascii, which mailparse decodes
+as windows-1252, so its own earlier mail showed garbled; a text part
+that declares no charset is now read as UTF-8, as mutt passes it
+through.
+
 ## 2.16.2 (released 2026-10-01)
 
 A fix for an encrypted message its own sender could not read. The
