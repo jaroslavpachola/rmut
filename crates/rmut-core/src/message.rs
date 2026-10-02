@@ -488,7 +488,7 @@ fn render(part: &ParsedMail, disp: &Display, out: &mut String) -> bool {
         return false;
     }
     if ty.starts_with("text/")
-        && let Ok(text) = part.get_body()
+        && let Ok(text) = text_body(part)
     {
         gap(out);
         if ty == "text/html" && disp.html_to_text {
@@ -840,19 +840,32 @@ pub fn body_text(path: &Path) -> Result<String> {
     Ok(extract_text(&mail).unwrap_or_default())
 }
 
+/// A text part's body, transfer encoding and charset decoded. A part
+/// that declares no charset gets no conversion, as in mutt (handler.c,
+/// mutt_decode_attachment: no charset parameter and no
+/// $assumed_charset opens no iconv), so its bytes are read as the UTF-8
+/// they almost always are, where mailparse would assume us-ascii and
+/// decode them as windows-1252.
+fn text_body(part: &ParsedMail) -> Result<String> {
+    if part.ctype.params.contains_key("charset") {
+        return Ok(part.get_body()?);
+    }
+    Ok(String::from_utf8_lossy(&part.get_body_raw()?).into_owned())
+}
+
 /// Depth-first search for the first text/plain part (falling back to any
 /// text/* part), with transfer encoding and charset decoded by mailparse.
 pub(crate) fn extract_text(mail: &ParsedMail) -> Option<String> {
     if mail.subparts.is_empty() {
         if mail.ctype.mimetype.starts_with("text/") {
-            return mail.get_body().ok();
+            return text_body(mail).ok();
         }
         return None;
     }
     for sub in &mail.subparts {
         if sub.ctype.mimetype == "text/plain"
             && sub.subparts.is_empty()
-            && let Ok(body) = sub.get_body()
+            && let Ok(body) = text_body(sub)
         {
             return Some(body);
         }
@@ -922,7 +935,7 @@ fn leaf_at<'a, 'b>(mail: &'a ParsedMail<'b>, index: usize) -> Result<&'a ParsedM
 pub fn part_text(path: &Path, index: usize) -> Result<String> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mail = parse_mail(&raw)?;
-    Ok(leaf_at(&mail, index)?.get_body()?)
+    text_body(leaf_at(&mail, index)?)
 }
 
 /// Decoded bytes of the given leaf part (for saving to a file).
@@ -1322,6 +1335,19 @@ mod tests {
             render_entity(b"just words", &Display::default()),
             "just words"
         );
+    }
+
+    #[test]
+    fn an_undeclared_charset_is_read_as_utf8() {
+        // No Content-Type at all, as an old rmut sent plain mail.
+        let bare = "From: jane@example.com\r\nSubject: hi\r\n\r\nPříliš žluťoučký kůň\r\n";
+        assert!(render_entity(bare.as_bytes(), &Display::default()).contains("Příliš žluťoučký kůň"));
+        // A Content-Type with no charset parameter: the same.
+        let typed = "Content-Type: text/plain\r\n\r\nPříliš žluťoučký kůň\r\n";
+        assert!(render_entity(typed.as_bytes(), &Display::default()).contains("Příliš žluťoučký kůň"));
+        // A declared charset is still honoured.
+        let latin = b"Content-Type: text/plain; charset=iso-8859-1\r\n\r\nse\xf1or\r\n";
+        assert!(render_entity(latin, &Display::default()).contains("señor"));
     }
 
     #[test]
