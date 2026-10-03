@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.16.3" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.16.4" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -905,7 +905,10 @@ from the layer below.
 .TP
 .B mailboxes
 Mailboxes for the folder browser, new-mail watching and the sidebar;
-the first is the default mailbox. In the browser (\fBy\fR),
+the first is the default mailbox. The browser and the sidebar name a
+remote folder as mutt does under $folder (Archive, not
+imap:work/Archive), the account in front only when several are
+configured. In the browser (\fBy\fR),
 .B C
 creates a folder (an imap:account/name spec makes a remote one),
 .B d
