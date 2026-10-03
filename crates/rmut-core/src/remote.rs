@@ -71,6 +71,19 @@ pub fn parse_spec(spec: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// How an `imap:account/mailbox` spec reads in a list: the mailbox
+/// alone, as mutt names folders relative to `$folder`, with the
+/// account in front only when several are configured and it tells
+/// folders apart. Anything else is returned as given.
+pub fn display_spec(spec: &str, several_accounts: bool) -> &str {
+    match parse_spec(spec) {
+        Some(_) if several_accounts => &spec["imap:".len()..],
+        Some((_, mailbox)) if spec.contains('/') => mailbox,
+        Some(_) => "INBOX",
+        None => spec,
+    }
+}
+
 /// Tidy a mailbox name: collapse `//` runs and trim `/` from the ends
 /// (servers reject "adjacent hierarchy separators"); empty → INBOX.
 /// A mutt-style imap[s]:// URL (from an unconverted config) means the
@@ -851,6 +864,20 @@ mod tests {
         assert_eq!(parse_spec("imap:"), None);
         assert_eq!(parse_spec("imap:work/"), None);
         assert_eq!(parse_spec("~/Maildir"), None);
+    }
+
+    #[test]
+    fn spec_display() {
+        assert_eq!(display_spec("imap:mutt/INBOX", false), "INBOX");
+        assert_eq!(
+            display_spec("imap:mutt/Archive/2026", false),
+            "Archive/2026"
+        );
+        assert_eq!(display_spec("imap:mutt", false), "INBOX");
+        assert_eq!(display_spec("imap:work/INBOX", true), "work/INBOX");
+        assert_eq!(display_spec("imap:work", true), "work");
+        assert_eq!(display_spec("~/Mail/a", false), "~/Mail/a");
+        assert_eq!(display_spec("..", true), "..");
     }
 
     #[test]

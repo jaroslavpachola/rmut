@@ -132,7 +132,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Mode::Pager(_) => unreachable!(),
             Mode::Compose { sel } => draw_compose(frame, content_area, app, *sel),
             Mode::Attach { parts, sel, .. } => draw_attach(frame, content_area, parts, *sel),
-            Mode::Folders { dirs, sel, .. } => draw_folders(frame, content_area, dirs, *sel),
+            Mode::Folders { dirs, sel, .. } => {
+                let several = app.session.config.accounts.len() > 1;
+                draw_folders(frame, content_area, dirs, *sel, several)
+            }
             Mode::Postponed { drafts, sel } => draw_postponed(frame, content_area, drafts, *sel),
             Mode::Query { results, sel } => draw_list(frame, content_area, results, *sel),
             Mode::Urls { urls, sel, .. } => {
@@ -226,9 +229,9 @@ fn draw_compose(frame: &mut Frame, area: Rect, app: &App, sel: usize) {
 
 /// A short label for a sidebar entry: the folder part of an `imap:`
 /// spec, the last path component of a local maildir.
-fn sidebar_label(spec: &str) -> &str {
-    if let Some(rest) = spec.strip_prefix("imap:") {
-        return rest;
+fn sidebar_label(spec: &str, several_accounts: bool) -> &str {
+    if spec.starts_with("imap:") {
+        return rmut_core::remote::display_spec(spec, several_accounts);
     }
     spec.trim_end_matches('/')
         .rsplit('/')
@@ -239,10 +242,12 @@ fn sidebar_label(spec: &str) -> &str {
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let width = area.width as usize;
+    let several = app.session.config.accounts.len() > 1;
     let mut lines = Vec::new();
     for (i, (spec, new)) in app.sidebar.iter().enumerate().take(area.height as usize) {
         let open = app.sidebar_open == Some(i);
-        let mut text = format!("{}{}", if open { ">" } else { " " }, sidebar_label(spec));
+        let label = sidebar_label(spec, several);
+        let mut text = format!("{}{label}", if open { ">" } else { " " });
         if *new > 0 {
             text += &format!(" ({new})");
         }
@@ -484,14 +489,21 @@ fn draw_attach(frame: &mut Frame, area: Rect, parts: &[Part], sel: usize) {
 
 // ---- folders ----
 
-fn draw_folders(frame: &mut Frame, area: Rect, dirs: &[(String, usize)], sel: usize) {
+fn draw_folders(
+    frame: &mut Frame,
+    area: Rect,
+    dirs: &[(String, usize)],
+    sel: usize,
+    several_accounts: bool,
+) {
     let width = area.width as usize;
     let rows = area.height as usize;
     // Keep the selection on screen in deep directory listings.
     let offset = (sel + 1).saturating_sub(rows);
     let mut lines = Vec::new();
     for (i, (dir, new)) in dirs.iter().enumerate().skip(offset).take(rows) {
-        let mut text = format!("{:>3} {}", i + 1, dir);
+        let dir = rmut_core::remote::display_spec(dir, several_accounts);
+        let mut text = format!("{:>3} {dir}", i + 1);
         if *new > 0 {
             text += &format!(" ({new} new)");
         }

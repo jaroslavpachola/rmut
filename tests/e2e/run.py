@@ -933,9 +933,12 @@ smtp_tls = false
     assert any("RCPT TO:<bob@example.org>" in c for c in smtp.commands)
     wait_for(lambda: imap.appended, desc="Fcc APPEND on the IMAP server")
     assert "Subject: imap send" in imap.appended[0]
-    # Folder browser lists the account's folders.
+    # Folder browser lists the account's folders, named as mutt names
+    # them under $folder: with one account, no imap:test/ in front.
+    r.buf = ""
     r.keys(b"y")
-    r.expect("imap:test/Sent")
+    r.repaint()
+    r.expect("INBOX", "Sent", absent=("imap:test/",))
 
     # R69: folder management. Create a remote folder (typed as a
     # spec), subscribe to the selected one, rename it, delete it.

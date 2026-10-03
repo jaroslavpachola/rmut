@@ -675,6 +675,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         return;
                     };
                     let (dirs, sel) = (dirs.clone(), *sel);
+                    let several = gui.session.config.accounts.len() > 1;
                     let mut open = None;
                     for (i, (spec, count)) in dirs.iter().enumerate().take(rows) {
                         let style = if i == sel {
@@ -684,7 +685,10 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                         };
                         let mut job = LayoutJob::default();
                         job.append(
-                            &format!("{spec:<40} {count:>5} new"),
+                            &format!(
+                                "{:<40} {count:>5} new",
+                                rmut_core::remote::display_spec(spec, several)
+                            ),
                             0.0,
                             format(style, size),
                         );
