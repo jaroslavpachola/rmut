@@ -241,7 +241,10 @@ pushes your changes to the server (flags via UID STORE, deletes via
 EXPUNGE). New mail is announced by **IDLE** (RFC 2177, on a second
 connection) and shows up within a second; when the server doesn't
 support IDLE, the NOOP poll (`poll_seconds`) picks it up as before.
-The folder browser asks the server for UNSEEN counts (STATUS). A
+The browser and the sidebar name a remote folder as mutt does under
+`$folder`, `Archive` rather than `imap:work/Archive`, and put the
+account in front only when more than one is configured. The folder
+browser asks the server for UNSEEN counts (STATUS). A
 connection dropped by laptop sleep or a server timeout is transparently
 reopened and the operation retried once; polls fetch only new arrivals
 unless the server reported flag changes or expunges. The

@@ -2894,6 +2894,16 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.4 (released 2026-10-03)
+
+A fix for how the folder browser names IMAP folders. Each row printed
+its raw spec, so an account imported from a muttrc showed imap:mutt/
+in front of every folder, and the terminal sidebar showed mutt/INBOX.
+Now a folder reads as mutt names it under $folder, INBOX or Archive,
+with the account in front only when several are configured
+(remote::display_spec), in both front ends. Display only: the rows
+still hold the full spec, so opening a folder works as before.
+
 ## 2.16.3 (released 2026-10-02)
 
 Fixes for mail that is not plain ASCII, in both directions. A plain
