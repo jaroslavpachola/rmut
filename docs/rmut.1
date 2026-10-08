@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.16.8" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.17.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -400,6 +400,20 @@ action for bind, with no default key, as in mutt
 .TP
 .B s C
 save (copy and mark deleted) / copy to a mailbox
+.TP
+.B (unbound)
+decrypt\-save / decrypt\-copy: save or copy the message with its
+encryption opened (still the whole MIME message, attachments and all),
+as mutt has them, with no default key
+.TP
+.B Ctrl+K
+extract\-keys: import the PGP public keys the message carries (key
+attachments, armored blocks in its text, inside the encryption too)
+into gpg
+.TP
+.B Esc+k
+mail\-key: asks for a key id or address and starts a message with
+that public key attached (application/pgp\-keys), the subject offered
 .TP
 .B | p
 pipe raw message to a shell command; pipe to the print command
@@ -1605,6 +1619,34 @@ $crypt_replysignencrypted: a reply inherits the original's protection
 \(em signed when it was signed, encrypted when it was encrypted, and
 signed too when answering encrypted mail. Off by default; detection
 reads the MIME type only, never decrypting.
+.TP
+.B opportunistic_encrypt
+mutt's $crypt_opportunistic_encrypt: a draft is encrypted whenever gpg
+has a key for every recipient, and stops being so when one without a
+key is added; the compose menu shows "(auto)". A choice in the
+security menu (p) takes over for that draft, and o there hands it
+back. A draft that starts out encrypted (encrypt_by_default,
+reply_encrypt) is left alone. Off by default.
+.TP
+.B protect_subject ", " subject_placeholder
+mutt's $crypt_protected_headers_write and
+$crypt_protected_headers_subject: encrypted mail carries its subject
+and address fields inside the encryption, the subject outside
+replaced by subject_placeholder ("..." when unset), so the subject no
+longer travels in clear. On by default, as in Thunderbird; off sends
+the subject outside only, as mutt does by default.
+.TP
+.B postpone_encrypt
+mutt's $postpone_encrypt: a draft postponed with encryption on is
+stored encrypted to your own key (sign_key, else the From address).
+Its headers stay readable for the postponed list. Off by default.
+Every postponed draft keeps its security in mutt's X\-Mutt\-PGP
+header, so a recall comes back signed or encrypted as it was.
+.TP
+.B save_protected_subject
+mutt's $crypt_protected_headers_save: a subject revealed by
+decryption is kept in the header cache, so the index shows it after
+a restart. It then sits on disk in clear, so off by default.
 .SH FORMAT STRINGS
 .B index.format
 takes

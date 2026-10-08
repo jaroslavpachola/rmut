@@ -1873,12 +1873,14 @@ envelope odds moved to R89 (post-2.0).
 Goal: the crypto pieces R72 deferred, each needing gpg fixtures or a
 new encoding path. Not a 2.0 blocker.
 
-- [ ] `$crypt_opportunistic_encrypt` (encrypt when every recipient
-      has a key), `$pgp_replyinline` / `$pgp_autoinline` (inline PGP
-      as an alternative to PGP/MIME), `$postpone_encrypt`
-- [ ] The index key ops: Ctrl+K extract-keys (gpg --import from the
-      message), Esc k mail-key (mail your public key), Esc P
-      check-traditional-pgp
+- [x] `$crypt_opportunistic_encrypt` and `$postpone_encrypt`: done
+      in R99 (2.17.0)
+- [ ] `$pgp_replyinline` / `$pgp_autoinline` (inline PGP as an
+      alternative to PGP/MIME): still open, and only if asked; inline
+      PGP is the shape mail clients have been moving away from
+- [x] Ctrl+K extract-keys and Esc k mail-key: done in R99. Esc P
+      check-traditional-pgp is moot: rmut finds inline armor anywhere
+      in a text part on its own (2.16.7)
 
 ## R77: page motion (done, 1.74)
 
@@ -2468,6 +2470,52 @@ tooling, docs), each finding checked first. Every one held.
       rmut lived on to the end of the run. `close()` waits for the
       exit (killing after 3 s) instead of reaping without waiting
 
+## R99: the PGP odds, finished (done, 2.17.0; asked for by name, 2026-10-08)
+
+Goal: what R76 left, plus the outgoing half of protected headers now
+that rmut reads them (2.16.8).
+
+- [x] `opportunistic_encrypt` (mutt's $crypt_opportunistic_encrypt):
+      the draft's encryption follows whether gpg has a usable key for
+      every To/Cc/Bcc recipient, a crypt-hook key standing in for its
+      address, an address matched exactly (`<addr>`, not gpg's
+      substring match). Rechecked after the editor and on every
+      recipient edit, answers cached until keys are imported. A choice
+      in the security menu takes over (`o` hands it back), and a draft
+      that starts encrypted is left alone, as in mutt. The Security
+      line says "(auto)"
+- [x] Protected headers going out (`protect_subject`, mutt's
+      $crypt_protected_headers_write, on by default as in
+      Thunderbird): the address fields and Subject copied onto the
+      plaintext's top part, its Content-Type marked
+      protected-headers="v1", the Subject outside replaced by
+      `subject_placeholder` ("..."). Bcc never goes inside.
+      Encryption now always takes the entity path (encrypt_message's
+      bytes were the same), so the one place protects every shape
+- [x] Ctrl+K extract-keys: application/pgp-keys parts and armored
+      key blocks in text parts, read through Session::readable so keys
+      inside encrypted mail count, each block one gpg --import, the
+      IMPORT_RES counts reported. Esc k mail-key: a key id or address,
+      exactly one valid key or an error naming the candidates, the
+      export attached as application/pgp-keys under its 0x id, the
+      subject offered. Both in the index and the pager
+- [x] decrypt-save / decrypt-copy, unbound as in mutt: the copy path's
+      decode flag became CopyForm (raw, decoded, decrypted); decrypted
+      is the opened message whole, attachments and all
+- [x] Postponed drafts keep their security in mutt's X-Mutt-PGP (E, S,
+      O), read back on recall, so mutt's own postponed drafts recall
+      right too. `postpone_encrypt` stores the draft encrypted to the
+      sign key or the From address, the headers left readable for the
+      postponed list
+- [x] `save_protected_subject` (mutt's $crypt_protected_headers_save):
+      the revealed subject written into the header cache entry rather
+      than into the message, off by default since it then sits on disk
+      in clear
+- [x] Tests: listing, export, import, key blocks and protect_headers
+      in pgp.rs; the header cache; the importer; session tests with a
+      rot13 gpg (opportunistic, the postpone round trip, a protected
+      send read back); e2e scenario_pgp_keys_and_copies
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2893,6 +2941,14 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.17.0 (released 2026-10-08)
+
+R99, the rest of mutt's PGP: opportunistic encryption, the subject
+protected inside encrypted mail going out, Ctrl+K extract-keys, Esc k
+mail-key, decrypt-save and decrypt-copy, postponed drafts that keep
+their security (and with postpone_encrypt are stored encrypted), and
+revealed subjects optionally kept in the header cache. See R99.
 
 ## 2.16.8 (released 2026-10-08)
 

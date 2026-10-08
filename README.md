@@ -337,7 +337,16 @@ original's protection: `reply_sign` signs replies to signed mail,
 signs replies to encrypted mail too (mutt's `$crypt_replysign` /
 `$crypt_replyencrypt` / `$crypt_replysignencrypted`, all off by
 default). Detection reads the original's MIME type only; it never
-decrypts to decide. Passphrases are gpg-agent's
+decrypts to decide. `opportunistic_encrypt` encrypts a draft whenever
+gpg has a key for every recipient (mutt's
+`$crypt_opportunistic_encrypt`; the security menu's choice takes over,
+`o` hands it back). Encrypted mail goes out with its subject inside
+the encryption and "..." outside (`protect_subject`, on by default as
+in Thunderbird). Ctrl+K imports the keys a message carries, Esc k mails
+a public key as an attachment, and decrypt-save / decrypt-copy (no
+default key, as in mutt) keep a decrypted copy of encrypted mail. A
+postponed draft keeps its security (mutt's `X-Mutt-PGP`), and with
+`postpone_encrypt` it is stored encrypted to your own key. Passphrases are gpg-agent's
 business; rmut never sees them.
 
 ## Sending mail
@@ -1152,6 +1161,10 @@ encrypt_by_default = false
 reply_sign = false             # a reply to signed mail defaults signed
 reply_encrypt = false          # a reply to encrypted mail, encrypted
 reply_sign_encrypted = false   # a reply to encrypted mail, signed too
+opportunistic_encrypt = false  # encrypt whenever every recipient has a key
+protect_subject = true         # the subject inside the encryption, "..." outside
+postpone_encrypt = false       # postponed drafts encrypted to your own key
+save_protected_subject = false # keep revealed subjects in the header cache
 ```
 
 Key syntax: a character, `ctrl+x`, `alt+x`, or enter/esc/space/tab/
