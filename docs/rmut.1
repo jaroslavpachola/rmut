@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.16.5" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.16.6" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1579,7 +1579,9 @@ multipart (a mailing list's footer appended) is decrypted in place. Passphrases 
 address too, so the sent copy stays readable; when gpg picks a key for
 it whose secret is not in your keyring (an old key a keyserver still
 serves), rmut asks before sending. A message that cannot be decrypted
-names the keys it was encrypted to.
+names the keys it was encrypted to: one in your keyring with its user
+id and creation date (an old key of yours, typically), the other
+recipients' keys counted.
 .TP
 .B sign_key
 Signing key for \-\-local\-user; gpg's default key when unset.

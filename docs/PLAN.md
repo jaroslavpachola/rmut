@@ -2894,6 +2894,24 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.6 (released 2026-10-08)
+
+A clearer verdict on mail that cannot be decrypted. The message named
+every key it was encrypted to, then the one user id gpg printed, so a
+list of several ids read as if all of them were the reader's. Now each
+key whose public half is in the keyring gets its own user id and
+creation date, and the rest, the other recipients' keys, are counted:
+"no secret key for <id> (<user id>, created <date>) or the 4 other
+recipients' keys" (pgp::no_secret).
+
+And a key typed while the terminal resizes is no longer held back.
+crossterm's default event source waits edge-triggered and, when a
+resize and a key arrive in the same wakeup, returns the resize and
+leaves the key unread until the next one is typed. rmut now builds
+crossterm with its poll(2) source (use-dev-tty), which keeps the key
+reported. The e2e runner resizes the window to force full repaints,
+which is why the compose scenarios timed out now and then.
+
 ## 2.16.5 (released 2026-10-08)
 
 A fix for encrypted mail that comes through a mailing list. A list

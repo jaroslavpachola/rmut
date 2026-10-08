@@ -317,7 +317,10 @@ menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption
 looks keys up by recipient address and always encrypts to the sender
 too, so the Fcc copy stays readable. When the key gpg picks for your
 own address has no secret in your keyring (an old key a keyserver
-still serves), rmut asks before sending. A reply can inherit the
+still serves), rmut asks before sending. Mail that cannot be decrypted
+says why: the key it was encrypted to that is in your keyring, with
+its user id and creation date, then a count of the other recipients'
+keys. A reply can inherit the
 original's protection: `reply_sign` signs replies to signed mail,
 `reply_encrypt` encrypts replies to encrypted mail, `reply_sign_encrypted`
 signs replies to encrypted mail too (mutt's `$crypt_replysign` /
