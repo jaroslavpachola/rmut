@@ -2894,6 +2894,27 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.7 (released 2026-10-08)
+
+Encrypted mail read the same everywhere, not only in the pager. The
+pager decrypted, but a reply quoted the raw file (nothing for PGP/MIME,
+the armor for inline PGP), and the attachment menu listed the two
+PGP/MIME wrapper parts, so an attachment inside the encryption could
+not be saved, viewed or forwarded. pgp::view now hands back the whole
+message as it reads opened, every decrypted part spliced in where its
+ciphertext stood, and the session keeps the last one (in memory) for
+the attachment menu, replies, forwards and resends to read from
+(Session::readable).
+
+And three shapes that went undecrypted: PGP/MIME that Exchange rewrote
+as multipart/mixed (the same two parts, an empty text part in front;
+mutt's malformed_multipart_pgp_encrypted), inline armor after other
+text such as a greeting, now marked off with mutt's BEGIN/END lines
+when there is text around it, and inline plaintext in a charset other
+than UTF-8, now read in the charset the part declares (us-ascii, a
+label for the armor only, still reads as UTF-8). Searching bodies with
+~b still sees the ciphertext: it does not run gpg per message.
+
 ## 2.16.6 (released 2026-10-08)
 
 A clearer verdict on mail that cannot be decrypted. The message named

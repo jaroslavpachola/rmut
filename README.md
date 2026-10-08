@@ -310,7 +310,12 @@ PGP/MIME (RFC 3156) and inline/clearsigned messages are decrypted
 and/or verified, with a `[-- PGP: ... --]` verdict line at the top of
 the pager (good/BAD/unverified signature). A PGP/MIME part further
 down the tree, as a mailing list delivers it with its footer
-appended, is decrypted in place, the footer still shown after it. Outgoing mail is treated
+appended, is decrypted in place, the footer still shown after it,
+and so is PGP/MIME that Exchange rewrote as multipart/mixed. Inline
+armor is found after a greeting too, the protected text marked off
+from the rest, and its plaintext read in the charset the part
+declares. A reply quotes the decrypted text, and the attachment menu
+lists, saves and forwards the parts inside the encryption. Outgoing mail is treated
 per message: in the compose menu, `p` opens the security menu with
 (e)ncrypt, (s)ign, (b)oth, (c)lear, and the chosen state shows in the
 menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption

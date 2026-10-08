@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.16.6" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.16.7" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -1574,7 +1574,11 @@ identity = { name = "Jane Work", email = "jane@work.example.com" }.
 The gpg executable (default gpg). Decrypt/verify happens
 automatically when a viewed message is PGP; signing and encrypting
 are chosen in the compose menu (p). A PGP/MIME part inside another
-multipart (a mailing list's footer appended) is decrypted in place. Passphrases are gpg-agent's business
+multipart (a mailing list's footer appended) is decrypted in place,
+as is one Exchange rewrote as multipart/mixed, and inline armor is
+found after other text and read in the part's declared charset. A
+reply quotes the decrypted text and the attachment menu works on the
+parts inside the encryption. Passphrases are gpg-agent's business
 \(em rmut never sees them. An encrypted message goes to your own
 address too, so the sent copy stays readable; when gpg picks a key for
 it whose secret is not in your keyring (an old key a keyserver still
