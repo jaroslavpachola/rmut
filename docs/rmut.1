@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.17.0" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.18.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -345,7 +345,14 @@ prints it via print, and
 forwards the part under the cursor: text is quoted as a forward
 quotes a message, anything else goes along as a file, which
 mime_forward_rest = false refuses instead (forward = "attach"
-attaches it whatever it is)
+attaches it whatever it is).
+.B d / u
+mark the part for deletion and take the mark off (mutt's
+delete\-entry / undelete\-entry, a D on the row); leaving the menu
+asks, and yes rewrites the message with mutt's deleted\-attachment
+stub where each part was (one undo step; local maildirs only, never
+encrypted or signed mail). The pager then says which attachment was
+deleted
 .TP
 .B Alt+v Alt+V
 fold/unfold current thread; fold/unfold all threads
@@ -405,6 +412,10 @@ save (copy and mark deleted) / copy to a mailbox
 decrypt\-save / decrypt\-copy: save or copy the message with its
 encryption opened (still the whole MIME message, attachments and all),
 as mutt has them, with no default key
+.TP
+.B (unbound)
+next\-tagged / previous\-tagged: the nearest tagged message, wrapping
+with a note, without a search (the last search stays as it was)
 .TP
 .B Ctrl+K
 extract\-keys: import the PGP public keys the message carries (key
@@ -935,6 +946,10 @@ renames it, and
 .B s / u
 subscribe and unsubscribe: CREATE / DELETE / RENAME / SUBSCRIBE on
 the open IMAP account, or the filesystem for a local maildir.
+.B T
+toggles between every folder of the account and only the subscribed
+ones (LSUB; INBOX and the configured mailboxes always show), mutt's
+toggle\-subscribed; imap_list_subscribed starts it on the subscribed.
 .TP
 .B sent, postponed
 Mailboxes receiving sent copies and postponed drafts.
@@ -989,6 +1004,17 @@ along as a message/rfc822 part, mutt's mime_forward).
 .B query_command
 External address lookup for Tab completion at the To prompt (%s is
 the word, or it is appended), e.g. "khard email \-\-parsable %s".
+.TP
+.B display_filter
+mutt's $display_filter: a shell command the pager's body goes through
+before it is shown, stdin to stdout, e.g. a cleaner for a mailing
+list's quoting. The header lines stay rmut's, and print, a decoded
+pipe and decode\-save keep the text unfiltered. A failing command
+shows the body as it was and says so.
+.TP
+.B imap_list_subscribed
+mutt's $imap_list_subscribed: the folder browser starts on the
+subscribed IMAP folders only (T toggles). Off by default.
 .TP
 .B trash
 Purged messages move here (a maildir path or imap:account/folder of

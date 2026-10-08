@@ -161,11 +161,15 @@ account folders and nearby maildirs; empty Tab opens the folder
 browser), `y` folder browser (with
 new/unseen counts; folders holding new mail show bold), `G` check
 for new mail now, `B` toggle the sidebar (Ctrl+N/Ctrl+P move its
-highlight, Ctrl+O opens the highlighted mailbox), `v` attachments,
+highlight, Ctrl+O opens the highlighted mailbox), `v` attachments
+(`d`/`u` there mark a part for deletion, and leaving the menu asks
+before the message is rewritten with mutt's deleted-attachment stub;
+local maildirs only, one undo step),
 `m` compose, `r` reply, `g` group
 reply, `L` list-reply, `f` forward, `C` copy to a mailbox (no delete mark), `|` pipe
 the raw message to a shell command, `b` bounce (resend as-is to new
-recipients, with a Resent-\* block), `e` edit the raw message (mutt's
+recipients, with a Resent-\* block), next-tagged / previous-tagged
+(unbound) the nearest tagged message, `e` edit the raw message (mutt's
 edit; the changed result replaces the original), Alt+e edit as a new
 draft (resend), `a` add the sender to the alias file (nick prompted, local
 part prefilled), `p` print (pipes the message to `mail.print`,
@@ -236,7 +240,9 @@ a config spelling one the mutt way, `Odeslan&AOE-`, still works). In the browser
 (type an `imap:account/name` spec for a remote one), `d` deletes the
 selected mailbox (confirmed), `r` renames it, and `s`/`u`
 subscribe/unsubscribe: CREATE / DELETE / RENAME / SUBSCRIBE on the
-open account, or the filesystem for a local maildir. Messages are mirrored into a cache maildir
+open account, or the filesystem for a local maildir. `T` shows only
+the subscribed folders (LSUB) and back; `imap_list_subscribed = true`
+starts the browser that way. Messages are mirrored into a cache maildir
 under `~/.cache/rmut/imap/` (headers up front, full bodies fetched on
 first view), so the index is fast and old mail reopens offline. `$`
 pushes your changes to the server (flags via UID STORE, deletes via
@@ -1001,6 +1007,8 @@ fcc_clear = false            # true: keep the copy of signed/encrypted
                              # mail in the clear
 forward_edit = "yes"         # "no": a forward skips the editor;
                              # ask-yes/ask-no ask first
+# display_filter = "fmt -w 72" # the pager body through a command first
+imap_list_subscribed = false # true: the browser lists subscribed folders
 mime_forward_rest = true     # f in the attachment menu attaches a
                              # part that is not text; false refuses
 signature = "~/.signature"   # ends every draft; a name ending in |

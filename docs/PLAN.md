@@ -823,7 +823,7 @@ Alt+V (mutt's `Esc v`), so half the map is drawn.
       All of them refuse without thread sort, as mutt does;
       e2e scenario_thread_ops, which also needed a reply-to-the-reply
       fixture so a subthread is not the whole thread
-- [ ] Postponed from R45, only if the macros do not carry it: promote
+- [x] (R100, as next-tagged / previous-tagged) Postponed from R45, only if the macros do not carry it: promote
       next/previous-marked to real motions with a key of their own,
       rather than `/~D` and Alt+/ driven from `[macros.index]`. What
       a key would buy over the macro is not typing the pattern and
@@ -2516,6 +2516,43 @@ that rmut reads them (2.16.8).
       rot13 gpg (opportunistic, the postpone round trip, a protected
       send read back); e2e scenario_pgp_keys_and_copies
 
+## R100: the leftovers (done, 2.18.0; asked for by name, 2026-10-08)
+
+Goal: the small pieces earlier rounds deferred, each with its reason
+gone.
+
+- [x] next-tagged / previous-tagged, unbound as mutt leaves its own
+      motions of this kind: the nearest tagged message by the same
+      wrap_order walk as next-new, without touching last_search. R42's
+      note said a "marked" motion should mean deleted; what was asked
+      for (2026-10-08) was the tagged set, and deleted stays `/~D`
+- [x] `display_filter` (mutt's $display_filter): the pager's body
+      through `sh -c`, stdin to stdout, applied where the pager is
+      fed (open_message) and nowhere else, so print, a decoded pipe
+      and decode-save stay unfiltered as in mutt. The header lines
+      stay rmut's, since the pager draws them itself. A failing
+      command shows the body unfiltered with an error
+- [x] Subscribed-only folders (mutt's $imap_list_subscribed and the
+      browser's toggle-subscribed on T): the folder job sends LSUB
+      after LIST, the session keeps the set beside the listing and
+      updates it on s/u, and folder_candidates filters the server's
+      folders by it, INBOX and the configured mailboxes always kept.
+      A server refusing LSUB leaves every folder showing, with a
+      word when T is pressed
+- [x] Attachment delete-entry / undelete-entry: d/u in the menu mark
+      a part (a D on the row, the marks held by the session so both
+      front ends share them), leaving the menu asks, and yes rewrites
+      the file with mutt's own stub (message/external-body;
+      access-type=x-mutt-deleted, the part's header fields kept) in
+      one undo step. Local maildirs only, like edit-label, and never
+      encrypted or signed mail, as in mutt. The pager shows the stub
+      as mutt does: "This text/plain (notes.txt) attachment has been
+      deleted"
+- [x] Tests: without_parts and the stub's rendering in core; session
+      tests for the motions, the filter, and the delete/undo/refusal
+      cycle; e2e scenario_attach_delete and the LSUB toggle in
+      scenario_imap_utf7_folders
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -2942,6 +2979,12 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.18.0 (released 2026-10-08)
+
+R100, the leftovers: next-tagged / previous-tagged, display_filter, a
+subscribed-only folder browser (imap_list_subscribed, T), and deleting
+attachments from a message in the attachment menu. See R100.
+
 ## 2.17.0 (released 2026-10-08)
 
 R99, the rest of mutt's PGP: opportunistic encryption, the subject
@@ -3084,8 +3127,9 @@ scenario_password_command_in_the_open.
 
 Easy to lose under a (done, x.y) heading:
 
-- R42: a real next/previous-marked motion, if the macros do not carry
-  it
+- R42: next/previous-marked became next-tagged / previous-tagged in
+  R100 (the tagged set, which is what was asked for; a deleted-mark
+  motion stays a `/~D` search)
 - R59: `move` + `mbox` dropped on purpose; stays dropped unless asked
 
 ## The GUI front end (proposed, 2026-08-27)
