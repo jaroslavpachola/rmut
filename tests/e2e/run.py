@@ -1254,6 +1254,56 @@ def scenario_pgp_unreadable_copy(tmp):
     r.close()
 
 
+def scenario_pgp_nested(tmp):
+    """2.16.5: PGP/MIME inside a multipart/mixed, the way a mailing
+    list delivers it with its footer appended, is decrypted in place
+    and shown with the footer after it."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751900000.7.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: crew@lists.example.com\r\n"
+            "Subject: sealed via the list\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <listed@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="o"\r\n\r\n'
+            "--o\r\n"
+            'Content-Type: multipart/encrypted; boundary="b";\r\n'
+            '\tprotocol="application/pgp-encrypted"\r\n\r\n'
+            "--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--b\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nZZZ\r\n-----END PGP MESSAGE-----\r\n"
+            "--b--\r\n"
+            "--o\r\nContent-Type: text/plain\r\n\r\n"
+            "crew mailing list footer\r\n--o--\r\n"
+        )
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--decrypt*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
+            '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
+            "  printf 'Content-Type: multipart/mixed; boundary=\"m\"\\r\\n\\r\\n"
+            "--m\\r\\nContent-Type: text/plain\\r\\n\\r\\nthe listed secret\\r\\n"
+            "--m\\r\\nContent-Type: application/pdf\\r\\n"
+            "Content-Disposition: attachment; filename=\"plan.pdf\"\\r\\n\\r\\n"
+            "PDFBYTES\\r\\n--m--\\r\\n' ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[pgp]\ncommand = "{gpg}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config}))
+    r.expect("Msgs:2", "sealed via the list")
+    r.keys(b"\r")
+    r.expect("PGP: decrypted", "the listed secret", "plan.pdf",
+             "crew mailing list footer")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_print(tmp):
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane"])
@@ -5423,6 +5473,7 @@ SCENARIOS = [
     scenario_trash_and_alias,
     scenario_pgp,
     scenario_pgp_unreadable_copy,
+    scenario_pgp_nested,
     scenario_print,
     scenario_edit_headers,
     scenario_mutt_flow,
