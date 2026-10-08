@@ -696,8 +696,9 @@ fn bytes(spec: &str) -> Result<u64, String> {
 
 // ---- matching ----
 
-/// Answers `~b` for a message without the local file read: Some
-/// when a server-side search already knows, None to fall back.
+/// Answers `~b` (and the body half of `~B`) for a message without the
+/// local file read: Some when the caller already knows (a server-side
+/// search, a body decrypted earlier), None to fall back.
 pub type BodyOracle<'a> = &'a dyn Fn(&Envelope, &Matcher) -> Option<bool>;
 
 /// Per-message context: disk reads happen at most once.
@@ -853,6 +854,9 @@ fn eval(p: &Pattern, ctx: &mut Ctx) -> bool {
                 .get_or_insert_with(|| message::header_text(&env.file.path).unwrap_or_default());
             if m.is_match(headers) {
                 return true;
+            }
+            if let Some(answer) = ctx.oracle.and_then(|oracle| oracle(env, m)) {
+                return answer;
             }
             let body = ctx
                 .body

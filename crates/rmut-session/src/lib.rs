@@ -490,10 +490,14 @@ pub struct Session {
     /// message's parts turn into the text a reader sees.
     pub display: message::Display,
     /// The last message opened by PGP, as it reads decrypted: its
-    /// path, size and mtime, then the bytes. Replies, forwards and the
-    /// attachment menu read it from here instead of asking gpg again.
-    /// Kept in memory only.
-    opened: Option<(PathBuf, u64, Option<SystemTime>, Vec<u8>)>,
+    /// mail_key, size and mtime, then the bytes. Replies, forwards and
+    /// the attachment menu read it from here instead of asking gpg
+    /// again. Kept in memory only.
+    opened: Option<(String, u64, Option<SystemTime>, Vec<u8>)>,
+    /// The decrypted text body of every message opened this session,
+    /// by mail_key, for `~b` and `~B`: a search does not run gpg, but
+    /// what the reader has seen decrypted can be found. Memory only.
+    decrypted: HashMap<String, String>,
     /// Messages sent but still inside their $undo_send window, oldest
     /// first. They go out when the timer runs out or rmut leaves.
     outbox: Vec<Held>,
@@ -622,6 +626,19 @@ impl Session {
         if let Ok(email) = std::env::var("EMAIL") {
             me.push(email.to_lowercase());
         }
+        // IMAP folders named in the server's modified UTF-7 (a config
+        // written for mutt) read as text, the way LIST names now do,
+        // so the two spellings are one folder.
+        let mut config = config;
+        for spec in config
+            .mail
+            .mailboxes
+            .iter_mut()
+            .chain(config.mail.trash.as_mut())
+            .chain(config.mail.postponed.as_mut())
+        {
+            *spec = remote::canonical_spec(spec);
+        }
         let mut session = Session {
             dir: dir.to_path_buf(),
             title: dir.display().to_string(),
@@ -666,6 +683,7 @@ impl Session {
             crypt_hooks: Vec::new(),
             display: display_from_config(&config),
             opened: None,
+            decrypted: HashMap::new(),
             outbox: Vec::new(),
             quote_re: default_quote_re(),
             reply_re: compose::default_reply_regexp(),
@@ -1163,6 +1181,9 @@ impl Session {
             env,
             self.scope_at(pos, mi),
             Some(&|env: &Envelope, m: &pattern::Matcher| {
+                if let Some(body) = self.decrypted.get(&mail_key(&env.file.path)) {
+                    return Some(m.is_match(body));
+                }
                 let set = self.body_hits.get(m.raw())?;
                 let uid = remote::uid_of(&env.file.path)?;
                 Some(set.contains(&uid))
@@ -3667,9 +3688,16 @@ impl Session {
         {
             // The opened message is a MIME tree of its own: render it
             // whole, so attachments inside encrypted mail are
-            // announced like any others.
+            // announced like any others. Its header fields are the
+            // protected ones where the sender protected any: the real
+            // subject for the "..." outside.
             if let Some(opened) = &p.opened {
                 view.body = message::render_entity(opened, &self.display);
+                if let Ok(inner) = message::load_bytes(opened, &self.display) {
+                    view.brief = inner.brief;
+                    view.all = inner.all;
+                }
+                self.learn_opened(path, opened, &view.all);
             }
             self.keep_opened(path, p.opened.unwrap_or(raw));
             view.body = format!("{}\n\n{}", p.note, view.body);
@@ -3683,8 +3711,8 @@ impl Session {
     /// all come from here, so they agree.
     pub fn readable(&mut self, path: &Path) -> Result<Vec<u8>> {
         let stamp = std::fs::metadata(path).map(|m| (m.len(), m.modified().ok()));
-        if let (Some((p, len, mtime, bytes)), Ok(stamp)) = (&self.opened, &stamp)
-            && p == path
+        if let (Some((key, len, mtime, bytes)), Ok(stamp)) = (&self.opened, &stamp)
+            && *key == mail_key(path)
             && (*len, *mtime) == *stamp
         {
             return Ok(bytes.clone());
@@ -3694,7 +3722,12 @@ impl Session {
             Some(pgp::View {
                 opened: Some(opened),
                 ..
-            }) => opened,
+            }) => {
+                if let Ok(inner) = message::load_bytes(&opened, &self.display) {
+                    self.learn_opened(path, &opened, &inner.all);
+                }
+                opened
+            }
             Some(_) => raw,
             // Not PGP at all: nothing worth keeping.
             None => return Ok(raw),
@@ -3706,7 +3739,26 @@ impl Session {
     fn keep_opened(&mut self, path: &Path, bytes: Vec<u8>) {
         self.opened = std::fs::metadata(path)
             .ok()
-            .map(|m| (path.to_path_buf(), m.len(), m.modified().ok(), bytes));
+            .map(|m| (mail_key(path), m.len(), m.modified().ok(), bytes));
+    }
+
+    /// What a decrypted message tells the rest of rmut: its body, for
+    /// `~b`, and its subject when the sender protected it, for the
+    /// index and a reply (held in memory, like mutt without
+    /// $crypt_protected_headers_save).
+    fn learn_opened(&mut self, path: &Path, opened: &[u8], all: &[(String, String)]) {
+        if let Ok(body) = message::body_text_in(opened) {
+            self.decrypted.insert(mail_key(path), body);
+        }
+        let subject = all
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("Subject"))
+            .map(|(_, value)| value.clone());
+        if let Some(subject) = subject
+            && let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
+        {
+            m.env.subject = subject;
+        }
     }
 
     /// The attachment menu's leaves of the message at `path`, read
@@ -5811,6 +5863,13 @@ fn postponed_fallback() -> PathBuf {
 }
 
 /// mutt's $quote_regexp default.
+/// A message's name that outlives a flag change, which renames the
+/// file: its maildir file name up to the info part.
+fn mail_key(path: &Path) -> String {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    name.split(':').next().unwrap_or_default().to_string()
+}
+
 pub fn default_quote_re() -> regex_lite::Regex {
     regex_lite::Regex::new(r"^([ \t]*[|>:}#])+").expect("default quote_regexp compiles")
 }

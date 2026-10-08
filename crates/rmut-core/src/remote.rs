@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result, ensure};
 
 use crate::config::{Account, AuthKind};
-use crate::imap::{Changes, Client, Fetched};
+use crate::imap::{self, Changes, Client, Fetched};
 use crate::maildir::{self, Flags, MailFile};
 use crate::net;
 
@@ -84,10 +84,23 @@ pub fn display_spec(spec: &str, several_accounts: bool) -> &str {
     }
 }
 
+/// An `imap:account/folder` spec with the folder spelled as text: a
+/// name in the server's modified UTF-7 decoded (clean_mailbox). Any
+/// other spec comes back as it is.
+pub fn canonical_spec(spec: &str) -> String {
+    match parse_spec(spec) {
+        Some((account, mailbox)) if mailbox.contains('&') => {
+            format!("imap:{account}/{}", clean_mailbox(mailbox))
+        }
+        _ => spec.to_string(),
+    }
+}
+
 /// Tidy a mailbox name: collapse `//` runs and trim `/` from the ends
 /// (servers reject "adjacent hierarchy separators"); empty → INBOX.
 /// A mutt-style imap[s]:// URL (from an unconverted config) means the
-/// mailbox in its path.
+/// mailbox in its path. A name spelled in the server's modified UTF-7
+/// (a config written for mutt) comes back as text, as LIST names do.
 pub fn clean_mailbox(name: &str) -> String {
     let name = match name
         .strip_prefix("imap://")
@@ -103,6 +116,8 @@ pub fn clean_mailbox(name: &str) -> String {
         .join("/");
     if cleaned.is_empty() {
         "INBOX".into()
+    } else if cleaned.contains('&') {
+        imap::decode_mailbox(&cleaned).unwrap_or(cleaned)
     } else {
         cleaned
     }
@@ -141,12 +156,14 @@ pub fn data_base() -> PathBuf {
 }
 
 /// Where a folder's cache maildir lives:
-/// `$XDG_CACHE_HOME/rmut/imap/<account>/<mailbox>` (percent-encoded).
+/// `$XDG_CACHE_HOME/rmut/imap/<account>/<mailbox>` (percent-encoded,
+/// the mailbox as the server spells it, so a cache made before rmut
+/// read those names as text is still the one found).
 pub fn cache_dir(account: &str, mailbox: &str) -> PathBuf {
     cache_base()
         .join("imap")
         .join(sanitize(account))
-        .join(sanitize(mailbox))
+        .join(sanitize(&imap::encode_mailbox(mailbox)))
 }
 
 /// Filesystem-safe single path component.
@@ -792,6 +809,15 @@ mod tests {
         );
         assert_eq!(clean_mailbox("imaps://host/Work/Reports/"), "Work/Reports");
         assert_eq!(clean_mailbox("imaps://host"), "INBOX");
+        // A name in the server's spelling reads as text; text that
+        // only looks like it stays.
+        assert_eq!(clean_mailbox("Odeslan&AOE- po&AWE-ta"), "Odeslaná pošta");
+        assert_eq!(clean_mailbox("Q&A-list"), "Q&A-list");
+        assert_eq!(clean_mailbox("R&D"), "R&D");
+        assert_eq!(canonical_spec("imap:work/Ko&AWE-"), "imap:work/Koš");
+        assert_eq!(canonical_spec("imap:work/R&D"), "imap:work/R&D");
+        assert_eq!(canonical_spec("imap:work"), "imap:work");
+        assert_eq!(canonical_spec("~/Mail/R&D"), "~/Mail/R&D");
     }
 
     fn account(port: u16) -> Account {

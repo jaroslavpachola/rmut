@@ -640,6 +640,7 @@ class FakeImap(threading.Thread):
         self.list_delay = 0  # seconds a LIST dawdles
         self.store_delay = 0  # seconds a UID STORE dawdles
         self.noop_delay = 0  # seconds a NOOP (the new-mail check) dawdles
+        self.extra_folders = []  # more LIST names, as the server spells them
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -729,6 +730,8 @@ class FakeImap(threading.Thread):
                     if self.list_delay:
                         time.sleep(self.list_delay)
                     conn.sendall(b'* LIST () "/" "INBOX"\r\n* LIST () "/" "Sent"\r\n')
+                    for name in self.extra_folders:
+                        conn.sendall(f'* LIST () "/" "{name}"\r\n'.encode())
                 elif up.startswith("UID FETCH"):
                     m = re.match(r"UID FETCH ([\d,:*]+) \((.*)\)", cmd, re.I)
                     spec = m.group(1)
@@ -1431,6 +1434,61 @@ def scenario_pgp_shapes(tmp):
     r.keys(b"i")
     r.keys(b"k\r")
     r.expect("PGP: decrypted", "exchange secret")
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_pgp_protected_subject(tmp):
+    """2.16.8: an encrypted subject ("..." outside) shows for real once
+    the message is opened, in the pager and the index, and ~b finds
+    the words of a message opened decrypted, after its flags change."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751900000.7.host:2,"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: ...\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <hidden@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/encrypted; boundary="b";\r\n'
+            '\tprotocol="application/pgp-encrypted"\r\n\r\n'
+            "--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--b\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nZZZ\r\n-----END PGP MESSAGE-----\r\n"
+            "--b--\r\n"
+        )
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--decrypt*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
+            '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
+            "  printf 'Content-Type: text/plain; protected-headers=\"v1\"\\r\\n"
+            "Subject: the real plan\\r\\n\\r\\nmeet at the quarry\\r\\n' ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[pgp]\ncommand = "{gpg}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config}))
+    r.expect("Msgs:2", "Lunch on Friday?", absent=("the real plan",))
+    r.keys(b"l~b quarry\r")  # not opened yet: the ciphertext has no quarry
+    r.expect("limit:~b quarry", "No messages match the limit")
+    r.keys(b"l\x15\r")
+    r.expect("Msgs:2")
+    r.keys(b"\r")  # newest: the encrypted one
+    r.expect("Subject: the real plan", "meet at the quarry")
+    r.keys(b"i")
+    r.expect("the real plan")
+    r.keys(b"$")  # the read mark goes to disk: the file is renamed
+    read = os.path.join(md, "cur", "1751900000.7.host:2,S")
+    wait_for(lambda: os.path.exists(read), desc="seen rename on disk")
+    r.keys(b"l~b quarry\r")
+    r.expect("limit:~b quarry", "Msgs:1/2", "the real plan")
+    r.keys(b"l\x15~B quarry\r")
+    r.expect("limit:~B quarry", "Msgs:1/2")
     r.keys(b"q")
     r.close()
 
@@ -4643,6 +4701,50 @@ imap_tls = false
 
 
 
+def scenario_imap_utf7_folders(tmp):
+    """2.16.8: IMAP folder names in modified UTF-7 show as text in the
+    browser, and a name typed with accents goes to the server encoded."""
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="the only one",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="u1", body="a body"))
+    imap.extra_folders = ["Odeslan&AOE- po&AWE-ta"]
+    imap.start()
+    cfg = os.path.join(tmp, "utf7-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f"""
+[identity]
+email = "alex@example.com"
+[mail]
+poll_seconds = 600
+[[accounts]]
+name = "cz"
+user = "jane"
+password = "x"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+    env = base_env(tmp, {
+        "RMUT_CONFIG": cfg,
+        "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+    })
+    r = Rmut("imap:cz", env)
+    r.expect("imap:cz/INBOX", "Msgs:1", "the only one")
+    r.keys(b"y")
+    r.expect("Odeslaná pošta", absent=("&AOE-",))
+    r.keys(b"q")
+    r.keys(b"c")
+    r.expect("Open mailbox (Tab completes):")
+    r.keys("imap:cz/Odeslaná pošta\r".encode())
+    r.expect("imap:cz/Odeslaná pošta")
+    wait_for(lambda: any('SELECT "Odeslan&AOE- po&AWE-ta"' in c
+                         for c in imap.commands),
+             desc="the encoded SELECT")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_network_open(tmp):
     """R55, the rest: opening a folder, the browser's list and a save
     to the server no longer stop the screen. Keys typed while a folder
@@ -5600,6 +5702,7 @@ SCENARIOS = [
     scenario_sidebar,
     scenario_send_via_config_sendmail,
     scenario_imap,
+    scenario_imap_utf7_folders,
     scenario_mbox,
     scenario_trash_and_alias,
     scenario_pgp,
@@ -5607,6 +5710,7 @@ SCENARIOS = [
     scenario_pgp_nested,
     scenario_pgp_opened_everywhere,
     scenario_pgp_shapes,
+    scenario_pgp_protected_subject,
     scenario_print,
     scenario_edit_headers,
     scenario_mutt_flow,

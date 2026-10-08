@@ -389,7 +389,12 @@ pub fn load(path: &Path) -> Result<MessageView> {
 /// Like `load`, but under an explicit `Display`.
 pub fn load_with(path: &Path, disp: &Display) -> Result<MessageView> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    load_bytes(&raw, disp).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// `load_with` of a message in memory (one opened by PGP, say).
+pub fn load_bytes(raw: &[u8], disp: &Display) -> Result<MessageView> {
+    let mail = parse_mail(raw)?;
     let all: Vec<(String, String)> = mail
         .headers
         .iter()

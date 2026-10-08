@@ -462,7 +462,110 @@ fn quoted(s: &str) -> Option<String> {
 }
 
 fn mailbox_arg(mailbox: &str) -> Result<String> {
-    quoted(mailbox).with_context(|| format!("unsupported mailbox name: {mailbox}"))
+    quoted(&encode_mailbox(mailbox)).with_context(|| format!("unsupported mailbox name: {mailbox}"))
+}
+
+/// A mailbox name as the server spells it: modified UTF-7 (RFC 3501
+/// 5.1.3), printable ASCII as it is, `&` as `&-`, anything else as
+/// `&`, its UTF-16 in base64 (`,` for `/`, no padding), `-`. A name
+/// already spelled that way (from a config written for mutt) is
+/// passed through, so it is never encoded twice.
+pub fn encode_mailbox(name: &str) -> String {
+    if name.contains('&') && decode_mailbox(name).is_some() {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len());
+    let mut run: Vec<u16> = Vec::new();
+    let flush = |run: &mut Vec<u16>, out: &mut String| {
+        if run.is_empty() {
+            return;
+        }
+        let bytes: Vec<u8> = run.iter().flat_map(|u| u.to_be_bytes()).collect();
+        let b64 = crate::smtp::b64(&bytes);
+        out.push('&');
+        out.push_str(&b64.trim_end_matches('=').replace('/', ","));
+        out.push('-');
+        run.clear();
+    };
+    for c in name.chars() {
+        if (' '..='~').contains(&c) {
+            flush(&mut run, &mut out);
+            match c {
+                '&' => out.push_str("&-"),
+                c => out.push(c),
+            }
+        } else {
+            let mut units = [0; 2];
+            run.extend_from_slice(c.encode_utf16(&mut units));
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
+/// A modified UTF-7 mailbox name (what LIST answers) as text; None
+/// when it is not valid modified UTF-7, strictly: a shifted run that
+/// leaves bits over or spells printable ASCII is not, so text such as
+/// "Q&A-list" is never taken for an encoded name.
+pub fn decode_mailbox(name: &str) -> Option<String> {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(at) = rest.find('&') {
+        let plain = &rest[..at];
+        if !plain.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+            return None;
+        }
+        out.push_str(plain);
+        let after = &rest[at + 1..];
+        let end = after.find('-')?;
+        let b64 = &after[..end];
+        if b64.is_empty() {
+            out.push('&');
+        } else {
+            let bytes = b64_decode(b64)?;
+            if bytes.is_empty() || bytes.len() % 2 != 0 {
+                return None;
+            }
+            let units: Vec<u16> = bytes
+                .chunks(2)
+                .map(|p| u16::from_be_bytes([p[0], p[1]]))
+                .collect();
+            if units.iter().any(|u| (0x20..0x7f).contains(u)) {
+                return None;
+            }
+            out.push_str(&String::from_utf16(&units).ok()?);
+        }
+        rest = &after[end + 1..];
+    }
+    if !rest.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        return None;
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Unpadded base64 in the modified alphabet (`,` for `/`).
+fn b64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0);
+    for b in text.bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b',' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    // What is left over is padding, zero bits short of a byte.
+    (bits < 6 && acc & ((1 << bits) - 1) == 0).then_some(out)
 }
 
 fn number_after(text: &str, marker: &str) -> Option<u64> {
@@ -495,6 +598,8 @@ fn parse_list(line: &Line) -> Option<Folder> {
     } else {
         rest.to_string()
     };
+    // Modified UTF-7 on the wire, text from here on.
+    let name = decode_mailbox(&name).unwrap_or(name);
     Some(Folder { name, no_select })
 }
 
@@ -620,6 +725,40 @@ mod tests {
         assert_eq!(quoted(r#"a"b\c"#), Some(r#""a\"b\\c""#.into()));
         assert_eq!(quoted("naïve"), None);
         assert_eq!(quoted("nl\n"), None);
+    }
+
+    #[test]
+    fn mailbox_names_go_through_modified_utf7() {
+        // RFC 3501's own example, and Czech.
+        let jp = "~peter/mail/\u{53f0}\u{5317}/\u{65e5}\u{672c}\u{8a9e}";
+        assert_eq!(encode_mailbox(jp), "~peter/mail/&U,BTFw-/&ZeVnLIqe-");
+        assert_eq!(
+            decode_mailbox("~peter/mail/&U,BTFw-/&ZeVnLIqe-").unwrap(),
+            jp
+        );
+        assert_eq!(encode_mailbox("Odeslaná pošta"), "Odeslan&AOE- po&AWE-ta");
+        assert_eq!(
+            decode_mailbox("Odeslan&AOE- po&AWE-ta").unwrap(),
+            "Odeslaná pošta"
+        );
+        // & alone, plain ASCII, an already-encoded name, bad input.
+        assert_eq!(encode_mailbox("R&D"), "R&-D");
+        assert_eq!(decode_mailbox("R&-D").unwrap(), "R&D");
+        assert_eq!(encode_mailbox("INBOX/Sent"), "INBOX/Sent");
+        assert_eq!(encode_mailbox("Odeslan&AOE-"), "Odeslan&AOE-");
+        assert_eq!(decode_mailbox("broken&AOE"), None);
+        assert_eq!(decode_mailbox("naïve"), None);
+        assert_eq!(decode_mailbox("Q&A-list"), None);
+        assert_eq!(encode_mailbox("Q&A-list"), "Q&-A-list");
+        assert_eq!(decode_mailbox("Q&-A-list").unwrap(), "Q&A-list");
+        // mailbox_arg sends the encoded form.
+        assert_eq!(mailbox_arg("Koš").unwrap(), "\"Ko&AWE-\"");
+        let f = parse_list(&Line {
+            text: r#"* LIST () "/" "Odeslan&AOE- po&AWE-ta""#.into(),
+            literals: vec![],
+        })
+        .unwrap();
+        assert_eq!(f.name, "Odeslaná pošta");
     }
 
     #[test]

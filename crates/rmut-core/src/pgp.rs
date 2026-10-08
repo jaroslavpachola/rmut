@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail, ensure};
-use mailparse::{ParsedMail, parse_mail};
+use mailparse::{MailHeaderMap as _, ParsedMail, parse_mail};
 
 use crate::config::Pgp;
 use crate::message;
@@ -540,21 +540,46 @@ fn view_encrypted(cfg: &Pgp, raw: &[u8], parts: &[Sealed]) -> View {
 /// Put `entity` where `part` (a slice of `raw`, as mailparse hands
 /// out subparts) stands in `out`, a copy of `raw` changed only after
 /// `part` so far. The top of the message keeps its own header fields,
-/// all but the Content- ones, which the entity brings along.
+/// all but the Content- ones, which the entity brings along, and the
+/// ones the entity protects.
 fn replace(out: &mut Vec<u8>, raw: &[u8], part: &ParsedMail, entity: &[u8]) {
     let start = part.raw_bytes.as_ptr() as usize - raw.as_ptr() as usize;
     let end = start + part.raw_bytes.len();
     let mut new = Vec::with_capacity(entity.len() + 1024);
     if start == 0 {
-        new.extend_from_slice(&outer_head(raw));
+        new.extend_from_slice(&outer_head(raw, &protected_names(entity)));
     }
     new.extend_from_slice(entity);
     out.splice(start..end, new);
 }
 
-/// The message's header block without its Content- fields and the
-/// blank line after it, folded lines kept with their field.
-fn outer_head(raw: &[u8]) -> Vec<u8> {
+/// The fields a plaintext entity carries for the message itself, its
+/// protected headers (a Content-Type with protected-headers="v1"),
+/// lowercase. A client that encrypts the subject sends "..." outside
+/// and the real one in here.
+fn protected_names(entity: &[u8]) -> Vec<String> {
+    let Ok((headers, _)) = mailparse::parse_headers(entity) else {
+        return Vec::new();
+    };
+    let protected = headers.get_first_value("Content-Type").is_some_and(|ct| {
+        mailparse::parse_content_type(&ct)
+            .params
+            .contains_key("protected-headers")
+    });
+    if !protected {
+        return Vec::new();
+    }
+    headers
+        .iter()
+        .map(|h| h.get_key().to_ascii_lowercase())
+        .filter(|name| !name.starts_with("content-"))
+        .collect()
+}
+
+/// The message's header block without its Content- fields, the ones
+/// named in `protected` and the blank line after it, folded lines
+/// kept with their field.
+fn outer_head(raw: &[u8], protected: &[String]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut keep = true;
     for line in raw.split_inclusive(|&b| b == b'\n') {
@@ -562,9 +587,9 @@ fn outer_head(raw: &[u8]) -> Vec<u8> {
             break;
         }
         if !line.starts_with(b" ") && !line.starts_with(b"\t") {
-            keep = !line
-                .get(..8)
-                .is_some_and(|name| name.eq_ignore_ascii_case(b"content-"));
+            let name = line.split(|&b| b == b':').next().unwrap_or_default();
+            let name = String::from_utf8_lossy(name).trim().to_ascii_lowercase();
+            keep = !name.starts_with("content-") && !protected.contains(&name);
         }
         if keep {
             out.extend_from_slice(line);
@@ -1372,6 +1397,29 @@ printf 'Content-Type: multipart/mixed; boundary="in"\r\n\r\n--in\r\nContent-Type
         let names: Vec<_> = parts.iter().map(|p| p.filename.as_deref()).collect();
         assert_eq!(names, [None, Some("x.pdf")]);
         assert_eq!(message::part_bytes_in(raw, 1).unwrap(), b"PDF");
+    }
+
+    #[test]
+    fn opened_message_takes_the_protected_headers() {
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] DECRYPTION_OKAY" >&2
+printf 'Content-Type: text/plain; protected-headers="v1"\r\nSubject: the real plan\r\n\r\nbody\r\n'"#,
+        );
+        let v = view(&cfg, MIME_ENCRYPTED.as_bytes()).unwrap();
+        let mail = parse_mail(v.opened.as_ref().unwrap()).unwrap();
+        use mailparse::MailHeaderMap as _;
+        assert_eq!(mail.headers.get_all_values("Subject"), ["the real plan"]);
+        assert_eq!(mail.headers.get_first_value("From").unwrap(), "a@x");
+        // Without the marker, the header fields outside stand.
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] DECRYPTION_OKAY" >&2
+printf 'Content-Type: text/plain\r\nSubject: inner\r\n\r\nbody\r\n'"#,
+        );
+        let v = view(&cfg, MIME_ENCRYPTED.as_bytes()).unwrap();
+        let mail = parse_mail(v.opened.as_ref().unwrap()).unwrap();
+        assert_eq!(mail.headers.get_first_value("Subject").unwrap(), "sealed");
     }
 
     /// MIME_ENCRYPTED as Exchange delivers it: multipart/mixed, an
