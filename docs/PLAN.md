@@ -2894,6 +2894,18 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.5 (released 2026-10-08)
+
+A fix for encrypted mail that comes through a mailing list. A list
+that appends its footer wraps the PGP/MIME message in a
+multipart/mixed, and only a multipart/encrypted at the top of the
+message was decrypted, so the pager showed the two encrypted parts
+as attachments and the footer. Now every multipart/encrypted in the
+tree is decrypted and its plaintext entity put where the part stood
+(pgp::view_nested), so the message renders whole: the decrypted
+text, its attachments, then the footer. The reply-crypto defaults
+count such a message as encrypted too (pgp::classify).
+
 ## 2.16.4 (released 2026-10-03)
 
 A fix for how the folder browser names IMAP folders. Each row printed
