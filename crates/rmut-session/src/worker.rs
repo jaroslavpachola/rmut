@@ -99,7 +99,9 @@ pub enum Done {
     Nothing,
     /// How many messages arrived (a check, or a switch).
     Arrived(usize),
-    Folders(Vec<(String, usize)>),
+    /// The folders with their unread counts, and the subscribed ones
+    /// (None when LSUB failed).
+    Folders(Vec<(String, usize)>, Option<Vec<String>>),
     /// The counts asked for, in the order they were asked for.
     Counts(Vec<usize>),
     Uids(Vec<u32>),
@@ -348,7 +350,10 @@ fn do_job(remote: &mut Remote, job: Job) -> Result<Done> {
             Ok(Done::Appended(outcomes))
         }
         Job::CheckNew => Ok(Done::Arrived(remote.check_new()?)),
-        Job::Folders => Ok(Done::Folders(remote.folders()?)),
+        Job::Folders => {
+            let folders = remote.folders()?;
+            Ok(Done::Folders(folders, remote.subscribed().ok()))
+        }
         Job::Unseen(folders) => Ok(Done::Counts(
             folders.iter().map(|f| remote.unseen(f)).collect(),
         )),

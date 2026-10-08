@@ -3370,3 +3370,110 @@ fn encrypted_mail_goes_out_with_its_subject_protected() {
     let subject = opened.all.iter().find(|(k, _)| k == "Subject").unwrap();
     assert_eq!(subject.1, "md");
 }
+
+// ---- the leftovers (R100)
+
+#[test]
+fn next_tagged_walks_the_tagged_set_without_a_search() {
+    let mut f = Fixture::new(&["one", "two", "three", "four"]);
+    f.session.sel = 0;
+    f.session.msgs[2].env.tagged = true;
+    f.run("next-tagged");
+    assert_eq!(f.session.sel, 2);
+    f.run("next-tagged");
+    assert_eq!(f.session.sel, 2, "the only one, reached again by wrapping");
+    assert_eq!(f.log.last_text(), "search wrapped");
+    f.session.msgs[0].env.tagged = true;
+    f.run("previous-tagged");
+    assert_eq!(f.session.sel, 0);
+    assert!(f.session.last_search.is_none(), "no search was made");
+    f.session.msgs[0].env.tagged = false;
+    f.session.msgs[2].env.tagged = false;
+    f.run("next-tagged");
+    assert_eq!(f.log.last_text(), "no tagged messages");
+}
+
+#[test]
+fn display_filter_runs_over_the_pager_only() {
+    let mut f = Fixture::new(&["one"]);
+    f.session.config.mail.display_filter = Some("tr a-z A-Z".into());
+    f.session.open_message();
+    let mut shown = None;
+    while let Some(request) = f.session.take_request() {
+        if let crate::Request::ShowMessage(view) = request {
+            shown = Some(view.body);
+        }
+    }
+    let body = shown.expect("the message was shown");
+    assert!(!body.chars().any(|c| c.is_ascii_lowercase()), "{body}");
+    // A failing filter leaves the body as it was, and says so.
+    f.session.config.mail.display_filter = Some("exit 3".into());
+    f.session.open_message();
+    assert!(
+        f.log.last_text().starts_with("display_filter:"),
+        "{}",
+        f.log.last_text()
+    );
+}
+
+const WITH_ATTACHMENT: &str = concat!(
+    "From: a@example.com\n",
+    "Subject: one\n",
+    "Date: Mon, 6 Jul 2026 10:00:00 +0200\n",
+    "MIME-Version: 1.0\n",
+    "Content-Type: multipart/mixed; boundary=\"b\"\n",
+    "\n",
+    "--b\n",
+    "Content-Type: text/plain\n",
+    "\n",
+    "the text\n",
+    "--b\n",
+    "Content-Type: text/plain; name=\"notes.txt\"\n",
+    "Content-Disposition: attachment; filename=\"notes.txt\"\n",
+    "\n",
+    "attached notes\n",
+    "--b--\n",
+);
+
+#[test]
+fn a_marked_attachment_is_deleted_from_the_message_and_undo_brings_it_back() {
+    let mut f = Fixture::new(&["one"]);
+    let path = f.session.msgs[0].env.file.path.clone();
+    fs::write(&path, WITH_ATTACHMENT).unwrap();
+    assert!(f.session.mark_part(&path, 1, true));
+    assert!(f.session.part_marked(&path, 1) && !f.session.part_marked(&path, 0));
+    let ask = f.session.ask_delete_parts();
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Delete 1 attachment from the message? (y/n): "
+    );
+    assert!(f.answer_key(ask, 'y').is_none());
+    assert_eq!(f.log.last_text(), "1 attachment deleted");
+    let path = f.session.msgs[0].env.file.path.clone();
+    let now = fs::read_to_string(&path).unwrap();
+    assert!(now.contains("access-type=x-mutt-deleted") && !now.contains("attached notes"));
+    assert!(now.contains("the text"));
+    assert!(
+        f.session.ask_delete_parts().is_none(),
+        "the marks went with it"
+    );
+    f.run("undo");
+    let back = fs::read_to_string(&path).unwrap();
+    assert_eq!(back, WITH_ATTACHMENT, "undo put the message back");
+
+    // Answered no, nothing changes; and signed mail is refused.
+    assert!(f.session.mark_part(&path, 1, true));
+    let ask = f.session.ask_delete_parts();
+    let _ = f.answer_key(ask, 'n');
+    assert_eq!(fs::read_to_string(&path).unwrap(), WITH_ATTACHMENT);
+    let signed = WITH_ATTACHMENT.replace(
+        "multipart/mixed; boundary=\"b\"",
+        "multipart/signed; protocol=\"application/pgp-signature\"; boundary=\"b\"",
+    );
+    fs::write(&path, signed).unwrap();
+    assert!(!f.session.mark_part(&path, 1, true));
+    assert_eq!(
+        f.log.last_text(),
+        "cannot delete attachments from encrypted or signed mail"
+    );
+}

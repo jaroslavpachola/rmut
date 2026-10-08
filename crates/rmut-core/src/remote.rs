@@ -544,6 +544,12 @@ impl Remote {
         self.retry(move |client, _, _| client.subscribe_mailbox(&name, on))
     }
 
+    /// The names of the subscribed folders (LSUB), for the browser's
+    /// subscribed-only view.
+    pub fn subscribed(&mut self) -> Result<Vec<String>> {
+        self.retry(|client, _, _| Ok(client.lsub()?.into_iter().map(|f| f.name).collect()))
+    }
+
     /// Selectable folders with their UNSEEN counts, for the folder
     /// browser. The open folder's count comes from the local cache
     /// (STATUS must not target the selected mailbox); a failing STATUS

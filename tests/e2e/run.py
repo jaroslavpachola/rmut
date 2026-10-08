@@ -642,6 +642,7 @@ class FakeImap(threading.Thread):
         self.store_delay = 0  # seconds a UID STORE dawdles
         self.noop_delay = 0  # seconds a NOOP (the new-mail check) dawdles
         self.extra_folders = []  # more LIST names, as the server spells them
+        self.subscribed = ["INBOX", "Sent"]  # what LSUB answers
         self.lock = threading.Lock()
 
     def add(self, uid, flags, content):
@@ -727,6 +728,9 @@ class FakeImap(threading.Thread):
                         f"* {len(self.msgs)} EXISTS\r\n"
                         f"* OK [UIDVALIDITY 7] ok\r\n".encode()
                     )
+                elif up.startswith("LSUB"):
+                    for name in self.subscribed:
+                        conn.sendall(f'* LSUB () "/" "{name}"\r\n'.encode())
                 elif up.startswith("LIST"):
                     if self.list_delay:
                         time.sleep(self.list_delay)
@@ -2561,6 +2565,47 @@ def scenario_import_muttrc(tmp):
                  "reverse_realname", "timeout", "crypt_replysign",
                  "crypt_replyencrypt", "assumed_charset"):
         assert not any(f"set {name} " in l for l in unclaimed), name
+
+
+def scenario_attach_delete(tmp):
+    """R100: d in the attachment menu marks a part, leaving the menu
+    asks, and yes rewrites the message with mutt's deleted-attachment
+    stub in its place; undo puts the part back."""
+    md = make_maildir(tmp, "md")
+    path = os.path.join(md, "cur", "1751790000.1.host:2,S")
+    original = ("From: jane@example.com\r\nTo: alex@example.com\r\n"
+                "Subject: with attachment\r\n"
+                "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+                "Message-ID: <ad1@example.com>\r\nMIME-Version: 1.0\r\n"
+                "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n"
+                "--b\r\nContent-Type: text/plain\r\n\r\nmain body here\r\n"
+                "--b\r\nContent-Type: text/plain; name=\"notes.txt\"\r\n"
+                "Content-Disposition: attachment; filename=\"notes.txt\"\r\n\r\n"
+                "attached notes text\r\n--b--\r\n")
+    with open(path, "w", newline="") as f:
+        f.write(original)
+    r = Rmut(md, base_env(tmp))
+    r.expect("Msgs:1", "with attachment")
+    r.keys(b"v")
+    r.expect("Parts:2", "notes.txt", "d/u:Del/Undel")
+    r.keys(b"j")
+    r.keys(b"d")
+    r.expect(" D [text/plain")
+    r.keys(b"q")
+    r.expect("Delete 1 attachment from the message? (y/n):")
+    r.keys(b"y")
+    r.expect("1 attachment deleted")
+    text = open(path, newline="").read()
+    assert "x-mutt-deleted" in text and "attached notes text" not in text, text
+    r.keys(b"\r")
+    r.expect("main body here",
+             "[-- This text/plain (notes.txt) attachment has been deleted --]")
+    r.keys(b"q")
+    r.keys(b"z")
+    r.expect("undone: delete attachments")
+    assert open(path, newline="").read() == original
+    r.keys(b"q")
+    r.close()
 
 
 def scenario_attachment_pager(tmp):
@@ -4844,6 +4889,14 @@ imap_tls = false
     r.expect("imap:cz/INBOX", "Msgs:1", "the only one")
     r.keys(b"y")
     r.expect("Odeslaná pošta", absent=("&AOE-",))
+    # T: only what LSUB names (INBOX and Sent here), T again: all.
+    r.keys(b"T")
+    r.expect("subscribed folders only")
+    r.buf = ""
+    r.repaint()
+    r.expect("Sent", absent=("Odeslaná",))
+    r.keys(b"T")
+    r.expect("every folder", "Odeslaná pošta")
     r.keys(b"q")
     r.keys(b"c")
     r.expect("Open mailbox (Tab completes):")
@@ -5860,6 +5913,7 @@ SCENARIOS = [
     scenario_tag_save_sort,
     scenario_import_muttrc,
     scenario_attachment_pager,
+    scenario_attach_delete,
     scenario_attach_mailcap,
     scenario_network_timeouts,
     scenario_network_abort,

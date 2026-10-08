@@ -496,6 +496,12 @@ pub struct Session {
     /// The open account's folders as the server last listed them,
     /// for the browser and mailbox completion.
     server_folders: Option<Vec<(String, usize)>>,
+    /// The open account's subscribed folders from the same listing
+    /// (LSUB); None until it lands, or when the server refused it.
+    server_subscribed: Option<HashSet<String>>,
+    /// The browser lists only the subscribed folders: mutt's
+    /// $imap_list_subscribed to start with, `T` toggles it.
+    pub subscribed_only: bool,
     /// A LIST is on its way, so asking again waits for it.
     listing: bool,
     /// Background IDLE watcher for the open IMAP folder.
@@ -538,6 +544,9 @@ pub struct Session {
     /// the attachment menu read it from here instead of asking gpg
     /// again. Kept in memory only.
     opened: Option<(String, u64, Option<SystemTime>, Vec<u8>)>,
+    /// Parts marked in the attachment menu for deletion (mutt's
+    /// delete-entry): the message and the leaf indices.
+    part_marks: Option<(PathBuf, std::collections::BTreeSet<usize>)>,
     /// Whether gpg has an encryption key for a recipient, as asked for
     /// opportunistic encryption; forgotten when keys are imported.
     key_known: HashMap<String, bool>,
@@ -714,6 +723,8 @@ impl Session {
             body_hits: HashMap::new(),
             body_local: HashSet::new(),
             server_folders: None,
+            server_subscribed: None,
+            subscribed_only: config.mail.imap_list_subscribed,
             listing: false,
             idle: None,
             backfill: None,
@@ -732,6 +743,7 @@ impl Session {
             opened: None,
             decrypted: HashMap::new(),
             key_known: HashMap::new(),
+            part_marks: None,
             outbox: Vec::new(),
             quote_re: default_quote_re(),
             reply_re: compose::default_reply_regexp(),
@@ -2535,6 +2547,110 @@ impl Session {
         }
     }
 
+    /// mutt's delete-entry / undelete-entry in the attachment menu:
+    /// mark (or unmark) the part at `index` of the message at `path`
+    /// for deletion. Refused where the message cannot be rewritten,
+    /// and inside encrypted or signed mail, as in mutt. False when
+    /// refused.
+    pub fn mark_part(&mut self, path: &Path, index: usize, on: bool) -> bool {
+        if on {
+            if self.deny_readonly() {
+                return false;
+            }
+            if self.imap.is_some() || self.mbox.is_some() {
+                self.error("deleting attachments is for local maildirs only");
+                return false;
+            }
+            let crypto = std::fs::read(path)
+                .map(|raw| pgp::classify(&raw))
+                .unwrap_or_default();
+            if crypto.encrypted || crypto.signed {
+                self.error("cannot delete attachments from encrypted or signed mail");
+                return false;
+            }
+        }
+        let marks = match &mut self.part_marks {
+            Some((p, marks)) if p == path => marks,
+            _ => {
+                &mut self
+                    .part_marks
+                    .insert((path.to_path_buf(), Default::default()))
+                    .1
+            }
+        };
+        match on {
+            true => marks.insert(index),
+            false => marks.remove(&index),
+        };
+        true
+    }
+
+    /// Whether the part at `index` of the message at `path` is marked
+    /// for deletion, for the attachment menu's D.
+    pub fn part_marked(&self, path: &Path, index: usize) -> bool {
+        self.part_marks
+            .as_ref()
+            .is_some_and(|(p, marks)| p == path && marks.contains(&index))
+    }
+
+    /// Leaving the attachment menu: with parts marked, the question
+    /// whether to delete them from the message; None when none are.
+    pub fn ask_delete_parts(&mut self) -> Option<Ask> {
+        let (path, marks) = self.part_marks.take()?;
+        if marks.is_empty() {
+            return None;
+        }
+        let n = marks.len();
+        Some(Ask::Key {
+            label: format!(
+                "Delete {n} attachment{} from the message? (y/n): ",
+                if n == 1 { "" } else { "s" }
+            ),
+            what: AskKind::DeleteParts {
+                path,
+                indices: marks.into_iter().collect(),
+            },
+        })
+    }
+
+    /// The marked parts out of the message on disk, each replaced by
+    /// mutt's deleted-attachment stub, in one undo step.
+    pub fn delete_parts(&mut self, path: &Path, indices: &[usize]) {
+        let Some(i) = self.msgs.iter().position(|m| m.env.file.path == path) else {
+            self.error("the message is gone");
+            return;
+        };
+        let result = std::fs::read(path)
+            .map_err(anyhow::Error::from)
+            .and_then(|old| {
+                let when = compose::rfc2822_now();
+                let new = message::without_parts(&old, indices, &when)?;
+                maildir::replace_content(path, &new)?;
+                Ok((old, new.len() as u64))
+            });
+        match result {
+            Ok((old, size)) => {
+                let keep = self.selected_path();
+                self.push_undo_step(UndoStep {
+                    what: "delete attachments".into(),
+                    marks: vec![self.mark(i)],
+                    sel: keep,
+                    created: Vec::new(),
+                    note: None,
+                    rewritten: vec![(path.to_path_buf(), old)],
+                });
+                let _ = self.reread(i, size);
+                self.opened = None;
+                let n = indices.len();
+                self.note(format!(
+                    "{n} attachment{} deleted",
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            Err(err) => self.error(format!("cannot delete the attachments: {err:#}")),
+        }
+    }
+
     /// Like `can_rewrite`, but not tied to thread sort: edit-label
     /// works in any order.
     fn can_rewrite_here(&mut self) -> bool {
@@ -2638,6 +2754,27 @@ impl Session {
             }
         }
         self.error("no new or unread messages");
+    }
+
+    /// next-tagged / previous-tagged: the nearest tagged message, the
+    /// way next-new finds unread ones, wrapping with a note. A walk
+    /// over the tagged set without a `/~T` search, so the last search
+    /// stays what it was.
+    pub fn jump_tagged(&mut self, forward: bool) {
+        let n = self.visible.len();
+        if n == 0 {
+            return;
+        }
+        for (vi, wrapped) in wrap_order(n, self.sel, forward) {
+            if self.msgs[self.visible[vi]].env.tagged {
+                if wrapped {
+                    self.note("search wrapped");
+                }
+                self.select(vi);
+                return;
+            }
+        }
+        self.error("no tagged messages");
     }
 
     /// Apply `f` to every message matching `input`, within the active
@@ -2978,12 +3115,41 @@ impl Session {
         } else {
             "unsubscribed from"
         };
-        self.manage(
-            spec,
-            move |_account, folder| Manage::Subscribe(folder, on),
-            |_path| Err("subscription is an IMAP notion".into()),
-        )
-        .map(|shown| format!("{verb} {shown}"))
+        let done = self
+            .manage(
+                spec,
+                move |_account, folder| Manage::Subscribe(folder, on),
+                |_path| Err("subscription is an IMAP notion".into()),
+            )
+            .map(|shown| format!("{verb} {shown}"))?;
+        // The browser's subscribed-only view follows at once.
+        if let (Some(subscribed), Some((_, folder))) =
+            (&mut self.server_subscribed, remote::parse_spec(spec))
+        {
+            let folder = remote::clean_mailbox(folder);
+            match on {
+                true => subscribed.insert(folder),
+                false => subscribed.remove(&folder),
+            };
+        }
+        Ok(done)
+    }
+
+    /// The browser's `T` (mutt's toggle-subscribed): every folder of
+    /// the account, or only the subscribed ones.
+    pub fn toggle_subscribed_only(&mut self) {
+        if self.imap.is_none() {
+            self.error("only an IMAP account has subscriptions");
+            return;
+        }
+        self.subscribed_only = !self.subscribed_only;
+        match self.subscribed_only {
+            true if self.server_subscribed.is_none() && self.server_folders.is_some() => {
+                self.error("the server gave no subscribed list; showing every folder")
+            }
+            true => self.note("subscribed folders only"),
+            false => self.note("every folder"),
+        }
     }
 
     /// Rename a mailbox to `new` (a bare folder name for an imap spec,
@@ -3073,10 +3239,19 @@ impl Session {
         match &self.imap {
             Some(imap) => {
                 let account = imap.facts.account.name.clone();
+                // Subscribed only: what LSUB named, and INBOX, which
+                // servers seldom list there but nobody means to hide.
+                let shown = |f: &str| match (&self.server_subscribed, self.subscribed_only) {
+                    (Some(subscribed), true) => {
+                        f.eq_ignore_ascii_case("INBOX") || subscribed.contains(f)
+                    }
+                    _ => true,
+                };
                 match &self.server_folders {
                     Some(folders) => dirs.extend(
                         folders
                             .iter()
+                            .filter(|(f, _)| shown(f))
                             .map(|(f, unseen)| (format!("imap:{account}/{f}"), *unseen)),
                     ),
                     None => self.refresh_folders(),
@@ -3130,8 +3305,10 @@ impl Session {
             Box::new(|session, done| {
                 session.listing = false;
                 match done {
-                    Ok(Done::Folders(folders)) => {
+                    Ok(Done::Folders(folders, subscribed)) => {
                         session.server_folders = Some(folders);
+                        session.server_subscribed =
+                            subscribed.map(|names| names.into_iter().collect());
                         session.requests.push(Request::FoldersChanged);
                     }
                     Ok(_) => {}
@@ -3739,7 +3916,10 @@ impl Session {
         }
         self.mark_read();
         match self.load_view(&path) {
-            Ok(view) => self.requests.push(Request::ShowMessage(Box::new(view))),
+            Ok(view) => {
+                let view = self.display_filtered(view);
+                self.requests.push(Request::ShowMessage(Box::new(view)))
+            }
             Err(err) => self.error(format!("cannot open message: {err:#}")),
         }
     }
@@ -3787,6 +3967,21 @@ impl Session {
             view.body = format!("{}\n\n{}", p.note, view.body);
         }
         Ok(view)
+    }
+
+    /// mutt's $display_filter: the body the pager is about to show,
+    /// through a command. Only the pager's: print, a decoded pipe and
+    /// decode-save keep the text unfiltered, as in mutt.
+    fn display_filtered(&mut self, mut view: message::MessageView) -> message::MessageView {
+        if let Some(command) = self.config.mail.display_filter.clone()
+            && !command.trim().is_empty()
+        {
+            match message::filter_text(&command, &view.body) {
+                Ok(text) => view.body = text,
+                Err(err) => self.error(format!("display_filter: {err:#}")),
+            }
+        }
+        view
     }
 
     /// The message at `path` as rmut reads it: decrypted, when it is

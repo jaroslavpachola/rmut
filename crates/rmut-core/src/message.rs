@@ -472,6 +472,13 @@ fn render(part: &ParsedMail, disp: &Display, out: &mut String) -> bool {
             }
         };
     }
+    if let Some(what) = deleted_part(part) {
+        gap(out);
+        out.push_str(&format!(
+            "[-- This {what} attachment has been deleted --]\n"
+        ));
+        return false;
+    }
     if ty == "message/rfc822" {
         if let Ok(raw) = part.get_body_raw()
             && let Ok(embedded) = parse_mail(&raw)
@@ -697,6 +704,12 @@ impl Drop for TempPart {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
+}
+
+/// `text` through `sh -c command`, stdin to stdout: mutt's
+/// $display_filter over the pager's body.
+pub fn filter_text(command: &str, text: &str) -> Result<String> {
+    run_piped(command, text.as_bytes())
 }
 
 fn run_piped(command: &str, input: &[u8]) -> Result<String> {
@@ -943,6 +956,85 @@ fn leaf_at<'a, 'b>(mail: &'a ParsedMail<'b>, index: usize) -> Result<&'a ParsedM
     let mut all = Vec::new();
     leaves(mail, &mut all);
     all.get(index).copied().context("no such part")
+}
+
+/// mutt's delete-entry, carried out: the message with the leaves at
+/// `indices` (as `parts` counts them) replaced by mutt's own stub for
+/// a deleted attachment, a message/external-body with access-type
+/// x-mutt-deleted that keeps the part's header fields, so mutt and
+/// rmut alike can say what was there. `when` goes in as its
+/// expiration date. The whole message is not a part to delete.
+pub fn without_parts(raw: &[u8], indices: &[usize], when: &str) -> Result<Vec<u8>> {
+    let mail = parse_mail(raw)?;
+    let mut all = Vec::new();
+    leaves(&mail, &mut all);
+    let crlf = raw.windows(2).any(|w| w == b"\r\n");
+    let nl = if crlf { "\r\n" } else { "\n" };
+    let mut spans = Vec::new();
+    for &i in indices {
+        let part = all.get(i).with_context(|| format!("no part {}", i + 1))?;
+        let start = part.raw_bytes.as_ptr() as usize - raw.as_ptr() as usize;
+        anyhow::ensure!(
+            start > 0,
+            "a message of one part has nothing to delete but itself"
+        );
+        let (head, body) = split_entity(part.raw_bytes);
+        let mut stub = format!(
+            "Content-Type: message/external-body; access-type=x-mutt-deleted;{nl}\texpiration=\"{when}\"; length={}{nl}{nl}",
+            body.len()
+        )
+        .into_bytes();
+        stub.extend_from_slice(head);
+        spans.push((start, start + part.raw_bytes.len(), stub));
+    }
+    // Back to front, so the earlier spans stay where they were.
+    spans.sort_by_key(|span| std::cmp::Reverse(span.0));
+    spans.dedup_by_key(|span| span.0);
+    let mut out = raw.to_vec();
+    for (start, end, stub) in spans {
+        out.splice(start..end, stub);
+    }
+    Ok(out)
+}
+
+/// An entity's header block (its fields, without the blank line) and
+/// its body.
+fn split_entity(entity: &[u8]) -> (&[u8], &[u8]) {
+    let mut at = 0;
+    for line in entity.split_inclusive(|&b| b == b'\n') {
+        if line == b"\n" || line == b"\r\n" {
+            return (&entity[..at], &entity[at + line.len()..]);
+        }
+        at += line.len();
+    }
+    (entity, &[])
+}
+
+/// A part mutt's delete-entry left behind: what it was, for the
+/// pager's line and the attachment menu.
+fn deleted_part(part: &ParsedMail) -> Option<String> {
+    if part.ctype.mimetype != "message/external-body"
+        || part.ctype.params.get("access-type").map(String::as_str) != Some("x-mutt-deleted")
+    {
+        return None;
+    }
+    let body = part.get_body_raw().ok()?;
+    let (headers, _) = mailparse::parse_headers(&body).ok()?;
+    let ctype = headers
+        .get_first_value("Content-Type")
+        .map(|v| mailparse::parse_content_type(&v));
+    let mimetype = ctype
+        .as_ref()
+        .map_or("text/plain".to_string(), |c| c.mimetype.clone());
+    let name = headers
+        .get_first_value("Content-Disposition")
+        .map(|v| mailparse::parse_content_disposition(&v))
+        .and_then(|d| d.params.get("filename").cloned())
+        .or_else(|| ctype.and_then(|c| c.params.get("name").cloned()));
+    Some(match name {
+        Some(name) => format!("{mimetype} ({})", one_line(&name)),
+        None => mimetype,
+    })
 }
 
 /// Decoded text of the given leaf part.
@@ -1330,6 +1422,29 @@ mod tests {
         .unwrap()
         .body;
         assert!(body.contains("plain version"), "{body}");
+    }
+
+    #[test]
+    fn deleted_parts_leave_mutts_stub_behind() {
+        let raw = MULTIPART.as_bytes();
+        let out = without_parts(raw, &[1], "Thu, 8 Oct 2026 20:00:00 +0200").unwrap();
+        let text = String::from_utf8(out.clone()).unwrap();
+        assert!(text.contains(
+            "Content-Type: message/external-body; access-type=x-mutt-deleted;\r\n\texpiration=\"Thu, 8 Oct 2026 20:00:00 +0200\"; length="
+        ), "{text}");
+        // The part's own header fields stay, inside the stub.
+        assert!(text.contains("Content-Disposition: attachment; filename=\"report.pdf\""));
+        assert!(text.contains("plain text"), "the rest stays");
+        let mail = parse_mail(&out).unwrap();
+        let mut body = String::new();
+        render(&mail, &Display::default(), &mut body);
+        assert!(
+            body.contains("[-- This application/pdf (report.pdf) attachment has been deleted --]"),
+            "{body}"
+        );
+        assert_eq!(parts_in(&out).unwrap().len(), 2, "the stub is still a part");
+        // A one-part message has nothing to delete but itself.
+        assert!(without_parts(b"Subject: x\n\nbody\n", &[0], "now").is_err());
     }
 
     #[test]

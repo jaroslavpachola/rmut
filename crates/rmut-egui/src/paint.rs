@@ -615,15 +615,26 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 }
                 Mode::Attach { .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let Mode::Attach { parts, sel, .. } = &gui.mode else {
+                    let Mode::Attach {
+                        msg_path,
+                        parts,
+                        sel,
+                        ..
+                    } = &gui.mode
+                    else {
                         return;
                     };
                     let sel = *sel;
                     let mut rowinfo = Vec::new();
                     for (i, part) in parts.iter().enumerate().take(rows) {
                         rowinfo.push(format!(
-                            "{:>3} [{:<24}] {:>6}  {}",
+                            "{:>3} {} [{:<24}] {:>6}  {}",
                             i + 1,
+                            if gui.session.part_marked(msg_path, i) {
+                                'D'
+                            } else {
+                                ' '
+                            },
                             part.mimetype,
                             rmut_front::pager::humanize_size(part.size as u64),
                             part.filename.as_deref().unwrap_or("(inline)"),
@@ -1278,8 +1289,7 @@ pub const INDEX_HELP: &str = "q:Quit Enter:View m:New r:Reply f:Fwd t:Tag s:Save
 const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev r:Reply f:Fwd d:Del s:Save h:Headers v:Parts";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
-const ATTACH_HELP: &str =
-    "q:Back j/k:Move Enter:View m:Mailcap T:Text R:Render s:Save |:Pipe p:Print f:Fwd";
+const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View m:Mailcap T:Text R:Render s:Save |:Pipe p:Print f:Fwd d/u:Del/Undel";
 const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP M:Markdown P:Postpone q:Quit";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";

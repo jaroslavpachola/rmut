@@ -824,10 +824,33 @@ impl Gui {
                     Mode::Attach { back, .. } => back.take(),
                     _ => None,
                 };
+                // Marked parts are deleted on the way out, if the
+                // question says so; the pager would show the message
+                // as it was, so the index takes over then.
+                let ask = self.session.ask_delete_parts();
                 self.mode = match back {
-                    Some(pager) => Mode::Pager(pager),
-                    None => Mode::Index,
+                    Some(pager) if ask.is_none() => Mode::Pager(pager),
+                    _ => Mode::Index,
                 };
+                self.open_ask(ask);
+            }
+            // mutt's delete-entry / undelete-entry.
+            KeyCode::Char('d') | KeyCode::Char('u') => {
+                if let Mode::Attach {
+                    msg_path,
+                    parts,
+                    sel,
+                    ..
+                } = &self.mode
+                {
+                    let (path, at, last) = (msg_path.clone(), *sel, parts.len());
+                    let on = key.code == KeyCode::Char('d');
+                    if self.session.mark_part(&path, at, on)
+                        && let Mode::Attach { sel, .. } = &mut self.mode
+                    {
+                        *sel = (at + 1).min(last.saturating_sub(1));
+                    }
+                }
             }
             KeyCode::Enter => self.view_part(),
             KeyCode::Char('m') => self.view_part_mailcap(),
@@ -3112,6 +3135,10 @@ impl Gui {
                 if let Some((spec, _)) = dirs.get(*sel).cloned() {
                     self.open_mailbox_spec(&spec);
                 }
+            }
+            KeyCode::Char('T') => {
+                self.session.toggle_subscribed_only();
+                self.folders_changed();
             }
             _ => {}
         }

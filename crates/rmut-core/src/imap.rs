@@ -156,6 +156,12 @@ impl Client {
         Ok(lines.iter().filter_map(parse_list).collect())
     }
 
+    /// The subscribed folders (LSUB), for mutt's $imap_list_subscribed.
+    pub fn lsub(&mut self) -> Result<Vec<Folder>> {
+        let lines = self.command("LSUB \"\" \"*\"")?;
+        Ok(lines.iter().filter_map(parse_list).collect())
+    }
+
     pub fn select(&mut self, mailbox: &str) -> Result<Select> {
         let lines = self.command(&format!("SELECT {}", mailbox_arg(mailbox)?))?;
         let mut sel = Select::default();
@@ -576,10 +582,13 @@ fn number_after(text: &str, marker: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
-/// `* LIST (\Noselect) "/" "INBOX/sub"`; name may be quoted, a
-/// literal, or a bare atom.
+/// `* LIST (\Noselect) "/" "INBOX/sub"` (or the same as LSUB); name
+/// may be quoted, a literal, or a bare atom.
 fn parse_list(line: &Line) -> Option<Folder> {
-    let rest = line.text.strip_prefix("* LIST ")?;
+    let rest = line
+        .text
+        .strip_prefix("* LIST ")
+        .or_else(|| line.text.strip_prefix("* LSUB "))?;
     let close = rest.find(')')?;
     let no_select = rest[..close].to_ascii_lowercase().contains("\\noselect");
     let mut rest = rest[close + 1..].trim_start();

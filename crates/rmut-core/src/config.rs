@@ -236,6 +236,14 @@ pub struct Mail {
     /// "inline" (quoted text, the default) or "attach" (the original
     /// goes along as a message/rfc822 part, mutt's mime_forward).
     pub forward: Option<String>,
+    /// mutt's $imap_list_subscribed: the folder browser lists only the
+    /// subscribed IMAP folders (INBOX and the configured mailboxes
+    /// always); `T` in the browser toggles. Off by default.
+    pub imap_list_subscribed: bool,
+    /// mutt's $display_filter: a shell command the pager's body text
+    /// goes through before it is shown (stdin to stdout); the header
+    /// lines stay rmut's. A failing command shows the body unfiltered.
+    pub display_filter: Option<String>,
     /// mutt's query_command: external address lookup for Tab
     /// completion at the To prompt (`%s` = the word, or appended),
     /// e.g. "khard email --parsable %s".

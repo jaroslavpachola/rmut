@@ -13,6 +13,8 @@
 //! end can do, because it owns the terminal, or the window, or in the
 //! case of a library caller nothing at all.
 
+use std::path::PathBuf;
+
 use crate::{CopyForm, Msg, Security, Session, SortKey, mailbox_exists};
 
 /// A question waiting on an answer.
@@ -85,6 +87,11 @@ pub enum AskKind {
     },
     /// mutt's mail-key: whose public key goes into a new draft.
     MailKey,
+    /// Leaving the attachment menu with parts marked: delete them?
+    DeleteParts {
+        path: PathBuf,
+        indices: Vec<usize>,
+    },
     /// Where to copy the messages, and whether the originals are
     /// marked deleted afterwards (mutt's save).
     CopyTo {
@@ -1058,6 +1065,12 @@ impl Session {
             },
             (AskKind::ComposeTo, Answer::Line(input)) => self.answer_to(input),
             (AskKind::MailKey, Answer::Line(input)) => self.start_mail_key(input),
+            (AskKind::DeleteParts { path, indices }, Answer::Key(key)) => {
+                if key == Key::Char('y') {
+                    self.delete_parts(&path, &indices);
+                }
+                None
+            }
             (AskKind::ComposeCc, Answer::Line(input)) => self.answer_cc(input),
             (AskKind::ComposeBcc, Answer::Line(input)) => self.answer_bcc(input),
             (AskKind::ComposeSubject, Answer::Line(input)) => self.answer_subject(input),

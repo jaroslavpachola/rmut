@@ -354,6 +354,8 @@ fn slot<'a>(cfg: &'a mut Config, name: &str) -> Option<Slot<'a>> {
         "pipe_split" => FlagOpt(&mut cfg.mail.pipe_split),
         "print_split" => FlagOpt(&mut cfg.mail.print_split),
         "query_command" => Text(&mut cfg.mail.query_command),
+        "display_filter" => Text(&mut cfg.mail.display_filter),
+        "imap_list_subscribed" => Flag(&mut cfg.mail.imap_list_subscribed),
         "trash" => Text(&mut cfg.mail.trash),
         "record" => Text(&mut cfg.mail.sent),
         "postponed" => Text(&mut cfg.mail.postponed),

@@ -219,6 +219,7 @@ struct State {
     save_protected_subject: bool,
     print: Option<String>,
     query_command: Option<String>,
+    display_filter: Option<String>,
     trash: Option<String>,
     /// `set edit_headers` (off is mutt's and rmut's default).
     edit_headers_on: bool,
@@ -232,6 +233,7 @@ struct State {
     /// mime_forward = ask-yes/ask-no.
     forward_ask: bool,
     fast_reply: bool,
+    imap_list_subscribed: bool,
     autoedit: bool,
     /// `set nocopy`: skip the sent copy.
     no_copy: bool,
@@ -766,6 +768,7 @@ impl State {
             ),
             "print_command" => self.print = Some(v),
             "query_command" => self.query_command = Some(v),
+            "display_filter" => self.display_filter = Some(v),
             "trash" => self.trash = Some(v),
             "edit_headers" => {
                 if is_yes(&v) {
@@ -1345,6 +1348,13 @@ impl State {
             }
             "askcc" => self.ask_cc = is_yes(value),
             "askbcc" => self.ask_bcc = is_yes(value),
+            "imap_list_subscribed" => {
+                if is_yes(&v) {
+                    self.imap_list_subscribed = true;
+                } else {
+                    self.satisfy(line, "listing every folder is rmut's default");
+                }
+            }
             "fast_reply" => {
                 if is_yes(&v) {
                     self.fast_reply = true;
@@ -1815,11 +1825,13 @@ impl State {
             || self.poll_seconds.is_some()
             || self.print.is_some()
             || self.query_command.is_some()
+            || self.display_filter.is_some()
             || self.trash.is_some()
             || self.save_default.is_some()
             || self.forward_attach
             || self.forward_ask
             || self.fast_reply
+            || self.imap_list_subscribed
             || self.quit.is_some()
             || self.postpone.is_some()
             || self.recall.is_some()
@@ -1910,6 +1922,9 @@ impl State {
             if let Some(q) = &self.query_command {
                 out += &format!("query_command = {}\n", quote(q));
             }
+            if let Some(f) = &self.display_filter {
+                out += &format!("display_filter = {}\n", quote(f));
+            }
             if let Some(t) = &self.trash {
                 out += &format!("trash = {}\n", quote(&self.expand_mailbox(t)));
             }
@@ -1923,6 +1938,9 @@ impl State {
             }
             if self.fast_reply {
                 out += "fast_reply = true\n";
+            }
+            if self.imap_list_subscribed {
+                out += "imap_list_subscribed = true\n";
             }
             if let Some(v) = &self.postpone {
                 out += &format!("postpone = {}\n", quote(v));
