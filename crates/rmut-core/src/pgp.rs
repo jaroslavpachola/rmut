@@ -347,21 +347,16 @@ pub fn encrypt(cfg: &Pgp, recipients: &[String], sign: bool, data: &[u8]) -> Res
 
 // ---- viewing ----
 
-/// What the pager should show for a PGP message: a replacement body
-/// (when decryption produced one) and a one-line status note. gpg
-/// trouble goes in the note; the original body stays available.
+/// What the pager should show for a PGP message: the message as it
+/// reads once opened, and a one-line status note. gpg trouble goes in
+/// the note; the original message stays available.
 pub struct View {
-    pub body: Option<Body>,
+    /// The raw message with every part that decrypted (or verified
+    /// inline) replaced by its plaintext, so the pager, a reply's
+    /// quote and the attachment menu all read the same tree. None
+    /// when nothing opened: the original stands.
+    pub opened: Option<Vec<u8>>,
     pub note: String,
-}
-
-/// What decryption produced, when it produced anything.
-pub enum Body {
-    /// Plain text, from inline PGP: show it as it stands.
-    Text(String),
-    /// A MIME entity, from PGP/MIME: the caller renders the tree, so
-    /// attachments inside encrypted mail show like any others.
-    Entity(Vec<u8>),
 }
 
 fn note(text: &str) -> String {
@@ -376,9 +371,6 @@ fn sig_phrase(sig: &Sig) -> String {
     }
 }
 
-/// Inspect a raw message; Some when it is PGP-encrypted or signed in
-/// any of the four shapes (PGP/MIME encrypted or signed, inline
-/// encrypted, clearsigned).
 /// Whether a message is signed and/or encrypted, without running gpg:
 /// just the MIME type and the inline PGP markers. For the reply-crypto
 /// defaults, which must not decrypt anything.
@@ -392,7 +384,7 @@ pub fn classify(raw: &[u8]) -> Crypto {
     let Ok(mail) = parse_mail(raw) else {
         return Crypto::default();
     };
-    if mail.ctype.mimetype == "multipart/encrypted" || !nested_encrypted(&mail).is_empty() {
+    if mail.ctype.mimetype == "multipart/encrypted" || !encrypted_parts(&mail).is_empty() {
         return Crypto {
             encrypted: true,
             signed: false,
@@ -407,16 +399,16 @@ pub fn classify(raw: &[u8]) -> Crypto {
             encrypted: false,
         };
     }
-    // Inline PGP: look at the text body's opening marker.
+    // Inline PGP: the armor markers in the text body.
     if let Some(text) = message::extract_text(&mail) {
-        let t = text.trim_start();
-        if t.starts_with("-----BEGIN PGP MESSAGE-----") {
+        let blocks = armor_blocks(&text);
+        if blocks.iter().any(|b| b.encrypted) {
             return Crypto {
                 encrypted: true,
                 signed: false,
             };
         }
-        if t.starts_with("-----BEGIN PGP SIGNED MESSAGE-----") {
+        if !blocks.is_empty() {
             return Crypto {
                 signed: true,
                 encrypted: false,
@@ -426,56 +418,85 @@ pub fn classify(raw: &[u8]) -> Crypto {
     Crypto::default()
 }
 
+/// Inspect a raw message; Some when it is PGP-encrypted or signed in
+/// any of its shapes (PGP/MIME encrypted, at the top or further down,
+/// or signed; inline encrypted or clearsigned).
 pub fn view(cfg: &Pgp, raw: &[u8]) -> Option<View> {
     let mail = parse_mail(raw).ok()?;
-    if mail.ctype.mimetype == "multipart/encrypted" && mail.subparts.len() >= 2 {
-        return Some(view_mime_encrypted(cfg, &mail));
+    let encrypted = encrypted_parts(&mail);
+    if !encrypted.is_empty() {
+        return Some(view_encrypted(cfg, raw, &encrypted));
     }
-    if mail.ctype.mimetype == "multipart/signed"
+    if mime_signed(&mail) {
+        return Some(view_mime_signed(cfg, &mail));
+    }
+    let leaf = message::text_leaf(&mail)?;
+    let text = message::text_body(leaf).ok()?;
+    let blocks = armor_blocks(&text);
+    if blocks.is_empty() {
+        return None;
+    }
+    Some(view_inline(cfg, raw, leaf, &text, &blocks))
+}
+
+fn mime_signed(mail: &ParsedMail) -> bool {
+    mail.ctype.mimetype == "multipart/signed"
         && mail.ctype.params.get("protocol").map(String::as_str)
             == Some("application/pgp-signature")
         && mail.subparts.len() >= 2
-    {
-        return Some(view_mime_signed(cfg, &mail));
-    }
-    // PGP/MIME further down: a mailing list that appends a footer
-    // wraps the encrypted message in a multipart/mixed.
-    let nested = nested_encrypted(&mail);
-    if !nested.is_empty() {
-        return Some(view_nested(cfg, raw, &nested));
-    }
-    let text = message::extract_text(&mail)?;
-    let trimmed = text.trim_start();
-    if trimmed.starts_with("-----BEGIN PGP MESSAGE-----") {
-        return Some(view_inline(cfg, trimmed, true));
-    }
-    if trimmed.starts_with("-----BEGIN PGP SIGNED MESSAGE-----") {
-        return Some(view_inline(cfg, trimmed, false));
-    }
-    None
 }
 
-fn view_mime_encrypted(cfg: &Pgp, mail: &ParsedMail) -> View {
-    let cipher = match mail.subparts[1].get_body_raw() {
-        Ok(c) => c,
-        Err(err) => {
-            return View {
-                body: None,
-                note: note(&format!("cannot read the encrypted part: {err}")),
-            };
+/// A PGP/MIME encrypted part and the part inside it holding the
+/// ciphertext.
+struct Sealed<'m, 'a> {
+    whole: &'m ParsedMail<'a>,
+    cipher: &'m ParsedMail<'a>,
+}
+
+/// The PGP/MIME encrypted parts of `mail`, the top of it included,
+/// outermost ones only, in document order. Besides multipart/encrypted
+/// itself, a mailing list may wrap one in a multipart/mixed with its
+/// footer, and Exchange rewrites one into a multipart/mixed of the
+/// same two parts, an empty text part in front (mutt's
+/// malformed_multipart_pgp_encrypted).
+fn encrypted_parts<'m, 'a>(mail: &'m ParsedMail<'a>) -> Vec<Sealed<'m, 'a>> {
+    fn cipher<'m, 'a>(part: &'m ParsedMail<'a>) -> Option<&'m ParsedMail<'a>> {
+        let mut subs = part.subparts.as_slice();
+        match part.ctype.mimetype.as_str() {
+            "multipart/encrypted" => return subs.get(1).filter(|_| subs.len() >= 2),
+            "multipart/mixed" => {}
+            _ => return None,
         }
-    };
-    match decrypt(cfg, &cipher) {
-        Ok(opened) => View {
-            note: note(&decrypted_phrase(&opened)),
-            // The plaintext is itself a MIME entity.
-            body: Some(Body::Entity(opened.plaintext)),
-        },
-        Err(err) => View {
-            body: None,
-            note: note(&format!("decryption failed: {err:#}")),
-        },
+        if let [first, rest @ ..] = subs
+            && first.ctype.mimetype == "text/plain"
+            && first
+                .get_body_raw()
+                .is_ok_and(|b| b.iter().all(u8::is_ascii_whitespace))
+        {
+            subs = rest;
+        }
+        match subs {
+            [control, data]
+                if control.ctype.mimetype == "application/pgp-encrypted"
+                    && data.ctype.mimetype == "application/octet-stream" =>
+            {
+                Some(data)
+            }
+            _ => None,
+        }
     }
+    fn walk<'m, 'a>(part: &'m ParsedMail<'a>, out: &mut Vec<Sealed<'m, 'a>>) {
+        match cipher(part) {
+            Some(cipher) => out.push(Sealed {
+                whole: part,
+                cipher,
+            }),
+            None => part.subparts.iter().for_each(|sub| walk(sub, out)),
+        }
+    }
+    let mut out = Vec::new();
+    walk(mail, &mut out);
+    out
 }
 
 fn decrypted_phrase(opened: &Opened) -> String {
@@ -485,44 +506,25 @@ fn decrypted_phrase(opened: &Opened) -> String {
     }
 }
 
-/// The multipart/encrypted parts below the top of `mail`, outermost
-/// ones only, in document order.
-fn nested_encrypted<'m, 'a>(mail: &'m ParsedMail<'a>) -> Vec<&'m ParsedMail<'a>> {
-    fn walk<'m, 'a>(part: &'m ParsedMail<'a>, out: &mut Vec<&'m ParsedMail<'a>>) {
-        for sub in &part.subparts {
-            if sub.ctype.mimetype == "multipart/encrypted" && sub.subparts.len() >= 2 {
-                out.push(sub);
-            } else {
-                walk(sub, out);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(mail, &mut out);
-    out
-}
-
-/// A message with PGP/MIME parts inside it. Each part that decrypts
-/// is replaced, in a copy of `raw`, by its plaintext entity, so the
-/// whole tree renders with the clear parts around it (a list footer)
-/// still in place. A part that does not decrypt stays as it was.
-fn view_nested(cfg: &Pgp, raw: &[u8], parts: &[&ParsedMail]) -> View {
-    let mut spliced = raw.to_vec();
+/// A message with PGP/MIME parts in it. Each part that decrypts is
+/// replaced, in a copy of `raw`, by its plaintext entity, so the whole
+/// tree renders with the clear parts around it (a list footer) still
+/// in place. A part that does not decrypt stays as it was.
+fn view_encrypted(cfg: &Pgp, raw: &[u8], parts: &[Sealed]) -> View {
+    let mut opened = raw.to_vec();
     let mut phrases = Vec::new();
     let mut any = false;
     // Back to front, so the spans of the earlier parts stay valid.
     for part in parts.iter().rev() {
-        let opened = part.subparts[1]
+        let plain = part
+            .cipher
             .get_body_raw()
             .context("cannot read the encrypted part")
             .and_then(|cipher| decrypt(cfg, &cipher));
-        match opened {
-            Ok(opened) => {
-                // mailparse hands out subparts as slices of the input.
-                let start = part.raw_bytes.as_ptr() as usize - raw.as_ptr() as usize;
-                let end = start + part.raw_bytes.len();
-                spliced.splice(start..end, as_part(&opened.plaintext));
-                phrases.push(decrypted_phrase(&opened));
+        match plain {
+            Ok(plain) => {
+                replace(&mut opened, raw, part.whole, &as_part(&plain.plaintext));
+                phrases.push(decrypted_phrase(&plain));
                 any = true;
             }
             Err(err) => phrases.push(format!("decryption failed: {err:#}")),
@@ -530,9 +532,45 @@ fn view_nested(cfg: &Pgp, raw: &[u8], parts: &[&ParsedMail]) -> View {
     }
     phrases.reverse();
     View {
-        body: any.then_some(Body::Entity(spliced)),
+        opened: any.then_some(opened),
         note: note(&phrases.join("; ")),
     }
+}
+
+/// Put `entity` where `part` (a slice of `raw`, as mailparse hands
+/// out subparts) stands in `out`, a copy of `raw` changed only after
+/// `part` so far. The top of the message keeps its own header fields,
+/// all but the Content- ones, which the entity brings along.
+fn replace(out: &mut Vec<u8>, raw: &[u8], part: &ParsedMail, entity: &[u8]) {
+    let start = part.raw_bytes.as_ptr() as usize - raw.as_ptr() as usize;
+    let end = start + part.raw_bytes.len();
+    let mut new = Vec::with_capacity(entity.len() + 1024);
+    if start == 0 {
+        new.extend_from_slice(&outer_head(raw));
+    }
+    new.extend_from_slice(entity);
+    out.splice(start..end, new);
+}
+
+/// The message's header block without its Content- fields and the
+/// blank line after it, folded lines kept with their field.
+fn outer_head(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut keep = true;
+    for line in raw.split_inclusive(|&b| b == b'\n') {
+        if line == b"\n" || line == b"\r\n" {
+            break;
+        }
+        if !line.starts_with(b" ") && !line.starts_with(b"\t") {
+            keep = !line
+                .get(..8)
+                .is_some_and(|name| name.eq_ignore_ascii_case(b"content-"));
+        }
+        if keep {
+            out.extend_from_slice(line);
+        }
+    }
+    out
 }
 
 /// A plaintext entity ready to stand where its encrypted part stood.
@@ -564,7 +602,7 @@ fn view_mime_signed(cfg: &Pgp, mail: &ParsedMail) -> View {
         Ok(s) => s,
         Err(err) => {
             return View {
-                body: None,
+                opened: None,
                 note: note(&format!("cannot read the signature part: {err}")),
             };
         }
@@ -584,7 +622,7 @@ fn view_mime_signed(cfg: &Pgp, mail: &ParsedMail) -> View {
         }
     });
     View {
-        body: None,
+        opened: None,
         note: match verdict {
             Ok(sig) => note(&sig_phrase(&sig)),
             Err(err) => note(&format!("cannot verify signature: {err:#}")),
@@ -592,33 +630,135 @@ fn view_mime_signed(cfg: &Pgp, mail: &ParsedMail) -> View {
     }
 }
 
-fn view_inline(cfg: &Pgp, text: &str, encrypted: bool) -> View {
-    match decrypt(cfg, text.as_bytes()) {
-        Ok(opened) => {
-            let phrase = match (&opened.sig, encrypted) {
-                (Some(sig), true) => format!("decrypted; {}", sig_phrase(sig)),
-                (Some(sig), false) => sig_phrase(sig),
-                (None, true) => "decrypted".into(),
-                (None, false) => "signed, no verdict from gpg".into(),
-            };
-            View {
-                body: Some(Body::Text(
-                    String::from_utf8_lossy(&opened.plaintext).into_owned(),
-                )),
-                note: note(&phrase),
+/// One armored block in a text body, by byte offsets, its END line
+/// and that line's newline included.
+struct Armor {
+    start: usize,
+    end: usize,
+    encrypted: bool,
+}
+
+/// The inline PGP blocks in `text`, wherever they start: a reply or a
+/// greeting may stand before one. A block with no END line runs to
+/// the end of the text, for gpg to judge.
+fn armor_blocks(text: &str) -> Vec<Armor> {
+    let mut blocks = Vec::new();
+    let mut open: Option<(usize, bool)> = None;
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end();
+        match open {
+            None if bare == "-----BEGIN PGP MESSAGE-----" => open = Some((at, true)),
+            None if bare == "-----BEGIN PGP SIGNED MESSAGE-----" => open = Some((at, false)),
+            Some((start, encrypted))
+                if bare
+                    == if encrypted {
+                        "-----END PGP MESSAGE-----"
+                    } else {
+                        "-----END PGP SIGNATURE-----"
+                    } =>
+            {
+                blocks.push(Armor {
+                    start,
+                    end: at + line.len(),
+                    encrypted,
+                });
+                open = None;
+            }
+            _ => {}
+        }
+        at += line.len();
+    }
+    if let Some((start, encrypted)) = open {
+        blocks.push(Armor {
+            start,
+            end: text.len(),
+            encrypted,
+        });
+    }
+    blocks
+}
+
+/// Inline PGP: each block in the text part `leaf` decrypted or
+/// verified in place. Text outside the blocks was neither encrypted
+/// nor signed, so when there is any, mutt's BEGIN/END lines mark
+/// where the protected text starts and stops.
+fn view_inline(cfg: &Pgp, raw: &[u8], leaf: &ParsedMail, text: &str, blocks: &[Armor]) -> View {
+    let mut outside = 0;
+    let mut rest = 0;
+    for b in blocks {
+        outside += text[rest..b.start].trim().len();
+        rest = b.end;
+    }
+    let framed = outside + text[rest..].trim().len() > 0;
+    let mut body = String::with_capacity(text.len());
+    let mut phrases = Vec::new();
+    let mut any = false;
+    let mut rest = 0;
+    for b in blocks {
+        body.push_str(&text[rest..b.start]);
+        rest = b.end;
+        let block = &text[b.start..b.end];
+        let (what, failed) = match b.encrypted {
+            true => ("PGP MESSAGE", "decryption"),
+            false => ("PGP SIGNED MESSAGE", "verification"),
+        };
+        match decrypt(cfg, block.as_bytes()) {
+            Ok(opened) => {
+                phrases.push(match (&opened.sig, b.encrypted) {
+                    (Some(sig), true) => format!("decrypted; {}", sig_phrase(sig)),
+                    (Some(sig), false) => sig_phrase(sig),
+                    (None, true) => "decrypted".into(),
+                    (None, false) => "signed, no verdict from gpg".into(),
+                });
+                any = true;
+                if framed {
+                    body.push_str(&format!("[-- BEGIN {what} --]\n"));
+                }
+                body.push_str(&in_charset(&opened.plaintext, leaf));
+                if framed {
+                    if !body.ends_with('\n') {
+                        body.push('\n');
+                    }
+                    body.push_str(&format!("[-- END {what} --]\n"));
+                }
+            }
+            Err(err) => {
+                phrases.push(format!("{failed} failed: {err:#}"));
+                body.push_str(block);
             }
         }
-        Err(err) => View {
-            body: None,
-            note: note(&format!(
-                "{} failed: {err:#}",
-                if encrypted {
-                    "decryption"
-                } else {
-                    "verification"
-                }
-            )),
-        },
+    }
+    body.push_str(&text[rest..]);
+    let opened = any.then(|| {
+        let entity = format!(
+            "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n{body}"
+        );
+        let mut out = raw.to_vec();
+        replace(&mut out, raw, leaf, entity.as_bytes());
+        out
+    });
+    View {
+        opened,
+        note: note(&phrases.join("; ")),
+    }
+}
+
+/// Inline plaintext as text. The armor is ASCII whatever the sender
+/// wrote, so the plaintext inside is in the charset the part declares
+/// (mutt converts it the same way); us-ascii, a label meant only for
+/// the armor, or no charset at all leaves it read as UTF-8.
+fn in_charset(plaintext: &[u8], leaf: &ParsedMail) -> String {
+    let declared = leaf
+        .ctype
+        .params
+        .get("charset")
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| !matches!(c.as_str(), "us-ascii" | "ascii" | "utf-8" | "utf8"))
+        .and_then(|c| charset::Charset::for_label_no_replacement(c.as_bytes()));
+    match declared {
+        Some(cs) => cs.decode_without_bom_handling(plaintext).0.into_owned(),
+        None => String::from_utf8_lossy(plaintext).into_owned(),
     }
 }
 
@@ -731,13 +871,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
-    /// Whatever decryption produced, as text (a PGP/MIME entity comes
-    /// back raw, headers and all).
+    /// The opened message's text body, as a reply would quote it.
     fn body_text(v: &View) -> String {
-        match v.body.as_ref().expect("a decrypted body") {
-            Body::Text(t) => t.clone(),
-            Body::Entity(raw) => String::from_utf8_lossy(raw).into_owned(),
-        }
+        message::body_text_in(v.opened.as_ref().expect("an opened message")).unwrap()
     }
 
     /// A fake gpg: a shell script that inspects "$@", reads stdin, and
@@ -1040,7 +1176,7 @@ echo "[GNUPG:] DECRYPTION_FAILED" >&2
 exit 2"#,
         );
         let v = view(&cfg, MIME_ENCRYPTED.as_bytes()).unwrap();
-        assert!(v.body.is_none());
+        assert!(v.opened.is_none());
         assert!(v.note.contains("decryption failed"), "{}", v.note);
     }
 
@@ -1088,7 +1224,7 @@ printf 'Content-Type: multipart/mixed; boundary="in"\r\n\r\n--in\r\nContent-Type
         );
         // The decrypted tree stands where the encrypted part stood,
         // the footer after it.
-        let Some(Body::Entity(raw)) = &v.body else {
+        let Some(raw) = &v.opened else {
             panic!("an entity");
         };
         let mail = parse_mail(raw).unwrap();
@@ -1113,7 +1249,7 @@ echo "[GNUPG:] DECRYPTION_OKAY" >&2
 printf 'just words\n'"#,
         );
         let v = view(&cfg, NESTED_ENCRYPTED.as_bytes()).unwrap();
-        let Some(Body::Entity(raw)) = &v.body else {
+        let Some(raw) = &v.opened else {
             panic!("an entity");
         };
         let mail = parse_mail(raw).unwrap();
@@ -1132,7 +1268,7 @@ echo "gpg: decryption failed: No secret key" >&2
 exit 2"#,
         );
         let v = view(&cfg, NESTED_ENCRYPTED.as_bytes()).unwrap();
-        assert!(v.body.is_none());
+        assert!(v.opened.is_none());
         assert_eq!(v.note, "[-- PGP: decryption failed: No secret key --]");
     }
 
@@ -1162,7 +1298,7 @@ exit 2"#,
 echo "[GNUPG:] GOODSIG AAA Jane <j@x>" >&2"#,
         );
         let v = view(&cfg, MIME_SIGNED.as_bytes()).unwrap();
-        assert!(v.body.is_none());
+        assert!(v.opened.is_none());
         assert!(v.note.contains("good signature"), "{}", v.note);
         // The signed data is the exact first part, CRLF-canonical, with
         // the boundary's own CRLF excluded.
@@ -1210,6 +1346,112 @@ printf 'stripped text'"#,
         let v = view(&cfg, msg.as_bytes()).unwrap();
         assert_eq!(body_text(&v), "stripped text");
         assert!(v.note.contains("good signature"), "{}", v.note);
+    }
+
+    /// gpg handing back a PGP/MIME plaintext with an attachment.
+    const OPENS_TO_TEXT_AND_PDF: &str = r#"cat >/dev/null
+echo "[GNUPG:] BEGIN_DECRYPTION" >&2
+echo "[GNUPG:] DECRYPTION_OKAY" >&2
+printf 'Content-Type: multipart/mixed; boundary="in"\r\n\r\n--in\r\nContent-Type: text/plain\r\n\r\nthe secret plan\r\n--in\r\nContent-Type: application/pdf; name=x.pdf\r\n\r\nPDF\r\n--in--\r\n'"#;
+
+    #[test]
+    fn opened_pgp_mime_keeps_the_envelope_and_lists_the_inner_parts() {
+        let (_dir, cfg) = stub(OPENS_TO_TEXT_AND_PDF);
+        let v = view(&cfg, MIME_ENCRYPTED.as_bytes()).unwrap();
+        let raw = v.opened.as_ref().unwrap();
+        let mail = parse_mail(raw).unwrap();
+        // The outer header fields stay, the plaintext's Content-Type
+        // takes the place of multipart/encrypted.
+        use mailparse::MailHeaderMap as _;
+        assert_eq!(mail.headers.get_first_value("Subject").unwrap(), "sealed");
+        assert_eq!(mail.ctype.mimetype, "multipart/mixed");
+        assert_eq!(mail.headers.get_all_values("Content-Type").len(), 1);
+        // What a reply quotes and what the attachment menu lists.
+        assert_eq!(body_text(&v).trim_end(), "the secret plan");
+        let parts = message::parts_in(raw).unwrap();
+        let names: Vec<_> = parts.iter().map(|p| p.filename.as_deref()).collect();
+        assert_eq!(names, [None, Some("x.pdf")]);
+        assert_eq!(message::part_bytes_in(raw, 1).unwrap(), b"PDF");
+    }
+
+    /// MIME_ENCRYPTED as Exchange delivers it: multipart/mixed, an
+    /// empty text part in front.
+    const EXCHANGE_MANGLED: &str = concat!(
+        "From: a@x\r\n",
+        "Content-Type: multipart/mixed; boundary=\"b\"\r\n",
+        "\r\n",
+        "--b\r\n",
+        "Content-Type: text/plain\r\n",
+        "\r\n",
+        "\r\n",
+        "--b\r\n",
+        "Content-Type: application/pgp-encrypted\r\n",
+        "\r\n",
+        "Version: 1\r\n",
+        "--b\r\n",
+        "Content-Type: application/octet-stream\r\n",
+        "\r\n",
+        "-----BEGIN PGP MESSAGE-----\r\n",
+        "XYZ\r\n",
+        "-----END PGP MESSAGE-----\r\n",
+        "--b--\r\n",
+    );
+
+    #[test]
+    fn view_decrypts_exchange_mangled_pgp_mime() {
+        assert!(classify(EXCHANGE_MANGLED.as_bytes()).encrypted);
+        let (_dir, cfg) = stub(OPENS_TO_TEXT_AND_PDF);
+        let v = view(&cfg, EXCHANGE_MANGLED.as_bytes()).unwrap();
+        assert_eq!(v.note, "[-- PGP: decrypted --]");
+        assert_eq!(body_text(&v).trim_end(), "the secret plan");
+        // Without the empty text part, too; with other parts beside
+        // the two, it is an ordinary multipart.
+        let two = EXCHANGE_MANGLED.replacen("--b\r\nContent-Type: text/plain\r\n\r\n\r\n", "", 1);
+        assert!(view(&cfg, two.as_bytes()).unwrap().opened.is_some());
+        let more = EXCHANGE_MANGLED.replacen("\r\n\r\n\r\n--b", "\r\n\r\nhello\r\n--b", 1);
+        assert!(view(&cfg, more.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn view_finds_inline_armor_after_other_text() {
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] BEGIN_DECRYPTION" >&2
+echo "[GNUPG:] DECRYPTION_OKAY" >&2
+printf 'inline secret\n'"#,
+        );
+        let msg = "From: a@x\r\n\r\nHi,\r\n\r\n-----BEGIN PGP MESSAGE-----\r\nXYZ\r\n-----END PGP MESSAGE-----\r\nbye\r\n";
+        assert!(classify(msg.as_bytes()).encrypted);
+        let v = view(&cfg, msg.as_bytes()).unwrap();
+        assert_eq!(v.note, "[-- PGP: decrypted --]");
+        // The clear text around it stays, marked off from what was
+        // encrypted.
+        assert_eq!(
+            body_text(&v),
+            "Hi,\r\n\r\n[-- BEGIN PGP MESSAGE --]\ninline secret\n[-- END PGP MESSAGE --]\nbye\r\n"
+        );
+    }
+
+    #[test]
+    fn view_reads_inline_plaintext_in_the_declared_charset() {
+        // "šťastný" in iso-8859-2.
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] BEGIN_DECRYPTION" >&2
+echo "[GNUPG:] DECRYPTION_OKAY" >&2
+printf '\271\273astn\375'"#,
+        );
+        let msg = "From: a@x\r\nContent-Type: text/plain; charset=iso-8859-2\r\n\r\n-----BEGIN PGP MESSAGE-----\r\nXYZ\r\n-----END PGP MESSAGE-----\r\n";
+        let v = view(&cfg, msg.as_bytes()).unwrap();
+        assert_eq!(body_text(&v), "šťastný");
+        // Labelled us-ascii (the armor's own charset), it is UTF-8.
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] DECRYPTION_OKAY" >&2
+printf '\305\241\305\245astn\303\275'"#,
+        );
+        let v = view(&cfg, msg.replace("iso-8859-2", "us-ascii").as_bytes()).unwrap();
+        assert_eq!(body_text(&v), "šťastný");
     }
 
     #[test]

@@ -1305,6 +1305,136 @@ def scenario_pgp_nested(tmp):
     r.close()
 
 
+def scenario_pgp_opened_everywhere(tmp):
+    """2.16.7: the attachment menu and a reply's quote read encrypted
+    mail decrypted, as the pager shows it, not the ciphertext."""
+    md = make_maildir(tmp, "md")
+    write_msgs(md, ["jane"])
+    with open(os.path.join(md, "cur", "1751900000.7.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: sealed orders\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <sealed@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/encrypted; boundary="b";\r\n'
+            '\tprotocol="application/pgp-encrypted"\r\n\r\n'
+            "--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--b\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nZZZ\r\n-----END PGP MESSAGE-----\r\n"
+            "--b--\r\n"
+        )
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--decrypt*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
+            '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
+            "  printf 'Content-Type: multipart/mixed; boundary=\"m\"\\r\\n\\r\\n"
+            "--m\\r\\nContent-Type: text/plain\\r\\n\\r\\nthe secret plan\\r\\n"
+            "--m\\r\\nContent-Type: application/pdf\\r\\n"
+            "Content-Disposition: attachment; filename=\"plan.pdf\"\\r\\n\\r\\n"
+            "PDFBYTES\\r\\n--m--\\r\\n' ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[pgp]\ncommand = "{gpg}"\n')
+    editor = os.path.join(tmp, "editor.sh")
+    with open(editor, "w") as f:
+        f.write(f'#!/bin/sh\ncp "$1" {tmp}/draft-copy-$$.txt\n')
+    os.chmod(editor, 0o755)
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config, "EDITOR": editor}))
+    r.expect("Msgs:2", "sealed orders")
+    r.keys(b"\r")
+    r.expect("the secret plan", "plan.pdf")
+    r.keys(b"v")
+    r.expect("Parts:2", "plan.pdf", absent=("pgp-encrypted",))
+    saved = os.path.join(tmp, "plan.pdf")
+    r.keys(b"j")
+    r.keys(b"s")
+    r.expect("Save to file:")
+    r.keys(b"\x15" + saved.encode() + b"\r")  # ^U clears the name offered
+    wait_for(lambda: os.path.exists(saved), desc="part saved")
+    assert open(saved, "rb").read() == b"PDFBYTES", open(saved, "rb").read()
+    r.keys(b"q")  # menu -> pager
+    r.keys(b"i")  # pager -> index
+    r.keys(b"r\r\ry")  # reply: To, Subject, include the original
+    # The editor leaves the draft as it was, so rmut drops it.
+    r.expect("aborted unmodified message")
+
+    def reply_draft():
+        for p in os.listdir(tmp):
+            if p.startswith("draft-copy-"):
+                return open(os.path.join(tmp, p)).read()
+        return None
+
+    wait_for(lambda: reply_draft() is not None, desc="reply draft captured")
+    body = reply_draft()
+    assert "> the secret plan" in body, body
+    assert "BEGIN PGP MESSAGE" not in body, body
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_pgp_shapes(tmp):
+    """2.16.7: Exchange's rewrite of PGP/MIME as multipart/mixed is
+    decrypted, and inline armor after a greeting is found and read in
+    the charset its part declares."""
+    md = make_maildir(tmp, "md")
+    with open(os.path.join(md, "cur", "1751900000.1.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: through exchange\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <exch@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="b"\r\n\r\n'
+            "--b\r\nContent-Type: text/plain\r\n\r\n\r\n"
+            "--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--b\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nMIME\r\n-----END PGP MESSAGE-----\r\n"
+            "--b--\r\n"
+        )
+    with open(os.path.join(md, "cur", "1751900001.2.host:2,S"), "w") as f:
+        f.write(
+            "From: Petr Novak <petr@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: inline latin2\r\nDate: Tue, 7 Jul 2026 13:00:00 +0200\r\n"
+            "Message-ID: <inl@example.com>\r\nMIME-Version: 1.0\r\n"
+            "Content-Type: text/plain; charset=iso-8859-2\r\n\r\n"
+            "Ahoj,\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nINLINE\r\n-----END PGP MESSAGE-----\r\n"
+        )
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        # "šťastný žák" in iso-8859-2 for the inline one.
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--decrypt*)\n"
+            '  in=$(cat)\n'
+            '  echo "[GNUPG:] BEGIN_DECRYPTION" >&2\n'
+            '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
+            '  case "$in" in\n'
+            "  *INLINE*) printf '\\271\\273astn\\375 \\276\\341k\\n' ;;\n"
+            "  *) printf 'Content-Type: text/plain\\r\\n\\r\\nexchange secret\\r\\n' ;;\n"
+            "  esac ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[pgp]\ncommand = "{gpg}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": config}))
+    r.expect("Msgs:2", "through exchange", "inline latin2")
+    r.keys(b"\r")  # newest: the inline one
+    r.expect("PGP: decrypted", "Ahoj,", "[-- BEGIN PGP MESSAGE --]",
+             "šťastný žák", "[-- END PGP MESSAGE --]")
+    r.keys(b"i")
+    r.keys(b"k\r")
+    r.expect("PGP: decrypted", "exchange secret")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_print(tmp):
     md = make_maildir(tmp, "md")
     write_msgs(md, ["jane"])
@@ -5475,6 +5605,8 @@ SCENARIOS = [
     scenario_pgp,
     scenario_pgp_unreadable_copy,
     scenario_pgp_nested,
+    scenario_pgp_opened_everywhere,
+    scenario_pgp_shapes,
     scenario_print,
     scenario_edit_headers,
     scenario_mutt_flow,

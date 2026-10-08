@@ -875,7 +875,7 @@ impl Gui {
             return;
         };
         let msg_path = self.session.msgs[i].env.file.path.clone();
-        match rmut_core::message::parts(&msg_path) {
+        match self.session.parts(&msg_path) {
             Ok(parts) if !parts.is_empty() => {
                 let back = match std::mem::replace(&mut self.mode, Mode::Index) {
                     Mode::Pager(pager) => Some(pager),
@@ -909,7 +909,7 @@ impl Gui {
             _ => return,
         };
         if mimetype.starts_with("image/") {
-            match rmut_core::message::part_bytes(&msg_path, index) {
+            match self.session.part_bytes(&msg_path, index) {
                 Ok(bytes) => {
                     let uri = format!("bytes://{}#{index}", msg_path.display());
                     let back = std::mem::replace(&mut self.mode, Mode::Index);
@@ -927,13 +927,15 @@ impl Gui {
         // "we can display any text, overridable by auto_view").
         let filter = self.session.display.filters.get(&mimetype).cloned();
         let body = if let Some(command) = filter {
-            rmut_core::message::filter_part(&msg_path, index, &command)
+            self.session
+                .filter_part(&msg_path, index, &command)
                 .map_err(|err| format!("filter failed: {err:#}"))
         } else if is_text {
             // The part as the message pager would show it: html
             // through the built-in renderer unless raw is asked for
             // (T always shows the source).
-            rmut_core::message::part_text(&msg_path, index)
+            self.session
+                .part_text(&msg_path, index)
                 .map(|text| {
                     if mimetype == "text/html" && self.session.display.html_to_text {
                         rmut_core::html::to_text(&text)
@@ -1007,7 +1009,7 @@ impl Gui {
             self.error(format!("no mailcap entry for {mimetype}"));
             return;
         };
-        let bytes = match rmut_core::message::part_bytes(&msg_path, index) {
+        let bytes = match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => bytes,
             Err(err) => {
                 self.error(format!("cannot decode part: {err:#}"));
@@ -1060,7 +1062,7 @@ impl Gui {
             } => (msg_path.clone(), *sel, parts[*sel].mimetype.clone()),
             _ => return,
         };
-        match rmut_core::message::part_bytes(&msg_path, index) {
+        match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
                 self.part_pager(mimetype, rmut_core::html::to_text(&text));
@@ -1081,7 +1083,7 @@ impl Gui {
             } => (msg_path.clone(), *sel, parts[*sel].mimetype.clone()),
             _ => return,
         };
-        match rmut_core::message::part_bytes(&msg_path, index) {
+        match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => self.part_pager(mimetype, String::from_utf8_lossy(&bytes).into_owned()),
             Err(err) => self.error(format!("cannot decode part: {err:#}")),
         }
@@ -1093,7 +1095,7 @@ impl Gui {
             Mode::Attach { msg_path, sel, .. } => (msg_path.clone(), *sel),
             _ => return None,
         };
-        match rmut_core::message::part_bytes(&msg_path, index) {
+        match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
                 self.error(format!("cannot decode part: {err:#}"));
@@ -1115,7 +1117,7 @@ impl Gui {
         // Never over something already there: create_new refuses any
         // name that exists, a link included (exists() is false for a
         // dangling one, and a plain write would follow it).
-        let result = rmut_core::message::part_bytes(&msg_path, index).and_then(|bytes| {
+        let result = self.session.part_bytes(&msg_path, index).and_then(|bytes| {
             use std::io::Write as _;
             let mut file = match std::fs::OpenOptions::new()
                 .write(true)
@@ -2228,7 +2230,7 @@ impl Gui {
             self.error("no message selected");
             return;
         };
-        let body = rmut_core::message::body_text(&base.path).unwrap_or_default();
+        let body = self.session.body_text(&base.path).unwrap_or_default();
         let text = rmut_core::compose::draft_text(
             &rmut_core::compose::DraftHeaders {
                 from: self.session.compose_from(None, &base.orig_to),
@@ -2725,10 +2727,10 @@ impl Gui {
         let path = self.session.selected_path()?;
         if self.pager_images.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path()) {
             let mut list = Vec::new();
-            if let Ok(parts) = rmut_core::message::parts(&path) {
+            if let Ok(parts) = self.session.parts(&path) {
                 for (i, part) in parts.iter().enumerate() {
                     if part.mimetype.starts_with("image/") {
-                        list.push(rmut_core::message::part_bytes(&path, i).ok().map(|bytes| {
+                        list.push(self.session.part_bytes(&path, i).ok().map(|bytes| {
                             let uri = format!("bytes://{}#{i}", path.display());
                             (uri, std::sync::Arc::from(bytes))
                         }));

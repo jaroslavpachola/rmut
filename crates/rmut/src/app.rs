@@ -1833,7 +1833,7 @@ impl App {
             return;
         };
         let msg_path = self.session.msgs[i].env.file.path.clone();
-        match message::parts(&msg_path) {
+        match self.session.parts(&msg_path) {
             Ok(parts) if !parts.is_empty() => {
                 let back = match mem::replace(&mut self.mode, Mode::Index) {
                     Mode::Pager(pager) => Some(pager),
@@ -1869,7 +1869,7 @@ impl App {
         // An auto_view filter overrides even a text part (mutt's
         // "we can display any text, overridable by auto_view").
         if let Some(command) = self.session.display.filters.get(&mimetype).cloned() {
-            match message::filter_part(&msg_path, index, &command) {
+            match self.session.filter_part(&msg_path, index, &command) {
                 Ok(body) => self.open_part_pager(mimetype, body),
                 Err(err) => self.error(format!("filter failed: {err:#}")),
             }
@@ -1891,7 +1891,7 @@ impl App {
         // The part as the message pager would show it: html through
         // the built-in renderer unless raw is asked for (T always
         // shows the source).
-        match message::part_text(&msg_path, index) {
+        match self.session.part_text(&msg_path, index) {
             Ok(body) => {
                 let body = if mimetype == "text/html" && self.session.display.html_to_text {
                     rmut_core::html::to_text(&body)
@@ -1951,7 +1951,7 @@ impl App {
             self.error(format!("no mailcap entry for {mimetype}"));
             return;
         };
-        let bytes = match message::part_bytes(&msg_path, index) {
+        let bytes = match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => bytes,
             Err(err) => {
                 self.error(format!("cannot decode part: {err:#}"));
@@ -2008,7 +2008,7 @@ impl App {
             } => (msg_path.clone(), *sel, parts[*sel].mimetype.clone()),
             _ => return,
         };
-        match rmut_core::message::part_bytes(&msg_path, index) {
+        match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
                 self.open_part_pager(mimetype, rmut_core::html::to_text(&text));
@@ -2030,7 +2030,7 @@ impl App {
             } => (msg_path.clone(), *sel, parts[*sel].mimetype.clone()),
             _ => return,
         };
-        match message::part_bytes(&msg_path, index) {
+        match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => {
                 self.open_part_pager(mimetype, String::from_utf8_lossy(&bytes).into_owned())
             }
@@ -2044,7 +2044,7 @@ impl App {
             Mode::Attach { msg_path, sel, .. } => (msg_path.clone(), *sel),
             _ => return None,
         };
-        match message::part_bytes(&msg_path, index) {
+        match self.session.part_bytes(&msg_path, index) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
                 self.error(format!("cannot decode part: {err:#}"));
@@ -2099,7 +2099,7 @@ impl App {
         // Never over something already there: create_new refuses any
         // name that exists, a link included (exists() is false for a
         // dangling one, and a plain write would follow it).
-        let result = message::part_bytes(&msg_path, index).and_then(|bytes| {
+        let result = self.session.part_bytes(&msg_path, index).and_then(|bytes| {
             use std::io::Write as _;
             let mut file = match std::fs::OpenOptions::new()
                 .write(true)
@@ -3356,7 +3356,7 @@ impl App {
             self.error("no message selected");
             return;
         };
-        let body = message::body_text(&base.path).unwrap_or_default();
+        let body = self.session.body_text(&base.path).unwrap_or_default();
         let text = compose::draft_text(
             &compose::DraftHeaders {
                 from: self.session.compose_from(None, &base.orig_to),

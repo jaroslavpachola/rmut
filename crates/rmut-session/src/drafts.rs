@@ -62,7 +62,7 @@ impl Session {
             self.error("no message selected");
             return None;
         };
-        let part = match message::parts(&base.path) {
+        let part = match self.parts(&base.path) {
             Ok(parts) => parts.into_iter().nth(index)?,
             Err(err) => {
                 self.error(format!("cannot list parts: {err:#}"));
@@ -429,7 +429,7 @@ impl Session {
             match setup.kind {
                 ComposeKind::Reply | ComposeKind::GroupReply | ComposeKind::ListReply => {
                     if include {
-                        let orig = message::body_text(&b.path).unwrap_or_default();
+                        let orig = self.body_text(&b.path).unwrap_or_default();
                         let quoted = self.quoted_of(b);
                         let attribution = compose::attribution(
                             self.config
@@ -495,7 +495,7 @@ impl Session {
                     attach = Some(b.path.clone());
                 }
                 ComposeKind::Forward => {
-                    let orig = message::body_text(&b.path).unwrap_or_default();
+                    let orig = self.body_text(&b.path).unwrap_or_default();
                     // mutt's $forward_quote: the original comes in
                     // quoted, so a reply to the forward reads right.
                     let indent = self.config.mail.forward_quote.then(|| self.indent_string());
@@ -650,12 +650,14 @@ impl Session {
     /// does not read as text). The file is the part decoded into the
     /// temp directory, unlinked once the message is sent.
     fn forward_part(
-        &self,
+        &mut self,
         b: &ComposeBase,
         index: usize,
         whole: bool,
     ) -> Result<(String, Option<String>)> {
-        let part = message::parts(&b.path)?
+        // Read (and decrypted) once, before `quote` borrows self.
+        let raw = self.readable(&b.path)?;
+        let part = message::parts_in(&raw)?
             .into_iter()
             .nth(index)
             .ok_or_else(|| anyhow::anyhow!("no part {}", index + 1))?;
@@ -664,9 +666,9 @@ impl Session {
             |text: &str| compose::forward_body(&b.from_display, b.date, &b.subject, text, indent);
         if !whole && self.part_reads_as_text(&part) {
             let text = match self.display.filters.get(&part.mimetype) {
-                Some(command) => message::filter_part(&b.path, index, command)?,
+                Some(command) => message::filter_part_in(&raw, index, command)?,
                 None => {
-                    let text = message::part_text(&b.path, index)?;
+                    let text = message::part_text_in(&raw, index)?;
                     match part.mimetype == "text/html" && self.display.html_to_text {
                         true => rmut_core::html::to_text(&text),
                         false => text,
@@ -675,7 +677,7 @@ impl Session {
             };
             return Ok((quote(&text), None));
         }
-        let bytes = message::part_bytes(&b.path, index)?;
+        let bytes = message::part_bytes_in(&raw, index)?;
         let dir = std::env::temp_dir().join(format!("rmut-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         // The part's own name, its basename only, as mutt's sanitizer

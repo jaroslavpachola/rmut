@@ -489,6 +489,11 @@ pub struct Session {
     /// ignore/unignore/hdr_order and the [filters] table: how a
     /// message's parts turn into the text a reader sees.
     pub display: message::Display,
+    /// The last message opened by PGP, as it reads decrypted: its
+    /// path, size and mtime, then the bytes. Replies, forwards and the
+    /// attachment menu read it from here instead of asking gpg again.
+    /// Kept in memory only.
+    opened: Option<(PathBuf, u64, Option<SystemTime>, Vec<u8>)>,
     /// Messages sent but still inside their $undo_send window, oldest
     /// first. They go out when the timer runs out or rmut leaves.
     outbox: Vec<Held>,
@@ -660,6 +665,7 @@ impl Session {
             fcc_hooks: Vec::new(),
             crypt_hooks: Vec::new(),
             display: display_from_config(&config),
+            opened: None,
             outbox: Vec::new(),
             quote_re: default_quote_re(),
             reply_re: compose::default_reply_regexp(),
@@ -3659,19 +3665,74 @@ impl Session {
         if let Ok(raw) = std::fs::read(path)
             && let Some(p) = pgp::view(&self.config.pgp, &raw)
         {
-            match p.body {
-                // A decrypted PGP/MIME entity is a MIME tree of its
-                // own: render it whole, so attachments inside
-                // encrypted mail are announced like any others.
-                Some(pgp::Body::Entity(raw)) => {
-                    view.body = message::render_entity(&raw, &self.display);
-                }
-                Some(pgp::Body::Text(text)) => view.body = text,
-                None => {}
+            // The opened message is a MIME tree of its own: render it
+            // whole, so attachments inside encrypted mail are
+            // announced like any others.
+            if let Some(opened) = &p.opened {
+                view.body = message::render_entity(opened, &self.display);
             }
+            self.keep_opened(path, p.opened.unwrap_or(raw));
             view.body = format!("{}\n\n{}", p.note, view.body);
         }
         Ok(view)
+    }
+
+    /// The message at `path` as rmut reads it: decrypted, when it is
+    /// encrypted and gpg can open it, else the file as it stands. What
+    /// the pager shows, a reply quotes and the attachment menu lists
+    /// all come from here, so they agree.
+    pub fn readable(&mut self, path: &Path) -> Result<Vec<u8>> {
+        let stamp = std::fs::metadata(path).map(|m| (m.len(), m.modified().ok()));
+        if let (Some((p, len, mtime, bytes)), Ok(stamp)) = (&self.opened, &stamp)
+            && p == path
+            && (*len, *mtime) == *stamp
+        {
+            return Ok(bytes.clone());
+        }
+        let raw = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let bytes = match pgp::view(&self.config.pgp, &raw) {
+            Some(pgp::View {
+                opened: Some(opened),
+                ..
+            }) => opened,
+            Some(_) => raw,
+            // Not PGP at all: nothing worth keeping.
+            None => return Ok(raw),
+        };
+        self.keep_opened(path, bytes.clone());
+        Ok(bytes)
+    }
+
+    fn keep_opened(&mut self, path: &Path, bytes: Vec<u8>) {
+        self.opened = std::fs::metadata(path)
+            .ok()
+            .map(|m| (path.to_path_buf(), m.len(), m.modified().ok(), bytes));
+    }
+
+    /// The attachment menu's leaves of the message at `path`, read
+    /// through `readable`.
+    pub fn parts(&mut self, path: &Path) -> Result<Vec<message::Part>> {
+        message::parts_in(&self.readable(path)?)
+    }
+
+    /// Decoded bytes of one leaf, as `parts` counts them.
+    pub fn part_bytes(&mut self, path: &Path, index: usize) -> Result<Vec<u8>> {
+        message::part_bytes_in(&self.readable(path)?, index)
+    }
+
+    /// Decoded text of one leaf, as `parts` counts them.
+    pub fn part_text(&mut self, path: &Path, index: usize) -> Result<String> {
+        message::part_text_in(&self.readable(path)?, index)
+    }
+
+    /// One leaf through a filter command, as `parts` counts them.
+    pub fn filter_part(&mut self, path: &Path, index: usize, command: &str) -> Result<String> {
+        message::filter_part_in(&self.readable(path)?, index, command)
+    }
+
+    /// The text body a reply or a forward quotes.
+    pub fn body_text(&mut self, path: &Path) -> Result<String> {
+        message::body_text_in(&self.readable(path)?)
     }
 
     /// The message as the pager shows it: brief (weeded) headers and

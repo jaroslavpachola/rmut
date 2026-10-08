@@ -651,9 +651,12 @@ fn pretty_size(n: usize) -> String {
 /// Decoded part rendered through a filter command (attachment viewer).
 pub fn filter_part(path: &Path, index: usize, command: &str) -> Result<String> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mail = parse_mail(&raw)?;
-    let bytes = leaf_at(&mail, index)?.get_body_raw()?;
-    run_filter(command, &bytes)
+    filter_part_in(&raw, index, command)
+}
+
+/// `filter_part` of a message in memory.
+pub fn filter_part_in(raw: &[u8], index: usize, command: &str) -> Result<String> {
+    run_filter(command, &part_bytes_in(raw, index)?)
 }
 
 /// sh -c `command` with the part on stdin, capturing stdout. A
@@ -836,7 +839,12 @@ pub fn header_text(path: &Path) -> Option<String> {
 /// Decoded text body only (used by `~b` pattern matching).
 pub fn body_text(path: &Path) -> Result<String> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    body_text_in(&raw)
+}
+
+/// `body_text` of a message in memory (one opened by PGP, say).
+pub fn body_text_in(raw: &[u8]) -> Result<String> {
+    let mail = parse_mail(raw).context("parsing the message")?;
     Ok(extract_text(&mail).unwrap_or_default())
 }
 
@@ -846,7 +854,7 @@ pub fn body_text(path: &Path) -> Result<String> {
 /// $assumed_charset opens no iconv), so its bytes are read as the UTF-8
 /// they almost always are, where mailparse would assume us-ascii and
 /// decode them as windows-1252.
-fn text_body(part: &ParsedMail) -> Result<String> {
+pub(crate) fn text_body(part: &ParsedMail) -> Result<String> {
     if part.ctype.params.contains_key("charset") {
         return Ok(part.get_body()?);
     }
@@ -856,26 +864,22 @@ fn text_body(part: &ParsedMail) -> Result<String> {
 /// Depth-first search for the first text/plain part (falling back to any
 /// text/* part), with transfer encoding and charset decoded by mailparse.
 pub(crate) fn extract_text(mail: &ParsedMail) -> Option<String> {
+    text_body(text_leaf(mail)?).ok()
+}
+
+/// The part `extract_text` reads.
+pub(crate) fn text_leaf<'a, 'b>(mail: &'a ParsedMail<'b>) -> Option<&'a ParsedMail<'b>> {
     if mail.subparts.is_empty() {
-        if mail.ctype.mimetype.starts_with("text/") {
-            return text_body(mail).ok();
-        }
-        return None;
+        return mail.ctype.mimetype.starts_with("text/").then_some(mail);
     }
-    for sub in &mail.subparts {
-        if sub.ctype.mimetype == "text/plain"
-            && sub.subparts.is_empty()
-            && let Ok(body) = text_body(sub)
-        {
-            return Some(body);
-        }
+    if let Some(plain) = mail
+        .subparts
+        .iter()
+        .find(|sub| sub.ctype.mimetype == "text/plain" && sub.subparts.is_empty())
+    {
+        return Some(plain);
     }
-    for sub in &mail.subparts {
-        if let Some(body) = extract_text(sub) {
-            return Some(body);
-        }
-    }
-    None
+    mail.subparts.iter().find_map(text_leaf)
 }
 
 /// One leaf MIME part, for the attachment menu.
@@ -900,7 +904,12 @@ fn leaves<'a, 'b>(mail: &'a ParsedMail<'b>, out: &mut Vec<&'a ParsedMail<'b>>) {
 
 pub fn parts(path: &Path) -> Result<Vec<Part>> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mail = parse_mail(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    parts_in(&raw)
+}
+
+/// `parts` of a message in memory.
+pub fn parts_in(raw: &[u8]) -> Result<Vec<Part>> {
+    let mail = parse_mail(raw).context("parsing the message")?;
     let mut all = Vec::new();
     leaves(&mail, &mut all);
     Ok(all
@@ -934,14 +943,24 @@ fn leaf_at<'a, 'b>(mail: &'a ParsedMail<'b>, index: usize) -> Result<&'a ParsedM
 /// Decoded text of the given leaf part.
 pub fn part_text(path: &Path, index: usize) -> Result<String> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mail = parse_mail(&raw)?;
+    part_text_in(&raw, index)
+}
+
+/// `part_text` of a message in memory.
+pub fn part_text_in(raw: &[u8], index: usize) -> Result<String> {
+    let mail = parse_mail(raw)?;
     text_body(leaf_at(&mail, index)?)
 }
 
 /// Decoded bytes of the given leaf part (for saving to a file).
 pub fn part_bytes(path: &Path, index: usize) -> Result<Vec<u8>> {
     let raw = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mail = parse_mail(&raw)?;
+    part_bytes_in(&raw, index)
+}
+
+/// `part_bytes` of a message in memory.
+pub fn part_bytes_in(raw: &[u8], index: usize) -> Result<Vec<u8>> {
+    let mail = parse_mail(raw)?;
     Ok(leaf_at(&mail, index)?.get_body_raw()?)
 }
 
