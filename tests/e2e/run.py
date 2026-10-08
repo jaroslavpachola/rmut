@@ -1232,7 +1232,8 @@ def scenario_pgp_unreadable_copy(tmp):
     r = Rmut(md, env)
     r.expect("Msgs:2", "sealed to the old key")
     r.keys(b"\r")
-    r.expect("decryption failed: no secret key for OLDKEY (Me <me@example.com>)")
+    r.expect("decryption failed: no secret key for OLDKEY "
+             "(Me <me@example.com>, created 2001-01-01)")
     r.keys(b"i")
     r.keys(b"m")
     r.expect("To:")

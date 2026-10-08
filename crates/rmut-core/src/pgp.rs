@@ -143,7 +143,7 @@ pub fn decrypt(cfg: &Pgp, data: &[u8]) -> Result<Opened> {
         // key it tried.
         let missing = keyids(&out.status, "NO_SECKEY ");
         if !missing.is_empty() {
-            bail!("no secret key for {}", with_uid(&missing, &out.diag));
+            bail!("no secret key for {}", no_secret(&missing, &out.diag));
         }
         // The view says "decryption failed" already; gpg's last line
         // is its verdict, its first only which key it tried.
@@ -169,6 +169,41 @@ fn keyids(status: &[String], prefix: &str) -> Vec<String> {
         .filter_map(|rest| rest.split(' ').next())
         .map(str::to_string)
         .collect()
+}
+
+/// The keys without a secret here, told apart. One whose public half
+/// is in the keyring is named with its user id and creation date (an
+/// old key of one's own, typically); the rest belong to the other
+/// recipients and are only counted, as their ids say nothing.
+fn no_secret(ids: &[String], diag: &str) -> String {
+    let lines: Vec<&str> = diag.lines().map(str::trim).collect();
+    let known: Vec<String> = ids
+        .iter()
+        .filter_map(|id| {
+            // "encrypted with <algo> key, ID <id>, created <date>",
+            // then the user id quoted when the public key is here.
+            let at = lines.iter().position(|l| {
+                l.split_once(", ID ")
+                    .is_some_and(|(_, rest)| rest.split(',').next() == Some(id.as_str()))
+            })?;
+            let uid = lines
+                .get(at + 1)
+                .filter(|l| l.len() > 1 && l.starts_with('"') && l.ends_with('"'))?
+                .trim_matches('"');
+            Some(match lines[at].split_once(", created ") {
+                Some((_, date)) => format!("{id} ({uid}, created {})", date.trim()),
+                None => format!("{id} ({uid})"),
+            })
+        })
+        .collect();
+    let named = known.join(", ");
+    match (known.len(), ids.len() - known.len()) {
+        (0, 1) => format!("{}, not in your keyring", ids[0]),
+        (0, _) => format!("{}, none of them in your keyring", ids.join(", ")),
+        (_, 0) => named,
+        (_, 1) => format!("{named} or the other recipient's key"),
+        (_, n) => format!("{named} or the {n} other recipients' keys"),
+    }
 }
 
 /// `ids`, followed by the user id gpg printed (quoted, on the line
@@ -812,7 +847,42 @@ exit 2"#,
         let err = decrypt(&cfg, b"armor").unwrap_err();
         assert_eq!(
             format!("{err:#}"),
-            "no secret key for 0LDKEY0000000001 (Jane Doe <jane@x>)"
+            "no secret key for 0LDKEY0000000001 (Jane Doe <jane@x>, created 2001-01-01)"
+        );
+    }
+
+    /// gpg's lines for a message to an old key of one's own and to two
+    /// other recipients, whose public keys are not here either.
+    const TO_THREE: &str = "\
+gpg: encrypted with ECDH key, ID 0THER00000000002
+gpg: encrypted with rsa2048 key, ID 0LDKEY0000000001, created 2001-01-01
+      \"Jane Doe <jane@x>\"
+gpg: encrypted with rsa4096 key, ID 0THER00000000003
+gpg: decryption failed: No secret key";
+
+    #[test]
+    fn no_secret_names_the_known_key_and_counts_the_rest() {
+        let ids = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            no_secret(
+                &ids("0THER00000000002 0LDKEY0000000001 0THER00000000003"),
+                TO_THREE
+            ),
+            "0LDKEY0000000001 (Jane Doe <jane@x>, created 2001-01-01) \
+             or the 2 other recipients' keys"
+        );
+        assert_eq!(
+            no_secret(&ids("0LDKEY0000000001 0THER00000000003"), TO_THREE),
+            "0LDKEY0000000001 (Jane Doe <jane@x>, created 2001-01-01) \
+             or the other recipient's key"
+        );
+        assert_eq!(
+            no_secret(&ids("0THER00000000002 0THER00000000003"), TO_THREE),
+            "0THER00000000002, 0THER00000000003, none of them in your keyring"
+        );
+        assert_eq!(
+            no_secret(&ids("0THER00000000002"), TO_THREE),
+            "0THER00000000002, not in your keyring"
         );
     }
 
