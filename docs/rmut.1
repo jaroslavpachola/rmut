@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.16.7" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.16.8" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -766,7 +766,8 @@ order moved.
 Limit and search take mutt-style patterns. On an IMAP mailbox a
 plain-substring ~b term is answered by the server (UID SEARCH), so
 no bodies are downloaded; regex or non-ASCII terms, and any failure,
-fall back to matching locally. The specifiers:
+fall back to matching locally. Encrypted mail is searched decrypted
+when it was opened this session, as ciphertext otherwise. The specifiers:
 .PP
 .nf
   ~f x  from       ~s x  subject     ~b x  body
@@ -908,7 +909,9 @@ Mailboxes for the folder browser, new-mail watching and the sidebar;
 the first is the default mailbox. The browser and the sidebar name a
 remote folder as mutt does under $folder (Archive, not
 imap:work/Archive), the account in front only when several are
-configured. In the browser (\fBy\fR),
+configured. IMAP folder names with accents show and are typed as text;
+the server's modified UTF-7 spelling (Odeslan&AOE\-) is understood too.
+In the browser (\fBy\fR),
 .B C
 creates a folder (an imap:account/name spec makes a remote one),
 .B d
@@ -1578,7 +1581,10 @@ multipart (a mailing list's footer appended) is decrypted in place,
 as is one Exchange rewrote as multipart/mixed, and inline armor is
 found after other text and read in the part's declared charset. A
 reply quotes the decrypted text and the attachment menu works on the
-parts inside the encryption. Passphrases are gpg-agent's business
+parts inside the encryption. A subject the sender encrypted
+(protected headers) replaces the "..." outside once the message is
+opened, and ~b and ~B search the decrypted body of messages opened
+this session. Passphrases are gpg-agent's business
 \(em rmut never sees them. An encrypted message goes to your own
 address too, so the sent copy stays readable; when gpg picks a key for
 it whose secret is not in your keyring (an old key a keyserver still

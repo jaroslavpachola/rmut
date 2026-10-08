@@ -2894,6 +2894,34 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.16.8 (released 2026-10-08)
+
+Three follow-ups to 2.16.7. An encrypted subject: a client that
+protects its headers sends "..." outside and the real subject on the
+top part of the plaintext, its Content-Type marked
+protected-headers="v1". The opened message now takes those fields
+over the outer ones (pgp::protected_names), so the pager shows the
+real subject, and the session puts it on the envelope, so the index,
+~s and a reply's subject have it too. Memory only, like mutt without
+$crypt_protected_headers_save: a fresh start shows "..." until the
+message is opened again.
+
+~b and ~B on encrypted mail: the session keeps the decrypted text body
+of each message opened, by its maildir name without the flags (a read
+mark renames the file), and the pattern oracle answers from it. A
+search never runs gpg, so mail not opened this session is still
+searched as ciphertext.
+
+And IMAP folder names outside ASCII, left from R93: LIST answers in
+modified UTF-7 (RFC 3501 5.1.3), which rmut showed as it came
+(Odeslan&AOE- po&AWE-ta) and refused to send when typed as text. Now
+names are text inside rmut and the server's spelling on the wire
+(imap::encode_mailbox in mailbox_arg, decode_mailbox in parse_list).
+A name spelled the mutt way in the config is decoded on the way in
+(clean_mailbox, canonical_spec), and the cache directory keeps the
+wire spelling, so existing caches are still found. The decoder is
+strict, so text such as "Q&A-list" is never taken for an encoded name.
+
 ## 2.16.7 (released 2026-10-08)
 
 Encrypted mail read the same everywhere, not only in the pager. The

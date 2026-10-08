@@ -230,7 +230,9 @@ groups: `!~D (~f jane | ~t jane) ~d <1m`.
 
 `rmut imap:work` (or `imap:work/Archive`) opens an account folder;
 `c` and the folder browser `y` take the same specs, and `y` lists the
-account's folders via LIST. In the browser, `C` creates a folder
+account's folders via LIST. Folder names with accents show as text
+and can be typed as text (rmut speaks the server's modified UTF-7;
+a config spelling one the mutt way, `Odeslan&AOE-`, still works). In the browser, `C` creates a folder
 (type an `imap:account/name` spec for a remote one), `d` deletes the
 selected mailbox (confirmed), `r` renames it, and `s`/`u`
 subscribe/unsubscribe: CREATE / DELETE / RENAME / SUBSCRIBE on the
@@ -315,7 +317,11 @@ and so is PGP/MIME that Exchange rewrote as multipart/mixed. Inline
 armor is found after a greeting too, the protected text marked off
 from the rest, and its plaintext read in the charset the part
 declares. A reply quotes the decrypted text, and the attachment menu
-lists, saves and forwards the parts inside the encryption. Outgoing mail is treated
+lists, saves and forwards the parts inside the encryption. A subject
+the sender encrypted (protected headers, "..." outside) shows for real
+once the message is opened, in the pager, the index and a reply, and
+`~b`/`~B` search the decrypted body of messages opened this session
+(nothing is decrypted just to search, nor kept on disk). Outgoing mail is treated
 per message: in the compose menu, `p` opens the security menu with
 (e)ncrypt, (s)ign, (b)oth, (c)lear, and the chosen state shows in the
 menu's Security line. Signing uses `sign_key` (or gpg's default key); encryption
