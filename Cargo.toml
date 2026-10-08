@@ -15,6 +15,11 @@ rmut-session = { path = "crates/rmut-session", version = "2.16.5" }
 rmut-front = { path = "crates/rmut-front", version = "2.16.5" }
 anyhow = "1"
 ratatui = "0.29"
+# ratatui's own crossterm, with the poll(2) event source: the default
+# mio one is edge-triggered and, when a resize and a key arrive in the
+# same wakeup, returns the resize and leaves the key unread until the
+# next one is typed.
+crossterm = { version = "0.28.1", features = ["use-dev-tty"] }
 egui_extras = { version = "0.36", default-features = false, features = ["image"] }
 eframe = { version = "0.36", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 chrono = "0.4"
