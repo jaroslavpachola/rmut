@@ -787,6 +787,273 @@ fn in_charset(plaintext: &[u8], leaf: &ParsedMail) -> String {
     }
 }
 
+// ---- keys ----
+
+/// One public key gpg lists.
+#[derive(Debug, PartialEq, Eq)]
+struct Listed {
+    fpr: String,
+    uid: String,
+    /// Not revoked, expired, disabled or invalid.
+    valid: bool,
+    /// Valid, and able to encrypt (an E in the key's capabilities).
+    encrypts: bool,
+}
+
+/// The public keys gpg lists for `pattern`, from --with-colons: a
+/// pub line (validity in field 2, capabilities in field 12), then its
+/// fpr and uid lines.
+fn list_keys(cfg: &Pgp, pattern: &str) -> Result<Vec<Listed>> {
+    let out = run(cfg, &["--with-colons", "--list-keys", pattern], b"")?;
+    Ok(parse_listing(&String::from_utf8_lossy(&out.stdout)))
+}
+
+fn parse_listing(listing: &str) -> Vec<Listed> {
+    let mut keys: Vec<Listed> = Vec::new();
+    let mut in_pub = false;
+    for line in listing.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        match f[0] {
+            "pub" => {
+                let valid = !matches!(f.get(1), Some(&("i" | "d" | "r" | "e")));
+                keys.push(Listed {
+                    fpr: String::new(),
+                    uid: String::new(),
+                    valid,
+                    encrypts: valid && f.get(11).is_some_and(|caps| caps.contains('E')),
+                });
+                in_pub = true;
+            }
+            "sub" => in_pub = false,
+            "fpr" if in_pub => {
+                if let Some(key) = keys.last_mut().filter(|k| k.fpr.is_empty()) {
+                    key.fpr = f.get(9).unwrap_or(&"").to_string();
+                }
+            }
+            "uid" => {
+                if let Some(key) = keys.last_mut().filter(|k| k.uid.is_empty()) {
+                    key.uid = f.get(9).unwrap_or(&"").to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
+/// The short form a person reads a key by: 0x and the last 16 hex
+/// digits of its fingerprint.
+fn short_id(fpr: &str) -> String {
+    format!("0x{}", &fpr[fpr.len().saturating_sub(16)..])
+}
+
+/// Whether gpg holds a usable encryption key for `recipient` (an
+/// address, matched exactly, or a key id from a crypt-hook). For
+/// mutt's $crypt_opportunistic_encrypt.
+pub fn can_encrypt_to(cfg: &Pgp, recipient: &str) -> bool {
+    // A bare address would match as a substring ("jan@x" in
+    // "ojan@x"); in angle brackets gpg matches it exactly.
+    let pattern = match recipient.contains('@') && !recipient.starts_with('<') {
+        true => format!("<{recipient}>"),
+        false => recipient.to_string(),
+    };
+    list_keys(cfg, &pattern).is_ok_and(|keys| keys.iter().any(|k| k.encrypts))
+}
+
+/// mutt's mail-key: the public key `who` names, ASCII-armored, with
+/// its short id. More than one valid key matching is an error that
+/// names them, since mailing the wrong one is worse than asking.
+pub fn export_key(cfg: &Pgp, who: &str) -> Result<(String, String)> {
+    let keys: Vec<Listed> = list_keys(cfg, who)?
+        .into_iter()
+        .filter(|k| k.valid)
+        .collect();
+    let key = match keys.as_slice() {
+        [] => bail!("no public key for {who}"),
+        [key] => key,
+        several => bail!(
+            "{} keys match {who}: {}; give one key id",
+            several.len(),
+            several
+                .iter()
+                .map(|k| format!("{} ({})", short_id(&k.fpr), k.uid))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let out = run(
+        cfg,
+        &[
+            "--armor",
+            "--export-options",
+            "export-minimal",
+            "--export",
+            &key.fpr,
+        ],
+        b"",
+    )?;
+    if !out.success || out.stdout.is_empty() {
+        return Err(out.error("cannot export the key"));
+    }
+    let armor = String::from_utf8(out.stdout).context("gpg produced non-UTF-8 armor")?;
+    Ok((short_id(&key.fpr), armor))
+}
+
+/// What one gpg --import made of a key block, from IMPORT_RES:
+/// (keys seen, imported, unchanged).
+fn import_one(cfg: &Pgp, block: &[u8]) -> Result<(u64, u64, u64)> {
+    let out = run(cfg, &["--import"], block)?;
+    let res = out
+        .status
+        .iter()
+        .find_map(|l| l.strip_prefix("IMPORT_RES "))
+        .ok_or_else(|| out.error("gpg imported nothing"))?;
+    let n: Vec<u64> = res
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    let at = |i: usize| n.get(i).copied().unwrap_or(0);
+    Ok((at(0), at(2), at(4)))
+}
+
+/// mutt's extract-keys: every key block in `blocks` into gpg's
+/// keyring, and a line saying what came of it.
+pub fn import_keys(cfg: &Pgp, blocks: &[Vec<u8>]) -> Result<String> {
+    let (mut seen, mut imported, mut unchanged) = (0, 0, 0);
+    for block in blocks {
+        let (s, i, u) = import_one(cfg, block)?;
+        seen += s;
+        imported += i;
+        unchanged += u;
+    }
+    ensure!(seen > 0, "gpg found no keys in the message");
+    let plural = |n: u64| if n == 1 { "" } else { "s" };
+    Ok(format!(
+        "{imported} key{} imported, {unchanged} unchanged",
+        plural(imported)
+    ))
+}
+
+/// The PGP public keys a message carries: application/pgp-keys parts
+/// and armored key blocks in its text parts, each block on its own.
+pub fn key_blocks(raw: &[u8]) -> Vec<Vec<u8>> {
+    let Ok(mail) = parse_mail(raw) else {
+        return Vec::new();
+    };
+    fn walk(part: &ParsedMail, out: &mut Vec<Vec<u8>>) {
+        if !part.subparts.is_empty() {
+            part.subparts.iter().for_each(|sub| walk(sub, out));
+            return;
+        }
+        if part.ctype.mimetype == "application/pgp-keys" {
+            out.extend(part.get_body_raw().ok().filter(|b| !b.is_empty()));
+        } else if part.ctype.mimetype.starts_with("text/")
+            && let Ok(text) = message::text_body(part)
+        {
+            const BEGIN: &str = "-----BEGIN PGP PUBLIC KEY BLOCK-----";
+            const END: &str = "-----END PGP PUBLIC KEY BLOCK-----";
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(BEGIN) {
+                let Some(len) = rest[at..].find(END) else {
+                    break;
+                };
+                out.push(rest.as_bytes()[at..at + len + END.len()].to_vec());
+                rest = &rest[at + len + END.len()..];
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&mail, &mut out);
+    out
+}
+
+/// The header fields an encrypted message carries inside as well,
+/// as its protected headers. Bcc stays out: it must not reach the
+/// other recipients, encrypted or not.
+const PROTECTED: &[&str] = &[
+    "subject",
+    "from",
+    "to",
+    "cc",
+    "reply-to",
+    "followup-to",
+    "mail-followup-to",
+    "date",
+    "message-id",
+    "in-reply-to",
+    "references",
+];
+
+/// Protected headers (the draft-autocrypt / Thunderbird scheme) for
+/// an outgoing encrypted message: the fields in PROTECTED copied
+/// onto the top of the plaintext `entity`, its Content-Type marked
+/// protected-headers="v1", and the Subject outside replaced with
+/// `placeholder`, so the subject no longer travels in clear. Without
+/// a Subject there is nothing to hide and both come back unchanged.
+pub fn protect_headers(head: &str, entity: &[u8], placeholder: &str) -> (String, Vec<u8>) {
+    // Fields with their folded lines, in order.
+    let mut fields: Vec<String> = Vec::new();
+    for line in head.lines() {
+        match (line.starts_with([' ', '\t']), fields.last_mut()) {
+            (true, Some(field)) => {
+                field.push('\n');
+                field.push_str(line);
+            }
+            _ => fields.push(line.to_string()),
+        }
+    }
+    let name = |field: &str| {
+        field
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+    };
+    if !fields.iter().any(|f| name(f) == "subject") {
+        return (head.to_string(), entity.to_vec());
+    }
+    let inner: Vec<&String> = fields
+        .iter()
+        .filter(|f| PROTECTED.contains(&name(f).as_str()))
+        .collect();
+    let outer: Vec<String> = fields
+        .iter()
+        .map(|f| match name(f) == "subject" {
+            true => format!("Subject: {placeholder}"),
+            false => f.clone(),
+        })
+        .collect();
+    // The entity's own header block, up to the blank line.
+    let text = String::from_utf8_lossy(entity);
+    let (ehead, ebody) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let mut new_head = Vec::new();
+    let mut in_type = false;
+    let mut marked = false;
+    let mut lines = ehead.split("\r\n").peekable();
+    while let Some(line) = lines.next() {
+        if !line.starts_with([' ', '\t']) {
+            in_type = name(line) == "content-type";
+        }
+        new_head.push(line.to_string());
+        let type_ends = lines
+            .peek()
+            .is_none_or(|next| !next.starts_with([' ', '\t']));
+        if in_type && type_ends && !marked {
+            new_head
+                .last_mut()
+                .unwrap()
+                .push_str("; protected-headers=\"v1\"");
+            marked = true;
+        }
+    }
+    for field in inner {
+        new_head.push(field.replace('\n', "\r\n"));
+    }
+    let entity = format!("{}\r\n\r\n{ebody}", new_head.join("\r\n"));
+    (outer.join("\n"), entity.into_bytes())
+}
+
 // ---- outgoing (RFC 3156) ----
 
 /// Wrap a finalized draft in multipart/signed. `flowed` is mutt's
@@ -1397,6 +1664,164 @@ printf 'Content-Type: multipart/mixed; boundary="in"\r\n\r\n--in\r\nContent-Type
         let names: Vec<_> = parts.iter().map(|p| p.filename.as_deref()).collect();
         assert_eq!(names, [None, Some("x.pdf")]);
         assert_eq!(message::part_bytes_in(raw, 1).unwrap(), b"PDF");
+    }
+
+    const LISTING: &str = concat!(
+        "tru::1:1700000000:0:3:1:5\n",
+        "pub:u:255:22:AAAA1111BBBB2222:1:::u:::scESC::::::23::0:\n",
+        "fpr:::::::::0000AAAA1111BBBB2222:\n",
+        "uid:u::::1::H::Jane <jane@x>::::::::::0:\n",
+        "sub:u:255:18:CCCC:1::::::e::::::23:\n",
+        "fpr:::::::::0000CCCC:\n",
+        "pub:r:255:22:DDDD:1:::u:::sc::::::23::0:\n",
+        "fpr:::::::::0000DDDD:\n",
+        "uid:r::::1::H::Old <old@x>::::::::::0:\n",
+        "pub:e:255:22:EEEE:1:::u:::scESC::::::23::0:\n",
+        "fpr:::::::::0000EEEE:\n",
+        "uid:e::::1::H::Lapsed <lapsed@x>::::::::::0:\n",
+    );
+
+    #[test]
+    fn listing_reads_validity_and_capability() {
+        let keys = parse_listing(LISTING);
+        assert_eq!(keys.len(), 3);
+        assert_eq!(
+            keys[0],
+            Listed {
+                fpr: "0000AAAA1111BBBB2222".into(),
+                uid: "Jane <jane@x>".into(),
+                valid: true,
+                encrypts: true,
+            }
+        );
+        assert!(!keys[1].valid && !keys[1].encrypts, "revoked");
+        assert!(!keys[2].valid && !keys[2].encrypts, "expired");
+        assert_eq!(short_id(&keys[0].fpr), "0xAAAA1111BBBB2222");
+    }
+
+    #[test]
+    fn can_encrypt_to_matches_the_address_exactly() {
+        let (dir, cfg) = stub(&format!(
+            r#"echo "$*" >> "$D/args"
+case "$*" in
+*"<jane@x>"*) printf '{}' ;;
+*) exit 2 ;;
+esac"#,
+            LISTING.lines().take(5).collect::<Vec<_>>().join("\n")
+        ));
+        assert!(can_encrypt_to(&cfg, "jane@x"));
+        assert!(!can_encrypt_to(&cfg, "ane@x"));
+        let args = String::from_utf8(scratch(dir.path(), "args")).unwrap();
+        assert!(args.contains("--list-keys <jane@x>"), "{args}");
+    }
+
+    #[test]
+    fn export_key_wants_exactly_one_valid_key() {
+        let (dir, cfg) = stub(&format!(
+            r#"echo "$*" >> "$D/args"
+case "$*" in
+*--export*) printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----
+K
+-----END PGP PUBLIC KEY BLOCK-----
+' ;;
+*"jane"*) printf '{}' ;;
+*"x"*) printf '{}' ;;
+*) exit 2 ;;
+esac"#,
+            LISTING.lines().take(7).collect::<Vec<_>>().join("\n"),
+            LISTING.replace("pub:r", "pub:u").replace("\n", "\\n"),
+        ));
+        let (id, armor) = export_key(&cfg, "jane").unwrap();
+        assert_eq!(id, "0xAAAA1111BBBB2222");
+        assert!(armor.contains("BEGIN PGP PUBLIC KEY BLOCK"));
+        let args = String::from_utf8(scratch(dir.path(), "args")).unwrap();
+        assert!(args.contains("--export 0000AAAA1111BBBB2222"), "{args}");
+        let err = export_key(&cfg, "x").unwrap_err().to_string();
+        assert!(err.contains("2 keys match x"), "{err}");
+        assert!(err.contains("0xAAAA1111BBBB2222 (Jane <jane@x>)"), "{err}");
+        let err = export_key(&cfg, "nobody").unwrap_err().to_string();
+        assert_eq!(err, "no public key for nobody");
+    }
+
+    #[test]
+    fn import_keys_reports_what_gpg_did() {
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] IMPORT_OK 1 FPR" >&2
+echo "[GNUPG:] IMPORT_RES 1 0 1 0 0 0 0 0 0 0 0 0 0 0 0" >&2"#,
+        );
+        let blocks = vec![b"K1".to_vec(), b"K2".to_vec()];
+        assert_eq!(
+            import_keys(&cfg, &blocks).unwrap(),
+            "2 keys imported, 0 unchanged"
+        );
+        let (_dir, cfg) = stub(
+            r#"cat >/dev/null
+echo "[GNUPG:] IMPORT_RES 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" >&2"#,
+        );
+        assert!(import_keys(&cfg, &[b"junk".to_vec()]).is_err());
+    }
+
+    #[test]
+    fn key_blocks_finds_attachments_and_armor_in_text() {
+        let msg = concat!(
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
+            "--b\r\nContent-Type: text/plain\r\n\r\n",
+            "my key:\r\n-----BEGIN PGP PUBLIC KEY BLOCK-----\r\nAAA\r\n",
+            "-----END PGP PUBLIC KEY BLOCK-----\r\nbye\r\n",
+            "--b\r\nContent-Type: application/pgp-keys; name=0x1.asc\r\n\r\n",
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\r\nBBB\r\n-----END PGP PUBLIC KEY BLOCK-----\r\n",
+            "--b--\r\n",
+        );
+        let blocks = key_blocks(msg.as_bytes());
+        assert_eq!(blocks.len(), 2);
+        let first = String::from_utf8_lossy(&blocks[0]);
+        assert!(
+            first.starts_with("-----BEGIN") && first.contains("AAA"),
+            "{first}"
+        );
+        assert!(first.ends_with("-----END PGP PUBLIC KEY BLOCK-----"));
+        assert!(String::from_utf8_lossy(&blocks[1]).contains("BBB"));
+        assert!(key_blocks(b"Subject: x\r\n\r\nno keys\r\n").is_empty());
+    }
+
+    #[test]
+    fn protect_headers_moves_the_subject_inside() {
+        let head =
+            "From: me@x\nTo: you@x\nBcc: secret@x\nSubject: the plan,\n folded\nX-Other: kept";
+        let entity = b"Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\nbody\r\n";
+        let (outer, inner) = protect_headers(head, entity, "...");
+        assert_eq!(
+            outer,
+            "From: me@x\nTo: you@x\nBcc: secret@x\nSubject: ...\nX-Other: kept"
+        );
+        let inner = String::from_utf8(inner).unwrap();
+        assert_eq!(
+            inner,
+            concat!(
+                "Content-Type: text/plain; charset=utf-8; protected-headers=\"v1\"\r\n",
+                "Content-Transfer-Encoding: 8bit\r\n",
+                "From: me@x\r\nTo: you@x\r\nSubject: the plan,\r\n folded\r\n",
+                "\r\nbody\r\n",
+            )
+        );
+        // What comes back out of decryption reads the real subject.
+        let (_dir, cfg) =
+            stub("cat >/dev/null; echo '[GNUPG:] DECRYPTION_OKAY' >&2; cat \"$D/plain\"");
+        std::fs::write(_dir.path().join("plain"), &inner).unwrap();
+        let sealed = format!(
+            "{}\nContent-Type: multipart/encrypted; boundary=\"b\"\n\n--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n--b\r\nContent-Type: application/octet-stream\r\n\r\nX\r\n--b--\r\n",
+            outer
+        );
+        let v = view(&cfg, sealed.as_bytes()).unwrap();
+        let mail = parse_mail(v.opened.as_ref().unwrap()).unwrap();
+        assert_eq!(mail.headers.get_all_values("Subject"), ["the plan, folded"]);
+        // No Subject, nothing to hide.
+        let (outer, same) = protect_headers("From: me@x", entity, "...");
+        assert_eq!(
+            (outer.as_str(), same.as_slice()),
+            ("From: me@x", &entity[..])
+        );
     }
 
     #[test]

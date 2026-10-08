@@ -1552,6 +1552,23 @@ impl App {
                 self.open_ask(ask);
                 return;
             }
+            PagerAction::DecryptSave | PagerAction::DecryptCopy => {
+                let delete = action == PagerAction::DecryptSave;
+                let ask =
+                    self.session
+                        .ask_copy_decode(delete, false, rmut_session::CopyForm::Decrypted);
+                self.open_ask(ask);
+                return;
+            }
+            PagerAction::ExtractKeys => {
+                self.session.extract_keys(false);
+                return;
+            }
+            PagerAction::MailKey => {
+                let ask = self.session.ask_mail_key();
+                self.open_ask(ask);
+                return;
+            }
             PagerAction::Pipe => {
                 let ask = self.session.ask_pipe(false);
                 self.open_ask(ask);
@@ -2628,7 +2645,7 @@ impl App {
         let security = self
             .session
             .draft()
-            .map(|c| c.security.label())
+            .map(|c| c.security_label())
             .filter(|l| !l.is_empty())
             .unwrap_or("none");
         let fcc = match self.session.draft().and_then(|c| c.fcc.clone()) {
@@ -3198,6 +3215,7 @@ impl App {
                     attach: None,
                     hidden_head,
                     fcc: None,
+                    opportunistic: false,
                 });
             }
             Err(err) => self.error(format!("cannot write draft: {err:#}")),
@@ -3377,6 +3395,7 @@ impl App {
                     attach: None,
                     hidden_head,
                     fcc: None,
+                    opportunistic: false,
                 });
             }
             Err(err) => self.error(format!("cannot write draft: {err:#}")),

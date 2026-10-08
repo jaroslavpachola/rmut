@@ -16,7 +16,7 @@
 //! neither a screen nor an editor.
 
 use crate::ask::{Ask, PatternOp};
-use crate::{ComposeKind, Session, ThreadOp};
+use crate::{ComposeKind, CopyForm, Session, ThreadOp};
 
 /// One thing the index can be told to do, under the name mutt gives
 /// it. A front end binds keys or menu items to these; `bind` and
@@ -93,6 +93,10 @@ pub enum Function {
     Copy,
     DecodeSave,
     DecodeCopy,
+    DecryptSave,
+    DecryptCopy,
+    ExtractKeys,
+    MailKey,
     Pipe,
     Bounce,
     Resend,
@@ -199,6 +203,10 @@ impl Function {
             Copy => "copy",
             DecodeSave => "decode-save",
             DecodeCopy => "decode-copy",
+            DecryptSave => "decrypt-save",
+            DecryptCopy => "decrypt-copy",
+            ExtractKeys => "extract-keys",
+            MailKey => "mail-key",
             Pipe => "pipe",
             Bounce => "bounce",
             Resend => "resend",
@@ -295,6 +303,10 @@ impl Function {
             Save => "save (copy + mark deleted) to a mailbox",
             DecodeSave => "decode-save: the decoded message, original deleted",
             DecodeCopy => "decode-copy: the decoded message",
+            DecryptSave => "decrypt-save: the message decrypted, original deleted",
+            DecryptCopy => "decrypt-copy: the message decrypted",
+            ExtractKeys => "import the PGP keys in the message into gpg",
+            MailKey => "mail a PGP public key",
             Copy => "copy to a mailbox (original stays)",
             Pipe => "pipe raw message to a shell command",
             Bounce => "bounce (resend) message to new recipients",
@@ -395,6 +407,10 @@ impl Function {
             Copy,
             DecodeSave,
             DecodeCopy,
+            DecryptSave,
+            DecryptCopy,
+            ExtractKeys,
+            MailKey,
             Pipe,
             Bounce,
             Resend,
@@ -442,6 +458,9 @@ impl Function {
                 | Copy
                 | DecodeSave
                 | DecodeCopy
+                | DecryptSave
+                | DecryptCopy
+                | ExtractKeys
                 | Pipe
                 | Print
                 | Bounce
@@ -699,8 +718,24 @@ impl Session {
             UntagPattern => return self.ask_pattern(PatternOp::Untag).into(),
             Save => return self.ask_copy(true, tagged).into(),
             Copy => return self.ask_copy(false, tagged).into(),
-            DecodeSave => return self.ask_copy_decode(true, tagged, true).into(),
-            DecodeCopy => return self.ask_copy_decode(false, tagged, true).into(),
+            DecodeSave => return self.ask_copy_decode(true, tagged, CopyForm::Decoded).into(),
+            DecodeCopy => {
+                return self
+                    .ask_copy_decode(false, tagged, CopyForm::Decoded)
+                    .into();
+            }
+            DecryptSave => {
+                return self
+                    .ask_copy_decode(true, tagged, CopyForm::Decrypted)
+                    .into();
+            }
+            DecryptCopy => {
+                return self
+                    .ask_copy_decode(false, tagged, CopyForm::Decrypted)
+                    .into();
+            }
+            ExtractKeys => self.extract_keys(tagged),
+            MailKey => return self.ask_mail_key().into(),
             Pipe => return self.ask_pipe(tagged).into(),
             Bounce => return self.ask_bounce(tagged).into(),
             Print => return self.ask_print(tagged).into(),

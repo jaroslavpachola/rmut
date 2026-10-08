@@ -182,6 +182,37 @@ fn load_envelopes_at(dir: &Path, cache_file: &Path) -> Result<(Vec<Envelope>, us
     Ok((envelopes, skipped))
 }
 
+/// mutt's $crypt_protected_headers_save, kept in the cache rather
+/// than written into the message: the subject decryption revealed,
+/// put on `file`'s entry, so the index shows it after a restart. A
+/// file that changes is parsed afresh and loses it, as any cached
+/// field would.
+pub fn remember_subject(dir: &Path, file: &MailFile, subject: &str) {
+    remember_subject_at(&cache_path(dir), file, subject);
+}
+
+fn remember_subject_at(cache_file: &Path, file: &MailFile, subject: &str) {
+    let Some(mut cache) = std::fs::read_to_string(cache_file)
+        .ok()
+        .and_then(|text| toml::from_str::<CacheFile>(&text).ok())
+    else {
+        return;
+    };
+    let Some(key) = key_of(file) else {
+        return;
+    };
+    let Some(entry) = cache.entries.iter_mut().find(|e| e.key == key) else {
+        return;
+    };
+    if entry.subject == subject {
+        return;
+    }
+    entry.subject = subject.to_string();
+    if let Ok(text) = toml::to_string(&cache) {
+        let _ = std::fs::write(cache_file, text);
+    }
+}
+
 /// Drop header caches of maildirs that no longer exist. Rate-limited
 /// by a marker file, so callers can just invoke it at startup.
 pub fn sweep() {
@@ -262,6 +293,21 @@ mod tests {
         write_msg(&md.join("cur"), "1.host,S=90:2,S", "after, and longer");
         let (second, _) = load_envelopes_at(&md, &cache).unwrap();
         assert_eq!(second[0].subject, "after, and longer");
+    }
+
+    #[test]
+    fn a_remembered_subject_outlives_a_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let md = tmp.path().join("md");
+        for sub in ["cur", "new", "tmp"] {
+            std::fs::create_dir_all(md.join(sub)).unwrap();
+        }
+        let cache = tmp.path().join("c.toml");
+        write_msg(&md.join("cur"), "1.host:2,S", "...");
+        let (envs, _) = load_envelopes_at(&md, &cache).unwrap();
+        remember_subject_at(&cache, &envs[0].file, "the real plan");
+        let (envs, _) = load_envelopes_at(&md, &cache).unwrap();
+        assert_eq!(envs[0].subject, "the real plan");
     }
 
     fn write_msg(dir: &Path, name: &str, subject: &str) {

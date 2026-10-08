@@ -864,6 +864,26 @@ pub struct Pgp {
     pub reply_sign: bool,
     pub reply_encrypt: bool,
     pub reply_sign_encrypted: bool,
+    /// mutt's $crypt_opportunistic_encrypt: a draft is encrypted
+    /// whenever gpg has a key for every recipient, and stops being so
+    /// when one without a key is added. Choosing in the security menu
+    /// takes over for that draft. Off by default.
+    pub opportunistic_encrypt: bool,
+    /// mutt's $crypt_protected_headers_write: encrypted mail carries
+    /// its subject (and the other address fields) inside the
+    /// encryption, the subject outside replaced by
+    /// `subject_placeholder`. On by default, as in Thunderbird.
+    pub protect_subject: bool,
+    /// mutt's $crypt_protected_headers_subject, "..." when unset.
+    pub subject_placeholder: Option<String>,
+    /// mutt's $postpone_encrypt: a draft postponed with encryption on
+    /// is stored encrypted to your own key. Off by default.
+    pub postpone_encrypt: bool,
+    /// mutt's $crypt_protected_headers_save: a subject revealed by
+    /// decryption is kept in the header cache, so the index shows it
+    /// after a restart. It then sits on disk in clear, so off by
+    /// default.
+    pub save_protected_subject: bool,
 }
 
 impl Default for Pgp {
@@ -876,6 +896,11 @@ impl Default for Pgp {
             reply_sign: false,
             reply_encrypt: false,
             reply_sign_encrypted: false,
+            opportunistic_encrypt: false,
+            protect_subject: true,
+            subject_placeholder: None,
+            postpone_encrypt: false,
+            save_protected_subject: false,
         }
     }
 }

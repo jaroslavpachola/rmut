@@ -714,6 +714,7 @@ fn an_untouched_first_edit_drops_the_draft() {
         attach: None,
         hidden_head: None,
         fcc: None,
+        opportunistic: false,
     };
     f.session.set_draft(again);
     assert!(f.session.draft().is_some(), "a re-edit is not the first");
@@ -882,6 +883,7 @@ fn the_attachment_reminder_reads_the_body_not_the_quotes() {
         attach: None,
         hidden_head: None,
         fcc: None,
+        opportunistic: false,
     };
     let says_it = "To: you@example.com\nSubject: x\n\nthe file is attached\n";
     assert!(f.session.attachment_forgotten(says_it, &draft));
@@ -1752,7 +1754,9 @@ fn decode_save_writes_the_decoded_message() {
 
     let out = d.join("decoded");
     // decode-save: the delivered copy holds the decoded body.
-    let ask = f.session.ask_copy_decode(true, false, true);
+    let ask = f
+        .session
+        .ask_copy_decode(true, false, crate::CopyForm::Decoded);
     f.answer_line(ask, out.to_str().unwrap());
     assert!(
         f.log.last_text().starts_with("saved to"),
@@ -2813,19 +2817,23 @@ fn save_advances_like_delete() {
     let spec = dest.path().join("archive").display().to_string();
     // The open positions on first-new; the test starts from the top.
     f.session.sel = 0;
-    f.session.copy_message(&spec, true, false, false);
+    f.session
+        .copy_message(&spec, true, false, crate::CopyForm::Raw);
     assert_eq!(f.session.sel, 1, "save moved to the next message");
     assert!(f.session.msgs[0].env.file.flags.deleted);
     // A copy stays put, like mutt's copy-message.
-    f.session.copy_message(&spec, false, false, false);
+    f.session
+        .copy_message(&spec, false, false, crate::CopyForm::Raw);
     assert_eq!(f.session.sel, 1, "copy stays");
     // A tagged save stays put too (mutt advances only untagged).
     f.session.msgs[2].env.tagged = true;
-    f.session.copy_message(&spec, true, true, false);
+    f.session
+        .copy_message(&spec, true, true, crate::CopyForm::Raw);
     assert_eq!(f.session.sel, 1, "tagged save stays");
     // On the last undeleted message there is nowhere to go.
     f.session.sel = 1;
-    f.session.copy_message(&spec, true, false, false);
+    f.session
+        .copy_message(&spec, true, false, crate::CopyForm::Raw);
     assert_eq!(f.session.sel, 1, "the last one stays put");
 }
 
@@ -2972,6 +2980,7 @@ fn sending_fixture(config: Config) -> (Fixture, tempfile::TempDir) {
         attach: None,
         hidden_head: None,
         fcc: None,
+        opportunistic: false,
     });
     (f, out)
 }
@@ -3148,6 +3157,7 @@ fn markdown_fixture(config: Config, head: &str) -> (Fixture, tempfile::TempDir) 
         attach: None,
         hidden_head: None,
         fcc: None,
+        opportunistic: false,
     });
     (f, out)
 }
@@ -3200,4 +3210,163 @@ fn the_draft_says_whether_it_is_markdown() {
         sent.contains("notes.txt") && !sent.contains("X-Rmut-Markdown"),
         "{sent}"
     );
+}
+
+// ---- the PGP odds (R99)
+
+/// A gpg that holds a key for jane@example.com only, "encrypts" with
+/// rot13 between armor lines and "decrypts" by turning that back.
+fn rot13_gpg(dir: &Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("gpg");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+case "$*" in
+*--list-keys*"<jane@example.com>"*)
+  echo "pub:u:255:22:AAAA1111BBBB2222:1:::u:::scESC::::::23::0:"
+  echo "fpr:::::::::0000AAAA1111BBBB2222:"
+  echo "uid:u::::1::H::Jane <jane@example.com>::::::::::0:" ;;
+*--list-keys*) exit 2 ;;
+*--decrypt*)
+  echo "[GNUPG:] DECRYPTION_OKAY" >&2
+  grep -v -e '^-----BEGIN PGP MESSAGE-----' -e '^-----END PGP MESSAGE-----' \
+    | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
+*--encrypt*)
+  echo "-----BEGIN PGP MESSAGE-----"
+  tr 'A-Za-z' 'N-ZA-Mn-za-m'
+  echo
+  echo "-----END PGP MESSAGE-----" ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    script.display().to_string()
+}
+
+/// A new draft to `to`, edited so abort_unmodified keeps it, in hand.
+fn staged_draft(f: &mut Fixture, to: &str) {
+    let ask = f.session.start_compose(crate::ComposeKind::New);
+    let ask = f.answer_line(ask, to);
+    let _ = f.answer_line(ask, "sealed plans");
+    let draft = draft_from_requests(&mut f.session);
+    let text = fs::read_to_string(&draft.path).unwrap();
+    fs::write(&draft.path, format!("{text}meet at the quarry\n")).unwrap();
+    f.session.set_draft(draft);
+}
+
+#[test]
+fn opportunistic_encryption_follows_the_recipients() {
+    let gpg = tempfile::tempdir().unwrap();
+    let mut config = reply_config();
+    config.pgp.command = rot13_gpg(gpg.path());
+    config.pgp.opportunistic_encrypt = true;
+    let mut f = Fixture::with_config(&["one"], config);
+    staged_draft(&mut f, "jane@example.com");
+    let security = |f: &Fixture| f.session.draft().unwrap().security;
+    assert_eq!(security(&f), crate::Security::Encrypt, "jane has a key");
+    assert_eq!(
+        f.session.draft().unwrap().security_label(),
+        "encrypt (auto)"
+    );
+    f.session.set_draft_header("Cc", "nokey@example.com");
+    assert_eq!(
+        security(&f),
+        crate::Security::None,
+        "a recipient without one"
+    );
+    f.session.set_draft_header("Cc", "");
+    assert_eq!(security(&f), crate::Security::Encrypt);
+    // A choice in the security menu takes over; o hands it back.
+    let ask = f.session.ask_security();
+    let _ = f.answer_key(ask, 's');
+    assert_eq!(security(&f), crate::Security::Sign);
+    f.session.set_draft_header("Cc", "");
+    assert_eq!(security(&f), crate::Security::Sign, "no longer automatic");
+    let ask = f.session.ask_security();
+    let _ = f.answer_key(ask, 'o');
+    assert_eq!(
+        security(&f),
+        crate::Security::Both,
+        "signing kept, encryption back"
+    );
+}
+
+#[test]
+fn an_encrypted_draft_is_postponed_encrypted_and_recalled_as_it_was() {
+    let gpg = tempfile::tempdir().unwrap();
+    let postponed = tempfile::tempdir().unwrap();
+    rmut_core::maildir::create(postponed.path()).unwrap();
+    let mut config = reply_config();
+    config.pgp.command = rot13_gpg(gpg.path());
+    config.pgp.postpone_encrypt = true;
+    config.mail.postponed = Some(postponed.path().display().to_string());
+    let mut f = Fixture::with_config(&["one"], config);
+    staged_draft(&mut f, "jane@example.com");
+    f.session.draft_mut().unwrap().security = crate::Security::Both;
+    let draft = f.session.take_draft().unwrap();
+    f.session.postpone_draft(draft);
+    let file = rmut_core::maildir::scan(postponed.path())
+        .unwrap()
+        .remove(0)
+        .path;
+    let stored = fs::read_to_string(&file).unwrap();
+    assert!(stored.contains("multipart/encrypted"), "{stored}");
+    assert!(stored.contains("X-Mutt-PGP: ES"), "{stored}");
+    assert!(
+        stored.contains("Subject: sealed plans"),
+        "the head stays readable"
+    );
+    assert!(
+        !stored.contains("quarry"),
+        "the body is not in clear: {stored}"
+    );
+    let recalled = f.session.recall_file(file).unwrap();
+    assert_eq!(recalled.security, crate::Security::Both);
+    let text = crate::draft_full(&recalled).unwrap();
+    assert!(text.contains("meet at the quarry\n"), "{text}");
+    assert!(
+        !text.contains("X-Mutt-PGP") && !text.contains("multipart"),
+        "{text}"
+    );
+
+    // Without postpone_encrypt the draft is kept as it is, the
+    // security line still on it.
+    f.session.config.pgp.postpone_encrypt = false;
+    f.session.set_draft(recalled);
+    let draft = f.session.take_draft().unwrap();
+    f.session.postpone_draft(draft);
+    let files = rmut_core::maildir::scan(postponed.path()).unwrap();
+    assert_eq!(files.len(), 2, "the recalled one stays until sent");
+    assert!(
+        files.iter().any(|file| {
+            let stored = fs::read_to_string(&file.path).unwrap();
+            stored.contains("quarry") && stored.contains("X-Mutt-PGP: ES")
+        }),
+        "a copy in clear, its security line on it"
+    );
+}
+
+#[test]
+fn encrypted_mail_goes_out_with_its_subject_protected() {
+    let gpg = tempfile::tempdir().unwrap();
+    let mut config = reply_config();
+    config.pgp.command = rot13_gpg(gpg.path());
+    let (mut f, out) = markdown_fixture(config, "");
+    f.session.draft_mut().unwrap().security = crate::Security::Encrypt;
+    assert!(f.session.send_draft().is_none());
+    let sent = fs::read(out.path().join("sent")).unwrap();
+    let text = String::from_utf8_lossy(&sent);
+    assert!(text.contains("Subject: ...\n"), "{text}");
+    assert!(!text.contains("Subject: md"), "{text}");
+    // What the recipient reads: the real subject, inside.
+    let view = rmut_core::pgp::view(&f.session.config.pgp, &sent).unwrap();
+    let opened = rmut_core::message::load_bytes(
+        view.opened.as_ref().expect(&view.note),
+        &Default::default(),
+    )
+    .unwrap();
+    let subject = opened.all.iter().find(|(k, _)| k == "Subject").unwrap();
+    assert_eq!(subject.1, "md");
 }

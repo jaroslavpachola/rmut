@@ -199,6 +199,19 @@ pub struct ComposeSetup {
     pub fwd_attach: Option<bool>,
     /// A forward from the attachment menu: the part it forwards.
     pub part: Option<usize>,
+    /// mutt's mail-key: the Attach line carrying the exported key,
+    /// and the subject the prompt offers.
+    pub mail_key: Option<(String, String)>,
+}
+
+/// What a save or copy delivers: the message as it is, decoded as the
+/// pager shows it (decode-save), or with its encryption opened
+/// (decrypt-save).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CopyForm {
+    Raw,
+    Decoded,
+    Decrypted,
 }
 
 /// PGP treatment for an outgoing draft, chosen at the send prompt.
@@ -219,6 +232,16 @@ impl Security {
             Security::Both => "sign+encrypt",
         }
     }
+
+    pub fn encrypts(self) -> bool {
+        matches!(self, Security::Encrypt | Security::Both)
+    }
+
+    /// The same signing, with encryption on or off.
+    fn with_encrypt(self, on: bool) -> Security {
+        let sign = matches!(self, Security::Sign | Security::Both);
+        Session::combine(sign, on)
+    }
 }
 
 /// A draft file going through editor → send/postpone/discard.
@@ -236,6 +259,24 @@ pub struct Compose {
     /// Fcc chosen in the compose menu (`f`): None = the default sent
     /// copy, Some("") = keep no copy, Some(path) = that maildir.
     pub fcc: Option<String>,
+    /// mutt's $crypt_opportunistic_encrypt for this draft: encryption
+    /// follows whether gpg has a key for every recipient. Off once
+    /// the security menu is used, and for a draft that started out
+    /// encrypted anyway.
+    pub opportunistic: bool,
+}
+
+impl Compose {
+    /// The compose menu's Security line.
+    pub fn security_label(&self) -> &'static str {
+        match (self.security, self.opportunistic) {
+            (Security::None, true) => "none (auto)",
+            (Security::Sign, true) => "sign (auto)",
+            (Security::Encrypt, true) => "encrypt (auto)",
+            (Security::Both, true) => "sign+encrypt (auto)",
+            (security, false) => security.label(),
+        }
+    }
 }
 
 /// A message that has been sent but is waiting out $undo_send before
@@ -372,7 +413,7 @@ enum Again {
         input: String,
         delete: bool,
         tagged: bool,
-        decode: bool,
+        form: CopyForm,
     },
     Pipe {
         command: String,
@@ -383,6 +424,9 @@ enum Again {
     },
     Bounce {
         to: String,
+        tagged: bool,
+    },
+    ExtractKeys {
         tagged: bool,
     },
 }
@@ -494,6 +538,9 @@ pub struct Session {
     /// the attachment menu read it from here instead of asking gpg
     /// again. Kept in memory only.
     opened: Option<(String, u64, Option<SystemTime>, Vec<u8>)>,
+    /// Whether gpg has an encryption key for a recipient, as asked for
+    /// opportunistic encryption; forgotten when keys are imported.
+    key_known: HashMap<String, bool>,
     /// The decrypted text body of every message opened this session,
     /// by mail_key, for `~b` and `~B`: a search does not run gpg, but
     /// what the reader has seen decrypted can be found. Memory only.
@@ -684,6 +731,7 @@ impl Session {
             display: display_from_config(&config),
             opened: None,
             decrypted: HashMap::new(),
+            key_known: HashMap::new(),
             outbox: Vec::new(),
             quote_re: default_quote_re(),
             reply_re: compose::default_reply_regexp(),
@@ -1625,11 +1673,12 @@ impl Session {
                 input,
                 delete,
                 tagged,
-                decode,
-            } => self.copy_message(&input, delete, tagged, decode),
+                form,
+            } => self.copy_message(&input, delete, tagged, form),
             Again::Pipe { command, tagged } => self.pipe_message(&command, tagged),
             Again::Print { tagged } => self.print_current(tagged),
             Again::Bounce { to, tagged } => self.bounce_current(&to, tagged),
+            Again::ExtractKeys { tagged } => self.extract_keys(tagged),
         }
     }
 
@@ -3307,7 +3356,7 @@ impl Session {
     /// Copy the message to a mailbox (local maildir path or a folder
     /// of the open IMAP account); with `delete` the original is marked
     /// deleted afterwards, mutt's s versus C.
-    pub fn copy_message(&mut self, input: &str, delete: bool, tagged: bool, decode: bool) {
+    pub fn copy_message(&mut self, input: &str, delete: bool, tagged: bool, form: CopyForm) {
         if input.is_empty() {
             self.error("no mailbox given");
             return;
@@ -3324,7 +3373,7 @@ impl Session {
                 input: input.to_string(),
                 delete,
                 tagged,
-                decode,
+                form,
             },
         ) {
             return;
@@ -3342,7 +3391,7 @@ impl Session {
             let mut paths = Vec::new();
             let mut messages = Vec::new();
             for &i in &targets {
-                match self.copy_bytes(i, decode) {
+                match self.copy_bytes(i, form) {
                     Ok(bytes) => {
                         paths.push(self.msgs[i].env.file.path.clone());
                         messages.push((self.msgs[i].env.file.flags, bytes));
@@ -3403,7 +3452,7 @@ impl Session {
         let mut errors: Vec<String> = Vec::new();
         let mut target = String::new();
         for &i in &targets {
-            match self.copy_one(i, input, decode, &mut created) {
+            match self.copy_one(i, input, form, &mut created) {
                 Ok(shown) => {
                     target = shown;
                     copied.push(i);
@@ -3485,14 +3534,20 @@ impl Session {
 
     /// A message's bytes as a save or copy delivers them. mutt's
     /// decode-save/decode-copy deliver the message as the pager shows
-    /// it (weeded headers, decoded body); plain save keeps the bytes
-    /// verbatim.
-    fn copy_bytes(&mut self, i: usize, decode: bool) -> Result<Vec<u8>, String> {
-        if decode {
-            Ok(self.displayed_text(i)?.into_bytes())
-        } else {
-            self.message_bytes(i)
-                .ok_or_else(|| "cannot read the message".into())
+    /// it (weeded headers, decoded body), decrypt-save/decrypt-copy
+    /// the whole message with its encryption opened (still MIME, the
+    /// attachments in it); plain save keeps the bytes verbatim.
+    fn copy_bytes(&mut self, i: usize, form: CopyForm) -> Result<Vec<u8>, String> {
+        match form {
+            CopyForm::Decoded => Ok(self.displayed_text(i)?.into_bytes()),
+            CopyForm::Decrypted => {
+                let path = self.msgs[i].env.file.path.clone();
+                self.readable(&path)
+                    .map_err(|err| format!("cannot read the message: {err:#}"))
+            }
+            CopyForm::Raw => self
+                .message_bytes(i)
+                .ok_or_else(|| "cannot read the message".into()),
         }
     }
 
@@ -3504,14 +3559,14 @@ impl Session {
         &mut self,
         i: usize,
         spec: &str,
-        decode: bool,
+        form: CopyForm,
         created: &mut Vec<PathBuf>,
     ) -> Result<String, String> {
         if remote::parse_spec(spec).is_some() {
             return Err("can only save to a folder of the open account".into());
         }
         let flags = self.msgs[i].env.file.flags;
-        let bytes = self.copy_bytes(i, decode)?;
+        let bytes = self.copy_bytes(i, form)?;
         let dir = expand_tilde(spec);
         maildir::create(&dir)
             .and_then(|()| maildir::deliver(&dir, &bytes, flags))
@@ -3520,6 +3575,35 @@ impl Session {
                 dir.display().to_string()
             })
             .map_err(|err| format!("{err:#}"))
+    }
+
+    /// mutt's extract-keys: the PGP public keys the message carries
+    /// (key attachments, armored blocks in its text, inside the
+    /// encryption too) imported into gpg's keyring.
+    pub fn extract_keys(&mut self, tagged: bool) {
+        let paths = self.target_paths(tagged);
+        if paths.is_empty() || !self.have_bodies(&paths, Again::ExtractKeys { tagged }) {
+            return;
+        }
+        let mut blocks = Vec::new();
+        for path in &paths {
+            match self.readable(path) {
+                Ok(raw) => blocks.extend(pgp::key_blocks(&raw)),
+                Err(err) => {
+                    self.error(format!("cannot read the message: {err:#}"));
+                    return;
+                }
+            }
+        }
+        if blocks.is_empty() {
+            self.error("no PGP keys in the message");
+            return;
+        }
+        self.key_known.clear();
+        match pgp::import_keys(&self.config.pgp, &blocks) {
+            Ok(done) => self.note(done),
+            Err(err) => self.error(format!("cannot import the keys: {err:#}")),
+        }
     }
 
     /// mutt's create-alias: one line appended to the alias file.
@@ -3744,8 +3828,8 @@ impl Session {
 
     /// What a decrypted message tells the rest of rmut: its body, for
     /// `~b`, and its subject when the sender protected it, for the
-    /// index and a reply (held in memory, like mutt without
-    /// $crypt_protected_headers_save).
+    /// index and a reply: in memory, and in the header cache too with
+    /// save_protected_subject (mutt's $crypt_protected_headers_save).
     fn learn_opened(&mut self, path: &Path, opened: &[u8], all: &[(String, String)]) {
         if let Ok(body) = message::body_text_in(opened) {
             self.decrypted.insert(mail_key(path), body);
@@ -3756,8 +3840,12 @@ impl Session {
             .map(|(_, value)| value.clone());
         if let Some(subject) = subject
             && let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
+            && m.env.subject != subject
         {
             m.env.subject = subject;
+            if self.config.pgp.save_protected_subject {
+                hdrcache::remember_subject(&self.dir, &m.env.file, &m.env.subject);
+            }
         }
     }
 
@@ -4516,19 +4604,15 @@ impl Session {
         };
         let flowed = self.config.mail.text_flowed;
         if files.is_empty() && original.is_none() && !markdown {
-            return match security {
+            match security {
                 // No MIME wrapper at all, so the body has to be
                 // declared in the message's own header.
-                Security::None => Ok(compose::declare_plain(&text, flowed)),
-                Security::Sign => pgp::sign_message(cfg, &text, flowed),
-                Security::Encrypt | Security::Both => pgp::encrypt_message(
-                    cfg,
-                    &recipients(&text)?,
-                    security == Security::Both,
-                    &text,
-                    flowed,
-                ),
-            };
+                Security::None => return Ok(compose::declare_plain(&text, flowed)),
+                Security::Sign => return pgp::sign_message(cfg, &text, flowed),
+                // Encrypted, the text is an entity like any other, so
+                // its headers can be protected inside it.
+                Security::Encrypt | Security::Both => {}
+            }
         }
         let (head, body) = text.split_once("\n\n").unwrap_or((text.trim_end(), ""));
         let entity = match files.is_empty() && original.is_none() {
@@ -4538,13 +4622,23 @@ impl Session {
         match security {
             Security::None => Ok(format!("{}\nMIME-Version: 1.0\n{entity}", head.trim_end())),
             Security::Sign => pgp::sign_entity(cfg, head, entity.as_bytes()),
-            Security::Encrypt | Security::Both => pgp::encrypt_entity(
-                cfg,
-                &recipients(&text)?,
-                security == Security::Both,
-                head,
-                entity.as_bytes(),
-            ),
+            Security::Encrypt | Security::Both => {
+                let (head, entity) = match cfg.protect_subject {
+                    true => pgp::protect_headers(
+                        head,
+                        entity.as_bytes(),
+                        cfg.subject_placeholder.as_deref().unwrap_or("..."),
+                    ),
+                    false => (head.to_string(), entity.into_bytes()),
+                };
+                pgp::encrypt_entity(
+                    cfg,
+                    &recipients(&text)?,
+                    security == Security::Both,
+                    &head,
+                    &entity,
+                )
+            }
         }
     }
 
@@ -4602,10 +4696,24 @@ impl Session {
                 maildir::create(&d).map(|()| d)
             }
         };
+        let security = compose_state.security;
+        let opportunistic = compose_state.opportunistic;
         let result = target.and_then(|dir| {
             // The full message, headers included, so the recall (and
-            // the postponed picker's subject) sees them.
-            let bytes = draft_full(&compose_state)?.into_bytes();
+            // the postponed picker's subject) sees them, and mutt's
+            // X-Mutt-PGP line for the security it had.
+            let text = with_pgp_line(&draft_full(&compose_state)?, security, opportunistic);
+            // mutt's $postpone_encrypt: a draft that will go out
+            // encrypted is not kept in clear meanwhile. The headers
+            // stay readable, for the postponed list.
+            let text = match self.config.pgp.postpone_encrypt && security.encrypts() {
+                true => {
+                    let me = self.postpone_key(&text)?;
+                    pgp::encrypt_message(&self.config.pgp, &[me], false, &text, false)?
+                }
+                false => text,
+            };
+            let bytes = text.into_bytes();
             let flags = maildir::Flags {
                 draft: true,
                 seen: true,
@@ -4627,21 +4735,88 @@ impl Session {
         }
     }
 
+    /// Whose key a postponed draft is encrypted to: the sign key when
+    /// one is set, else the draft's From (through a crypt-hook).
+    fn postpone_key(&self, text: &str) -> Result<String> {
+        if let Some(key) = &self.config.pgp.sign_key {
+            return Ok(key.clone());
+        }
+        let from = compose::from_address(text)
+            .or_else(|| {
+                let line = self.current_identity(&[]).from_line()?;
+                compose::bare_address(&line)
+            })
+            .context("no From address to encrypt the postponed draft to")?;
+        Ok(self.crypt_key_for(&from).unwrap_or(from))
+    }
+
+    /// A postponed draft as text again: decrypted when it was stored
+    /// encrypted ($postpone_encrypt), its X-Mutt-PGP line taken out
+    /// and read back as the security it had.
+    fn recalled_text(&mut self, raw: Vec<u8>) -> Result<(String, Option<(Security, bool)>)> {
+        let text = match pgp::classify(&raw).encrypted {
+            false => String::from_utf8_lossy(&raw).into_owned(),
+            true => {
+                let opened = pgp::view(&self.config.pgp, &raw)
+                    .and_then(|v| v.opened.ok_or(v.note).ok())
+                    .context("cannot decrypt the postponed draft")?;
+                let head: Vec<&str> = std::str::from_utf8(&opened)
+                    .unwrap_or_default()
+                    .split("\n\n")
+                    .next()
+                    .unwrap_or_default()
+                    .lines()
+                    .collect();
+                // The fields encryption put there go again, folded
+                // lines with them.
+                let mut kept = Vec::new();
+                let mut skip = false;
+                for line in head {
+                    let line = line.trim_end_matches('\r');
+                    if !line.starts_with([' ', '\t']) {
+                        let name = line
+                            .split(':')
+                            .next()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase();
+                        skip = name.starts_with("content-") || name == "mime-version";
+                    }
+                    if !skip {
+                        kept.push(line);
+                    }
+                }
+                let body = message::body_text_in(&opened)?.replace("\r\n", "\n");
+                format!("{}\n\n{body}", kept.join("\n"))
+            }
+        };
+        Ok(take_pgp_line(&text))
+    }
+
     /// A postponed draft read back into a compose state, for the
     /// front end to hand to the editor. None when it cannot be read.
     pub fn recall_file(&mut self, source: PathBuf) -> Option<Compose> {
-        let result = std::fs::read_to_string(&source)
+        let result = std::fs::read(&source)
             .map_err(anyhow::Error::from)
-            .and_then(|content| self.stage_draft(&content));
+            .and_then(|raw| self.recalled_text(raw))
+            .and_then(|(content, security)| {
+                self.stage_draft(&content).map(|staged| (staged, security))
+            });
         match result {
-            Ok((path, hidden_head)) => Some(Compose {
-                path,
-                recall_source: Some(source),
-                security: self.default_security(),
-                attach: None,
-                hidden_head,
-                fcc: None,
-            }),
+            Ok(((path, hidden_head), security)) => {
+                let (security, opportunistic) = security.unwrap_or_else(|| {
+                    let security = self.default_security();
+                    (security, self.opportunistic_for(security))
+                });
+                Some(Compose {
+                    path,
+                    recall_source: Some(source),
+                    security,
+                    attach: None,
+                    hidden_head,
+                    fcc: None,
+                    opportunistic,
+                })
+            }
             Err(err) => {
                 self.error(format!("cannot recall: {err:#}"));
                 None
@@ -4700,6 +4875,49 @@ impl Session {
             }
             lines.join("\n")
         });
+        if ["to", "cc", "bcc"].contains(&name.to_ascii_lowercase().as_str()) {
+            self.opportunistic_encrypt();
+        }
+    }
+
+    /// Whether a draft starting out with `security` has opportunistic
+    /// encryption: on in the config, and not encrypted already.
+    pub fn opportunistic_for(&self, security: Security) -> bool {
+        self.config.pgp.opportunistic_encrypt && !security.encrypts()
+    }
+
+    /// mutt's $crypt_opportunistic_encrypt: the draft in hand is
+    /// encrypted when gpg has a key for every recipient (a crypt-hook
+    /// key standing in for its address), and not when one is missing.
+    pub fn opportunistic_encrypt(&mut self) {
+        if !self.draft.as_ref().is_some_and(|c| c.opportunistic) {
+            return;
+        }
+        let head = self.draft_head();
+        let mut recipients = Vec::new();
+        for name in ["To", "Cc", "Bcc"] {
+            if let Some(value) = header_value(&head, name) {
+                recipients.extend(compose::addresses(&value));
+            }
+        }
+        let mut all = !recipients.is_empty();
+        for address in recipients {
+            if !all {
+                break;
+            }
+            let key = self.crypt_key_for(&address).unwrap_or(address);
+            all = match self.key_known.get(&key) {
+                Some(&known) => known,
+                None => {
+                    let known = pgp::can_encrypt_to(&self.config.pgp, &key);
+                    self.key_known.insert(key, known);
+                    known
+                }
+            };
+        }
+        if let Some(c) = &mut self.draft {
+            c.security = c.security.with_encrypt(all);
+        }
     }
 
     pub fn draft_header(&self, name: &str) -> String {
@@ -4987,6 +5205,8 @@ impl Session {
             return;
         }
         self.draft = Some(draft);
+        // The editor may have changed the recipients (edit_headers).
+        self.opportunistic_encrypt();
     }
 
     /// The submitted d / ctrl+t edit: rewrite the k-th Attach: line
@@ -5847,6 +6067,50 @@ pub fn header_value(head: &str, name: &str) -> Option<String> {
 
 /// The draft as a full message: the file as edited, with any withheld
 /// header block put back in front.
+/// mutt's X-Mutt-PGP header on a postponed draft: E encrypt, S sign,
+/// O opportunistic. Nothing for a draft that is neither.
+fn with_pgp_line(text: &str, security: Security, opportunistic: bool) -> String {
+    let mut flags = String::new();
+    if security.encrypts() {
+        flags.push('E');
+    }
+    if matches!(security, Security::Sign | Security::Both) {
+        flags.push('S');
+    }
+    if opportunistic {
+        flags.push('O');
+    }
+    if flags.is_empty() {
+        return text.to_string();
+    }
+    match text.split_once("\n\n") {
+        Some((head, body)) => format!("{head}\nX-Mutt-PGP: {flags}\n\n{body}"),
+        None => format!("{}\nX-Mutt-PGP: {flags}\n\n", text.trim_end()),
+    }
+}
+
+/// The draft without its X-Mutt-PGP line, and the security and
+/// opportunistic flag the line held (None when there was none).
+fn take_pgp_line(text: &str) -> (String, Option<(Security, bool)>) {
+    let (head, body) = text.split_once("\n\n").unwrap_or((text, ""));
+    let mut found = None;
+    let kept: Vec<&str> = head
+        .lines()
+        .filter(|line| match line.split_once(':') {
+            Some((name, value)) if name.trim().eq_ignore_ascii_case("X-Mutt-PGP") => {
+                let v = value.trim();
+                found = Some((
+                    Session::combine(v.contains('S'), v.contains('E')),
+                    v.contains('O'),
+                ));
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    (format!("{}\n\n{body}", kept.join("\n")), found)
+}
+
 pub fn draft_full(c: &Compose) -> std::io::Result<String> {
     let text = std::fs::read_to_string(&c.path)?;
     Ok(match &c.hidden_head {

@@ -82,6 +82,47 @@ impl Session {
         self.continue_setup(ComposeKind::Forward, Some(base), Some(index))
     }
 
+    /// mutt's mail-key: which key to mail.
+    pub fn ask_mail_key(&mut self) -> Option<Ask> {
+        Some(Ask::Line {
+            label: "Mail the PGP key of (key id or address): ".into(),
+            prefill: String::new(),
+            wants: Wants::Other,
+            what: AskKind::MailKey,
+        })
+    }
+
+    /// A new draft with the public key `who` names attached, as
+    /// application/pgp-keys under its id, the subject offered.
+    pub(crate) fn start_mail_key(&mut self, who: &str) -> Option<Ask> {
+        let who = who.trim();
+        if who.is_empty() {
+            self.error("no key given");
+            return None;
+        }
+        let (id, armor) = match rmut_core::pgp::export_key(&self.config.pgp, who) {
+            Ok(key) => key,
+            Err(err) => {
+                self.error(format!("cannot mail the key: {err:#}"));
+                return None;
+            }
+        };
+        let name = format!("{id}.asc");
+        let path = match rmut_core::scratch::write_named("key", &name, armor.as_bytes()) {
+            Ok(path) => path,
+            Err(err) => {
+                self.error(format!("cannot write the key: {err:#}"));
+                return None;
+            }
+        };
+        let mut file = compose::Attachment::of(path);
+        file.mime = Some("application/pgp-keys".into());
+        file.description = Some(format!("PGP key {id}"));
+        file.unlink = true;
+        let mail_key = (compose::attach_line(&file), format!("PGP key {id}"));
+        self.continue_setup_with(ComposeKind::New, None, None, Some(mail_key))
+    }
+
     /// Whether a forward can quote this part: text, or a type an
     /// auto_view filter turns into text.
     fn part_reads_as_text(&self, part: &message::Part) -> bool {
@@ -93,6 +134,16 @@ impl Session {
         kind: ComposeKind,
         base: Option<ComposeBase>,
         part: Option<usize>,
+    ) -> Option<Ask> {
+        self.continue_setup_with(kind, base, part, None)
+    }
+
+    fn continue_setup_with(
+        &mut self,
+        kind: ComposeKind,
+        base: Option<ComposeBase>,
+        part: Option<usize>,
+        mail_key: Option<(String, String)>,
     ) -> Option<Ask> {
         // mutt's $autoedit (with edit_headers): no prompts, no
         // questions: the defaults land in the draft and the editor
@@ -109,7 +160,10 @@ impl Session {
                     Some(b),
                 ) => self.reply_subject(&b.subject),
                 (ComposeKind::Forward, Some(b)) => self.forward_subject(b),
-                _ => String::new(),
+                _ => mail_key
+                    .as_ref()
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default(),
             };
             self.setup = Some(ComposeSetup {
                 kind,
@@ -121,6 +175,7 @@ impl Session {
                 subject: None,
                 fwd_attach: None,
                 part,
+                mail_key: mail_key.clone(),
             });
             return self.finish_compose_setup(&subject, true);
         }
@@ -136,6 +191,7 @@ impl Session {
             subject: None,
             fwd_attach: None,
             part,
+            mail_key,
         });
         if ask_reply_to {
             // mutt's $reply_to = ask-yes.
@@ -212,7 +268,11 @@ impl Session {
                 self.reply_subject(&b.subject)
             }
             (ComposeKind::Forward, Some(b)) => self.forward_subject(b),
-            _ => String::new(),
+            _ => setup
+                .mail_key
+                .as_ref()
+                .map(|(_, s)| s.clone())
+                .unwrap_or_default(),
         };
         // What the Subject prompt will offer, parked while the
         // copies are asked about; $fast_reply skips the prompt when
@@ -539,6 +599,7 @@ impl Session {
             extra.push(format!("Bcc: {value}"));
         }
         extra.extend(part_line);
+        extra.extend(setup.mail_key.as_ref().map(|(line, _)| line.clone()));
         let text = match extra.is_empty() {
             true => text,
             false => match text.split_once("\n\n") {
@@ -560,6 +621,7 @@ impl Session {
                     attach,
                     hidden_head,
                     fcc: None,
+                    opportunistic: self.opportunistic_for(security),
                 };
                 // mutt's $forward_edit, except that $autoedit with
                 // edit_headers always edits, as in mutt.

@@ -8,6 +8,7 @@ match against whitespace-squashed, ANSI-stripped text.
 """
 
 import base64
+import email
 import os
 import pty
 import re
@@ -1489,6 +1490,116 @@ def scenario_pgp_protected_subject(tmp):
     r.expect("limit:~b quarry", "Msgs:1/2", "the real plan")
     r.keys(b"l\x15~B quarry\r")
     r.expect("limit:~B quarry", "Msgs:1/2")
+    r.keys(b"q")
+    r.close()
+
+
+def scenario_pgp_keys_and_copies(tmp):
+    """R99: Ctrl+K imports the key a message carries, Esc k mails a
+    public key as an attachment, and decrypt-copy keeps a decrypted
+    copy of encrypted mail."""
+    md = make_maildir(tmp, "md")
+    with open(os.path.join(md, "cur", "1751900000.1.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: my key\r\nDate: Tue, 7 Jul 2026 12:00:00 +0200\r\n"
+            "Message-ID: <key@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="b"\r\n\r\n'
+            "--b\r\nContent-Type: text/plain\r\n\r\nhere it is\r\n"
+            "--b\r\nContent-Type: application/pgp-keys; name=jane.asc\r\n\r\n"
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\r\nKEYDATA\r\n"
+            "-----END PGP PUBLIC KEY BLOCK-----\r\n--b--\r\n"
+        )
+    with open(os.path.join(md, "cur", "1751900001.2.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: sealed orders\r\nDate: Tue, 7 Jul 2026 13:00:00 +0200\r\n"
+            "Message-ID: <sealed@example.com>\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/encrypted; boundary="e";\r\n'
+            '\tprotocol="application/pgp-encrypted"\r\n\r\n'
+            "--e\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n"
+            "--e\r\nContent-Type: application/octet-stream\r\n\r\n"
+            "-----BEGIN PGP MESSAGE-----\r\nZZZ\r\n-----END PGP MESSAGE-----\r\n"
+            "--e--\r\n"
+        )
+    imported = os.path.join(tmp, "imported.txt")
+    gpg = os.path.join(tmp, "gpg.sh")
+    with open(gpg, "w") as f:
+        f.write(
+            '#!/bin/sh\ncase "$*" in\n'
+            "*--import*)\n"
+            f"  cat > {imported}\n"
+            '  echo "[GNUPG:] IMPORT_RES 1 0 1 0 0 0 0 0 0 0 0 0 0 0 0" >&2 ;;\n'
+            "*--export*)\n"
+            "  printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\\nMYKEY\\n"
+            "-----END PGP PUBLIC KEY BLOCK-----\\n' ;;\n"
+            "*--list-keys*)\n"
+            '  echo "pub:u:255:22:AAAA1111BBBB2222:1:::u:::scESC::::::23::0:"\n'
+            '  echo "fpr:::::::::0000AAAA1111BBBB2222:"\n'
+            '  echo "uid:u::::1::H::Alex <alex@example.com>::::::::::0:" ;;\n'
+            "*--decrypt*)\n"
+            "  cat >/dev/null\n"
+            '  echo "[GNUPG:] DECRYPTION_OKAY" >&2\n'
+            "  printf 'Content-Type: text/plain\\r\\n\\r\\nthe secret plan\\r\\n' ;;\n"
+            "esac\nexit 0\n"
+        )
+    os.chmod(gpg, 0o755)
+    config = os.path.join(tmp, "config.toml")
+    with open(config, "w") as f:
+        f.write(f'[pgp]\ncommand = "{gpg}"\n[keys.index]\n"decrypt-copy" = "Y"\n')
+    editor = os.path.join(tmp, "editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\nprintf "my key, attached\\n" >> "$1"\n')
+    os.chmod(editor, 0o755)
+    sent_file = os.path.join(tmp, "sent.eml")
+    sendmail = os.path.join(tmp, "sendmail.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    r = Rmut(md, base_env(tmp, {
+        "RMUT_CONFIG": config,
+        "EDITOR": editor,
+        "RMUT_SENDMAIL": sendmail,
+    }))
+    r.expect("Msgs:2", "my key", "sealed orders")
+    # The newest is selected: the encrypted one. Its decrypted copy:
+    copies = os.path.join(tmp, "copies")
+    r.keys(b"Y")
+    r.expect("Decrypt-copy to mailbox:")
+    r.keys(b"\x15" + copies.encode() + b"\r")
+
+    def copied():
+        cur = os.path.join(copies, "cur")
+        if not os.path.isdir(cur) or not os.listdir(cur):
+            return None
+        return open(os.path.join(cur, os.listdir(cur)[0])).read()
+
+    wait_for(lambda: copied() is not None, desc="decrypted copy delivered")
+    text = copied()
+    assert "the secret plan" in text and "multipart/encrypted" not in text, text
+    assert "Subject: sealed orders" in text, text
+    # Ctrl+K on the key message imports its key.
+    r.keys(b"k")
+    r.keys(b"\x0b")
+    r.expect("1 key imported, 0 unchanged")
+    assert "KEYDATA" in open(imported).read()
+    # Esc k mails a key: the id asked for, then a draft with it on.
+    r.keys(b"\x1bk")
+    r.expect("Mail the PGP key of")
+    r.keys(b"alex@example.com\r")
+    r.expect("To:")
+    r.keys(b"bob@example.org\r")
+    r.expect("PGP key 0xAAAA1111BBBB2222")
+    r.keys(b"\r")
+    r.expect("y:Send", "0xAAAA1111BBBB2222.asc")
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file), desc="sendmail invoked")
+    sent = open(sent_file).read()
+    assert "Subject: PGP key 0xAAAA1111BBBB2222" in sent, sent
+    msg = email.message_from_string(sent)
+    key = [p for p in msg.walk() if p.get_content_type() == "application/pgp-keys"]
+    assert key and key[0].get_filename() == "0xAAAA1111BBBB2222.asc", sent
+    assert b"MYKEY" in key[0].get_payload(decode=True), sent
     r.keys(b"q")
     r.close()
 
@@ -5711,6 +5822,7 @@ SCENARIOS = [
     scenario_pgp_opened_everywhere,
     scenario_pgp_shapes,
     scenario_pgp_protected_subject,
+    scenario_pgp_keys_and_copies,
     scenario_print,
     scenario_edit_headers,
     scenario_mutt_flow,

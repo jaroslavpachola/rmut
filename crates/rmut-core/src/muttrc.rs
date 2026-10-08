@@ -210,6 +210,13 @@ struct State {
     reply_sign: bool,
     reply_encrypt: bool,
     reply_sign_encrypted: bool,
+    opportunistic_encrypt: bool,
+    /// $crypt_protected_headers_write, when set either way: rmut's
+    /// default is on, mutt's off.
+    protect_subject: Option<bool>,
+    subject_placeholder: Option<String>,
+    postpone_encrypt: bool,
+    save_protected_subject: bool,
     print: Option<String>,
     query_command: Option<String>,
     trash: Option<String>,
@@ -744,6 +751,15 @@ impl State {
             "crypt_replysign" => self.reply_sign = is_yes(&v),
             "crypt_replyencrypt" => self.reply_encrypt = is_yes(&v),
             "crypt_replysignencrypted" => self.reply_sign_encrypted = is_yes(&v),
+            "crypt_opportunistic_encrypt" => self.opportunistic_encrypt = is_yes(&v),
+            "crypt_protected_headers_write" => self.protect_subject = Some(is_yes(&v)),
+            "crypt_protected_headers_subject" => self.subject_placeholder = Some(v),
+            "crypt_protected_headers_read" => match is_yes(&v) {
+                true => self.satisfy(line, "rmut always reads protected headers"),
+                false => self.skip(line, "rmut always reads protected headers"),
+            },
+            "postpone_encrypt" => self.postpone_encrypt = is_yes(&v),
+            "crypt_protected_headers_save" => self.save_protected_subject = is_yes(&v),
             "assumed_charset" => self.differently(
                 line,
                 "rmut lets mailparse decode declared charsets; undeclared 8-bit is read as UTF-8",
@@ -2302,6 +2318,11 @@ impl State {
             || self.reply_sign
             || self.reply_encrypt
             || self.reply_sign_encrypted
+            || self.opportunistic_encrypt
+            || self.protect_subject.is_some()
+            || self.subject_placeholder.is_some()
+            || self.postpone_encrypt
+            || self.save_protected_subject
         {
             out += "\n[pgp]\n";
             if let Some(k) = &self.sign_key {
@@ -2321,6 +2342,21 @@ impl State {
             }
             if self.reply_sign_encrypted {
                 out += "reply_sign_encrypted = true\n";
+            }
+            if self.opportunistic_encrypt {
+                out += "opportunistic_encrypt = true\n";
+            }
+            if let Some(on) = self.protect_subject {
+                out += &format!("protect_subject = {on}\n");
+            }
+            if let Some(p) = &self.subject_placeholder {
+                out += &format!("subject_placeholder = {}\n", quote(p));
+            }
+            if self.postpone_encrypt {
+                out += "postpone_encrypt = true\n";
+            }
+            if self.save_protected_subject {
+                out += "save_protected_subject = true\n";
             }
         }
         let mut skipped = self.skipped.clone();
@@ -2644,6 +2680,10 @@ pub fn index_function(name: &str) -> Option<&'static str> {
         "save-message" => "save",
         "decode-save" => "decode-save",
         "decode-copy" => "decode-copy",
+        "decrypt-save" => "decrypt-save",
+        "decrypt-copy" => "decrypt-copy",
+        "extract-keys" => "extract-keys",
+        "mail-key" => "mail-key",
         "print-message" => "print",
         "edit" => "edit",
         "resend-message" => "resend",
@@ -3442,6 +3482,26 @@ mod tests {
         assert!(cfg.pgp.reply_sign, "{toml}");
         assert!(cfg.pgp.reply_encrypt);
         assert!(!cfg.pgp.reply_sign_encrypted);
+    }
+
+    #[test]
+    fn the_pgp_odds_carry_over() {
+        let (cfg, toml) = to_config(concat!(
+            "set crypt_opportunistic_encrypt = yes\n",
+            "set crypt_protected_headers_write = no\n",
+            "set crypt_protected_headers_subject = \"(encrypted)\"\n",
+            "set crypt_protected_headers_read = yes\n",
+            "set postpone_encrypt = yes\n",
+            "set crypt_protected_headers_save = yes\n",
+        ));
+        assert!(cfg.pgp.opportunistic_encrypt, "{toml}");
+        assert!(!cfg.pgp.protect_subject);
+        assert_eq!(cfg.pgp.subject_placeholder.as_deref(), Some("(encrypted)"));
+        assert!(cfg.pgp.postpone_encrypt);
+        assert!(cfg.pgp.save_protected_subject);
+        // Untouched, rmut's own default stands: on.
+        let (cfg, _) = to_config("set crypt_replysign = yes\n");
+        assert!(cfg.pgp.protect_subject);
     }
 
     #[test]

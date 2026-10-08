@@ -13,7 +13,7 @@
 //! end can do, because it owns the terminal, or the window, or in the
 //! case of a library caller nothing at all.
 
-use crate::{Msg, Security, Session, SortKey, mailbox_exists};
+use crate::{CopyForm, Msg, Security, Session, SortKey, mailbox_exists};
 
 /// A question waiting on an answer.
 pub enum Ask {
@@ -83,14 +83,17 @@ pub enum AskKind {
     Pattern {
         op: PatternOp,
     },
+    /// mutt's mail-key: whose public key goes into a new draft.
+    MailKey,
     /// Where to copy the messages, and whether the originals are
     /// marked deleted afterwards (mutt's save).
     CopyTo {
         delete: bool,
         tagged: bool,
-        /// mutt's decode-save / decode-copy: deliver the decoded
-        /// message rather than the raw bytes.
-        decode: bool,
+        /// Raw bytes, or mutt's decode-save / decode-copy (the
+        /// message as the pager shows it) or decrypt-save /
+        /// decrypt-copy (the message with its encryption opened).
+        form: CopyForm,
     },
     Pipe {
         tagged: bool,
@@ -201,7 +204,7 @@ pub enum AskKind {
         input: String,
         delete: bool,
         tagged: bool,
-        decode: bool,
+        form: CopyForm,
     },
 }
 
@@ -392,23 +395,25 @@ impl Session {
     /// Where to save or copy. None when there is nothing to copy, or
     /// when saving would have to write a read-only mailbox.
     pub fn ask_copy(&mut self, delete: bool, tagged: bool) -> Option<Ask> {
-        self.ask_copy_decode(delete, tagged, false)
+        self.ask_copy_decode(delete, tagged, CopyForm::Raw)
     }
 
-    /// mutt's decode-save / decode-copy, which are save / copy of the
-    /// decoded message.
-    pub fn ask_copy_decode(&mut self, delete: bool, tagged: bool, decode: bool) -> Option<Ask> {
+    /// mutt's decode-save / decode-copy and decrypt-save /
+    /// decrypt-copy, which are save / copy of the message in `form`.
+    pub fn ask_copy_decode(&mut self, delete: bool, tagged: bool, form: CopyForm) -> Option<Ask> {
         self.visible.get(self.sel)?;
         // Save marks the original deleted; a plain copy is fine.
         if delete && self.deny_readonly() {
             return None;
         }
         Some(Ask::Line {
-            label: match (delete, decode) {
-                (true, false) => "Save to mailbox: ".into(),
-                (false, false) => "Copy to mailbox: ".into(),
-                (true, true) => "Decode-save to mailbox: ".into(),
-                (false, true) => "Decode-copy to mailbox: ".into(),
+            label: match (delete, form) {
+                (true, CopyForm::Raw) => "Save to mailbox: ".into(),
+                (false, CopyForm::Raw) => "Copy to mailbox: ".into(),
+                (true, CopyForm::Decoded) => "Decode-save to mailbox: ".into(),
+                (false, CopyForm::Decoded) => "Decode-copy to mailbox: ".into(),
+                (true, CopyForm::Decrypted) => "Decrypt-save to mailbox: ".into(),
+                (false, CopyForm::Decrypted) => "Decrypt-copy to mailbox: ".into(),
             },
             prefill: self
                 .save_name_target()
@@ -418,7 +423,7 @@ impl Session {
             what: AskKind::CopyTo {
                 delete,
                 tagged,
-                decode,
+                form,
             },
         })
     }
@@ -722,8 +727,12 @@ impl Session {
 
     pub fn ask_security(&self) -> Option<Ask> {
         self.draft()?;
+        let label = match self.config.pgp.opportunistic_encrypt {
+            true => "Security: (e)ncrypt (s)ign (b)oth (c)lear (o)pportunistic: ",
+            false => "Security: (e)ncrypt (s)ign (b)oth (c)lear: ",
+        };
         Some(Ask::Key {
-            label: "Security: (e)ncrypt (s)ign (b)oth (c)lear: ".into(),
+            label: label.into(),
             what: AskKind::Security,
         })
     }
@@ -829,7 +838,7 @@ impl Session {
                 AskKind::CopyTo {
                     delete,
                     tagged,
-                    decode,
+                    form,
                 },
                 Answer::Line(input),
             ) => {
@@ -843,11 +852,11 @@ impl Session {
                             input,
                             delete,
                             tagged,
-                            decode,
+                            form,
                         },
                     });
                 }
-                self.copy_message(&input, delete, tagged, decode);
+                self.copy_message(&input, delete, tagged, form);
                 None
             }
             (
@@ -855,13 +864,13 @@ impl Session {
                     input,
                     delete,
                     tagged,
-                    decode,
+                    form,
                 },
                 Answer::Key(key),
             ) => {
                 // ask-yes, like mutt's: Enter takes the yes.
                 if matches!(key, Key::Char('y') | Key::Enter) {
-                    self.copy_message(&input, delete, tagged, decode);
+                    self.copy_message(&input, delete, tagged, form);
                 }
                 None
             }
@@ -967,15 +976,25 @@ impl Session {
                 None
             }
             (AskKind::Security, Answer::Key(key)) => {
+                let opportunistic = self.config.pgp.opportunistic_encrypt;
                 if let Some(draft) = self.draft_mut() {
-                    draft.security = match key {
-                        Key::Char('e') => Security::Encrypt,
-                        Key::Char('s') => Security::Sign,
-                        Key::Char('b') => Security::Both,
-                        Key::Char('c') => Security::None,
-                        _ => draft.security,
+                    let chosen = match key {
+                        Key::Char('e') => Some(Security::Encrypt),
+                        Key::Char('s') => Some(Security::Sign),
+                        Key::Char('b') => Some(Security::Both),
+                        Key::Char('c') => Some(Security::None),
+                        _ => None,
                     };
+                    // A choice made by hand takes over from the
+                    // opportunistic one; o hands it back.
+                    if let Some(chosen) = chosen {
+                        draft.security = chosen;
+                        draft.opportunistic = false;
+                    } else if key == Key::Char('o') && opportunistic {
+                        draft.opportunistic = true;
+                    }
                 }
+                self.opportunistic_encrypt();
                 None
             }
             (AskKind::PostponeAsk { default_yes }, Answer::Key(key)) => {
@@ -1038,6 +1057,7 @@ impl Session {
                 }
             },
             (AskKind::ComposeTo, Answer::Line(input)) => self.answer_to(input),
+            (AskKind::MailKey, Answer::Line(input)) => self.start_mail_key(input),
             (AskKind::ComposeCc, Answer::Line(input)) => self.answer_cc(input),
             (AskKind::ComposeBcc, Answer::Line(input)) => self.answer_bcc(input),
             (AskKind::ComposeSubject, Answer::Line(input)) => self.answer_subject(input),
