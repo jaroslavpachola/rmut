@@ -3,6 +3,10 @@ default: run
 run *ARGS:
     cargo run -p rmut -- {{ARGS}}
 
+# the window (rmut-egui), same flags
+gui *ARGS:
+    cargo run -p rmut-egui -- {{ARGS}}
+
 test:
     cargo test --workspace
 
