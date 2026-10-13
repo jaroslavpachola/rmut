@@ -646,7 +646,7 @@ fn ensure_newline(out: &mut String) {
 }
 
 /// Mutt's mutt_pretty_size: 0K, 3.2K, 128K, 1.3M, 12M.
-fn pretty_size(n: usize) -> String {
+pub fn pretty_size(n: usize) -> String {
     if n == 0 {
         "0K".into()
     } else if n < 10189 {

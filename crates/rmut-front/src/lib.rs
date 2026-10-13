@@ -4,6 +4,7 @@
 //! session into rows of text. Nothing in here draws.
 
 pub mod editor;
+pub mod files;
 pub mod index;
 pub mod key;
 pub mod keymap;

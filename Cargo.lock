@@ -2793,6 +2793,7 @@ dependencies = [
 name = "rmut-front"
 version = "2.18.0"
 dependencies = [
+ "chrono",
  "libc",
  "regex-lite",
  "rmut-core",

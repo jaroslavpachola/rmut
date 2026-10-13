@@ -1586,3 +1586,80 @@ fn hosted_rmut_leaves_the_hosts_visuals_alone() {
         "rmut restyled the host's whole window"
     );
 }
+
+/// The compose menu over a fresh draft, through the built-in editor.
+fn compose_menu(dir: &Path) -> Gui {
+    let config: Config = toml::from_str("[gui]\neditor = \"builtin\"\n").unwrap();
+    let (session, _) = Session::open(dir, config).unwrap();
+    let mut gui = Gui::new(session, Vec::new(), false);
+    press(&mut gui, "m");
+    press(&mut gui, "jane@example.com");
+    key(&mut gui, KeyCode::Enter);
+    press(&mut gui, "hello");
+    key(&mut gui, KeyCode::Enter);
+    let Mode::Edit { text, .. } = &mut gui.mode else {
+        panic!("the draft opened in the built-in editor");
+    };
+    text.push_str("body\n");
+    gui.finish_edit(true);
+    assert!(matches!(gui.mode, Mode::Compose { .. }));
+    gui
+}
+
+/// The names of the draft's attached files.
+fn attached(gui: &Gui) -> Vec<String> {
+    let full = rmut_session::draft_full(gui.session.draft().unwrap()).unwrap();
+    rmut_core::compose::extract_attachments(&full)
+        .1
+        .iter()
+        .map(|a| a.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn the_attach_prompt_completes_paths_and_browses_files() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let pick = dir.path().join("pick");
+    fs::create_dir(&pick).unwrap();
+    for name in ["notes.txt", "report.pdf", "zebra.txt"] {
+        fs::write(pick.join(name), name).unwrap();
+    }
+    let mut gui = compose_menu(dir.path());
+    // "pi" is the one directory: Tab grows it, slash and all, and a
+    // second Tab on the unchanged line browses it.
+    press(&mut gui, "a");
+    press(&mut gui, &format!("{}/pi", dir.path().display()));
+    key(&mut gui, KeyCode::Tab);
+    let Some(crate::app::Prompt::Line { edit, .. }) = &gui.prompt else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(edit.buf, format!("{}/pick/", dir.path().display()));
+    key(&mut gui, KeyCode::Tab);
+    let Mode::Files { browser, .. } = &gui.mode else {
+        panic!("a Tab that changes nothing browses");
+    };
+    assert_eq!(browser.dir, pick);
+    // Past .., tag two and leave: both are attached, the compose
+    // menu back.
+    press(&mut gui, "jttq");
+    assert!(matches!(gui.mode, Mode::Compose { .. }));
+    assert!(gui.prompt.is_none());
+    assert_eq!(attached(&gui), ["notes.txt", "report.pdf"]);
+    // '?' on the empty prompt: the browser where it was left, and
+    // Enter on a file attaches just that one.
+    press(&mut gui, "a?");
+    assert!(matches!(&gui.mode, Mode::Files { browser, .. } if browser.dir == pick));
+    press(&mut gui, "jjj");
+    key(&mut gui, KeyCode::Enter);
+    assert_eq!(attached(&gui), ["notes.txt", "report.pdf", "zebra.txt"]);
+    // Leaving with nothing picked gives the prompt back as it was.
+    press(&mut gui, "a?q");
+    assert!(matches!(gui.mode, Mode::Compose { .. }));
+    assert!(gui.prompt.is_some(), "the attach prompt is back");
+    key(&mut gui, KeyCode::Esc);
+    assert!(gui.prompt.is_none());
+}

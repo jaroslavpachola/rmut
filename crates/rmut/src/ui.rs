@@ -22,6 +22,7 @@ const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 const URLS_HELP: &str = "q:Back j/k:Move Enter:Open y:Copy";
+const FILES_HELP: &str = "q:Back j/k:Move Enter:Select t:Tag c:Chdir";
 
 /// A URL on screen: `width` cells from (`x`, `y`). The frame is
 /// drawn first; these are written over it as OSC 8 hyperlinks.
@@ -80,6 +81,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Query { .. } => QUERY_HELP,
         Mode::Urls { .. } => URLS_HELP,
         Mode::Help { .. } => HELP_HELP,
+        Mode::Files { .. } => FILES_HELP,
     };
     if help_rows > 0 {
         frame.render_widget(
@@ -159,6 +161,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
             }
             Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
+            Mode::Files { browser, .. } => draw_files(frame, content_area, browser),
         }
     }
     draw_status_bar(frame, status_area, app, content_area.height);
@@ -570,6 +573,28 @@ fn draw_postponed(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// The file browser: one row per entry, scrolled to keep the cursor
+/// in view, tagged rows marked.
+fn draw_files(frame: &mut Frame, area: Rect, browser: &rmut_front::files::Browser) {
+    let width = area.width as usize;
+    let height = (area.height as usize).max(1);
+    let top = browser.sel.saturating_sub(height - 1);
+    let mut lines = Vec::new();
+    for (i, entry) in browser.entries.iter().enumerate().skip(top).take(height) {
+        let text = format!("{:>3} {}", i + 1, entry.row());
+        let text = format!("{text:<width$}");
+        let mut style = Style::new();
+        if entry.tagged {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if i == browser.sel {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 // ---- the two bottom lines: status bar, then the message line ----
 
 /// mutt's status bar: what mailbox this is and what is in it. It says
@@ -604,6 +629,18 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16
         Mode::Query { results, .. } => format!("---rmut: query results [Found:{}]", results.len()),
         Mode::Urls { urls, .. } => format!("---rmut: links [URLs:{}]", urls.len()),
         Mode::Help { .. } => "---rmut: help".to_string(),
+        Mode::Files { browser, .. } => match browser.tagged_count() {
+            0 => format!(
+                "---rmut: {} [Files:{}]",
+                browser.title(),
+                browser.entries.len()
+            ),
+            n => format!(
+                "---rmut: {} [Files:{} Tagged:{n}]",
+                browser.title(),
+                browser.entries.len()
+            ),
+        },
         Mode::Index => status::index_status(
             &app.session,
             app.index_offset,

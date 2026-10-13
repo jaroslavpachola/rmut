@@ -4530,6 +4530,78 @@ def scenario_paper_cuts(tmp):
     r.close()
 
 
+def scenario_file_picker(tmp):
+    """mutt's file prompt at compose's a: Tab grows the path to what
+    the directory agrees on, a Tab that changes nothing opens the file
+    browser there, t tags several and q attaches them; '?' on the
+    empty prompt opens the browser where it was left, and Enter on a
+    file attaches that one."""
+    md = make_maildir(tmp, "md-picker")
+    write_msgs(md, ["jane"])
+    sent_file = os.path.join(tmp, "sent-picker.eml")
+    sendmail = os.path.join(tmp, "sendmail-picker.sh")
+    with open(sendmail, "w") as f:
+        f.write(f"#!/bin/sh\ncat >> {sent_file}\nexit 0\n")
+    os.chmod(sendmail, 0o755)
+    pick = os.path.join(tmp, "pick")
+    os.makedirs(os.path.join(pick, "docs"))
+    os.makedirs(os.path.join(pick, "downloads"))
+    for name in ["notes.txt", "report.pdf", "zebra.txt"]:
+        with open(os.path.join(pick, "docs", name), "w") as f:
+            f.write(name + "\n")
+    editor = os.path.join(tmp, "picker-editor.sh")
+    with open(editor, "w") as f:
+        f.write('#!/bin/sh\necho "Files below." >> "$1"\n')
+    os.chmod(editor, 0o755)
+    cfg = os.path.join(tmp, "picker-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "alex@example.com"\n'
+                f'[mail]\nsendmail = "{sendmail}"\neditor = "{editor}"\ncopy = false\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:1")
+    r.keys(b"m")
+    r.expect("To:")
+    r.keys(b"bob@example.org\r")
+    r.settle()
+    r.keys(b"picked\r")
+    r.expect("y:Send")
+
+    # "do" is docs or downloads: Tab says so and keeps the line.
+    r.keys(b"a" + pick.encode() + b"/do\t")
+    r.repaint()
+    r.expect("2 matches; Tab again lists them")
+    # "doc" is docs alone, with its slash; Tab again browses it.
+    r.keys(b"c\t")
+    r.settle()
+    r.keys(b"\t")
+    r.repaint()
+    r.expect("Enter:Select t:Tag", "notes.txt", "report.pdf", "zebra.txt")
+    # Down past .., tag the first two files, leave: both attach.
+    r.keys(b"jtt")
+    r.repaint()
+    r.expect("Tagged:2")
+    r.keys(b"q")
+    r.repaint()
+    r.expect("y:Send", "notes.txt", "report.pdf", "[Atts:2]")
+
+    # '?' on the empty prompt: the browser where it was left, and
+    # Enter on a file attaches just that one.
+    r.keys(b"a?")
+    r.repaint()
+    r.expect("Enter:Select", "zebra.txt")
+    r.keys(b"jjj\r")
+    r.repaint()
+    r.expect("y:Send", "[Atts:3]")
+
+    r.keys(b"y")
+    wait_for(lambda: os.path.exists(sent_file)
+             and "Subject: picked" in open(sent_file).read(),
+             desc="the message with its attachments")
+    sent = open(sent_file).read()
+    for name in ["notes.txt", "report.pdf", "zebra.txt"]:
+        assert f'filename="{name}"' in sent, name
+
+
 def scenario_attach_reminder(tmp):
     """Beyond mutt (neomutt's $abort_noattach): a body that mentions
     an attachment with none attached is asked about, unless the
@@ -5897,6 +5969,7 @@ SCENARIOS = [
     scenario_folder_shorthand,
     scenario_paper_cuts,
     scenario_attach_reminder,
+    scenario_file_picker,
     scenario_getting_started,
     scenario_control_chars,
     scenario_purge_question,

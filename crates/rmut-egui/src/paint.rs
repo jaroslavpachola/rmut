@@ -298,6 +298,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::Postponed { .. } => POSTPONED_HELP,
                 Mode::Query { .. } => QUERY_HELP,
                 Mode::Urls { .. } => URLS_HELP,
+                Mode::Files { .. } => FILES_HELP,
             };
             let mut job = LayoutJob::default();
             job.append(help, 0.0, format(bar_style, size));
@@ -346,6 +347,18 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 rows,
                 width,
             ),
+            Mode::Files { browser, .. } => match browser.tagged_count() {
+                0 => format!(
+                    "---rmut: {} [Files:{}]",
+                    browser.title(),
+                    browser.entries.len()
+                ),
+                n => format!(
+                    "---rmut: {} [Files:{} Tagged:{n}]",
+                    browser.title(),
+                    browser.entries.len()
+                ),
+            },
             _ => status::index_status(&gui.session, gui.index_offset, width, rows),
         };
         let mut job = LayoutJob::default();
@@ -679,6 +692,50 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.centered_and_justified(|ui| {
                         ui.add(image);
                     });
+                }
+                Mode::Files { browser, .. } => {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let top = browser.sel.saturating_sub(rows.saturating_sub(1));
+                    let sel = browser.sel;
+                    let shown: Vec<(usize, String, bool)> = browser
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .skip(top)
+                        .take(rows)
+                        .map(|(i, e)| (i, format!("{:>3} {}", i + 1, e.row()), e.tagged))
+                        .collect();
+                    let mut clicked = None;
+                    for (i, text, tagged) in shown {
+                        let mut style = Style::new();
+                        if tagged {
+                            style = style.bold();
+                        }
+                        if i == sel {
+                            style = style.reversed();
+                        }
+                        let mut job = LayoutJob::default();
+                        job.append(&text, 0.0, format(style, size));
+                        let response = ui.add(
+                            egui::Label::new(job)
+                                .extend()
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                        );
+                        hover(ui, &response);
+                        if response.clicked() {
+                            clicked = Some((i, response.double_clicked()));
+                        }
+                    }
+                    // A click selects, a double click enters or picks.
+                    if let Some((i, open)) = clicked {
+                        if let Mode::Files { browser, .. } = &mut gui.mode {
+                            browser.sel = i;
+                        }
+                        if open {
+                            gui.click("<enter>");
+                        }
+                    }
                 }
                 Mode::Folders { .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1296,6 +1353,7 @@ const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";
 const NVIM_HELP: &str = "nvim owns the keyboard - :wq finishes, :q! abandons";
 const QUERY_HELP: &str = "q:Back j/k:Move Enter:Compose";
 const URLS_HELP: &str = "q:Back j/k:Move Enter:Open y:Copy";
+const FILES_HELP: &str = "q:Back j/k:Move Enter:Select t:Tag c:Chdir";
 const IMAGE_HELP: &str = "q:Back";
 
 #[cfg(test)]

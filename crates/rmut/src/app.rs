@@ -17,7 +17,8 @@ use rmut_session::{
     Session, SidebarOp, Wants, default_from, draft_full, expand_tilde, pipe_to, write_draft,
 };
 
-use rmut_front::editor::{Complete, Edit, History, LineEdit};
+use rmut_front::editor::{Complete, Edit, History, LineEdit, byte_at};
+use rmut_front::files;
 use rmut_front::style::rule_style;
 use rmut_front::theme::Theme;
 use rmut_front::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence, resolve_function};
@@ -85,6 +86,14 @@ pub enum Mode {
         lines: Vec<String>,
         scroll: usize,
     },
+    /// mutt's file browser, opened from a file prompt: the prompt
+    /// waits in here and comes back unless a pick answers it, and
+    /// the menu it was opened over comes back after.
+    Files {
+        browser: files::Browser,
+        prompt: Box<Prompt>,
+        back: Box<Mode>,
+    },
 }
 
 #[derive(Clone)]
@@ -113,6 +122,8 @@ pub enum LineKind {
     /// The same, opened read-only (mutt's Esc c).
     ChangeDirReadOnly,
     SavePart,
+    /// The file browser's `c`: the directory to browse.
+    FileChdir,
     /// Folder browser: the new name for the selected mailbox.
     RenameMailbox {
         from: String,
@@ -134,6 +145,20 @@ impl LineKind {
         )
     }
 
+    /// The prompts whose answer is a path: Some(it takes several
+    /// files) for these, where Tab completes against the disk and
+    /// opens the file browser (mutt's MUTT_FILE).
+    fn file_prompt(&self) -> Option<bool> {
+        match self {
+            LineKind::Ask {
+                wants: Wants::File,
+                what,
+            } => Some(matches!(what, AskKind::AttachFile)),
+            LineKind::SavePart | LineKind::FileChdir => Some(false),
+            _ => None,
+        }
+    }
+
     fn history_bucket(&self) -> &'static str {
         match self {
             // A session question says what its answer is; the buckets
@@ -143,6 +168,7 @@ impl LineKind {
                 Wants::Pattern => "pattern",
                 Wants::Address => "address",
                 Wants::Command => "command",
+                Wants::File => "file",
                 Wants::Other => "other",
             },
             LineKind::PagerSearch => "pattern",
@@ -150,7 +176,7 @@ impl LineKind {
             | LineKind::ChangeDirReadOnly
             | LineKind::BrowseDir
             | LineKind::CreateDir => "mailbox",
-            LineKind::SavePart => "file",
+            LineKind::SavePart | LineKind::FileChdir => "file",
             LineKind::RenameMailbox { .. } => "mailbox",
             LineKind::PipePart => "command",
             LineKind::Notmuch => "notmuch",
@@ -280,6 +306,12 @@ pub struct App {
     pending_file_edit: Option<PathBuf>,
     /// Address completion state at the To prompt (Tab cycles).
     complete: Option<Complete>,
+    /// The file prompt's line as the last Tab left it: a Tab on it
+    /// unchanged opens the file browser (mutt's enter.c tempbuf).
+    file_tab: Option<String>,
+    /// Where the file browser was left, where it opens next (mutt's
+    /// LastFileDir).
+    last_file_dir: Option<PathBuf>,
     /// Keys queued by a macro, consumed before real terminal input.
     pending_keys: std::collections::VecDeque<KeyEvent>,
     /// Prompt history per input class (newest first), for the session.
@@ -421,6 +453,8 @@ impl App {
             screen_links: Vec::new(),
             pending_raw_edit: None,
             complete: None,
+            file_tab: None,
+            last_file_dir: None,
             pending_keys: std::collections::VecDeque::new(),
             history: History::default(),
             index_rules,
@@ -865,6 +899,8 @@ impl App {
             self.handle_query_key(key);
         } else if matches!(self.mode, Mode::Urls { .. }) {
             self.handle_urls_key(key);
+        } else if matches!(self.mode, Mode::Files { .. }) {
+            self.handle_files_key(key, page);
         } else {
             self.handle_folders_key(key);
         }
@@ -964,13 +1000,25 @@ impl App {
                 self.prompt = None;
                 self.run_key_prompt(kind, key.code);
             }
+            // mutt's "('?' for list)": the file browser, before
+            // anything is typed.
+            Some(Prompt::Line { edit, kind, .. })
+                if key.code == KeyCode::Char('?')
+                    && key.modifiers.is_empty()
+                    && edit.buf.is_empty()
+                    && kind.file_prompt().is_some() =>
+            {
+                let multiple = kind.file_prompt() == Some(true);
+                self.open_file_browser(None, "", multiple);
+            }
             Some(Prompt::Line { edit, .. }) => match edit.key(key) {
                 Edit::Cancel => {
                     self.prompt = None;
                     self.session.cancel_setup();
                     // Escaping a sub-prompt of the send flow (attach
-                    // file) returns to the compose menu.
-                    if self.session.draft().is_some() {
+                    // file) returns to the compose menu; the file
+                    // browser's own prompt returns to the browser.
+                    if self.session.draft().is_some() && !matches!(self.mode, Mode::Files { .. }) {
                         self.open_compose_menu();
                     }
                 }
@@ -1080,6 +1128,10 @@ impl App {
             Some(Prompt::Line { edit, kind, .. }) => (edit.buf.clone(), edit.cursor, kind.clone()),
             _ => return,
         };
+        if let Some(multiple) = kind.file_prompt() {
+            self.file_tab_complete(&buf_now, cursor, multiple);
+            return;
+        }
         // A session question says what its answer is; the front end's
         // own prompts are classified here.
         let is_addr = matches!(
@@ -1157,6 +1209,150 @@ impl App {
         self.complete = Some(state);
     }
 
+    /// Tab at a file prompt, mutt's way: the path before the cursor
+    /// grows to what its directory's names agree on, and a Tab that
+    /// changes nothing opens the file browser where it points.
+    fn file_tab_complete(&mut self, buf: &str, cursor: usize, multiple: bool) {
+        let (head, tail) = buf.split_at(byte_at(buf, cursor));
+        match files::tab(head, self.file_tab.as_deref()) {
+            files::Tab::Fill(line, n) => {
+                if let Some(Prompt::Line { edit, .. }) = &mut self.prompt {
+                    edit.set(&format!("{line}{tail}"));
+                    edit.cursor = line.chars().count();
+                }
+                if n > 1 {
+                    self.note(format!("{n} matches; Tab again lists them"));
+                }
+                self.file_tab = Some(line);
+            }
+            files::Tab::NoMatch => {
+                self.file_tab = None;
+                self.error(format!("no matches for {head}"));
+            }
+            files::Tab::Browse { dir, prefix } => self.open_file_browser(dir, &prefix, multiple),
+        }
+    }
+
+    /// The file browser over the open prompt, which waits in it. From
+    /// the browser's own `c` prompt, the browser moves instead.
+    fn open_file_browser(&mut self, dir: Option<PathBuf>, prefix: &str, multiple: bool) {
+        self.file_tab = None;
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
+        if let Mode::Files { browser, .. } = &mut self.mode {
+            if let Err(err) = browser.chdir(dir.unwrap_or_else(|| browser.dir.clone()), None) {
+                self.error(err);
+            }
+            return;
+        }
+        match files::Browser::open(dir, self.last_file_dir.as_deref(), prefix, multiple) {
+            Ok(browser) => {
+                let back = mem::replace(&mut self.mode, Mode::Index);
+                self.mode = Mode::Files {
+                    browser,
+                    prompt: Box::new(prompt),
+                    back: Box::new(back),
+                };
+            }
+            Err(err) => {
+                self.prompt = Some(prompt);
+                self.error(err);
+            }
+        }
+    }
+
+    fn handle_files_key(&mut self, key: KeyEvent, page: usize) {
+        let Mode::Files { browser, .. } = &mut self.mode else {
+            return;
+        };
+        let last = browser.entries.len().saturating_sub(1);
+        let picked = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                browser.sel = (browser.sel + 1).min(last);
+                Ok(None)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                browser.sel = browser.sel.saturating_sub(1);
+                Ok(None)
+            }
+            KeyCode::Char(' ') | KeyCode::PageDown => {
+                browser.sel = (browser.sel + page).min(last);
+                Ok(None)
+            }
+            KeyCode::Char('-') | KeyCode::PageUp => {
+                browser.sel = browser.sel.saturating_sub(page);
+                Ok(None)
+            }
+            KeyCode::Home => {
+                browser.sel = 0;
+                Ok(None)
+            }
+            KeyCode::End => {
+                browser.sel = last;
+                Ok(None)
+            }
+            KeyCode::Char('t') => browser.toggle_tag().map(|()| None),
+            KeyCode::Enter => browser.select().map(Some),
+            KeyCode::Char('q') | KeyCode::Esc => Ok(Some(browser.exit())),
+            KeyCode::Char('c') => {
+                let here = format!("{}/", browser.title());
+                self.prompt = Some(Prompt::line("Chdir to: ", here, LineKind::FileChdir));
+                Ok(None)
+            }
+            _ => Ok(None),
+        };
+        match picked {
+            Ok(Some(files::Picked::Files(paths))) => self.close_file_browser(paths),
+            Ok(_) => {}
+            Err(err) => self.error(err),
+        }
+    }
+
+    /// Leave the file browser with what was picked: the attach prompt
+    /// attaches every file (mutt's MUTT_SEL_MULTI), any other takes
+    /// the one path into its line to be confirmed, and nothing picked
+    /// returns to the prompt as it was.
+    fn close_file_browser(&mut self, paths: Vec<PathBuf>) {
+        let Mode::Files {
+            browser,
+            prompt,
+            back,
+        } = mem::replace(&mut self.mode, Mode::Index)
+        else {
+            return;
+        };
+        self.last_file_dir = Some(browser.dir);
+        self.mode = *back;
+        let mut prompt = *prompt;
+        let Prompt::Line { edit, kind, .. } = &mut prompt else {
+            return;
+        };
+        match (kind.clone(), paths.as_slice()) {
+            (_, []) => self.prompt = Some(prompt),
+            (
+                LineKind::Ask {
+                    what: AskKind::AttachFile,
+                    ..
+                },
+                _,
+            ) => {
+                for path in &paths {
+                    let typed = files::tilde(path);
+                    self.history.push("file", &typed);
+                    self.answer_ask(AskKind::AttachFile, Answer::Line(&typed));
+                }
+                if paths.len() > 1 {
+                    self.note(format!("attached {} files", paths.len()));
+                }
+            }
+            (_, [path, ..]) => {
+                edit.set(&files::tilde(path));
+                self.prompt = Some(prompt);
+            }
+        }
+    }
+
     fn run_line_prompt(&mut self, kind: LineKind, input: &str) {
         // mutt's +x / =x: a mailbox under $folder, wherever one is
         // typed. Macros come through here too, which is what makes an
@@ -1198,6 +1394,14 @@ impl App {
                 Err(err) => self.error(err),
             },
             LineKind::SavePart => self.save_part(input),
+            LineKind::FileChdir => {
+                if let Mode::Files { browser, .. } = &mut self.mode
+                    && !input.is_empty()
+                    && let Err(err) = browser.chdir(expand_tilde(input), None)
+                {
+                    self.error(err);
+                }
+            }
             LineKind::PipePart => self.pipe_part(input),
             LineKind::Query => self.run_query(input),
             LineKind::Notmuch => self.notmuch_search(input),

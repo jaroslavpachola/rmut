@@ -2553,6 +2553,30 @@ gone.
       cycle; e2e scenario_attach_delete and the LSUB toggle in
       scenario_imap_utf7_folders
 
+## R101: picking files (asked for by name, 2026-10-13)
+
+Goal: attaching a file without typing its whole path. The attach
+prompt had no completion and no browser in either front end, though
+mutt's file prompts have both.
+
+- [x] Path completion at the file prompts (compose `a` and `n`, the
+      attachment menu's `s`), matched against mutt's complete.c and
+      enter.c: Tab grows the path to the longest prefix its directory
+      agrees on, a `/` after a lone directory, hidden names only once
+      a `.` is typed; the session's new `Wants::File` marks the
+      prompts, rmut_front::files holds the logic for both fronts
+- [x] The file browser (mutt's browser.c with MUTT_SEL_FILE): a Tab
+      that changes nothing, or Tab or `?` on the empty prompt, opens
+      it where the path points or where it was last left (mutt's
+      LastFileDir); `t` tags and leaving with tags attaches them all
+      (MUTT_SEL_MULTI), Enter enters a directory or picks a file, `c`
+      changes directory; at the one-file prompts the pick fills the
+      line instead of answering it; rows clickable in the window
+- [ ] The window: files dropped on it attach to the draft, and a
+      "Choose files..." through the desktop's file chooser portal
+- [ ] Tests: rmut-front unit tests for completion and the browser,
+      an egui test, e2e scenario_file_picker
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this

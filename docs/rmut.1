@@ -599,6 +599,34 @@ per session unless
 whole, mode 600), up to
 .B save_history
 entries a kind (default 100).
+.SS File prompts and the file browser
+The prompts that take a path (compose's
+.B a
+and
+.BR n ,
+the attachment menu's
+.BR s )
+complete it the way mutt does: Tab grows the path before the cursor
+to the longest prefix the names in its directory share, with a "/"
+when the match is a single directory (hidden names only once a "."
+is typed), and says how many names still match. A Tab that changes
+nothing, or a Tab or
+.B ?
+on the empty prompt, opens the file browser there: the directory's
+files and subdirectories with size and date, ".." on top, hidden
+names left out.
+.B Enter
+enters a directory and picks a file,
+.B c
+browses another directory,
+.BR q / Esc
+leaves. At the attach prompt
+.B t
+tags files and leaving with tags attaches all of them, as Enter on a
+file attaches that one; at the other prompts the picked path fills
+the line, to be confirmed with Enter. Leaving with nothing picked
+gives the prompt back as it was. The browser opens where it was last
+left when nothing is typed.
 .SS Compose questions
 Like mutt's ask-yes defaults: replying to a message with a Reply-To
 asks "Reply to ...?" (no falls back to From), an empty Subject asks
@@ -621,7 +649,8 @@ edit To/Cc/Bcc/Subject (address prompts Tab-complete),
 .BR F / r
 edit the From and Reply-To,
 .B a
-attaches a file,
+attaches a file (Tab completes, the file browser picks several, see
+.BR "File prompts and the file browser" ),
 .B A
 attaches the tagged messages of the open mailbox (the one under the
 cursor when none is tagged) as message/rfc822 parts,

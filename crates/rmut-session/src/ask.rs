@@ -41,6 +41,9 @@ pub enum Wants {
     Pattern,
     Address,
     Command,
+    /// A path on disk: Tab completes it and opens the file browser
+    /// (mutt's MUTT_FILE).
+    File,
     Other,
 }
 
@@ -655,7 +658,7 @@ impl Session {
         Some(Ask::Line {
             label: "Attach file: ".into(),
             prefill: String::new(),
-            wants: Wants::Other,
+            wants: Wants::File,
             what: AskKind::AttachFile,
         })
     }
@@ -715,7 +718,7 @@ impl Session {
         Some(Ask::Line {
             label: "New file: ".into(),
             prefill: String::new(),
-            wants: Wants::Other,
+            wants: Wants::File,
             what: AskKind::NewMimeFile,
         })
     }
