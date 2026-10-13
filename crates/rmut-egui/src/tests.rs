@@ -1663,3 +1663,27 @@ fn the_attach_prompt_completes_paths_and_browses_files() {
     key(&mut gui, KeyCode::Esc);
     assert!(gui.prompt.is_none());
 }
+
+#[test]
+fn files_dropped_on_the_compose_menu_attach() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "one");
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.pdf");
+    fs::write(&a, "a").unwrap();
+    fs::write(&b, "b").unwrap();
+    let mut gui = compose_menu(dir.path());
+    gui.drop_files(vec![a.clone(), b.clone(), dir.path().join("cur")]);
+    assert_eq!(attached(&gui), ["a.txt", "b.pdf"]);
+    let notice = gui.notice().expect("the directory is refused");
+    assert!(notice.text().contains("directory"), "{}", notice.text());
+    // Off the compose menu there is nothing to attach to.
+    press(&mut gui, "q");
+    let (_dir2, mut idle) = fixture(&["one"]);
+    idle.drop_files(vec![a]);
+    let notice = idle.notice().expect("a drop on the index says why not");
+    assert!(notice.text().contains("compose menu"), "{}", notice.text());
+}

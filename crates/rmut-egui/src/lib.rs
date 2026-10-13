@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod boot;
+pub mod chooser;
 mod input;
 mod nvim;
 mod paint;

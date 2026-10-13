@@ -293,6 +293,9 @@ pub struct Gui {
     /// Where the file browser was left, where it opens next (mutt's
     /// LastFileDir).
     last_file_dir: Option<std::path::PathBuf>,
+    /// The desktop's file chooser while it is up: its answer arrives
+    /// here from the thread waiting on it.
+    chooser: Option<std::sync::mpsc::Receiver<Result<crate::chooser::Chosen, String>>>,
     /// The zoom factor as last saved, so a change is written once.
     last_zoom: f32,
     /// The last new-mail text sent as a desktop notification.
@@ -389,6 +392,7 @@ impl Gui {
             complete: None,
             file_tab: None,
             last_file_dir: None,
+            chooser: None,
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
             viewers: Vec::new(),
@@ -2919,6 +2923,69 @@ impl Gui {
         }
     }
 
+    /// Files dropped on the window: on the compose menu they are
+    /// attached, as many as were dropped; anywhere else there is no
+    /// draft to take them.
+    pub fn drop_files(&mut self, paths: Vec<std::path::PathBuf>) {
+        if !matches!(self.mode, Mode::Compose { .. }) || self.session.draft().is_none() {
+            self.error("drop files on the compose menu to attach them");
+            return;
+        }
+        let (files, dirs): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.is_file());
+        self.attach_paths(&files);
+        if !dirs.is_empty() {
+            self.error("Can't attach a directory!");
+        }
+    }
+
+    /// The desktop's file chooser (the XDG portal), from the compose
+    /// menu: what is chosen is attached when the dialog closes, the
+    /// window drawing on meanwhile.
+    pub fn choose_files(&mut self) {
+        if !matches!(self.mode, Mode::Compose { .. }) || self.session.draft().is_none() {
+            self.error("files are chosen to attach from the compose menu");
+            return;
+        }
+        if self.chooser.is_some() {
+            self.note("the file chooser is open already");
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::chooser::pick_files("Attach files"));
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+        self.chooser = Some(rx);
+    }
+
+    /// The chooser's answer, once it has one.
+    fn poll_chooser(&mut self) {
+        let Some(rx) = &self.chooser else {
+            return;
+        };
+        let answer = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the file chooser went away".into())
+            }
+        };
+        self.chooser = None;
+        match answer {
+            Ok(crate::chooser::Chosen::Files(paths)) if self.session.draft().is_some() => {
+                self.attach_paths(&paths)
+            }
+            Ok(crate::chooser::Chosen::Files(_)) => {
+                self.error("the draft was gone by the time the files were chosen")
+            }
+            Ok(crate::chooser::Chosen::Cancelled) => {}
+            Err(err) => self.error(err),
+        }
+    }
+
     pub fn open_folder_browser(&mut self) {
         // The server's list is the last one it gave; a fresh one
         // follows as FoldersChanged, and the browser takes it in.
@@ -3363,6 +3430,18 @@ impl Gui {
     /// itself, so a test harness can drive it without one.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let keys = ui.ctx().input(|i| crate::input::keys(&i.events));
+        // Files dropped on the window (winit delivers them on X11,
+        // macOS and Windows; not yet under Wayland).
+        let dropped: Vec<std::path::PathBuf> = ui.ctx().input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.drop_files(dropped);
+        }
         self.frame_with(ui, keys);
     }
 
@@ -3417,6 +3496,7 @@ impl Gui {
             }
         }
         self.poll_viewers();
+        self.poll_chooser();
         // Keys a menu or context item queued during the last paint,
         // or typed while a mailbox was on its way in.
         if !self.pending_keys.is_empty() && !self.session.holding() {

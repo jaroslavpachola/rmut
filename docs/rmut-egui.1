@@ -100,6 +100,17 @@ rendering, applied at once. Saving writes them to
 .IR gui.toml ,
 never to the hand-written configuration.
 .TP
+.B Attaching
+On the compose menu a Draft menu joins the menu bar; its
+.B "Choose files to attach…"
+opens the desktop's own file chooser (the XDG FileChooser portal),
+several files at once, and the window carries on while it is up.
+Files dropped on the compose menu are attached too, where the
+windowing system delivers drops: X11 (or XWayland), not yet a native
+Wayland window, which winit does not take drops on. The keyboard's
+way is the attach prompt's Tab completion and file browser, as in
+.BR rmut (1).
+.TP
 .B Viewers
 A part opened with a mailcap viewer is written to a private
 directory of its own; a viewer that needs a terminal runs in the

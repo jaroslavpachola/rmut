@@ -2553,7 +2553,7 @@ gone.
       cycle; e2e scenario_attach_delete and the LSUB toggle in
       scenario_imap_utf7_folders
 
-## R101: picking files (asked for by name, 2026-10-13)
+## R101: picking files (done; asked for by name, 2026-10-13)
 
 Goal: attaching a file without typing its whole path. The attach
 prompt had no completion and no browser in either front end, though
@@ -2572,10 +2572,20 @@ mutt's file prompts have both.
       (MUTT_SEL_MULTI), Enter enters a directory or picks a file, `c`
       changes directory; at the one-file prompts the pick fills the
       line instead of answering it; rows clickable in the window
-- [ ] The window: files dropped on it attach to the draft, and a
-      "Choose files..." through the desktop's file chooser portal
-- [ ] Tests: rmut-front unit tests for completion and the browser,
-      an egui test, e2e scenario_file_picker
+- [x] The window: a Draft menu on the compose menu whose "Choose
+      files to attach…" opens the desktop's file chooser through the
+      XDG FileChooser portal, spoken over D-Bus with zbus (already in
+      the tree through accesskit) instead of rfd/ashpd and the async
+      runtime they bring; the call waits on a thread, the answer
+      lands between frames. Files dropped on the compose menu attach,
+      directories refused. Known limit: winit 0.30 delivers drops on
+      X11 only (its Wayland backend has no data-device handling), so
+      under a native Wayland window, this machine's GNOME included,
+      dropping does nothing until winit takes it up
+- [x] Tests: rmut-front unit tests for completion and the browser;
+      egui tests for the prompt, the browser and drops; the portal's
+      request/response against a stand-in portal on a private
+      dbus-daemon; e2e scenario_file_picker
 
 ## The 2.0 cut (decided 2026-08-27)
 

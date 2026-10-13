@@ -2787,6 +2787,7 @@ dependencies = [
  "rmut-session",
  "tempfile",
  "toml 0.8.23",
+ "zbus",
 ]
 
 [[package]]

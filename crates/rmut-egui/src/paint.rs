@@ -991,6 +991,8 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     let mut fire: Option<&'static str> = None;
     let mut about = false;
     let mut prefs = false;
+    let mut choose = false;
+    let composing = matches!(gui.mode, Mode::Compose { .. });
     let item = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys| {
         if menu_item(ui, label, keys) {
             *target = Some(keys);
@@ -1051,6 +1053,19 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             ui.separator();
             item(&mut fire, ui, "Reverse date", "oD");
         });
+        // The compose menu's own, while it is on screen.
+        if composing {
+            ui.menu_button("Draft", |ui| {
+                item(&mut fire, ui, "Attach file…", "a");
+                // Window chrome: the desktop's dialog, no key.
+                if ui.button("Choose files to attach…").clicked() {
+                    choose = true;
+                }
+                ui.separator();
+                item(&mut fire, ui, "Send", "y");
+                item(&mut fire, ui, "Postpone", "P");
+            });
+        }
         ui.menu_button("Help", |ui| {
             item(&mut fire, ui, "Keys", "?");
             item(&mut fire, ui, "Version", "V");
@@ -1066,6 +1081,9 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     }
     if about {
         gui.about = true;
+    }
+    if choose {
+        gui.choose_files();
     }
     if prefs {
         gui.prefs = Some(crate::app::Prefs::from_config(&gui.session.config));
