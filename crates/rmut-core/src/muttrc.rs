@@ -1113,8 +1113,8 @@ impl State {
             "quit" => {
                 let want = v.trim().to_lowercase();
                 match want.as_str() {
-                    "yes" => self.satisfy(line, "q leaves at once, as in mutt"),
-                    "no" | "ask-yes" | "ask-no" => self.quit = Some(want),
+                    "ask-yes" => self.satisfy(line, "q asks before leaving, rmut's default"),
+                    "yes" | "no" | "ask-no" => self.quit = Some(want),
                     _ => self.skip(line, "quit wants yes / no / ask-yes / ask-no"),
                 }
             }

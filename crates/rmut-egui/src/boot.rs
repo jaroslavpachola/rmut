@@ -117,6 +117,16 @@ impl Boot {
 
     /// One frame of a window of rmut's own, closed when rmut is done.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
+        // The title bar's close button (Alt+F4, the window manager)
+        // asks what q asks; the window stays while the question is
+        // up. A close rmut sent itself finds `quit` set and goes.
+        if ui.ctx().input(|i| i.viewport().close_requested())
+            && let Boot::Ready(gui) = self
+            && !gui.close_requested()
+        {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         if self.step(ui, None) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -166,6 +176,10 @@ impl Boot {
         // SIGTERM or SIGHUP (a logout) leaves the way q does, in any
         // state, when the binary installed the handler.
         if rmut_front::signals::caught() {
+            // Not a question: the signal has decided.
+            if let Boot::Ready(gui) = self {
+                gui.quit = true;
+            }
             self.flush();
             return true;
         }

@@ -1184,14 +1184,28 @@ fn quit_no_refuses_and_ask_yes_asks_first() {
     assert_eq!(f.log.last_text(), "quitting is off ($quit = no)");
     assert!(f.session.take_request().is_none(), "still here");
 
-    let mut config = Config::default();
-    config.mail.quit = Some("ask-yes".into());
-    let mut f = Fixture::with_config(&["one"], config);
+    // The window's close button is not refused: it asks instead.
+    let ask = f.session.leave_window();
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Quit rmut? ([yes]/no): ");
+
+    // Unset is ask-yes, rmut's default (mutt's is yes).
+    let mut f = Fixture::new(&["one"]);
     let ask = f.session.leave();
-    assert_eq!(ask_label(ask.as_ref().unwrap()), "Quit rmut? (y/n): ");
-    // n stays; Enter takes the yes that ask-yes names.
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Quit rmut? ([yes]/no): ");
+    // n stays; a stray key (a second q) leaves the question standing;
+    // Esc (Key::Other) stays; Enter takes the yes that ask-yes names.
     f.answer_key(ask, 'n');
     assert!(f.session.take_request().is_none(), "n stayed");
+    let ask = f.session.leave().unwrap();
+    let again = f.session.answer(ask_kind(ask), Answer::Key(Key::Char('q')));
+    assert!(matches!(&again, Some(Ask::Key { label, .. }) if label.starts_with("Quit rmut?")));
+    assert!(f.session.take_request().is_none(), "q is no answer");
+    assert!(
+        f.session
+            .answer(ask_kind(again.unwrap()), Answer::Key(Key::Other))
+            .is_none()
+    );
+    assert!(f.session.take_request().is_none(), "Esc stayed");
     let ask = f.session.leave();
     let what = ask_kind(ask.unwrap());
     f.session.answer(what, Answer::Key(Key::Enter));
@@ -1199,6 +1213,28 @@ fn quit_no_refuses_and_ask_yes_asks_first() {
         matches!(f.session.take_request(), Some(crate::Request::Quit)),
         "Enter took the yes"
     );
+
+    // yes leaves at once, from q and from the close button alike.
+    let mut config = Config::default();
+    config.mail.quit = Some("yes".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    assert!(f.session.leave().is_none());
+    assert!(matches!(
+        f.session.take_request(),
+        Some(crate::Request::Quit)
+    ));
+    assert!(f.session.leave_window().is_none());
+    assert!(matches!(
+        f.session.take_request(),
+        Some(crate::Request::Quit)
+    ));
+
+    // ask-no shows its default.
+    let mut config = Config::default();
+    config.mail.quit = Some("ask-no".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    let ask = f.session.leave();
+    assert_eq!(ask_label(ask.as_ref().unwrap()), "Quit rmut? (yes/[no]): ");
 }
 
 #[test]

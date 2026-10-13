@@ -2378,7 +2378,7 @@ def scenario_mutt_flow(tmp):
     r.keys(b"i")
     # $mark_old: the untouched new message ages on quit, moved to
     # cur/ without gaining the seen flag
-    r.keys(b"q")
+    r.keys(b"qy")
     wait_for(lambda: "1751953000.5.host:2," in os.listdir(os.path.join(md, "cur")),
              desc="unread new message aged to old")
     assert os.listdir(os.path.join(md, "new")) == []
@@ -2497,7 +2497,7 @@ def scenario_tag_save_sort(tmp):
     msgs = [p for sub in ("cur", "new")
             for p in os.listdir(os.path.join(save_dir, sub))]
     assert len(msgs) == 1, msgs
-    r.keys(b"q")    # pending deletion -> purge prompt, straight away
+    r.keys(b"qy")   # quit, and the pending deletion asks to purge
     r.expect("Purge 1 deleted message(s)?")
     r.keys(b"n")    # keep it marked deleted; flags are written, rmut quits
     r.close()
@@ -4156,7 +4156,7 @@ def scenario_history_file(tmp):
     r.expect("Msgs:1")
     r.keys(b"l\r")   # clear the limit
     r.expect("Msgs:2")
-    r.keys(b"q")     # quit (writes the history on the way out)
+    r.keys(b"qy")     # quit (writes the history on the way out)
     wait_for(lambda: os.path.exists(histfile), desc="history file written")
     r.close()
     saved = open(histfile).read()
@@ -5696,7 +5696,7 @@ imap_tls = false
     r.keys(b"N")
     r.keys(b"G")
     wait_for(lambda: any("NOOP" in c for c in imap.commands), desc="the check")
-    r.keys(b"q")
+    r.keys(b"qy")
     wait_for(lambda: len(stores()) == 4, timeout=10, desc="the sync q asked for")
     r.close()
 
@@ -5785,7 +5785,7 @@ def scenario_prompt_keys(tmp):
     # The Delete key, bound from the config, marks for deletion.
     r.keys(b"=\x1b[3~")
     r.expect("Del:1")
-    r.keys(b"q")
+    r.keys(b"qy")
     r.expect("Purge 1 deleted")
     r.keys(b"n")
     r.close()

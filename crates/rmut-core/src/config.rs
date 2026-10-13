@@ -264,8 +264,8 @@ pub struct Mail {
     /// mutt's $fast_reply: replies skip the To and Subject prompts,
     /// forwards skip Subject (the ask-yes questions still run).
     pub fast_reply: bool,
-    /// mutt's $quit: "yes" (the default) leaves at once, "no"
-    /// refuses, "ask-yes" and "ask-no" ask first.
+    /// mutt's $quit: "ask-yes" (rmut's default; mutt's is "yes") and
+    /// "ask-no" ask first, "yes" leaves at once, "no" refuses.
     pub quit: Option<String>,
     /// mutt's $postpone: leaving a draft. "ask-yes" (the default) and
     /// "ask-no" ask whether to postpone (else discard); "yes"

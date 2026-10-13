@@ -120,9 +120,15 @@ window carries on. The copy goes when the viewer exits, or when the
 window closes.
 .TP
 .B Leaving
-However the window closes (q, its close button, Alt+F4, the window
-manager, SIGTERM, or Ctrl+C in the terminal it was started from), it
-leaves the way q does: mail still waiting out
+The close button (and Alt+F4, and the window manager's close) asks
+what q asks, "Quit rmut?", and the window stays until it is
+answered; with
+.B "[mail] quit"
+= "yes" it closes at once, and "no", which makes q do nothing, still
+asks here rather than hold a window open against its own button.
+However the window closes (q, its close button, the window manager,
+SIGTERM, or Ctrl+C in the terminal it was started from), it leaves
+the way q does: mail still waiting out
 .B undo_send
 goes, and so do the flag changes a quit writes.
 .SH EDITING

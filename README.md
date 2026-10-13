@@ -180,8 +180,8 @@ headers: help, post, subscribe, unsubscribe, archives, owner; mailto:
 ones compose), and, unbound as in mutt but bindable by name,
 `next-unread-mailbox`, `purge-message` (delete past the trash),
 `error-history` and `what-key`, `:` run a config command (see **Enter-command**
-below), `q` quit (writes changes; asks before purging
-deletions, like mutt), `x` abort without saving. Leaving a mailbox
+below), `q` quit (asks "Quit rmut?" first unless `quit =
+"yes"`, then writes changes, asking before purging deletions), `x` abort without saving. Leaving a mailbox
 ages unread new mail to old (`O`), mutt's mark_old.
 
 Pager: `j`/`k` scroll, `Space`/`-` page down/up, `J`/`K` next/previous
@@ -1016,6 +1016,8 @@ fcc_clear = false            # true: keep the copy of signed/encrypted
 forward_edit = "yes"         # "no": a forward skips the editor;
                              # ask-yes/ask-no ask first
 # display_filter = "fmt -w 72" # the pager body through a command first
+quit = "ask-yes"             # q and the window's close button ask first;
+                             # "yes" leaves at once (mutt's default)
 imap_list_subscribed = false # true: the browser lists subscribed folders
 mime_forward_rest = true     # f in the attachment menu attaches a
                              # part that is not text; false refuses

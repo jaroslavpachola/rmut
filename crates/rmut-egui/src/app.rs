@@ -2940,6 +2940,30 @@ impl Gui {
         }
     }
 
+    /// The window was asked to close (its close button, Alt+F4, the
+    /// window manager): true lets it go, false keeps it open while
+    /// the quit question q asks is up. $quit = yes, with nothing to
+    /// purge, goes at once.
+    pub fn close_requested(&mut self) -> bool {
+        if self.quit {
+            return true;
+        }
+        // Asked already: a second click waits for the answer.
+        if matches!(
+            &self.prompt,
+            Some(Prompt::Key {
+                kind: KeyKind::Ask(AskKind::QuitConfirm | AskKind::Purge { quit: true }),
+                ..
+            })
+        ) {
+            return false;
+        }
+        let ask = self.session.leave_window();
+        self.open_ask(ask);
+        self.run_requests();
+        self.quit
+    }
+
     /// Files dropped on the window: on the compose menu they are
     /// attached, as many as were dropped; anywhere else there is no
     /// draft to take them.

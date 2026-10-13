@@ -255,7 +255,8 @@ matching message (within the active limit), reporting the count
 write changes to the mailbox
 .TP
 .B q x
-quit (asks before purging deletions) / quit without saving. Leaving
+quit (asks first, see quit under [mail], then before purging
+deletions) / quit without saving. Leaving
 a mailbox ages unread new mail to old \(em shown as O, no longer
 counted as new (mutt's mark_old).
 .TP
@@ -1300,8 +1301,11 @@ no $tunnel yet, so those import as skipped.
 .SS [mail], the leaving and filing habits
 .TP
 .B quit
-"yes" (the default) leaves at once, "no" refuses,
-"ask\-yes" and "ask\-no" ask first (mutt's $quit).
+"ask\-yes" (the default) asks "Quit rmut? ([yes]/no)" and Enter
+quits, "ask\-no" asks with no as the default, "yes" leaves at once,
+"no" refuses (mutt's $quit, whose own default is yes: a stray q here
+costs less than a whole session). Only y, n, Enter or Esc answer the
+question; any other key, a second q included, leaves it up.
 .TP
 .B confirmappend
 Ask before adding messages to a mailbox that already exists (mutt's

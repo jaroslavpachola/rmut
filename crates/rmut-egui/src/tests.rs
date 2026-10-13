@@ -1687,3 +1687,26 @@ fn files_dropped_on_the_compose_menu_attach() {
     let notice = idle.notice().expect("a drop on the index says why not");
     assert!(notice.text().contains("compose menu"), "{}", notice.text());
 }
+
+#[test]
+fn q_and_the_close_button_ask_before_quitting() {
+    let (_dir, mut gui) = fixture(&["one"]);
+    let asking = |gui: &Gui| matches!(&gui.prompt, Some(crate::app::Prompt::Key { label, .. }) if label.starts_with("Quit rmut? ([yes]/no)"));
+    // q asks (rmut's default, $quit unset); a second q is no answer.
+    press(&mut gui, "q");
+    assert!(asking(&gui) && !gui.quit);
+    press(&mut gui, "q");
+    assert!(
+        asking(&gui) && !gui.quit,
+        "a stray q leaves the question up"
+    );
+    press(&mut gui, "n");
+    assert!(gui.prompt.is_none() && !gui.quit, "n stays");
+    // The close button asks the same; a second click waits for it.
+    assert!(!gui.close_requested());
+    assert!(asking(&gui));
+    assert!(!gui.close_requested());
+    press(&mut gui, "y");
+    assert!(gui.quit, "y quits");
+    assert!(gui.close_requested(), "and the close goes ahead");
+}

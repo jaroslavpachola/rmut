@@ -2587,6 +2587,28 @@ mutt's file prompts have both.
       request/response against a stand-in portal on a private
       dbus-daemon; e2e scenario_file_picker
 
+## R102: quitting asks (asked for by name, 2026-10-13)
+
+Goal: a stray q no longer ends the session, and the window's close
+button asks what q asks. Departs from mutt on purpose: mutt's $quit
+defaults to yes (init.h, and `mutt -D` on this machine says quit=yes),
+asked for as the default here anyway.
+
+- [x] `[mail] quit` unset means "ask-yes": "Quit rmut? ([yes]/no)"
+      with the default bracketed as mutt shows it; y, n, Enter or
+      Esc/Ctrl+G answer, any other key (a second q) leaves the
+      question up, as mutt_yesorno; "yes" keeps the old instant quit.
+      The muttrc import now writes `quit = "yes"` for a muttrc that
+      sets it, ask-yes being the default
+- [x] The window's close button (Alt+F4, the window manager) cancels
+      the close and asks; a second click waits for the answer; yes
+      closes. $quit = no, which makes q do nothing, still asks there
+      rather than hold a window open against its own button. SIGTERM
+      and SIGHUP leave without asking, as before
+- [x] Tests: the session's quit test over the default, the stray key
+      and the close button; an egui test for q and the close button;
+      the five e2e scenarios that quit with q answer the question
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this

@@ -576,24 +576,52 @@ impl Session {
         }
     }
 
-    /// Leaving for good: mutt's $quit decides whether to ask, and
-    /// what follows is the purge question, or nothing at all.
+    /// Leaving for good: $quit decides whether to ask, and what
+    /// follows is the purge question, or nothing at all. Unset, rmut
+    /// asks (ask-yes), where mutt's own default leaves at once: a
+    /// stray q costs a whole session, and the window has a close
+    /// button besides.
     pub fn leave(&mut self) -> Option<Ask> {
-        match self.config.mail.quit.as_deref().unwrap_or("yes") {
+        match self.quit_setting().as_str() {
             "no" => {
                 self.error("quitting is off ($quit = no)");
                 None
             }
             "yes" => self.leave_now(),
-            quit => {
-                // ask-no asks the same question; what differs is
-                // what Enter takes.
-                self.quit_default = quit != "ask-no";
-                Some(Ask::Key {
-                    label: "Quit rmut? (y/n): ".into(),
-                    what: AskKind::QuitConfirm,
-                })
-            }
+            quit => Some(self.quit_question(quit != "ask-no")),
+        }
+    }
+
+    /// The window's close button (Alt+F4, the window manager): the
+    /// question q asks, except that $quit = no cannot hold a window
+    /// open against its own close button, so that asks too.
+    pub fn leave_window(&mut self) -> Option<Ask> {
+        match self.quit_setting().as_str() {
+            "yes" => self.leave_now(),
+            quit => Some(self.quit_question(quit != "ask-no")),
+        }
+    }
+
+    fn quit_setting(&self) -> String {
+        self.config
+            .mail
+            .quit
+            .as_deref()
+            .unwrap_or("ask-yes")
+            .trim()
+            .to_lowercase()
+    }
+
+    /// "Quit rmut?", the default in brackets as mutt shows it, since
+    /// Enter takes it.
+    fn quit_question(&mut self, default_yes: bool) -> Ask {
+        self.quit_default = default_yes;
+        Ask::Key {
+            label: match default_yes {
+                true => "Quit rmut? ([yes]/no): ".into(),
+                false => "Quit rmut? (yes/[no]): ".into(),
+            },
+            what: AskKind::QuitConfirm,
         }
     }
 
@@ -892,11 +920,15 @@ impl Session {
                 None
             }
             (AskKind::QuitConfirm, Answer::Key(key)) => {
+                // mutt_yesorno: y, n or Enter answer, Esc and Ctrl+G
+                // (Key::Other) stay, and any other key leaves the
+                // question standing.
                 let yes = match key {
-                    Key::Char('y') => true,
-                    Key::Char('n') => false,
+                    Key::Char('y' | 'Y') => true,
+                    Key::Char('n' | 'N') => false,
                     Key::Enter => self.quit_default,
-                    _ => false,
+                    Key::Char(_) => return Some(self.quit_question(self.quit_default)),
+                    Key::Other => false,
                 };
                 match yes {
                     true => self.leave_now(),
