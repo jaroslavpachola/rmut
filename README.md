@@ -47,7 +47,7 @@ rmut                       # finds your mail on its own
 - **Links, attachments, images.** URLs are clickable and copyable,
   even over ssh; attachments open in your own viewers; the window
   shows images inline.
-- **Tested like it matters.** Every change runs 88 end-to-end
+- **Tested like it matters.** Every change runs 97 end-to-end
   scenarios that drive the real binary against fake IMAP and SMTP
   servers.
 
@@ -80,6 +80,7 @@ cargo install rmut                     # the `rmut` binary
 cargo install --path crates/rmut
 # or during development:
 cargo run -p rmut -- ~/Maildir         # or: just run ~/Maildir
+cargo run -p rmut-egui -- ~/Maildir    # the window; or: just gui ~/Maildir
 ```
 
 Tagged releases on GitHub carry prebuilt x86_64-linux binaries of
@@ -427,7 +428,13 @@ was postponed with rather than gaining a second one.
 
 By default (like mutt) the editor gets only the message body;
 headers come from the prompts, and attachments are added with `a` at
-the compose menu. The menu has mutt's heavier functions too: `A`
+the compose menu. Its prompt completes paths the way mutt's does:
+Tab grows the path to what the directory's names agree on, and a Tab
+that changes nothing (or `?` on the empty prompt) opens the file
+browser, where `t` tags several files and `q` attaches them all. In
+the window, the Draft menu's "Choose files to attach…" opens the
+desktop's own file chooser, and files dropped on the compose menu
+attach (X11 only for now: winit takes no drops under Wayland). The menu has mutt's heavier functions too: `A`
 attaches the tagged messages of the open mailbox (the one under the
 cursor when none is tagged) as message/rfc822, `n` makes a new file
 of a given Content-Type and opens it in the editor, Ctrl+O renames a
@@ -459,7 +466,8 @@ entry (text directly, other types via `[filters]`), `t`/`c`/`b`/`s`
 edit the headers, `F`/`r` edit the From and Reply-To,
 `a` attaches without a trip through the editor, `D` detaches
 the selected file, `p` opens the security menu, `P` postpones, and
-`q` asks "Postpone this message?" (no discards). `$postpone` sets that
+`q` asks "Postpone this message?" over the menu (`n` discards, Esc
+goes back to the menu). `$postpone` sets that
 question (yes/no skip it, ask-yes/ask-no pick the default). `M`
 turns markdown compose on or off for the draft: it goes out as
 multipart/alternative, the text as you typed it plus an html part

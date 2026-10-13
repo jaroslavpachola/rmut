@@ -2553,7 +2553,7 @@ gone.
       cycle; e2e scenario_attach_delete and the LSUB toggle in
       scenario_imap_utf7_folders
 
-## R101: picking files (done; asked for by name, 2026-10-13)
+## R101: picking files (done, 2.19.0; asked for by name, 2026-10-13)
 
 Goal: attaching a file without typing its whole path. The attach
 prompt had no completion and no browser in either front end, though
@@ -3012,6 +3012,15 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.19.0 (released 2026-10-13)
+
+R101, picking files: Tab completion and mutt's file browser at the
+file prompts (tag several to attach them at once), and in the window
+the desktop's file chooser and drag and drop on the compose menu. A
+bugfix: q on the compose menu asks its postpone question over the
+menu, and a stray key no longer answers it by putting the draft back.
+`just gui` runs the window from a checkout. See R101.
 
 ## 2.18.0 (released 2026-10-08)
 
