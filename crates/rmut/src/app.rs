@@ -490,6 +490,7 @@ impl App {
         let before = self.session.selected_path();
         let next = self.session.answer(what, answer);
         self.open_ask(next);
+        self.leave_compose_without_draft();
         if self.prompt.is_none() && matches!(&self.mode, Mode::Pager(p) if p.back.is_none()) {
             if self.session.selected_path() != before {
                 self.open_selected();
@@ -505,6 +506,14 @@ impl App {
                 // exactly as the pager's own delete already does.
                 self.mode = Mode::Index;
             }
+        }
+    }
+
+    /// The compose menu with its draft gone (postponed, discarded)
+    /// gives way to the index.
+    fn leave_compose_without_draft(&mut self) {
+        if matches!(self.mode, Mode::Compose { .. }) && self.session.draft().is_none() {
+            self.mode = Mode::Index;
         }
     }
 
@@ -998,7 +1007,12 @@ impl App {
             Some(Prompt::Key { kind, .. }) => {
                 let kind = kind.clone();
                 self.prompt = None;
-                self.run_key_prompt(kind, key.code);
+                // Ctrl+G calls a question off, as Esc does.
+                let code = match is_ctrl(&key) {
+                    true => KeyCode::Esc,
+                    false => key.code,
+                };
+                self.run_key_prompt(kind, code);
             }
             // mutt's "('?' for list)": the file browser, before
             // anything is typed.
@@ -3077,11 +3091,11 @@ impl App {
                 }
             }
             KeyCode::Char('q') => {
-                // Leaving the menu; an answer that keeps the draft
-                // asks for it back.
-                self.mode = Mode::Index;
+                // The menu stays on screen while mutt's "Postpone this
+                // message?" is asked; the index once the draft goes.
                 let ask = self.session.ask_postpone();
                 self.open_ask(ask);
+                self.leave_compose_without_draft();
             }
             _ => {}
         }

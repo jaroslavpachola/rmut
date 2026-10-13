@@ -695,7 +695,9 @@ postponed draft keeps it, and is taken off before sending),
 .B P
 postpones, and
 .B q
-asks "Postpone this message?" \(em no discards. mutt's $postpone
+asks "Postpone this message?" over the menu \(em y postpones, n
+discards, Enter takes the bracketed default, Esc or ctrl+g goes back
+to the menu, and any other key leaves the question standing. mutt's $postpone
 sets that question (yes / no skip it, ask\-yes / ask\-no choose the
 default), and $recall the new\-or\-recall offer when drafts wait
 (no never asks, yes recalls the newest, the default asks). Recalling

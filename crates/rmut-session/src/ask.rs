@@ -314,6 +314,18 @@ pub enum Request {
     Editor(crate::Compose),
 }
 
+/// "Postpone this message?", the default in brackets as mutt shows it
+/// ("([yes]/no): "), since Enter takes it.
+fn postpone_question(default_yes: bool) -> Ask {
+    Ask::Key {
+        label: match default_yes {
+            true => "Postpone this message? ([yes]/no): ".into(),
+            false => "Postpone this message? (yes/[no]): ".into(),
+        },
+        what: AskKind::PostponeAsk { default_yes },
+    }
+}
+
 impl Session {
     /// mutt's limit prompt.
     pub fn ask_limit(&self) -> Ask {
@@ -774,12 +786,7 @@ impl Session {
                 }
                 None
             }
-            other => Some(Ask::Key {
-                label: "Postpone this message? (y/n): ".into(),
-                what: AskKind::PostponeAsk {
-                    default_yes: other != "ask-no",
-                },
-            }),
+            other => Some(postpone_question(other != "ask-no")),
         }
     }
 
@@ -1008,12 +1015,16 @@ impl Session {
                 None
             }
             (AskKind::PostponeAsk { default_yes }, Answer::Key(key)) => {
+                // mutt_yesorno: y, n or Enter answer, Esc and Ctrl+G
+                // (Key::Other) go back to the menu, and any other
+                // key leaves the question standing - a second q must
+                // not quietly put the draft back.
                 let postpone = match key {
-                    Key::Char('y') => true,
-                    Key::Char('n') => false,
+                    Key::Char('y' | 'Y') => true,
+                    Key::Char('n' | 'N') => false,
                     Key::Enter => default_yes,
-                    // Anything else goes back to the menu.
-                    _ => {
+                    Key::Char(_) => return Some(postpone_question(default_yes)),
+                    Key::Other => {
                         self.requests.push(Request::ShowDraft);
                         return None;
                     }

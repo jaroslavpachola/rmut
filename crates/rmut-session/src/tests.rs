@@ -1888,7 +1888,7 @@ fn postpone_quadoption_decides_without_asking() {
     let ask = f.session.ask_postpone();
     assert_eq!(
         ask_label(ask.as_ref().unwrap()),
-        "Postpone this message? (y/n): "
+        "Postpone this message? (yes/[no]): "
     );
     assert!(f.answer_enter(ask).is_none());
     assert!(!f.session.has_postponed(), "Enter discarded it");
@@ -1896,8 +1896,28 @@ fn postpone_quadoption_decides_without_asking() {
     // ask-yes (the default): Enter postpones.
     let mut f = stage("ask-yes");
     let ask = f.session.ask_postpone();
+    assert_eq!(
+        ask_label(ask.as_ref().unwrap()),
+        "Postpone this message? ([yes]/no): "
+    );
     assert!(f.answer_enter(ask).is_none());
     assert!(f.session.has_postponed(), "Enter filed it");
+
+    // A stray key (a second q) leaves the question standing, as
+    // mutt_yesorno does; Esc or Ctrl+G (Key::Other) goes back to the
+    // menu with the draft kept.
+    let mut f = stage("ask-yes");
+    let ask = f.session.ask_postpone().unwrap();
+    let again = f.session.answer(ask_kind(ask), Answer::Key(Key::Char('q')));
+    assert!(matches!(&again, Some(Ask::Key { label, .. }) if label.starts_with("Postpone")));
+    assert!(f.session.draft().is_some(), "still composing");
+    assert!(
+        f.session
+            .answer(ask_kind(again.unwrap()), Answer::Key(Key::Other))
+            .is_none()
+    );
+    assert!(f.session.draft().is_some(), "Esc keeps the draft");
+    assert!(!f.session.has_postponed());
 }
 
 #[test]

@@ -5549,8 +5549,15 @@ def scenario_markdown(tmp):
     r.keys(b"r")
     r.expect("y:Send", "Markdown: yes (text and html)")
     r.keys(b"q")
-    r.expect("Postpone this message?")
+    r.expect("Postpone this message? ([yes]/no)")
+    # A second q is no answer: the question stands, over the compose
+    # menu, and n discards.
+    r.keys(b"q")
+    r.repaint()
+    r.expect("Postpone this message? ([yes]/no)", "y:Send")
     r.keys(b"n")
+    r.repaint()
+    r.expect("message discarded", "m:New")
     r.keys(b"q")
     r.close()
 

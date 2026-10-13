@@ -689,6 +689,7 @@ impl Gui {
         let before = self.session.selected_path();
         let next = self.session.answer(what, answer);
         self.open_ask(next);
+        self.leave_compose_without_draft();
         if self.prompt.is_none() && matches!(&self.mode, Mode::Pager(p) if p.back.is_none()) {
             if self.session.selected_path() != before {
                 self.open_selected();
@@ -1909,9 +1910,11 @@ impl Gui {
                 }
             }
             KeyCode::Char('q') => {
-                self.mode = Mode::Index;
+                // The menu stays on screen while mutt's "Postpone this
+                // message?" is asked; the index once the draft goes.
                 let ask = self.session.ask_postpone();
                 self.open_ask(ask);
+                self.leave_compose_without_draft();
             }
             _ => {}
         }
@@ -2370,6 +2373,12 @@ impl Gui {
                 match kind {
                     KeyKind::Ask(what) => {
                         let answer = match key.code {
+                            // Ctrl+G calls a question off, as Esc does.
+                            KeyCode::Char(_)
+                                if key.modifiers.contains(rmut_front::KeyModifiers::CONTROL) =>
+                            {
+                                Key::Other
+                            }
                             KeyCode::Char(c) => Key::Char(c),
                             KeyCode::Enter => Key::Enter,
                             _ => Key::Other,
@@ -2920,6 +2929,14 @@ impl Gui {
         }
         if paths.len() > 1 {
             self.note(format!("attached {} files", paths.len()));
+        }
+    }
+
+    /// The compose menu with its draft gone (postponed, discarded)
+    /// gives way to the index.
+    fn leave_compose_without_draft(&mut self) {
+        if matches!(self.mode, Mode::Compose { .. }) && self.session.draft().is_none() {
+            self.mode = Mode::Index;
         }
     }
 
