@@ -3035,6 +3035,14 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.19.2 (released 2026-10-14)
+
+The window's menus say what their items will do: Tag/Untag,
+Flag/Unflag and Collapse/Expand (thread, all threads) follow the
+message, Delete or Undelete is greyed out when it would change
+nothing, the Thread items are greyed out outside thread sort with
+the reason on hover, and the Sort menu ticks the sort in force.
+
 ## 2.19.1 (released 2026-10-14)
 
 R102: q, and in the window the close button, ask "Quit rmut?
