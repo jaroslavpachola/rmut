@@ -280,12 +280,20 @@ fn group_by_subject(
             }
         }
         if let Some((_, parent)) = best {
+            // A root here may be the promoted child of a missing
+            // parent's empty container: it leaves that for good.
+            if let Some(old) = arena[cur].parent {
+                arena[old].children.retain(|&c| c != cur);
+            }
             arena[cur].parent = Some(parent);
             arena[parent].children.push(cur);
             arena[cur].pseudo = true;
         }
     }
-    top.retain(|&t| arena[t].parent.is_none());
+    // Only what was just attached leaves the top: a reply to mail not
+    // in the folder (most of a Sent folder) has a parent, the empty
+    // container, and stays a thread of its own.
+    top.retain(|&t| !arena[t].pseudo);
 }
 
 pub fn thread_by(envs: &[&Envelope], order: ThreadOrder) -> Vec<ThreadedItem> {
@@ -589,6 +597,36 @@ mod tests {
         );
         // Without it, three roots, which is what rmut did before.
         assert_eq!(run(&envs), vec![(0, 0), (1, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn replies_to_mail_not_in_the_folder_are_kept() {
+        // A Sent folder: replies whose parents sit in another folder,
+        // so each hangs off an empty container. The subject pass used
+        // to drop every one of them from the index. A lone one stays
+        // a thread; a later reply on an old subject joins that thread
+        // and, with last-date-sent, takes it to the bottom.
+        let envs = [
+            subj("a", "Re: outage", &["in-inbox-1"], 10),
+            subj("b", "Re: lunch", &["in-inbox-2"], 20),
+            subj("c", "Re: outage", &["in-inbox-3"], 30),
+        ];
+        assert_eq!(
+            run_subject(&envs, true),
+            vec![(0, 0, false), (2, 1, true), (1, 0, false)]
+        );
+        let re = crate::compose::default_reply_regexp();
+        let fallback = SubjectFallback {
+            reply_re: &re,
+            sort_re: true,
+        };
+        let refs: Vec<&Envelope> = envs.iter().collect();
+        let order = ThreadOrder::parse("last-date-sent");
+        let out: Vec<usize> = thread_with(&refs, order, Some(&fallback))
+            .iter()
+            .map(|i| i.index)
+            .collect();
+        assert_eq!(out, vec![1, 0, 2]);
     }
 
     #[test]
