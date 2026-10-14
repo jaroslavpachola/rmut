@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, FontId, RichText, TextFormat, text::LayoutJob}
 use rmut_front::pager::{Menu, PagerStyle, RowKind, recenter};
 use rmut_front::status;
 use rmut_front::style::{Color, Style};
+use rmut_session::SortKey;
 
 use crate::app::{Gui, Mode, Prompt};
 
@@ -880,10 +881,10 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         if response.clicked() || response.secondary_clicked() {
             clicked = Some((vi, response.double_clicked()));
         }
-        let fold = fold_label(gui.session.thread_folded(vi));
+        let items = row_items(&gui.session, vi);
         response.context_menu(|ui| {
-            for &(label, keys) in CONTEXT_ITEMS.iter().chain([&(fold, "<alt+v>")]) {
-                if menu_item(ui, label, keys) {
+            for (label, keys, state) in items {
+                if menu_item_in(ui, label, keys, state) {
                     ctx_fire = Some((vi, keys));
                 }
             }
@@ -930,18 +931,90 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
     }
 }
 
+/// How a menu item stands: greyed out when it cannot apply, the
+/// reason on hover; one of a set of choices (the sorts) says whether
+/// it is the one in force, which is a toggle to assistive tech too.
+#[derive(Clone, Copy, Default)]
+struct ItemState {
+    off: Option<&'static str>,
+    ticked: Option<bool>,
+}
+
+impl ItemState {
+    const ON: ItemState = ItemState {
+        off: None,
+        ticked: None,
+    };
+
+    fn unless(cannot: bool, why: &'static str) -> ItemState {
+        ItemState {
+            off: cannot.then_some(why),
+            ticked: None,
+        }
+    }
+
+    fn ticked(ticked: bool) -> ItemState {
+        ItemState {
+            off: None,
+            ticked: Some(ticked),
+        }
+    }
+}
+
+/// What the thread functions say outside thread sort, where every
+/// one of them refuses.
+const NEEDS_THREADS: &str = "needs thread sort (Sort → Threads)";
+
+/// The marks of the message at visible row `pos`: (tagged, flagged,
+/// deleted), all clear past the end.
+fn marks(session: &rmut_session::Session, pos: usize) -> (bool, bool, bool) {
+    session
+        .visible
+        .get(pos)
+        .map(|&mi| {
+            let env = &session.msgs[mi].env;
+            (env.tagged, env.file.flags.flagged, env.file.flags.deleted)
+        })
+        .unwrap_or_default()
+}
+
+/// The message's own operations, for row `pos`: t and F toggle, so
+/// their items say which way they go, and of Delete and Undelete only
+/// the one that would change something is on.
+fn message_items(
+    session: &rmut_session::Session,
+    pos: usize,
+) -> Vec<(&'static str, &'static str, ItemState)> {
+    let (tagged, flagged, deleted) = marks(session, pos);
+    vec![
+        (if tagged { "Untag" } else { "Tag" }, "t", ItemState::ON),
+        (if flagged { "Unflag" } else { "Flag" }, "F", ItemState::ON),
+        ("Delete", "d", ItemState::unless(deleted, "already deleted")),
+        ("Undelete", "u", ItemState::unless(!deleted, "not deleted")),
+    ]
+}
+
 /// The row's operations, each item firing the keys it stands for.
-const CONTEXT_ITEMS: &[(&str, &str)] = &[
-    ("Open", "<enter>"),
-    ("Reply", "r"),
-    ("Reply to all", "g"),
-    ("Forward", "f"),
-    ("Tag", "t"),
-    ("Flag", "F"),
-    ("Delete", "d"),
-    ("Undelete", "u"),
-    ("Save…", "s"),
-];
+fn row_items(
+    session: &rmut_session::Session,
+    pos: usize,
+) -> Vec<(&'static str, &'static str, ItemState)> {
+    let threaded = session.sort == SortKey::Threads;
+    let mut items = vec![
+        ("Open", "<enter>", ItemState::ON),
+        ("Reply", "r", ItemState::ON),
+        ("Reply to all", "g", ItemState::ON),
+        ("Forward", "f", ItemState::ON),
+    ];
+    items.extend(message_items(session, pos));
+    items.push(("Save…", "s", ItemState::ON));
+    items.push((
+        fold_label(session.thread_folded(pos)),
+        "<alt+v>",
+        ItemState::unless(!threaded, NEEDS_THREADS),
+    ));
+    items
+}
 
 /// collapse-thread toggles, so its item says which way it will go
 /// (the row's own thread in the context menu, the selection's in the
@@ -985,14 +1058,27 @@ fn wheel_rows(gui: &mut Gui, ui: &egui::Ui, size: f32, region: egui::Rect) -> i6
 /// A button labelled with the key it queues, so the pointer and the
 /// keyboard can never disagree.
 fn menu_item(ui: &mut egui::Ui, label: &str, keys: &str) -> bool {
+    menu_item_in(ui, label, keys, ItemState::ON)
+}
+
+/// [`menu_item`] in a given state: a greyed-out item tells why on
+/// hover and cannot be clicked; a ticked one is drawn selected.
+fn menu_item_in(ui: &mut egui::Ui, label: &str, keys: &str, state: ItemState) -> bool {
     let shortcut = match keys.strip_prefix('<').and_then(|k| k.strip_suffix('>')) {
         Some(name) => rmut_front::parse_key(name)
             .map(|p| p.display())
             .unwrap_or_default(),
         None => keys.to_string(),
     };
-    ui.add(egui::Button::new(label).shortcut_text(shortcut))
-        .clicked()
+    let mut button = egui::Button::new(label).shortcut_text(shortcut);
+    if let Some(ticked) = state.ticked {
+        button = button.selected(ticked);
+    }
+    let response = ui.add_enabled(state.off.is_none(), button);
+    match state.off {
+        Some(why) => response.on_disabled_hover_text(why).clicked(),
+        None => response.clicked(),
+    }
 }
 
 /// The menu bar: every item fires by queueing its bound keys, so the
@@ -1004,14 +1090,27 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     let mut prefs = false;
     let mut choose = false;
     let composing = matches!(gui.mode, Mode::Compose { .. });
-    let thread_fold = fold_label(gui.session.thread_folded(gui.session.sel));
-    let all_fold = if gui.session.any_folded() {
+    let session = &gui.session;
+    let thread_fold = fold_label(session.thread_folded(session.sel));
+    let all_fold = if session.any_folded() {
         "Expand all threads"
     } else {
         "Collapse all threads"
     };
+    let message = message_items(session, session.sel);
+    let threads = ItemState::unless(session.sort != SortKey::Threads, NEEDS_THREADS);
+    let sorted = |key: SortKey, rev: bool| {
+        ItemState::ticked(
+            session.sort == key && (key == SortKey::Threads || session.sort_rev == rev),
+        )
+    };
     let item = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys| {
         if menu_item(ui, label, keys) {
+            *target = Some(keys);
+        }
+    };
+    let item_in = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys, state| {
+        if menu_item_in(ui, label, keys, state) {
             *target = Some(keys);
         }
     };
@@ -1035,10 +1134,9 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Reply to all", "g");
             item(&mut fire, ui, "Forward", "f");
             ui.separator();
-            item(&mut fire, ui, "Tag", "t");
-            item(&mut fire, ui, "Flag", "F");
-            item(&mut fire, ui, "Delete", "d");
-            item(&mut fire, ui, "Undelete", "u");
+            for &(label, keys, state) in &message {
+                item_in(&mut fire, ui, label, keys, state);
+            }
             item(&mut fire, ui, "Save…", "s");
         });
         // The `;` sweeps: every item is tag-prefix plus the key, so
@@ -1054,21 +1152,40 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Untag matching…", "<ctrl+t>");
         });
         ui.menu_button("Thread", |ui| {
-            item(&mut fire, ui, thread_fold, "<alt+v>");
-            item(&mut fire, ui, all_fold, "<alt+V>");
-            item(&mut fire, ui, "Next", "<alt+n>");
-            item(&mut fire, ui, "Previous", "<alt+p>");
-            item(&mut fire, ui, "Parent message", "P");
+            item_in(&mut fire, ui, thread_fold, "<alt+v>", threads);
+            item_in(&mut fire, ui, all_fold, "<alt+V>", threads);
+            item_in(&mut fire, ui, "Next", "<alt+n>", threads);
+            item_in(&mut fire, ui, "Previous", "<alt+p>", threads);
+            item_in(&mut fire, ui, "Parent message", "P", threads);
         });
         ui.menu_button("Sort", |ui| {
-            item(&mut fire, ui, "Date", "od");
-            item(&mut fire, ui, "From", "of");
-            item(&mut fire, ui, "Subject", "os");
-            item(&mut fire, ui, "Size", "oz");
-            item(&mut fire, ui, "Threads", "ot");
-            item(&mut fire, ui, "Label", "oy");
+            // The sort in force is ticked.
+            item_in(&mut fire, ui, "Date", "od", sorted(SortKey::Date, false));
+            item_in(&mut fire, ui, "From", "of", sorted(SortKey::From, false));
+            item_in(
+                &mut fire,
+                ui,
+                "Subject",
+                "os",
+                sorted(SortKey::Subject, false),
+            );
+            item_in(&mut fire, ui, "Size", "oz", sorted(SortKey::Size, false));
+            item_in(
+                &mut fire,
+                ui,
+                "Threads",
+                "ot",
+                sorted(SortKey::Threads, false),
+            );
+            item_in(&mut fire, ui, "Label", "oy", sorted(SortKey::Label, false));
             ui.separator();
-            item(&mut fire, ui, "Reverse date", "oD");
+            item_in(
+                &mut fire,
+                ui,
+                "Reverse date",
+                "oD",
+                sorted(SortKey::Date, true),
+            );
         });
         // The compose menu's own, while it is on screen.
         if composing {

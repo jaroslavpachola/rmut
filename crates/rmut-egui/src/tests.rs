@@ -1710,3 +1710,90 @@ fn q_and_the_close_button_ask_before_quitting() {
     assert!(gui.quit, "y quits");
     assert!(gui.close_requested(), "and the close goes ahead");
 }
+
+/// Asked 2026-10-14: the menus say what their items will do. t, F
+/// and the folds toggle, so their labels follow the message; of
+/// Delete and Undelete only the one that changes something is on;
+/// the Thread items are off outside thread sort; the sort in force
+/// is ticked.
+#[test]
+fn the_menus_follow_the_message_and_the_sort() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let (_dir, gui) = fixture(&["one", "two"]);
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(800.0, 400.0));
+    harness.run();
+    let open = |harness: &mut egui_kittest::Harness<'_, Gui>, menu: &str| {
+        harness.key_press(eframe::egui::Key::Escape);
+        harness.run();
+        harness.get_by_label(menu).click();
+        harness.run();
+    };
+    // A menu item's accessible label carries its shortcut after it.
+    fn item<'h>(
+        harness: &'h egui_kittest::Harness<'_, Gui>,
+        label: &'h str,
+    ) -> Option<egui_kittest::Node<'h>> {
+        let mut found = harness.query_all_by_label_contains(label).filter(|n| {
+            n.accesskit_node()
+                .label()
+                .is_some_and(|l| l == label || l.starts_with(&format!("{label} ")))
+        });
+        let first = found.next();
+        assert!(found.next().is_none(), "one {label:?} item");
+        first
+    }
+    let disabled = |harness: &egui_kittest::Harness<'_, Gui>, label: &str| {
+        item(harness, label)
+            .expect(label)
+            .accesskit_node()
+            .is_disabled()
+    };
+
+    open(&mut harness, "Message");
+    assert!(item(&harness, "Tag").is_some());
+    assert!(item(&harness, "Flag").is_some());
+    assert!(!disabled(&harness, "Delete") && disabled(&harness, "Undelete"));
+
+    let sel = harness.state().session.sel;
+    let mi = harness.state().session.visible[sel];
+    {
+        let session = &mut harness.state_mut().session;
+        session.msgs[mi].env.tagged = true;
+        session.msgs[mi].env.file.flags.flagged = true;
+        session.msgs[mi].env.file.flags.deleted = true;
+    }
+    open(&mut harness, "Message");
+    assert!(item(&harness, "Untag").is_some());
+    assert!(item(&harness, "Unflag").is_some());
+    assert!(disabled(&harness, "Delete") && !disabled(&harness, "Undelete"));
+
+    // Date sort: the Thread items are off, Date is ticked.
+    open(&mut harness, "Thread");
+    for label in [
+        "Collapse thread",
+        "Collapse all threads",
+        "Next",
+        "Previous",
+    ] {
+        assert!(disabled(&harness, label), "{label} off outside thread sort");
+    }
+    open(&mut harness, "Sort");
+    let ticked = |harness: &egui_kittest::Harness<'_, Gui>, label: &str| {
+        item(harness, label)
+            .expect(label)
+            .accesskit_node()
+            .toggled()
+            == Some(eframe::egui::accesskit::Toggled::True)
+    };
+    assert!(ticked(&harness, "Date") && !ticked(&harness, "Threads"));
+    assert!(!ticked(&harness, "Reverse date"));
+
+    harness.state_mut().session.sort = rmut_session::SortKey::Threads;
+    harness.state_mut().session.apply_sort();
+    open(&mut harness, "Sort");
+    assert!(ticked(&harness, "Threads") && !ticked(&harness, "Date"));
+    open(&mut harness, "Thread");
+    assert!(!disabled(&harness, "Collapse thread"));
+    assert!(!disabled(&harness, "Collapse all threads"));
+}
