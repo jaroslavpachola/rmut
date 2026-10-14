@@ -880,8 +880,9 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         if response.clicked() || response.secondary_clicked() {
             clicked = Some((vi, response.double_clicked()));
         }
+        let fold = fold_label(gui.session.thread_folded(vi));
         response.context_menu(|ui| {
-            for (label, keys) in CONTEXT_ITEMS {
+            for &(label, keys) in CONTEXT_ITEMS.iter().chain([&(fold, "<alt+v>")]) {
                 if menu_item(ui, label, keys) {
                     ctx_fire = Some((vi, keys));
                 }
@@ -940,8 +941,18 @@ const CONTEXT_ITEMS: &[(&str, &str)] = &[
     ("Delete", "d"),
     ("Undelete", "u"),
     ("Save…", "s"),
-    ("Collapse thread", "<alt+v>"),
 ];
+
+/// collapse-thread toggles, so its item says which way it will go
+/// (the row's own thread in the context menu, the selection's in the
+/// Thread menu).
+fn fold_label(folded: bool) -> &'static str {
+    if folded {
+        "Expand thread"
+    } else {
+        "Collapse thread"
+    }
+}
 
 /// Wheel motion as whole rows, the remainder kept for next frame.
 /// Only the region under the pointer scrolls, so with the mini-index
@@ -993,6 +1004,12 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
     let mut prefs = false;
     let mut choose = false;
     let composing = matches!(gui.mode, Mode::Compose { .. });
+    let thread_fold = fold_label(gui.session.thread_folded(gui.session.sel));
+    let all_fold = if gui.session.any_folded() {
+        "Expand all threads"
+    } else {
+        "Collapse all threads"
+    };
     let item = |target: &mut Option<&'static str>, ui: &mut egui::Ui, label, keys| {
         if menu_item(ui, label, keys) {
             *target = Some(keys);
@@ -1037,8 +1054,8 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Untag matching…", "<ctrl+t>");
         });
         ui.menu_button("Thread", |ui| {
-            item(&mut fire, ui, "Collapse", "<alt+v>");
-            item(&mut fire, ui, "Collapse all", "<alt+V>");
+            item(&mut fire, ui, thread_fold, "<alt+v>");
+            item(&mut fire, ui, all_fold, "<alt+V>");
             item(&mut fire, ui, "Next", "<alt+n>");
             item(&mut fire, ui, "Previous", "<alt+p>");
             item(&mut fire, ui, "Parent message", "P");

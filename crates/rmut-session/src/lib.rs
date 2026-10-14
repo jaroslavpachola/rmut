@@ -2172,6 +2172,21 @@ impl Session {
         self.thread_members = members;
     }
 
+    /// Whether the thread of the visible row `pos` is folded: what
+    /// collapse-thread there would do is unfold it.
+    pub fn thread_folded(&self, pos: usize) -> bool {
+        self.visible.get(pos).is_some_and(|&mi| {
+            let root = self.thread_root.get(mi).copied().unwrap_or(mi);
+            self.collapsed.contains(&self.msgs[root].env.file.path)
+        })
+    }
+
+    /// Whether any thread is folded: collapse-all then unfolds them
+    /// all rather than folding the rest.
+    pub fn any_folded(&self) -> bool {
+        !self.collapsed.is_empty()
+    }
+
     pub fn toggle_collapse(&mut self, all: bool) {
         if self.sort != SortKey::Threads {
             self.error("folding needs thread sort (o t)");

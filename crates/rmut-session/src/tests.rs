@@ -439,6 +439,24 @@ fn folding_a_thread_hides_its_replies() {
     assert_eq!(f.subjects().len(), 4);
 }
 
+#[test]
+fn the_fold_state_says_which_way_collapse_goes() {
+    let mut f = thread_fixture();
+    f.select("root");
+    let sel = f.session.sel;
+    assert!(!f.session.thread_folded(sel) && !f.session.any_folded());
+    f.session.toggle_collapse(false);
+    assert!(f.session.thread_folded(f.session.sel) && f.session.any_folded());
+    // collapse-all with one fold open unfolds it, so it reads Expand.
+    f.session.toggle_collapse(true);
+    assert!(!f.session.any_folded());
+    f.session.toggle_collapse(true);
+    assert!(f.session.any_folded());
+    f.select("unrelated");
+    assert!(f.session.thread_folded(f.session.sel));
+    assert!(!f.session.thread_folded(usize::MAX));
+}
+
 // ---- hooks
 
 #[test]
