@@ -2587,7 +2587,7 @@ mutt's file prompts have both.
       request/response against a stand-in portal on a private
       dbus-daemon; e2e scenario_file_picker
 
-## R102: quitting asks (asked for by name, 2026-10-13)
+## R102: quitting asks (done, 2.19.1; asked for by name, 2026-10-13)
 
 Goal: a stray q no longer ends the session, and the window's close
 button asks what q asks. Departs from mutt on purpose: mutt's $quit
@@ -3034,6 +3034,14 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.19.1 (released 2026-10-14)
+
+R102: q, and in the window the close button, ask "Quit rmut?
+([yes]/no)" before leaving; `quit = "yes"` under [mail] keeps the
+instant quit. A bugfix: threading by subject dropped every reply
+whose original is not in the same folder from the index (most of a
+Sent folder, since 2.0.2); they are all listed again.
 
 ## 2.19.0 (released 2026-10-13)
 
