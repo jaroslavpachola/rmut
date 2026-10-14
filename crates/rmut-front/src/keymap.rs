@@ -501,6 +501,8 @@ fn index_defaults() -> Vec<(KeyPattern, Function)> {
         (KeyPattern::ch('?'), Help),
         (KeyPattern::ch('~'), MarkMessage),
         (KeyPattern::alt('L'), ListAction),
+        // rmut's own; mutt binds nothing to Esc i.
+        (KeyPattern::alt('i'), Triage),
         (KeyPattern::ctrl('k'), ExtractKeys),
         (KeyPattern::alt('k'), MailKey),
     ]

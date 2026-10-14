@@ -300,6 +300,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 Mode::Query { .. } => QUERY_HELP,
                 Mode::Urls { .. } => URLS_HELP,
                 Mode::Files { .. } => FILES_HELP,
+                Mode::Triage { .. } => rmut_front::triage::HELP,
             };
             let mut job = LayoutJob::default();
             job.append(help, 0.0, format(bar_style, size));
@@ -348,6 +349,7 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                 rows,
                 width,
             ),
+            Mode::Triage { review } => review.status(),
             Mode::Files { browser, .. } => match browser.tagged_count() {
                 0 => format!(
                     "---rmut: {} [Files:{}]",
@@ -693,6 +695,59 @@ pub fn draw(gui: &mut Gui, root: &mut egui::Ui) {
                     ui.centered_and_justified(|ui| {
                         ui.add(image);
                     });
+                }
+                Mode::Triage { review } => {
+                    use rmut_front::triage::Line as Row;
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let shown: Vec<Row> = review
+                        .lines()
+                        .into_iter()
+                        .skip(review.top)
+                        .take(rows)
+                        .collect();
+                    // A click on a proposal ticks or unticks it.
+                    let mut clicked = None;
+                    for row in shown {
+                        let (text, style, item) = match row {
+                            Row::Text(text) => (text, Style::new(), None),
+                            Row::Heading(text) => (text, Style::new().bold(), None),
+                            Row::Item {
+                                index,
+                                selected,
+                                text,
+                            } => {
+                                let style = match selected {
+                                    true => Style::new().reversed(),
+                                    false => Style::new(),
+                                };
+                                (format!("{text:<width$}"), style, Some(index))
+                            }
+                        };
+                        let mut job = LayoutJob::default();
+                        job.append(
+                            if text.is_empty() { " " } else { &text },
+                            0.0,
+                            format(style, size),
+                        );
+                        let label = egui::Label::new(job).extend().selectable(false);
+                        match item {
+                            Some(index) => {
+                                let response = ui.add(label.sense(egui::Sense::click()));
+                                hover(ui, &response);
+                                if response.clicked() {
+                                    clicked = Some(index);
+                                }
+                            }
+                            None => {
+                                ui.add(label);
+                            }
+                        }
+                    }
+                    if let Some(index) = clicked
+                        && let Mode::Triage { review } = &mut gui.mode
+                    {
+                        review.toggle(index);
+                    }
                 }
                 Mode::Files { browser, .. } => {
                     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1098,6 +1153,10 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
         "Collapse all threads"
     };
     let message = message_items(session, session.sel);
+    let triage = ItemState::unless(
+        session.config.mail.triage_command.is_none(),
+        "set triage_command in [mail] first",
+    );
     let threads = ItemState::unless(session.sort != SortKey::Threads, NEEDS_THREADS);
     let sorted = |key: SortKey, rev: bool| {
         ItemState::ticked(
@@ -1120,6 +1179,7 @@ fn menu_bar(gui: &mut Gui, ui: &mut egui::Ui) {
             item(&mut fire, ui, "Browse folders", "y");
             item(&mut fire, ui, "Limit…", "l");
             item(&mut fire, ui, "Mark all read", "<alt+a>");
+            item_in(&mut fire, ui, "Triage…", "<alt+i>", triage);
             ui.separator();
             // Window chrome, like About: no key to queue.
             if ui.button("Preferences…").clicked() {

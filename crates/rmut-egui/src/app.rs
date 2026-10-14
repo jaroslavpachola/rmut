@@ -98,6 +98,11 @@ pub enum Mode {
         prompt: Box<Prompt>,
         back: Box<Mode>,
     },
+    /// What `$triage_command` made of the mailbox: its digest, and
+    /// the marks it proposes, ticked off before they are applied.
+    Triage {
+        review: Box<rmut_front::triage::Review>,
+    },
 }
 
 /// One inline-drawable image: its loader URI and decoded bytes.
@@ -296,6 +301,9 @@ pub struct Gui {
     /// The desktop's file chooser while it is up: its answer arrives
     /// here from the thread waiting on it.
     chooser: Option<std::sync::mpsc::Receiver<Result<crate::chooser::Chosen, String>>>,
+    /// A triage answer that came in while a menu or prompt was up:
+    /// shown once the index or the pager is back.
+    triage_waiting: Option<Box<rmut_session::Triage>>,
     /// The zoom factor as last saved, so a change is written once.
     last_zoom: f32,
     /// The last new-mail text sent as a desktop notification.
@@ -393,6 +401,7 @@ impl Gui {
             file_tab: None,
             last_file_dir: None,
             chooser: None,
+            triage_waiting: None,
             last_zoom: saved_zoom().unwrap_or(1.0),
             editing: None,
             viewers: Vec::new(),
@@ -492,7 +501,40 @@ impl Gui {
 
     // ---- the session's requests and questions ----
 
-    fn run_requests(&mut self) {
+    /// The triage review, once nothing else is in its way: over the
+    /// index or a message, never over a menu or a prompt.
+    pub fn show_triage_when_free(&mut self) {
+        if self.prompt.is_some() || !matches!(self.mode, Mode::Index | Mode::Pager(_)) {
+            return;
+        }
+        if let Some(triage) = self.triage_waiting.take() {
+            self.mode = Mode::Triage {
+                review: Box::new(rmut_front::triage::Review::new(*triage)),
+            };
+        }
+    }
+
+    fn handle_triage_key(&mut self, key: KeyEvent) {
+        let page = self.view_size.0;
+        let Mode::Triage { review } = &mut self.mode else {
+            return;
+        };
+        match review.key(&key, page) {
+            rmut_front::triage::Step::Stay => {}
+            rmut_front::triage::Step::Close => {
+                self.mode = Mode::Index;
+                self.note("triage discarded");
+            }
+            rmut_front::triage::Step::Apply => {
+                let Mode::Triage { review } = std::mem::replace(&mut self.mode, Mode::Index) else {
+                    return;
+                };
+                self.session.apply_triage(&review.triage);
+            }
+        }
+    }
+
+    pub(crate) fn run_requests(&mut self) {
         let mut warnings = Vec::new();
         while let Some(request) = self.session.take_request() {
             match request {
@@ -538,8 +580,10 @@ impl Gui {
                 Request::EditFile(path) => self.start_file_edit(&path),
                 Request::Shell(command) => self.start_shell(&command),
                 Request::Suspend => self.not_yet("suspend (minimize the window)"),
+                Request::Triage(triage) => self.triage_waiting = Some(triage),
             }
         }
+        self.show_triage_when_free();
         if !warnings.is_empty() {
             self.error(warnings.join("; "));
         }
@@ -834,6 +878,7 @@ impl Gui {
             Mode::Query { .. } => self.handle_query_key(key),
             Mode::Urls { .. } => self.handle_urls_key(key),
             Mode::Files { .. } => self.handle_files_key(key),
+            Mode::Triage { .. } => self.handle_triage_key(key),
             Mode::Image { .. } => {
                 if matches!(
                     key.code,

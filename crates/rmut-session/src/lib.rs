@@ -29,11 +29,13 @@ mod drafts;
 mod function;
 #[cfg(test)]
 mod tests;
+mod triage;
 mod worker;
 
 pub use ask::{Answer, Ask, AskKind, Key, PatternOp, Request, Wants};
 pub use commands::CommandRun;
 pub use function::{FrontOp, Function, Outcome, PageSpot, SidebarOp};
+pub use triage::{Action as TriageAction, Proposal, Triage};
 pub use worker::{Done, Facts, Imap, Job, Manage};
 
 /// How many undo steps to keep, and how many message snapshots in
@@ -429,6 +431,8 @@ enum Again {
     ExtractKeys {
         tagged: bool,
     },
+    /// The visible messages, for `$triage_command`.
+    Triage,
 }
 
 /// One open mailbox and everything rmut knows about it.
@@ -603,6 +607,8 @@ pub struct Session {
     parked_forward: Option<Compose>,
     /// $fcc_attach asked, and answered, for the send in progress.
     fcc_attach_answer: Option<bool>,
+    /// `$triage_command` at work on its own thread.
+    triage_run: Option<triage::Running>,
     /// The attachment reminder has been answered for this draft: the
     /// next send goes through without asking again.
     attach_confirmed: bool,
@@ -761,6 +767,7 @@ impl Session {
             staged: None,
             parked_forward: None,
             fcc_attach_answer: None,
+            triage_run: None,
             attach_confirmed: false,
             unreadable_confirmed: false,
             hook_base: None,
@@ -1691,6 +1698,7 @@ impl Session {
             Again::Print { tagged } => self.print_current(tagged),
             Again::Bounce { to, tagged } => self.bounce_current(&to, tagged),
             Again::ExtractKeys { tagged } => self.extract_keys(tagged),
+            Again::Triage => self.triage(),
         }
     }
 
@@ -2523,7 +2531,20 @@ impl Session {
             return;
         }
         let value = value.trim();
-        let new = (!value.is_empty()).then(|| value.to_string());
+        let new = (!value.is_empty()).then_some(value);
+        let done = self.label_messages(&targets, new);
+        if done > 0 {
+            self.note(match new {
+                Some(_) => format!("labelled {done} message(s)"),
+                None => format!("label cleared on {done} message(s)"),
+            });
+        }
+    }
+
+    /// Write (or, with None, clear) X-Label on `targets`, one undo
+    /// step, and re-sort; how many were rewritten. The caller has
+    /// made sure the mailbox can be rewritten.
+    pub(crate) fn label_messages(&mut self, targets: &[usize], new: Option<&str>) -> usize {
         let keep = self.selected_path();
         let mut step = UndoStep {
             what: "edit label".into(),
@@ -2534,7 +2555,7 @@ impl Session {
             rewritten: Vec::new(),
         };
         let mut done = 0usize;
-        for &i in &targets {
+        for &i in targets {
             let path = self.msgs[i].env.file.path.clone();
             let old = match std::fs::read(&path) {
                 Ok(b) => b,
@@ -2543,7 +2564,7 @@ impl Session {
                     continue;
                 }
             };
-            let bytes = message::with_header(&old, "X-Label", new.as_deref());
+            let bytes = message::with_header(&old, "X-Label", new);
             if let Err(err) = maildir::replace_content(&path, &bytes) {
                 self.error(format!("edit label: {err:#}"));
                 continue;
@@ -2555,11 +2576,8 @@ impl Session {
         if done > 0 {
             self.push_undo_step(step);
             self.resort(keep);
-            self.note(match new {
-                Some(_) => format!("labelled {done} message(s)"),
-                None => format!("label cleared on {done} message(s)"),
-            });
         }
+        done
     }
 
     /// mutt's delete-entry / undelete-entry in the attachment menu:
@@ -4528,6 +4546,8 @@ impl Session {
     /// Anything due in the outbox goes out; whatever still waits owns
     /// the status line, counting down.
     pub fn tick_outbox(&mut self) {
+        // The triage command answers whenever it is done, outbox or no.
+        self.poll_triage();
         // A mailbox on its way in: the mail goes out from it, a
         // moment later, rather than from under the switch.
         if self.holding() {

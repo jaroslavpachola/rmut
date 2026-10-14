@@ -1797,3 +1797,46 @@ fn the_menus_follow_the_message_and_the_sort() {
     assert!(!disabled(&harness, "Collapse thread"));
     assert!(!disabled(&harness, "Collapse all threads"));
 }
+
+/// The triage review in the window: an answer that comes in shows over
+/// the index, a click ticks or unticks a proposal, Enter applies.
+#[test]
+fn the_triage_review_ticks_by_click_and_applies() {
+    use egui_kittest::kittest::Queryable as _;
+    let (dir, mut gui) = fixture(&["one", "two"]);
+    let answer = dir.path().join("answer.txt");
+    fs::write(&answer, "Read m2 first.\n@flag m1 -- asks\n@flag m2\n").unwrap();
+    gui.session.config.mail.triage_command =
+        Some(format!("cat >/dev/null; cat '{}'", answer.display()));
+    gui.handle_keys(vec![KeyEvent::new(KeyCode::Char('i'), KeyModifiers::ALT)]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !matches!(gui.mode, Mode::Triage { .. }) {
+        assert!(std::time::Instant::now() < deadline, "no review");
+        gui.session.tick_outbox();
+        gui.run_requests();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.set_size(eframe::egui::Vec2::new(900.0, 400.0));
+    harness.run();
+    let first = harness
+        .query_all_by_label_contains("[x] flag")
+        .next()
+        .expect("a proposal row");
+    first.click();
+    harness.run();
+    let Mode::Triage { review } = &harness.state().mode else {
+        panic!("still reviewing");
+    };
+    assert_eq!(review.accepted(), 1, "the click unticked one");
+    key(harness.state_mut(), KeyCode::Enter);
+    let gui = harness.state();
+    assert!(matches!(gui.mode, Mode::Index));
+    let flagged: Vec<bool> = gui
+        .session
+        .visible
+        .iter()
+        .map(|&i| gui.session.msgs[i].env.file.flags.flagged)
+        .collect();
+    assert_eq!(flagged, [false, true], "only m2's flag applied");
+}

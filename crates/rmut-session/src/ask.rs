@@ -312,6 +312,10 @@ pub enum Request {
     /// afterwards. Only the front end knows how to stand its display
     /// down for one.
     Editor(crate::Compose),
+    /// `$triage_command` answered: put its digest and proposals up
+    /// for review, and hand back what was accepted with
+    /// [`Session::apply_triage`].
+    Triage(Box<crate::Triage>),
 }
 
 /// "Postpone this message?", the default in brackets as mutt shows it

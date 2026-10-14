@@ -47,7 +47,7 @@ rmut                       # finds your mail on its own
 - **Links, attachments, images.** URLs are clickable and copyable,
   even over ssh; attachments open in your own viewers; the window
   shows images inline.
-- **Tested like it matters.** Every change runs 97 end-to-end
+- **Tested like it matters.** Every change runs 98 end-to-end
   scenarios that drive the real binary against fake IMAP and SMTP
   servers.
 
@@ -177,7 +177,7 @@ part prefilled), `p` print (pipes the message to `mail.print`,
 default `lpr`), `~` mark-message (a stroke becomes a hotkey that
 jumps back to the message), Esc+L list-action (the message's List-*
 headers: help, post, subscribe, unsubscribe, archives, owner; mailto:
-ones compose), and, unbound as in mutt but bindable by name,
+ones compose), Alt+i triage (see **Triage** below), and, unbound as in mutt but bindable by name,
 `next-unread-mailbox`, `purge-message` (delete past the trash),
 `error-history` and `what-key`, `:` run a config command (see **Enter-command**
 below), `q` quit (asks "Quit rmut?" first unless `quit =
@@ -517,8 +517,8 @@ Settable at runtime: `index_format`, `date_format`, `sort`,
 `quote_regexp`, `wrap`, `tilde`, `status_format`, `theme`, `beep`,
 `from`, `realname`, `reverse_name`, `edit_headers`, `fast_reply`,
 `autoedit`, `copy`, `forward`/`mime_forward`, `sendmail`, `editor`,
-`print_command`, `query_command`, `trash`, `record`, `postponed`,
-`new_mail_command`, `mail_check`, `undo_send`, `metoo`, `text_flowed`,
+`print_command`, `query_command`, `triage_command`, `triage_limit`,
+`trash`, `record`, `postponed`, `new_mail_command`, `mail_check`, `undo_send`, `metoo`, `text_flowed`,
 `attribution`, `indent_string`, `forward_format`, `include`, `askcc`,
 `askbcc`, `connect_timeout`, `net_timeout`, `pager_stop`, `markers`,
 `smart_wrap`, `collapse_unread`, `uncollapse_jump`, `quit`,
@@ -829,6 +829,44 @@ neomutt's `abort_noattach` and `abort_noattach_regex` import
 word edges are translated to `\b` on the way in. Batch sends do not
 ask: there is no terminal to answer at.
 
+## Triage
+
+Alt+i (`triage`) hands the visible messages to `triage_command` under
+`[mail]` and puts its answer up for review: a digest of the mailbox,
+and the marks it proposes. Nothing changes until you say so.
+
+The command is anything that reads stdin and writes stdout: an LLM
+behind `claude -p`, `llm`, or `ollama run <model>`. rmut writes a
+prompt and one record per message (From, To, Cc, Date, Subject, read
+state, list, label, thread, and the first 30 lines of the decoded
+body, quoting and signature removed); a limit narrows what goes, e.g.
+`l ~N` for the unread ones, and `triage_limit` caps it (100). IMAP
+bodies that are only headers in the cache are fetched first. The
+command runs in the background; the review comes up when it answers.
+
+The answer is a digest in plain text and one line per proposal:
+
+```
+@flag m3 -- asks for the report by Friday
+@read m7 -- a build notification
+@tag m9 -- a newsletter, can be filed
+@label m9 newsletter
+```
+
+The review screen lists the digest, then every proposal ticked: `t`
+(or a click in the window) unticks one, `a` flips them all, Enter
+applies the ticked ones, `q` discards the lot. The flag, read and tag
+marks are one undo step (`z`). Labels rewrite the message, so like
+`edit-label` they apply to local maildirs only and are skipped on
+IMAP. Tagged messages are there for you to finish, e.g. `;s` to file
+them.
+
+Only those four actions exist: the mail is untrusted input to the
+model, so a message that says "mark everything read" can at most get
+that proposed, never applied unseen, and nothing can delete, move or
+send. What goes to the command is your mail: a cloud model sees it, a
+local one keeps it on the machine.
+
 ## Undo
 
 `z` walks back the last change to your messages: a delete or
@@ -984,6 +1022,8 @@ print = "lpr"                # `p` pipes the message here
 save = "~/Maildir/.Archive"  # default target for `s`
 forward = "inline"           # or "attach" (original as message/rfc822)
 query_command = "khard email --parsable %s"   # Tab completion lookup
+triage_command = "claude -p" # Alt+i: digest + proposed marks (see Triage)
+triage_limit = 100           # at most this many messages go to it
 trash = "~/Maildir/.Trash"   # purged mail moves here (mutt's $trash;
                              # imap:acct/Trash for IMAP mailboxes);
                              # purging inside it deletes for real

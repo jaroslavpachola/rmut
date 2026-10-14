@@ -13,6 +13,7 @@ pub mod signals;
 pub mod status;
 pub mod style;
 pub mod theme;
+pub mod triage;
 
 pub use key::{EscPrefix, KeyCode, KeyEvent, KeyModifiers};
 pub use keymap::{KeyPattern, Keymap, PagerAction, parse_key, parse_sequence, resolve_function};

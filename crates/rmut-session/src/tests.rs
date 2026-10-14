@@ -3551,3 +3551,105 @@ fn a_marked_attachment_is_deleted_from_the_message_and_undo_brings_it_back() {
         "cannot delete attachments from encrypted or signed mail"
     );
 }
+
+// ---- triage
+
+/// The whole round: the visible messages go to $triage_command as a
+/// prompt and records, its answer comes back as a review request, and
+/// what was accepted is applied, the marks as one undo step.
+#[test]
+fn triage_sends_the_mailbox_and_applies_what_was_accepted() {
+    let script = tempfile::tempdir().unwrap();
+    let input = script.path().join("input.txt");
+    let mut config = Config::default();
+    config.identity.email = Some("me@example.com".into());
+    config.mail.triage_command = Some(format!(
+        "cat > '{}'; printf 'Needs a reply: m1.\\n\\n@flag m1 -- asks\\n@read m2\\n@tag m3\\n@label m3 news\\n@delete m2\\n'",
+        input.display()
+    ));
+    let mut f = Fixture::with_config(&["first", "second", "third"], config);
+    f.session.run_function(Function::Triage, false, 10);
+    assert!(
+        f.log.said("triage: 3 message(s) sent"),
+        "{}",
+        f.log.last_text()
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut triage = loop {
+        f.session.tick_outbox();
+        if let Some(crate::Request::Triage(t)) = f.session.take_request() {
+            break *t;
+        }
+        assert!(std::time::Instant::now() < deadline, "no answer");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+
+    let sent = fs::read_to_string(&input).unwrap();
+    assert!(
+        sent.contains("untrusted data"),
+        "the prompt warns the model"
+    );
+    assert!(sent.contains("The owner:  <me@example.com>"));
+    assert!(sent.contains("=== m2\nFrom: Sender 1 <s1@example.com>\nTo: me@example.com\n"));
+    assert!(sent.contains("Subject: second\nStatus: unread\n\nbody of second\n"));
+
+    assert_eq!(triage.digest, ["Needs a reply: m1."]);
+    assert_eq!(triage.ignored, ["@delete m2"], "delete is not on the list");
+    assert_eq!(triage.proposals.len(), 4);
+    // The tag is turned down on the review screen.
+    triage.proposals[2].accepted = false;
+    f.session.apply_triage(&triage);
+    assert!(
+        f.log.said("triage: 1 flagged, 1 marked read, 1 labelled"),
+        "{}",
+        f.log.last_text()
+    );
+    let msg = |f: &Fixture, s: &str| {
+        f.session
+            .msgs
+            .iter()
+            .find(|m| m.env.subject == s)
+            .unwrap()
+            .env
+            .clone()
+    };
+    assert!(msg(&f, "first").file.flags.flagged);
+    assert!(msg(&f, "second").file.flags.seen);
+    assert!(!msg(&f, "third").tagged, "untick kept it untagged");
+    assert_eq!(msg(&f, "third").label.as_deref(), Some("news"));
+
+    // z takes the label back, then the marks in one step.
+    f.session.undo_last();
+    assert_eq!(msg(&f, "third").label, None);
+    f.session.undo_last();
+    assert!(!msg(&f, "first").file.flags.flagged);
+    assert!(!msg(&f, "second").file.flags.seen);
+}
+
+#[test]
+fn triage_says_what_is_missing_or_failed() {
+    let mut f = Fixture::new(&["one"]);
+    f.session.run_function(Function::Triage, false, 10);
+    assert!(f.log.said("set triage_command"), "{}", f.log.last_text());
+
+    let mut config = Config::default();
+    config.mail.triage_command = Some("echo no key >&2; exit 2".into());
+    let mut f = Fixture::with_config(&["one"], config);
+    f.session.run_function(Function::Triage, false, 10);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !f.log.said("triage failed") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{}",
+            f.log.last_text()
+        );
+        f.session.tick_outbox();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        f.log.last_text().contains("no key"),
+        "{}",
+        f.log.last_text()
+    );
+}

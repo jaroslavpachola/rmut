@@ -94,6 +94,11 @@ pub enum Mode {
         prompt: Box<Prompt>,
         back: Box<Mode>,
     },
+    /// What `$triage_command` made of the mailbox: its digest, and
+    /// the marks it proposes, ticked off before they are applied.
+    Triage {
+        review: Box<rmut_front::triage::Review>,
+    },
 }
 
 #[derive(Clone)]
@@ -334,6 +339,9 @@ pub struct App {
     pending_shell: Option<String>,
     /// Ctrl+Z: stop, and pick the terminal back up on SIGCONT.
     pending_suspend: bool,
+    /// A triage answer that came in while a menu or prompt was up:
+    /// shown once the index or the pager is back.
+    triage_waiting: Option<Box<rmut_session::Triage>>,
     /// `;` was pressed: the next flag operation applies to tagged messages.
     tag_next: bool,
     /// mutt's number entry: digits typed in the index accumulate here
@@ -467,6 +475,7 @@ impl App {
             pending_shell: None,
             pending_file_edit: None,
             pending_suspend: false,
+            triage_waiting: None,
             tag_next: false,
             jump_buffer: String::new(),
             esc: EscPrefix::default(),
@@ -567,6 +576,10 @@ impl App {
                 Request::ShowDraft => self.open_compose_menu(),
                 Request::Mailto(mailto) => self.start_mailto(&mailto),
                 Request::EditFile(path) => self.pending_file_edit = Some(path),
+                Request::Triage(triage) => {
+                    self.triage_waiting = Some(triage);
+                    self.show_triage_when_free();
+                }
                 Request::Command(cmd) => {
                     // The keymap is a snapshot of the key tables, so
                     // whatever moves them has to rebuild it. A typed
@@ -752,6 +765,7 @@ impl App {
             // A send that failed hands its draft back, and the hooks
             // may have asked for something too.
             self.run_requests_quietly();
+            self.show_triage_when_free();
             let done = terminal.draw(|frame| crate::ui::draw(frame, self))?;
             // [ui] hyperlinks: the URLs on screen, clickable.
             if self.session.config.ui.hyperlinks.unwrap_or(true) && !self.screen_links.is_empty() {
@@ -910,6 +924,8 @@ impl App {
             self.handle_urls_key(key);
         } else if matches!(self.mode, Mode::Files { .. }) {
             self.handle_files_key(key, page);
+        } else if matches!(self.mode, Mode::Triage { .. }) {
+            self.handle_triage_key(key, page);
         } else {
             self.handle_folders_key(key);
         }
@@ -969,6 +985,38 @@ impl App {
         }
         lines.extend(errors.into_iter().map(|e| format!("  {e}")));
         self.mode = Mode::Help { lines, scroll: 0 };
+    }
+
+    /// The triage review, once nothing else is in its way: over the
+    /// index or a message, never over a menu or a prompt.
+    fn show_triage_when_free(&mut self) {
+        if self.prompt.is_some() || !matches!(self.mode, Mode::Index | Mode::Pager(_)) {
+            return;
+        }
+        if let Some(triage) = self.triage_waiting.take() {
+            self.mode = Mode::Triage {
+                review: Box::new(rmut_front::triage::Review::new(*triage)),
+            };
+        }
+    }
+
+    fn handle_triage_key(&mut self, key: KeyEvent, page: usize) {
+        let Mode::Triage { review } = &mut self.mode else {
+            return;
+        };
+        match review.key(&key, page) {
+            rmut_front::triage::Step::Stay => {}
+            rmut_front::triage::Step::Close => {
+                self.mode = Mode::Index;
+                self.note("triage discarded");
+            }
+            rmut_front::triage::Step::Apply => {
+                let Mode::Triage { review } = mem::replace(&mut self.mode, Mode::Index) else {
+                    return;
+                };
+                self.session.apply_triage(&review.triage);
+            }
+        }
     }
 
     /// mutt's what-key: from here until Ctrl+G, every key is named.

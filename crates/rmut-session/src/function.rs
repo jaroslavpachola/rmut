@@ -131,6 +131,9 @@ pub enum Function {
     /// The message's links in a list, to open or copy one (rmut's
     /// own, urlview built in).
     Urls,
+    /// rmut's own: the visible messages to `$triage_command`, its
+    /// digest and proposed marks up for review.
+    Triage,
 }
 
 impl Function {
@@ -234,6 +237,7 @@ impl Function {
             WhatKey => "what-key",
             ListAction => "list-action",
             Urls => "urls",
+            Triage => "triage",
         }
     }
 
@@ -337,6 +341,7 @@ impl Function {
             WhatKey => "say what a key is (Ctrl+G ends it)",
             ListAction => "act on the message's List-* headers (subscribe, help, ...)",
             Urls => "list the message's links, to open or copy one",
+            Triage => "digest the visible messages and propose marks, by $triage_command",
         }
     }
 
@@ -442,6 +447,7 @@ impl Function {
             WhatKey,
             ListAction,
             Urls,
+            Triage,
         ]
     }
 
@@ -657,6 +663,7 @@ impl Session {
             WhatKey => return Outcome::Front(FrontOp::WhatKey),
             ListAction => return self.ask_list_action().into(),
             Urls => return Outcome::Front(FrontOp::Urls),
+            Triage => self.triage(),
             Flag => self.mark_selected(tagged, "flag", |m| {
                 m.env.file.flags.flagged = !m.env.file.flags.flagged
             }),

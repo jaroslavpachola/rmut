@@ -4602,6 +4602,41 @@ def scenario_file_picker(tmp):
         assert f'filename="{name}"' in sent, name
 
 
+def scenario_triage_command(tmp):
+    """rmut's triage (Alt+i): the visible messages go to
+    $triage_command, its digest and proposed marks come up for review,
+    t unticks one, Enter applies the rest."""
+    md = make_maildir(tmp, "md-triage-cmd")
+    write_msgs(md, ["ci", "jane", "petr"])
+    got = os.path.join(tmp, "triage-input.txt")
+    answer = os.path.join(tmp, "triage-answer.txt")
+    with open(answer, "w") as f:
+        f.write("Jane asks about lunch (m2).\n"
+                "@tag m1 -- a build notice\n"
+                "@flag m2 -- needs an answer\n"
+                "@read m3 -- seen it\n")
+    cfg = os.path.join(tmp, "triage-config.toml")
+    with open(cfg, "w") as f:
+        f.write('[identity]\nemail = "alex@example.com"\n'
+                f'[mail]\ntriage_command = "cat > {got}; cat {answer}"\n')
+    r = Rmut(md, base_env(tmp, {"RMUT_CONFIG": cfg}))
+    r.expect("Msgs:3")
+    r.keys(b"\x1bi")
+    r.repaint()
+    r.expect("Jane asks about lunch (m2).", "Proposed marks (3)",
+             "[x] tag", "[x] flag", "[x] read", "Ticked:3")
+    sent = open(got).read()
+    assert "=== m2\nFrom: Jane Doe <jane@example.com>" in sent, sent[:400]
+    assert "Are you free for lunch on Friday?" in sent
+    # The cursor starts on the first proposal: t unticks the tag.
+    r.keys(b"t")
+    r.repaint()
+    r.expect("[ ] tag", "Ticked:2")
+    r.keys(b"\r")
+    r.repaint()
+    r.expect("triage: 1 flagged, 1 marked read")
+
+
 def scenario_attach_reminder(tmp):
     """Beyond mutt (neomutt's $abort_noattach): a body that mentions
     an attachment with none attached is asked about, unless the
@@ -5977,6 +6012,7 @@ SCENARIOS = [
     scenario_paper_cuts,
     scenario_attach_reminder,
     scenario_file_picker,
+    scenario_triage_command,
     scenario_getting_started,
     scenario_control_chars,
     scenario_purge_question,

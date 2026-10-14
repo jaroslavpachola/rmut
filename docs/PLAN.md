@@ -2609,6 +2609,44 @@ asked for as the default here anyway.
       and the close button; an egui test for q and the close button;
       the five e2e scenarios that quit with q answer the question
 
+## R103: triage by an outside command (asked for by name, 2026-10-14)
+
+Goal: a digest of the mailbox and proposed marks from an LLM, with
+rmut knowing nothing about LLMs. `[mail] triage_command` is any
+program reading stdin (`claude -p`, `llm`, `ollama run`); Alt+i
+(`triage`, unbound in mutt) runs it, in the background, over the
+visible messages.
+
+- [x] Input: a fixed prompt (the answer format, and that the mail is
+      untrusted data), the owner's address, then one record per
+      message as `=== m<N>` (From, To, Cc, Date, Subject, read state,
+      List, Label, the thread's m<N>, and 30 lines / 2000 chars of the
+      decoded body, quoting and signature dropped, HTML as text). At
+      most `triage_limit` (100); IMAP partials fetched first through
+      the same have_bodies path pipe uses
+- [x] Output: plain digest lines, and `@flag|read|tag m<N> -- why`,
+      `@label m<N> <word>`; any other `@` line, or a reference to no
+      message sent, is listed as ignored. No delete, move or send:
+      the mail can prompt-inject the model, so the actions are few,
+      reversible, and reviewed
+- [x] The review screen (rmut-front::triage, drawn by both fronts):
+      the digest, then every proposal ticked; t unticks and moves on,
+      a flips all, Enter applies, q discards; the window ticks on a
+      click and has Mailbox → Triage…, greyed out while
+      triage_command is unset. An answer that lands during a menu or
+      prompt waits for the index
+- [x] Applying: flag/read/tag as one undo step; labels through
+      edit-label's writer, local maildirs only (on IMAP they are
+      skipped and the note says so)
+- [x] Tests: the parser and excerpt; the session round trip over a
+      shell stand-in (input, review request, apply, undo, failures);
+      the review model; an egui click-and-apply test;
+      e2e scenario_triage_command
+- [ ] Left for later: moving to folders (a chain of server jobs on
+      IMAP; tag then `;s` does it meanwhile), and remembering what
+      was already triaged, by Message-ID, so a rerun sends only the
+      new mail
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -3509,6 +3547,8 @@ value-per-effort:
   pipe to git am
 - Built-in full-text search: an incremental tantivy index making ~b
   instant without notmuch
+- LLM triage by an outside command: shipped as R103 above (asked for
+  by name, 2026-10-14)
 - Unified inbox: several accounts' inboxes merged into one live
   virtual mailbox (flagship-sized; after the parity rounds)
 - A GUI over the session library: planned above (G1-G5, 2026-08-27),

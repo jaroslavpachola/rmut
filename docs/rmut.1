@@ -469,6 +469,12 @@ menu (help, post, subscribe, unsubscribe, archives, owner). A
 mailto: action opens a compose to it; anything else is refused, as
 in mutt.
 .TP
+.B Esc+i
+triage: the visible messages (at most triage_limit) go to
+triage_command, and its digest and proposed marks come up for
+review; see
+.BR TRIAGE .
+.TP
 .B (unbound)
 next\-unread\-mailbox opens the next configured mailbox holding new
 mail; purge\-message deletes past the trash; error\-history shows the
@@ -763,6 +769,42 @@ without asking and no never asks.
 (on by default, as in mutt) drops a draft whose first editor pass
 changed nothing, which is what quitting the editor looks like from
 here; a re\-edit from the compose menu is never dropped.
+.SH TRIAGE
+Esc+i (triage) writes a prompt and one record per visible message to
+the standard input of
+.I triage_command
+(From, To, Cc, Date, Subject, read state, list, label, thread, and
+the first 30 lines of the decoded body without quoting or the
+signature), and reads its answer: a digest in plain text, and one
+line per proposed mark,
+.PP
+.nf
+.RS
+@flag m3 \-\- asks for the report by Friday
+@read m7 \-\- a build notification
+@tag m9 \-\- a newsletter, can be filed
+@label m9 newsletter
+.RE
+.fi
+.PP
+where m\fIN\fR is the message's place in what was sent. A limit
+narrows what goes; IMAP bodies the cache holds as headers only are
+fetched first; the command runs in the background, and the review
+comes up when it answers.
+.PP
+The review shows the digest, then every proposal, ticked.
+.B t
+unticks (or ticks) the one under the cursor and moves on,
+.B a
+flips them all,
+.B Enter
+applies the ticked ones,
+.B q
+discards everything; j, k, Space and \- move and page. Flag, read
+and tag are one undo step. A label rewrites the message, so like
+edit\-label it applies to local maildirs only. Any other @ line is
+listed as ignored: nothing can delete, move or send, since the mail
+is untrusted input to the model.
 .SH ENTER\-COMMAND
 .B :
 opens a command prompt (the line editor, with its own history) and
@@ -806,7 +848,8 @@ reverse_realname, delete_untag, flag_safe, maildir_trash,
 mail_check_recent, check_new, uncollapse_new, menu_scroll,
 menu_context, menu_move_off, help, error_history, sort_browser,
 sort_alias, shell, tmpdir, ispell,
-sendmail, editor, print_command, query_command, trash, record,
+sendmail, editor, print_command, query_command, triage_command,
+triage_limit, trash, record,
 postponed, new_mail_command, mail_check, undo_send, metoo, text_flowed,
 reflow_text, notmuch, sidebar_visible,
 sidebar_width, pgp_sign_as, crypt_autosign, crypt_autoencrypt,
@@ -1036,6 +1079,15 @@ along as a message/rfc822 part, mutt's mime_forward).
 .B query_command
 External address lookup for Tab completion at the To prompt (%s is
 the word, or it is appended), e.g. "khard email \-\-parsable %s".
+.TP
+.B triage_command
+rmut's own: the command Esc+i hands the visible messages to, on
+stdin, for a digest and proposed marks, e.g. "claude \-p", "llm" or
+"ollama run llama3". Unset, triage is off.
+.TP
+.B triage_limit
+At most this many visible messages, from the top, go to
+triage_command (100).
 .TP
 .B display_filter
 mutt's $display_filter: a shell command the pager's body goes through

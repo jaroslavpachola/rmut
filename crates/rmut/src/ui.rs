@@ -82,6 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Urls { .. } => URLS_HELP,
         Mode::Help { .. } => HELP_HELP,
         Mode::Files { .. } => FILES_HELP,
+        Mode::Triage { .. } => rmut_front::triage::HELP,
     };
     if help_rows > 0 {
         frame.render_widget(
@@ -162,6 +163,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
             Mode::Help { lines, scroll } => draw_help(frame, content_area, lines, *scroll),
             Mode::Files { browser, .. } => draw_files(frame, content_area, browser),
+            Mode::Triage { review } => draw_triage(frame, content_area, review),
         }
     }
     draw_status_bar(frame, status_area, app, content_area.height);
@@ -474,6 +476,33 @@ fn draw_help(frame: &mut Frame, area: Rect, lines: &[String], scroll: usize) {
     frame.render_widget(Paragraph::new(visible), area);
 }
 
+/// The triage review: the digest, then the proposals, the one under
+/// the cursor reversed, scrolled to the review's own `top`.
+fn draw_triage(frame: &mut Frame, area: Rect, review: &rmut_front::triage::Review) {
+    use rmut_front::triage::Line as Row;
+    let visible: Vec<Line> = review
+        .lines()
+        .into_iter()
+        .skip(review.top)
+        .take(area.height as usize)
+        .map(|row| match row {
+            Row::Text(text) => Line::raw(text),
+            Row::Heading(text) => Line::styled(text, Style::new().add_modifier(Modifier::BOLD)),
+            Row::Item { selected, text, .. } => {
+                let style = match selected {
+                    true => Style::new().add_modifier(Modifier::REVERSED),
+                    false => Style::new(),
+                };
+                Line::styled(
+                    format!("{text:<width$}", width = area.width as usize),
+                    style,
+                )
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(visible), area);
+}
+
 // ---- attachments ----
 
 fn draw_attach(
@@ -629,6 +658,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App, content_height: u16
         Mode::Query { results, .. } => format!("---rmut: query results [Found:{}]", results.len()),
         Mode::Urls { urls, .. } => format!("---rmut: links [URLs:{}]", urls.len()),
         Mode::Help { .. } => "---rmut: help".to_string(),
+        Mode::Triage { review } => review.status(),
         Mode::Files { browser, .. } => match browser.tagged_count() {
             0 => format!(
                 "---rmut: {} [Files:{}]",

@@ -22,6 +22,7 @@
 //! editor = "vim"
 //! poll_seconds = 5
 //! print = "lpr"
+//! triage_command = "claude -p"   # Alt+i: digest + proposed marks
 //!
 //! [index]
 //! format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"
@@ -248,6 +249,13 @@ pub struct Mail {
     /// completion at the To prompt (`%s` = the word, or appended),
     /// e.g. "khard email --parsable %s".
     pub query_command: Option<String>,
+    /// rmut's triage (Alt+i): a shell command that reads a prompt and
+    /// the visible messages on stdin and answers with a digest and
+    /// proposed marks, e.g. "claude -p" or "llm". Unset, triage is off.
+    pub triage_command: Option<String>,
+    /// How many visible messages triage hands over, from the top
+    /// (100 when unset).
+    pub triage_limit: Option<u64>,
     /// mutt's $trash: purged messages move here (a maildir path, or
     /// `imap:account/folder` of the open account) instead of being
     /// erased; purging inside the trash itself deletes for real.
