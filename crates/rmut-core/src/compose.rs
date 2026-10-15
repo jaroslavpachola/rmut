@@ -1018,6 +1018,20 @@ pub fn from_address(text: &str) -> Option<String> {
     bare_address(&crate::rfc2047::first(&mail.get_headers(), "From")?)
 }
 
+/// The message ids a draft's In-Reply-To names: what a sent reply
+/// answered, for marking those messages replied as mutt does.
+pub fn in_reply_to(text: &str) -> Vec<String> {
+    let Ok(mail) = mailparse::parse_mail(text.as_bytes()) else {
+        return Vec::new();
+    };
+    use mailparse::MailHeaderMap;
+    mail.get_headers()
+        .get_all_values("In-Reply-To")
+        .iter()
+        .flat_map(|v| crate::message::parse_msg_ids(v))
+        .collect()
+}
+
 fn field_addresses(value: &str, out: &mut Vec<String>) {
     let Ok(list) = mailparse::addrparse(value) else {
         return;

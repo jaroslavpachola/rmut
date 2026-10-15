@@ -140,6 +140,9 @@ The three characters after the number on each index row (`%Z` in
 
 One character shows per place, the first that applies in the order
 listed, so a deleted reply shows `D` and a tagged message `*`.
+A reply you send marks the message it answers `r`, as mutt does, and
+the next sync writes the mark to the folder (the server's Answered
+flag on IMAP).
 
 ## Keys
 

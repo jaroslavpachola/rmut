@@ -2663,6 +2663,25 @@ asides, and the status letters (`N O r D`) and `!` nowhere at all.
 - [x] Tests: help_opens_with_the_index_marks, and scenario_config
       checks the legend on its `?` screen
 
+## R105: replies mark what they answer (done, 2.20.1; asked for by name, 2026-10-15)
+
+Goal: a message shows `r` once you have replied to it. rmut read the
+Answered flag (the server's, or a maildir's R) and drew it, but never
+set it, so only mail answered from another client ever showed `r`.
+
+- [x] A send that goes out marks Answered on the messages its
+      In-Reply-To names, found by Message-ID in the open mailbox: a
+      recalled draft marks its original too, and a reply sent after a
+      change of mailbox marks nothing it cannot see. A failed send
+      marks nothing; a read-only mailbox is left alone. The next sync
+      writes the mark (IMAP `\Answered`, maildir `R`, mbox `A`), as
+      every other flag change
+- [x] Docs: the marks under The screen in the README, `r` in the
+      man page's `%Z` entry
+- [x] Tests: a_sent_reply_marks_the_original_replied (failed send,
+      then sent, then on disk after sync); scenario_reply_text syncs
+      and looks for the R flag
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
@@ -3088,6 +3107,13 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.20.1 (released 2026-10-15)
+
+R105: a reply you send marks the message it answers replied, as mutt
+does. The `r` shows at once, and the next sync writes it to the folder
+(the Answered flag on IMAP). Before this, rmut only showed the mark
+when another client had set it.
 
 ## 2.20.0 (released 2026-10-15)
 

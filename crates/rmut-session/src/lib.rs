@@ -4669,9 +4669,11 @@ impl Session {
         };
         // What the sent copy holds, which $fcc_attach and $fcc_clear
         // may have made different from what went out.
+        let replied = compose::in_reply_to(&final_text);
         let copy = fcc_text.unwrap_or(final_text);
         match send_result {
             Ok(()) => {
+                self.mark_replied(&replied);
                 let mut note = String::from("message sent");
                 let mut fcc_to_server = None;
                 let skip_copy = chosen.as_deref() == Some("")
@@ -4749,6 +4751,26 @@ impl Session {
             Err(err) => {
                 self.error(format!("send failed: {err:#}"));
                 self.hand_back(compose_state);
+            }
+        }
+    }
+
+    /// mutt's replied mark: the messages a sent reply answered, found
+    /// by Message-ID in the open mailbox, get the Answered flag, and
+    /// the next sync writes it. Found by id rather than remembered
+    /// from compose, so a recalled draft and a reply sent after a
+    /// change of mailbox mark whatever of it is open, and nothing
+    /// otherwise.
+    fn mark_replied(&mut self, ids: &[String]) {
+        if self.read_only || ids.is_empty() {
+            return;
+        }
+        for m in &mut self.msgs {
+            if !m.env.file.flags.answered
+                && m.env.msg_id.as_ref().is_some_and(|id| ids.contains(id))
+            {
+                m.env.file.flags.answered = true;
+                m.dirty = true;
             }
         }
     }

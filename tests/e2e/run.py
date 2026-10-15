@@ -5101,7 +5101,8 @@ def scenario_reply_text(tmp):
     """R56: the three strings mutt users change. $attribution and
     $indent_string shape a quoted reply, $forward_format the subject a
     forward carries, $include decides the quote without asking, and
-    $askcc puts a Cc prompt between To and Subject."""
+    $askcc puts a Cc prompt between To and Subject. A sent reply
+    marks the original replied (R105)."""
     md = make_maildir(tmp, "md-reply-text")
     write_msgs(md, ["jane"])
     sent_file = os.path.join(tmp, "sent-reply-text.eml")
@@ -5143,6 +5144,20 @@ def scenario_reply_text(tmp):
     assert "Jane Doe wrote (20" in text, text
     assert "| Hi Alex," in text, text
     assert "Cc: cc@example.com" in text, text
+
+    # R105: the sent reply marks the original replied, and $ writes
+    # the mark to the file as mutt's R flag.
+    r.expect("Msgs:1")
+    r.keys(b"$")
+
+    def replied_on_disk():
+        for sub in ("cur", "new"):
+            for name in os.listdir(os.path.join(md, sub)):
+                if "R" in name.rpartition(":2,")[2]:
+                    return True
+        return False
+
+    wait_for(replied_on_disk, desc="the original marked replied")
 
     # Forward: the subject comes from $forward_format.
     r.expect("Msgs:1")

@@ -3068,6 +3068,52 @@ fn the_sent_copy(out: &Path) -> String {
 }
 
 #[test]
+fn a_sent_reply_marks_the_original_replied() {
+    let mut config = reply_config();
+    config.mail.fast_reply = true;
+    let (mut f, out) = sending_fixture(config);
+    let replied = |f: &Fixture| {
+        f.session
+            .msgs
+            .iter()
+            .find(|m| m.env.subject == "one")
+            .is_some_and(|m| m.env.file.flags.answered)
+    };
+    let reply = |f: &mut Fixture| {
+        f.select("one");
+        let ask = f.session.start_compose(crate::ComposeKind::Reply);
+        f.answer_key(ask, 'n');
+        let draft = draft_from_requests(&mut f.session);
+        // What the editor would have done: a line of reply.
+        let mut text = fs::read_to_string(&draft.path).unwrap();
+        text.push_str("thanks\n");
+        fs::write(&draft.path, text).unwrap();
+        f.session.set_draft(draft);
+    };
+    // A send that fails leaves the original as it was.
+    let sendmail = out.path().join("sendmail");
+    let working = fs::read_to_string(&sendmail).unwrap();
+    fs::write(&sendmail, "#!/bin/sh\nexit 1\n").unwrap();
+    reply(&mut f);
+    assert!(f.session.send_draft().is_none());
+    assert!(f.log.said("send failed"), "{}", f.log.last_text());
+    assert!(!replied(&f), "nothing went out");
+    // The draft comes back; sent this time, the original is replied,
+    // and the sync writes the mark to the file.
+    fs::write(&sendmail, working).unwrap();
+    assert!(f.session.send_draft().is_none());
+    assert!(f.log.said("message sent"), "{}", f.log.last_text());
+    assert!(replied(&f), "the original is marked replied");
+    f.session.sync(true);
+    let path = f.path_of("one");
+    assert!(
+        path.to_string_lossy().ends_with(":2,R"),
+        "the R flag is on disk: {}",
+        path.display()
+    );
+}
+
+#[test]
 fn the_envelope_reaches_sendmail() {
     let mut config = reply_config();
     config.mail.use_envelope_from = true;
