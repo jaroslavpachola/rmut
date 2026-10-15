@@ -520,8 +520,10 @@ L = "l~f jane<enter>"
         lambda: not any("1751750100" in f for f in os.listdir(os.path.join(md, "cur"))),
         desc="deleted file removed",
     )
-    # help screen shows the remapped key and, after paging, the patterns
+    # help screen opens with the index marks, shows the remapped key
+    # and, after paging, the patterns
     r.keys(b"?")
+    r.expect("N new", "+ only to you")
     r.expect("write changes to the maildir")
     r.keys(b"\x1b[F")  # End: the patterns block sits at the bottom
     r.expect("~p addressed to me")

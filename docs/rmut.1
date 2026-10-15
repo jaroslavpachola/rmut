@@ -1,4 +1,4 @@
-.TH RMUT 1 "October 2026" "rmut 2.19.2" "User Commands"
+.TH RMUT 1 "October 2026" "rmut 2.20.0" "User Commands"
 .SH NAME
 rmut \- a mutt-like terminal mail client
 .SH SYNOPSIS
@@ -168,7 +168,9 @@ The bindings below are the defaults; the
 .B [keys]
 configuration remaps them, macros may shadow them, and
 .B ?
-always shows the live keymap.
+always shows the live keymap, below a legend of the index marks (see
+.B %Z
+under FORMAT STRINGS).
 An Alt key can be typed the way mutt spells it, as Esc and then the
 key: in the index, the pager and the compose menu an Esc waits for the
 next key and makes it the Alt binding however slowly it follows, so
@@ -1774,7 +1776,17 @@ truncates.
 .B %C
 number,
 .B %Z
-status/flag/mark characters (the mark is mutt's to_chars:
+status/flag/mark characters, one each, the first that applies: status
+.B N
+new,
+.B O
+old (unread),
+.B r
+replied,
+.B D
+deleted; flag
+.B !
+flagged; and the mark, mutt's to_chars:
 .B +
 sole recipient,
 .B T

@@ -129,6 +129,18 @@ line is where prompts, notes and errors go, so the status bar always
 says which mailbox you are in and what is in it, whatever else is
 happening.
 
+The three characters after the number on each index row (`%Z` in
+`index_format`) are mutt's marks, and `?` lists them above the keys:
+
+| Place     | Characters                                                   |
+|-----------|--------------------------------------------------------------|
+| status    | `N` new, `O` old (unread), `r` replied, `D` deleted          |
+| flag      | `!` flagged                                                  |
+| recipient | `+` only to you, `T` to you and others, `C` cc to you, `F` from you, `L` to a subscribed list, `*` tagged |
+
+One character shows per place, the first that applies in the order
+listed, so a deleted reply shows `D` and a tagged message `*`.
+
 ## Keys
 
 Index: `j`/`k` move, `Enter` view, `=`/`*` first/last, PgUp/PgDn or
@@ -1090,9 +1102,10 @@ print_confirm = "ask-no"     # mutt's $print: "ask-yes" makes Enter
 
 [index]
 format = "%4C %Z %-6d %-15.15L (%?l?%4l&%4c?) %s"   # mutt's default
-                                         # %Z status/flag/mark, where
-                                         # the mark is mutt's to_chars:
-                                         # + sole recipient, T one of
+                                         # %Z status/flag/mark (see
+                                         # The screen: N new, O old,
+                                         # r replied, D deleted; ! flag;
+                                         # + only to me, T one of
                                          # several, C on the Cc, F sent
                                          # by me, L to a subscribed list
                                          # %F from (%L: "To <list>" for

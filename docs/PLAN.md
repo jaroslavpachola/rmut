@@ -2609,7 +2609,7 @@ asked for as the default here anyway.
       and the close button; an egui test for q and the close button;
       the five e2e scenarios that quit with q answer the question
 
-## R103: triage by an outside command (asked for by name, 2026-10-14)
+## R103: triage by an outside command (done, 2.20.0; asked for by name, 2026-10-14)
 
 Goal: a digest of the mailbox and proposed marks from an LLM, with
 rmut knowing nothing about LLMs. `[mail] triage_command` is any
@@ -2646,6 +2646,22 @@ visible messages.
       IMAP; tag then `;s` does it meanwhile), and remembering what
       was already triaged, by Message-ID, so a rerun sends only the
       new mail
+
+## R104: the index marks explained (done, 2.20.0; asked for by name, 2026-10-15)
+
+Goal: the letters in an index row's second column say what they mean
+somewhere a user will look. The recipient marks (`+ T C F L`) were
+explained only inside the man page's `%Z` entry and two README
+asides, and the status letters (`N O r D`) and `!` nowhere at all.
+
+- [x] `?` opens with a legend of the three `%Z` characters (status,
+      flag, recipient) above the keys, in both front ends, since both
+      draw `Keymap::help_lines`
+- [x] Docs: a table under The screen in the README, the status and
+      flag characters in the man page's `%Z` entry, and the KEYS
+      intro pointing at the legend
+- [x] Tests: help_opens_with_the_index_marks, and scenario_config
+      checks the legend on its `?` screen
 
 ## The 2.0 cut (decided 2026-08-27)
 
@@ -3072,6 +3088,16 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.20.0 (released 2026-10-15)
+
+R103, triage by an outside command: Alt+i hands the visible messages
+to `[mail] triage_command` (`claude -p`, `llm`, `ollama run`...) and
+shows its digest and proposed flag/read/tag/label marks for review
+before anything applies. R104: `?` opens with a legend of the index
+marks (`N` new, `O` old, `r` replied, `D` deleted, `!` flagged, and
+`+ T C F L *` for how the mail reaches you), and the README and man
+page explain them too.
 
 ## 2.19.2 (released 2026-10-14)
 

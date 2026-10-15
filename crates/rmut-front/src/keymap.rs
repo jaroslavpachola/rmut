@@ -681,7 +681,21 @@ impl Keymap {
 
     /// Lines for the help screen, grouped and ordered by action.
     pub fn help_lines(&self) -> Vec<String> {
-        let mut lines = vec!["Index keys".to_string(), String::new()];
+        // What the three %Z characters in an index row mean, first:
+        // the letters are mutt's, and nothing else on screen says.
+        let mut lines: Vec<String> = [
+            "Index marks (%Z: status, flag, recipient)",
+            "",
+            "  status     N new   O old (unread)   r replied   D deleted",
+            "  flag       ! flagged",
+            "  recipient  + only to you   T to you and others   C cc to you",
+            "             F from you   L to a subscribed list   * tagged",
+            "",
+            "Index keys",
+            "",
+        ]
+        .map(String::from)
+        .to_vec();
         for &action in Function::all() {
             let keys: Vec<String> = self
                 .index
@@ -839,6 +853,31 @@ mod tests {
         let help = map.help_lines().join("\n");
         assert!(help.contains("Index macros"), "{help}");
         assert!(help.contains("l~f jane<enter>"), "{help}");
+    }
+
+    #[test]
+    fn help_opens_with_the_index_marks() {
+        let (map, _) = Keymap::with_config(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let help = map.help_lines();
+        assert!(help[0].starts_with("Index marks"), "{help:?}");
+        let marks = help[..help.iter().position(|l| l == "Index keys").unwrap()].join("\n");
+        for mark in [
+            "N new",
+            "r replied",
+            "D deleted",
+            "! flagged",
+            "+ only to you",
+            "C cc to you",
+            "L to a subscribed list",
+            "* tagged",
+        ] {
+            assert!(marks.contains(mark), "{mark}: {marks}");
+        }
     }
 
     #[test]
