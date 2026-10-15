@@ -3108,6 +3108,16 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.20.2 (released 2026-10-15)
+
+A reply to an IMAP message not yet opened quotes it. The cache holds
+such a message as headers only until it is read, and the reply quoted
+that file, so the draft carried the attribution line and nothing
+under it; a forward quoted or attached the same empty message. Every
+read of a message's body now fetches it first, as opening it always
+did. scenario_imap replies to a message it never opened, and checks
+the quote and the Answered flag the sync stores.
+
 ## 2.20.1 (released 2026-10-15)
 
 R105: a reply you send marks the message it answers replied, as mutt

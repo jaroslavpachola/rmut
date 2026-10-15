@@ -3957,26 +3957,39 @@ impl Session {
         }
     }
 
-    /// Fetch (IMAP), parse, and PGP-process a message the way the
-    /// pager shows it.
-    pub fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
+    /// The body of a cached IMAP message that holds headers only,
+    /// fetched now and waited for. Anything that reads a message's
+    /// body comes through here first; a header-only file read as the
+    /// message gives an empty body, and a reply quoting nothing.
+    pub(crate) fn fetch_body(&mut self, path: &Path) -> Result<()> {
+        if self.imap.is_none() || !remote::is_partial(path) {
+            return Ok(());
+        }
         // One connection, one conversation: whatever the tick has in
         // flight is collected first, so the answer waited for is this
         // job's own.
         self.settle();
-        // Cached IMAP messages start header-only; get the body now.
-        if remote::is_partial(path)
-            && let Some(imap) = &mut self.imap
-        {
+        if !remote::is_partial(path) {
+            return Ok(());
+        }
+        if let Some(imap) = &mut self.imap {
             imap.blocking(Job::FetchBodies(vec![path.to_path_buf()]))
                 .context("cannot fetch message")?;
-            // The body is here now: %l can show its line count.
-            if let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
-                && let Ok(raw) = std::fs::read(path)
-            {
-                m.env.lines = Some(message::body_lines(&raw));
-            }
         }
+        // The body is here now: %l can show its line count.
+        if let Some(m) = self.msgs.iter_mut().find(|m| m.env.file.path == path)
+            && let Ok(raw) = std::fs::read(path)
+        {
+            m.env.lines = Some(message::body_lines(&raw));
+        }
+        Ok(())
+    }
+
+    /// Fetch (IMAP), parse, and PGP-process a message the way the
+    /// pager shows it.
+    pub fn load_view(&mut self, path: &Path) -> Result<message::MessageView> {
+        self.settle();
+        self.fetch_body(path)?;
         let mut view = message::load_with(path, &self.display)?;
         // PGP messages: decrypt/verify via gpg, prepend the verdict
         // line to whatever body ends up shown.
@@ -4022,6 +4035,7 @@ impl Session {
     /// the pager shows, a reply quotes and the attachment menu lists
     /// all come from here, so they agree.
     pub fn readable(&mut self, path: &Path) -> Result<Vec<u8>> {
+        self.fetch_body(path)?;
         let stamp = std::fs::metadata(path).map(|m| (m.len(), m.modified().ok()));
         if let (Some((key, len, mtime, bytes)), Ok(stamp)) = (&self.opened, &stamp)
             && *key == mail_key(path)

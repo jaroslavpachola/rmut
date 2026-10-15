@@ -145,6 +145,15 @@ impl Session {
         part: Option<usize>,
         mail_key: Option<(String, String)>,
     ) -> Option<Ask> {
+        // The original is quoted or attached further on: a cached IMAP
+        // message that holds headers only would give an empty quote,
+        // or attach as a message without its body.
+        if let Some(b) = &base
+            && let Err(err) = self.fetch_body(&b.path)
+        {
+            self.error(format!("{err:#}"));
+            return None;
+        }
         // mutt's $autoedit (with edit_headers): no prompts, no
         // questions: the defaults land in the draft and the editor
         // opens; everything stays editable there and in the menu.

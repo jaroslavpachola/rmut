@@ -931,18 +931,36 @@ smtp_tls = false
     imap.idle_push = True
     r.expect("remote three", "Msgs:2", timeout=8)
     assert any("IDLE" in c for c in imap.commands), "client never idled"
-    # Compose: SMTP submission plus Fcc via APPEND to Sent.
-    r.keys(b"m")
+    # Compose: SMTP submission plus Fcc via APPEND to Sent. A reply to
+    # the message never opened, whose cache file holds headers only:
+    # the body is fetched for the quote rather than quoted as nothing.
+    r.keys(b"/three\r")
+    r.keys(b"r")
     r.expect("To:")
-    r.keys(b"bob@example.org\rimap send\ry")
+    r.keys(b"\r")
+    r.expect("Subject:")
+    r.keys(b"\r")
+    r.expect("Include message in reply?")
+    r.keys(b"y")
+    r.expect("y:Send")
+    r.keys(b"y")
     r.expect("message sent, copy in Sent")
     wait_for(lambda: smtp.message is not None, desc="message on the SMTP server")
-    assert "Subject: imap send" in smtp.message
+    assert "Subject: Re: remote three" in smtp.message
+    assert "> body three" in smtp.message, smtp.message
     assert "smtp body line" in smtp.message
     assert any("MAIL FROM:<alex@example.com>" in c for c in smtp.commands)
-    assert any("RCPT TO:<bob@example.org>" in c for c in smtp.commands)
+    assert any("RCPT TO:<three@remote.example>" in c for c in smtp.commands)
     wait_for(lambda: imap.appended, desc="Fcc APPEND on the IMAP server")
-    assert "Subject: imap send" in imap.appended[0]
+    assert "Subject: Re: remote three" in imap.appended[0]
+    # R105 on IMAP: the original is marked replied, and the sync
+    # stores the server's Answered flag.
+    r.keys(b"$")
+    r.expect("synced: 0 deleted, 1 updated")
+    wait_for(
+        lambda: "\\Answered" in imap.msgs[3][0],
+        desc="Answered stored on the server",
+    )
     # Folder browser lists the account's folders, named as mutt names
     # them under $folder: with one account, no imap:test/ in front.
     r.buf = ""
