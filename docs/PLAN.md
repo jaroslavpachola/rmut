@@ -2682,7 +2682,7 @@ set it, so only mail answered from another client ever showed `r`.
       then sent, then on disk after sync); scenario_reply_text syncs
       and looks for the R flag
 
-## R106: headless export (done, unreleased; asked for by name, 2026-10-22)
+## R106: headless export (done, 2.21.0; asked for by name, 2026-10-22)
 
 Goal: the messages a pattern finds, written out as records another
 program can take further, with no TUI. The digest itself stays
@@ -3163,6 +3163,23 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.21.0 (released 2026-10-22)
+
+R106, headless export: `rmut --export PATTERN` writes the messages a
+limit pattern matches (`all` for the whole folder) without the TUI,
+as JSON lines or Markdown (`--format jsonl|md`), to stdout or a file
+only you can read (`-o`), for an outside program to digest:
+`rmut --export '~b invoice ~d <30d' imap:work | claude -p '...'`.
+Each record carries the Message-ID, mailbox, file, UID, date, From,
+To, Cc, Subject, status, list, label, attachments and the decoded
+body without quoting or signature. It is read-only: nothing is
+marked read, nothing synced, encrypted mail stays encrypted. On IMAP
+a plain `~b` is searched on the server, a `~B` fetches the uncached
+bodies first so no match is missed, and a huge folder is exported
+whole rather than up to the 500 headers a first open mirrors.
+Message bodies now come from the server 50 per round trip instead of
+one, which speeds up triage, tagged pipe and print on IMAP too.
 
 ## 2.20.2 (released 2026-10-15)
 
@@ -3667,8 +3684,8 @@ value-per-effort:
   instant without notmuch
 - LLM triage by an outside command: shipped as R103 above (asked for
   by name, 2026-10-14)
-- Headless export for an outside digest: done as R106 above (asked
-  for by name, 2026-10-22)
+- Headless export for an outside digest: shipped as R106 above
+  (asked for by name, 2026-10-22)
 - Unified inbox: several accounts' inboxes merged into one live
   virtual mailbox (flagship-sized; after the parity rounds)
 - A GUI over the session library: planned above (G1-G5, 2026-08-27),
