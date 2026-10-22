@@ -13,6 +13,7 @@ use crate::app::App;
 const USAGE: &str =
     "usage: rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
        rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] [-e CMD]... -- ADDR...
+       rmut --export PATTERN [-o FILE] [--format jsonl|md] [-e CMD]... [-f MAILBOX]
        rmut --import-muttrc [-w] [MUTTRC]   (-V version, -h help)
 
 Reading:
@@ -38,6 +39,17 @@ Sending without the TUI (identity, SMTP or sendmail from the config):
 The body is stdin, the recipients are the remaining arguments, and -e
 applies config settings (bind/macro/exec need the TUI and are ignored).
 The exit code says whether the message went out.
+
+Exporting without the TUI (read-only: no flag changes, no sync):
+--export  write the messages PATTERN matches (a limit pattern; `all`
+          for every one) from the mailbox, in the index's order
+-o        write to FILE (readable by its owner only) instead of
+          stdout
+--format  jsonl (the default: one JSON object per message, with
+          message_id, mailbox, file, uid, date, timestamp, from, to,
+          cc, subject, status, list, label, attachments, body) or md
+The body is the decoded text, HTML as text, without quoting or the
+signature; encrypted mail is not decrypted. The count goes to stderr.
 
 --import-muttrc translates a muttrc (default ~/.muttrc or
 ~/.mutt/muttrc) into rmut TOML on stdout, for review and saving as
@@ -79,6 +91,12 @@ struct Cli {
     mailto: Option<rmut_core::mailto::Mailto>,
     /// -s/-c/-b/-a/-i, or a bare `--`: send instead of opening a mailbox.
     send_mode: bool,
+    /// `--export PATTERN`: write the matches out instead of opening.
+    export: Option<String>,
+    /// `-o FILE` with --export.
+    output: Option<PathBuf>,
+    /// `--format` with --export.
+    format: Option<String>,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
@@ -119,9 +137,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
                 std::process::exit(0);
             }
             "--import-muttrc" => cli.import = true,
+            "--export" => cli.export = Some(value("--export")?),
+            "--format" => cli.format = Some(value("--format")?),
             "-w" | "--write" => cli.write = true,
             _ if arg.starts_with("-e") => cli.commands.push(value("-e")?),
             _ if arg.starts_with("-f") => cli.spec = Some(value("-f")?),
+            _ if arg.starts_with("-o") => cli.output = Some(expand_tilde(&value("-o")?)),
             _ if arg.starts_with("-s") => {
                 cli.subject = Some(value("-s")?);
                 cli.send_mode = true;
@@ -155,6 +176,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
     {
         cli.mailto = Some(parsed);
         return Ok(cli);
+    }
+    if cli.export.is_some() && cli.send_mode {
+        bail!("--export reads mail; it does not take -s/-c/-b/-a/-i or --\n{USAGE}");
+    }
+    if (cli.output.is_some() || cli.format.is_some()) && cli.export.is_none() {
+        bail!("-o and --format go with --export\n{USAGE}");
     }
     if cli.send_mode {
         cli.recipients = positional;
@@ -191,6 +218,9 @@ fn run() -> Result<ExitCode> {
     }
     if cli.send_mode {
         return send_batch(&mut config, &cli);
+    }
+    if let Some(pattern) = &cli.export {
+        return export(config, &cli, pattern);
     }
     let spec = match cli.spec.clone() {
         Some(s) => s,
@@ -257,12 +287,7 @@ fn run() -> Result<ExitCode> {
 fn send_batch(config: &mut rmut_core::config::Config, cli: &Cli) -> Result<ExitCode> {
     // -e still applies, for the config half a send can honor
     // (identity, sendmail, copy); the rest needs a running TUI.
-    for line in &cli.commands {
-        for cmd in rmut_core::command::parse(line).map_err(|e| anyhow::anyhow!("{e}"))? {
-            rmut_core::command::apply(config, &cmd).map_err(|e| anyhow::anyhow!("{e}"))?;
-        }
-    }
-    config.expand_folders();
+    apply_commands(config, &cli.commands)?;
     let out = batch::Outgoing {
         to: cli.recipients.join(", "),
         cc: cli.cc.clone(),
@@ -273,6 +298,79 @@ fn send_batch(config: &mut rmut_core::config::Config, cli: &Cli) -> Result<ExitC
     };
     let note = batch::send(config, &out)?;
     eprintln!("rmut: {note}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `-e` without the TUI: the config settings apply, and bind, macro
+/// and exec, which need a running screen, are ignored.
+fn apply_commands(config: &mut rmut_core::config::Config, commands: &[String]) -> Result<()> {
+    for line in commands {
+        for cmd in rmut_core::command::parse(line).map_err(|e| anyhow::anyhow!("{e}"))? {
+            rmut_core::command::apply(config, &cmd).map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+    }
+    config.expand_folders();
+    Ok(())
+}
+
+/// `--export`: open the mailbox, take what the pattern matches, and
+/// write it out, with no terminal work and nothing written back.
+fn export(mut config: rmut_core::config::Config, cli: &Cli, pattern: &str) -> Result<ExitCode> {
+    use rmut_session::export::{Format, render};
+    let format = match cli.format.as_deref() {
+        None => Format::Jsonl,
+        Some(name) => Format::parse(name)
+            .ok_or_else(|| anyhow::anyhow!("--format is jsonl or md, not {name}"))?,
+    };
+    apply_commands(&mut config, &cli.commands)?;
+    let spec = match cli.spec.clone() {
+        Some(s) => s,
+        None => default_mailbox(&config)?,
+    };
+    // The open's progress, where someone is watching; a pipe or a
+    // cron log gets the count alone.
+    let tty = unsafe { libc::isatty(2) } == 1;
+    let progress = Box::new(move |line: &str| {
+        if tty {
+            eprint!("\r\x1b[K{line}");
+        }
+    });
+    let opened = rmut_session::Session::open_spec(&spec, config, progress);
+    if tty {
+        eprint!("\r\x1b[K");
+    }
+    let (mut session, _warnings) = opened.with_context(|| format!("cannot open {spec}"))?;
+    session.read_only = true;
+    session.read_only_session = true;
+    let records = session.export(pattern)?;
+    let text = render(&records, format);
+    match &cli.output {
+        Some(path) => {
+            // Written beside the target and renamed over it, so a
+            // failure leaves the last good export, not half of one.
+            let tmp = path.with_file_name(format!(
+                ".{}.rmut-tmp",
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
+            let _ = std::fs::remove_file(&tmp);
+            write_private(&tmp, &text)?;
+            std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
+            eprintln!(
+                "rmut: exported {} message(s) to {}",
+                records.len(),
+                path.display()
+            );
+        }
+        None => {
+            use std::io::Write as _;
+            std::io::stdout()
+                .write_all(text.as_bytes())
+                .context("writing the export")?;
+            eprintln!("rmut: exported {} message(s)", records.len());
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

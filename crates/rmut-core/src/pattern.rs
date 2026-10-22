@@ -771,6 +771,23 @@ pub fn body_terms(patterns: &[Pattern]) -> Vec<String> {
     out
 }
 
+/// Whether the pattern has a `~B` term anywhere: one no server
+/// search answers, so it reads each message's whole text from disk.
+pub fn mentions_whole(patterns: &[Pattern]) -> bool {
+    fn walk(p: &Pattern) -> bool {
+        match p {
+            Pattern::All(terms) | Pattern::Any(terms) => terms.iter().any(walk),
+            Pattern::Not(term)
+            | Pattern::Thread(term)
+            | Pattern::Parent(term)
+            | Pattern::Child(term) => walk(term),
+            Pattern::Whole(_) => true,
+            _ => false,
+        }
+    }
+    patterns.iter().any(walk)
+}
+
 /// Whether the pattern has a `~=` (duplicate) term anywhere: the
 /// Message-ID tally it needs costs a pass over the mailbox.
 pub fn mentions_duplicate(patterns: &[Pattern]) -> bool {

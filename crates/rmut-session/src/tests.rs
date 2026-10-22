@@ -3699,3 +3699,43 @@ fn triage_says_what_is_missing_or_failed() {
         f.log.last_text()
     );
 }
+
+#[test]
+fn export_writes_out_what_the_pattern_finds() {
+    let mut f = Fixture::new(&["first", "second", "third"]);
+    let quoted = f.path_of("second");
+    let text = fs::read_to_string(&quoted).unwrap().replace(
+        "body of second\n",
+        "the total is 10\n\n> what is the total?\n> asked before\n\n-- \nJane\n",
+    );
+    fs::write(&quoted, text).unwrap();
+    let before: Vec<PathBuf> = ["first", "second", "third"]
+        .iter()
+        .map(|s| f.path_of(s))
+        .collect();
+
+    let records = f.session.export("~b total | ~s third").unwrap();
+    let subjects: Vec<&str> = records.iter().map(|r| r.subject.as_str()).collect();
+    assert_eq!(subjects, ["second", "third"]);
+    let r = &records[0];
+    assert_eq!(r.message_id.as_deref(), Some("<m1@example.com>"));
+    assert_eq!(r.from, "Sender 1 <s1@example.com>");
+    assert_eq!(r.to, ["me@example.com"]);
+    assert_eq!(r.date.as_deref(), Some("Mon, 11 Mar 2024 10:00:00 +0000"));
+    assert!(r.timestamp > 0);
+    assert_eq!(r.status, ["unread"]);
+    assert_eq!(r.uid, None);
+    assert_eq!(r.body, "the total is 10\n", "quote and signature dropped");
+    assert_eq!(r.mailbox, f.session.title);
+
+    // Everything, and nothing at all: neither is an error.
+    assert_eq!(f.session.export("all").unwrap().len(), 3);
+    assert!(f.session.export("~s nowhere").unwrap().is_empty());
+    let err = f.session.export("~(").unwrap_err().to_string();
+    assert!(err.starts_with("bad pattern"), "{err}");
+
+    // Read-only work: no file was renamed (no flag was written).
+    for path in before {
+        assert!(path.exists(), "{} moved", path.display());
+    }
+}

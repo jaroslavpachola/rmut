@@ -199,6 +199,16 @@ fn parse(out: &str, sent: &[Sent]) -> Triage {
 /// quoted lines and the signature gone, blank runs squeezed, cut to
 /// size.
 fn excerpt(text: &str, quote_re: &regex_lite::Regex) -> String {
+    cleaned(text, quote_re, BODY_LINES, BODY_CHARS)
+}
+
+/// [`excerpt`] with the size given: export takes the whole body.
+pub(crate) fn cleaned(
+    text: &str,
+    quote_re: &regex_lite::Regex,
+    max_lines: usize,
+    max_chars: usize,
+) -> String {
     let text = if text.trim_start().starts_with('<') {
         html::to_text(text)
     } else {
@@ -223,7 +233,7 @@ fn excerpt(text: &str, quote_re: &regex_lite::Regex) -> String {
         } else {
             blank = false;
         }
-        if lines == BODY_LINES || out.len() + line.len() > BODY_CHARS {
+        if lines == max_lines || out.len().saturating_add(line.len()) > max_chars {
             out.push_str("[…]\n");
             break;
         }

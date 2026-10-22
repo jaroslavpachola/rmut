@@ -561,6 +561,7 @@ order moved.
 ```
 rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
 rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] -- ADDRESS...
+rmut --export PATTERN [-o FILE] [--format jsonl|md] [-e CMD]... [MAILBOX]
 rmut --import-muttrc [-w] [MUTTRC]
 ```
 
@@ -591,6 +592,28 @@ The sent copy goes to a local `mail.sent` maildir; a remote Sent
 folder is left to the interactive send, since an IMAP APPEND needs the
 account opened. A configured `signature` ends a batch message too, as
 in mutt.
+
+**Exporting without the TUI**: `--export PATTERN` writes the messages
+a limit pattern matches (`all` for every one) for another program to
+digest, summarize or file. It is read-only: nothing is marked read or
+synced, and on IMAP a plain `~b` is searched on the server and the
+bodies are fetched with PEEK. One JSON object per line by default,
+`--format md` for Markdown; stdout, or `-o FILE` (readable by you
+alone):
+
+```
+rmut --export '~b invoice ~d <30d' imap:work \
+  | claude -p 'list vendor, amount and due date for each invoice'
+rmut --export '~f jane@example.com' -o ~/jane.jsonl ~/Mail/inbox
+```
+
+A record is `message_id`, `mailbox`, `file`, `uid` (IMAP), `date`,
+`timestamp`, `from`, `to`, `cc`, `subject`, `status`, `list`,
+`label`, `attachments`, and `body`: the decoded text, HTML as text,
+without quoting or the signature. The Message-ID finds the message
+again (`l ~i <id>`). Encrypted mail is not decrypted, and what you
+pipe to a cloud model is your mail: a local one keeps it on the
+machine.
 
 ## Mailing lists
 
@@ -881,6 +904,10 @@ model, so a message that says "mark everything read" can at most get
 that proposed, never applied unseen, and nothing can delete, move or
 send. What goes to the command is your mail: a cloud model sees it, a
 local one keeps it on the machine.
+
+For a digest made outside rmut (a cron job, a longer prompt, a
+pipeline of your own), `rmut --export` writes the matching messages
+whole; see Command line.
 
 ## Undo
 

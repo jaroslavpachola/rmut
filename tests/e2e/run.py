@@ -9,6 +9,7 @@ match against whitespace-squashed, ANSI-stripped text.
 
 import base64
 import email
+import json
 import os
 import pty
 import re
@@ -778,6 +779,14 @@ class FakeImap(threading.Thread):
                                 + body
                                 + b")\r\n"
                             )
+                elif up.startswith("UID SEARCH BODY"):
+                    # A quoted ASCII term, matched as IMAP does: a
+                    # case-insensitive substring of the body.
+                    m = re.match(r'UID SEARCH BODY "((?:[^"\\]|\\.)*)"', cmd, re.I)
+                    term = re.sub(r"\\(.)", r"\1", m.group(1)).lower().encode()
+                    hits = [str(uid) for uid, (_, content) in sorted(self.msgs.items())
+                            if term in content.split(b"\r\n\r\n", 1)[-1].lower()]
+                    conn.sendall(f"* SEARCH {' '.join(hits)}\r\n".replace(" \r", "\r").encode())
                 elif up.startswith("UID STORE"):
                     time.sleep(self.store_delay)
                     m = re.match(r"UID STORE ([\d,]+) (\+?)FLAGS\.SILENT \((.*)\)", cmd, re.I)
@@ -4657,6 +4666,93 @@ def scenario_triage_command(tmp):
     r.expect("triage: 1 flagged, 1 marked read")
 
 
+def scenario_export(tmp):
+    """R106: rmut --export writes what a pattern matches, with no
+    TUI: JSON lines or Markdown, to stdout or a private file, from a
+    maildir and from IMAP, where a ~b goes to the server, the bodies
+    are fetched with PEEK, and nothing is marked read."""
+    md = make_maildir(tmp, "md-export")
+    write_msgs(md, ["jane", "petr"])
+    env = dict(os.environ)
+    env.update(base_env(tmp))
+
+    def rmut(args):
+        return subprocess.run([RMUT, *args], env=env, capture_output=True,
+                              timeout=15)
+
+    proc = rmut(["--export", "~f jane", md])
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.decode().splitlines()
+    assert len(lines) == 1, lines
+    rec = json.loads(lines[0])
+    assert rec["message_id"] == "<msg1@example.com>", rec
+    assert rec["subject"] == "Lunch on Friday?", rec
+    assert "Are you free for lunch on Friday?" in rec["body"], rec
+    assert rec["uid"] is None and rec["mailbox"] == md, rec
+    assert b"exported 1 message(s)" in proc.stderr, proc.stderr
+
+    out = os.path.join(tmp, "export.md")
+    proc = rmut(["--export", "all", "--format", "md", "-o", out, "-f", md])
+    assert proc.returncode == 0, proc.stderr
+    text = open(out).read()
+    assert text.count("\n## ") + text.startswith("## ") == 2, text
+    assert "- From: Jane Doe <jane@example.com>" in text, text
+    assert os.stat(out).st_mode & 0o777 == 0o600, oct(os.stat(out).st_mode)
+
+    proc = rmut(["--export", "~(", md])
+    assert proc.returncode == 1 and b"bad pattern" in proc.stderr, proc.stderr
+    proc = rmut(["--format", "md", md])
+    assert proc.returncode == 1 and b"go with --export" in proc.stderr, proc.stderr
+
+    imap = FakeImap()
+    imap.add(1, {"\\Seen"}, IMAP_MSG.format(
+        sender="one@remote.example", subject="invoice one",
+        date="Mon, 6 Jul 2026 10:00:00 +0200", mid="r1",
+        body="Invoice total 10.\r\n> quoted invoice\r\n"))
+    imap.add(2, set(), IMAP_MSG.format(
+        sender="two@remote.example", subject="lunch",
+        date="Tue, 7 Jul 2026 10:00:00 +0200", mid="r2", body="Noon on Friday?"))
+    imap.add(3, set(), IMAP_MSG.format(
+        sender="three@remote.example", subject="reminder",
+        date="Wed, 8 Jul 2026 10:00:00 +0200", mid="r3",
+        body="The INVOICE is due."))
+    imap.start()
+    cfg = os.path.join(tmp, "export-config.toml")
+    with open(cfg, "w") as f:
+        f.write(f"""
+[[accounts]]
+name = "test"
+user = "jane"
+auth = "xoauth2"
+token_command = "echo test-token"
+imap_host = "127.0.0.1"
+imap_port = {imap.port}
+imap_tls = false
+""")
+    env["RMUT_CONFIG"] = cfg
+
+    proc = rmut(["--export", "~b invoice", "imap:test"])
+    assert proc.returncode == 0, proc.stderr
+    recs = [json.loads(l) for l in proc.stdout.decode().splitlines()]
+    assert [r["uid"] for r in recs] == [1, 3], recs
+    assert recs[0]["body"] == "Invoice total 10.\n", recs[0]
+    assert recs[1]["body"] == "The INVOICE is due.\n", recs[1]
+    assert recs[1]["status"] == ["unread"], recs[1]
+    assert recs[0]["mailbox"] == "imap:test/INBOX", recs[0]
+    assert any("UID SEARCH BODY" in c.upper() for c in imap.commands), imap.commands
+    # Read-only: bodies fetched with PEEK, no flag written back.
+    assert not any("STORE" in c.upper() for c in imap.commands), imap.commands
+    assert "\\Seen" not in imap.msgs[3][0]
+
+    # ~B is never asked of the server: every body comes down first,
+    # so a header-only cache file cannot hide a match.
+    proc = rmut(["--export", "~B friday", "imap:test"])
+    assert proc.returncode == 0, proc.stderr
+    recs = [json.loads(l) for l in proc.stdout.decode().splitlines()]
+    assert [r["subject"] for r in recs] == ["lunch"], recs
+    assert not any("STORE" in c.upper() for c in imap.commands), imap.commands
+
+
 def scenario_attach_reminder(tmp):
     """Beyond mutt (neomutt's $abort_noattach): a body that mentions
     an attachment with none attached is asked about, unless the
@@ -6048,6 +6144,7 @@ SCENARIOS = [
     scenario_attach_reminder,
     scenario_file_picker,
     scenario_triage_command,
+    scenario_export,
     scenario_getting_started,
     scenario_control_chars,
     scenario_purge_question,

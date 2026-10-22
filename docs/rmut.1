@@ -23,6 +23,16 @@ rmut \- a mutt-like terminal mail client
 .B \-\-
 .IR ADDRESS ...
 .br
+.B rmut \-\-export
+.I PATTERN
+.RB [ \-o
+.IR FILE ]
+.RB [ \-\-format
+.BR jsonl | md ]
+.RB [ \-e
+.IR CMD ]...
+.RI [ MAILBOX ]
+.br
 .B rmut \-\-import\-muttrc
 .RI [ MUTTRC ]
 .br
@@ -111,6 +121,47 @@ reads the body from a file instead of standard input. Any of these
 flags, or a bare
 .BR \-\- ,
 puts rmut in send mode.
+.TP
+.BI \-\-export " PATTERN"
+Write the messages PATTERN matches out, without starting the
+interface, for another program to take further. The pattern is a
+limit pattern (see
+.BR PATTERNS );
+.B all
+takes every message. The mailbox opens as for reading, read-only:
+nothing is marked read, nothing is synced. On IMAP a plain
+.B ~b
+term goes to the server, and bodies the cache holds as headers only
+are fetched (with BODY.PEEK) before they are written; a
+.BR ~B ,
+or a
+.B ~b
+the server does not answer, fetches every such body first, so the
+match never misses one. The messages go out in the index's sort
+order;
+.B \-e
+applies configuration first, as in send mode. The count goes to
+standard error.
+.IP
+Each record carries message_id, mailbox, file (on IMAP, the cache
+copy), uid (IMAP only), date (the header as written), timestamp (Unix
+seconds), from, to, cc, subject, status (unread, replied, flagged),
+list, label, attachments (names, or types), and body: the decoded
+text, HTML as text, without quoting or the signature. Encrypted mail
+is not decrypted.
+.TP
+.BI \-o " FILE"
+With
+.BR \-\-export :
+write to FILE instead of standard output. The file is readable by its
+owner only; it is written beside FILE and renamed over it, so a
+failure leaves the previous export as it was.
+.TP
+.BR \-\-format " jsonl" | md
+With
+.BR \-\-export :
+one JSON object per line (the default), or Markdown, a heading per
+message with its headers and its body in a fence.
 .TP
 .BI mailto: URL
 Open a draft prefilled from an RFC 6068 URL (to, cc, bcc, subject,
@@ -793,6 +844,9 @@ where m\fIN\fR is the message's place in what was sent. A limit
 narrows what goes; IMAP bodies the cache holds as headers only are
 fetched first; the command runs in the background, and the review
 comes up when it answers.
+.B rmut \-\-export
+writes the same kind of material, uncut, for a command run outside
+rmut.
 .PP
 The review shows the digest, then every proposal, ticked.
 .B t

@@ -26,6 +26,7 @@ use rmut_core::{alias, compose, hdrcache, maildir, mbox, message, pgp, smtp, thr
 mod ask;
 mod commands;
 mod drafts;
+pub mod export;
 mod function;
 #[cfg(test)]
 mod tests;
