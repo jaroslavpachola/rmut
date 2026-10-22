@@ -2682,6 +2682,41 @@ set it, so only mail answered from another client ever showed `r`.
       then sent, then on disk after sync); scenario_reply_text syncs
       and looks for the R flag
 
+## R106: headless export (asked for by name, 2026-10-22)
+
+Goal: the messages a pattern finds, written out as records another
+program can take further, with no TUI. The digest itself stays
+outside, as in R103: `rmut --export '~b invoice ~d <30d' | claude -p
+"..."` is the whole integration, and rmut knows nothing about LLMs.
+
+- [ ] `rmut --export PATTERN [-f MAILBOX] [-o FILE] [--format
+      jsonl|md]`: the mailbox opens as it would for reading
+      (maildir, mbox, IMAP), read-only, the pattern applies as a
+      limit does (a plain `~b` answered by the server on IMAP), and
+      every match goes out in the index's sort order. `all` (or `~A`)
+      takes everything. `-e` applies config commands first, as in
+      send mode. Nothing is written to the mailbox: no flags, no
+      sync, and IMAP bodies are fetched with BODY.PEEK
+- [ ] A record: Message-ID, mailbox, file (the cache file on IMAP)
+      and UID, the Date header and its Unix time, From, To, Cc,
+      Subject, status (unread/replied/flagged), List, Label, the
+      attachments' names, and the body: decoded, HTML as text, the
+      quoting and signature dropped as for triage, but not cut short
+- [ ] jsonl (the default): one JSON object per line. md: a heading
+      per message, its headers, its body, for reading or for a model
+      that prefers prose
+- [ ] Output: stdout, or `-o FILE`, created only its owner can read
+      (it is mail). The count goes to stderr; a bad pattern or a
+      body the server would not hand over is an error exit, and no
+      file is left half written
+- [ ] Encrypted mail is not decrypted: export never runs gpg, so
+      nothing leaves encrypted that was not already readable
+- [ ] Docs: the usage text, the man page, the README
+- [ ] Tests: the records and both formats over a maildir; a pattern
+      that matches nothing; a bad pattern; e2e scenario_export over
+      a maildir and over the fake IMAP server (a server-side `~b`,
+      bodies fetched, nothing marked read)
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this
