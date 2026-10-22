@@ -349,7 +349,8 @@ fn worth_showing(href: &str, text: &str) -> bool {
 
 /// The value of `name=` in a tag's innards, quotes stripped.
 fn attr(inner: &str, name: &str) -> Option<String> {
-    let lower = inner.to_lowercase();
+    // ASCII only, so offsets found in `lower` are valid in `inner`.
+    let lower = inner.to_ascii_lowercase();
     let mut from = 0;
     loop {
         let i = lower[from..].find(name)? + from;
@@ -385,7 +386,8 @@ fn decode_entities(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let semi = rest[..rest.len().min(32)].find(';');
+        // Bytes, so the 32-byte window may end inside a multibyte character.
+        let semi = rest.bytes().take(32).position(|b| b == b';');
         let Some(semi) = semi else {
             out.push('&');
             rest = &rest[1..];
@@ -464,6 +466,16 @@ mod tests {
     fn entities_decode_and_unknown_stay() {
         let text = to_text("<p>Hello &amp; goodbye &lt;3 &#65; &#x42; &unknown; &rsquo;</p>");
         assert_eq!(text, "Hello & goodbye <3 A B &unknown; \u{2019}\n");
+    }
+
+    #[test]
+    fn multibyte_text_near_an_ampersand_or_attribute_does_not_panic() {
+        // The 32-byte entity window ends inside the \u{11b}.
+        let text = to_text("<p>a &aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{11b}; b</p>");
+        assert_eq!(text, "a &aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{11b}; b\n");
+        // \u{130} grows when lowercased, which shifted the offsets.
+        let text = to_text("<img title=\"\u{130}\u{130}\u{130}\" alt=\"Jane\">");
+        assert_eq!(text, "[Jane]\n");
     }
 
     #[test]
