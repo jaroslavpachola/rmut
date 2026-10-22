@@ -3174,6 +3174,15 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.22.1 (released 2026-10-22)
+
+Turning an HTML body into text could panic on a multibyte character
+(a Czech `ě` right where an `&` entity was looked for, or in a tag
+attribute), and the panic failed a whole `rmut --export`. Both spots
+are fixed, and the export no longer stops at one bad message: a body
+that cannot be read or converted leaves its record with an empty
+body and an `error` field, and a warning on stderr names it.
+
 ## 2.22.0 (released 2026-10-22)
 
 `rmut --export --no-body` stops each record at the headers (Message-ID,
