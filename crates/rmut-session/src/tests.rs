@@ -3752,4 +3752,14 @@ fn export_writes_out_what_the_pattern_finds() {
     for path in before {
         assert!(path.exists(), "{} moved", path.display());
     }
+
+    // A body that cannot be read leaves its record, named, and the
+    // rest of the export goes on.
+    fs::remove_file(f.path_of("first")).unwrap();
+    let records = f.session.export("all", true).unwrap();
+    assert_eq!(records.len(), 3);
+    let first = records.iter().find(|r| r.subject == "first").unwrap();
+    assert_eq!(first.body.as_deref(), Some(""));
+    assert!(first.error.is_some());
+    assert!(records.iter().filter(|r| r.error.is_none()).count() == 2);
 }

@@ -8,6 +8,7 @@
 //! gpg never runs here. The body is cleaned the way triage cleans it,
 //! but whole.
 
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
@@ -44,6 +45,10 @@ pub struct Record {
     pub attachments: Option<Vec<String>>,
     /// None with the bodies left out (`--no-body`).
     pub body: Option<String>,
+    /// Why the body and attachments came out empty, when reading or
+    /// converting them failed: the record still goes out, the export
+    /// does not stop at one bad message.
+    pub error: Option<String>,
 }
 
 /// How the records are written.
@@ -163,25 +168,14 @@ impl Session {
         if flags.flagged {
             status.push("flagged");
         }
-        let attachments = bodies.then(|| {
-            message::parts(path)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|p| p.filename.is_some() || !p.is_text)
-                .map(|p| p.filename.unwrap_or(p.mimetype))
-                .collect()
-        });
-        // The blank lines a dropped quote or signature leaves at the
-        // end are not the message's.
-        let body = bodies.then(|| {
-            message::body_text(path)
-                .map(|text| crate::triage::cleaned(&text, &self.quote_re, usize::MAX, usize::MAX))
-                .map(|text| match text.trim_end() {
-                    "" => String::new(),
-                    kept => format!("{kept}\n"),
-                })
-                .unwrap_or_default()
-        });
+        let (attachments, body, error) = if bodies {
+            match guarded(|| self.contents(path)) {
+                Ok((attachments, body)) => (Some(attachments), Some(body), None),
+                Err(err) => (Some(Vec::new()), Some(String::new()), Some(err)),
+            }
+        } else {
+            (None, None, None)
+        };
         Record {
             message_id: env.msg_id.clone(),
             mailbox: self.title.clone(),
@@ -198,6 +192,44 @@ impl Session {
             label: env.label.clone(),
             attachments,
             body,
+            error,
+        }
+    }
+
+    /// The attachments' names and the cleaned body text.
+    fn contents(&self, path: &std::path::Path) -> Result<(Vec<String>, String)> {
+        // A MIME tree that will not split still leaves the body text.
+        let attachments = message::parts(path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.filename.is_some() || !p.is_text)
+            .map(|p| p.filename.unwrap_or(p.mimetype))
+            .collect();
+        let text = message::body_text(path)?;
+        let text = crate::triage::cleaned(&text, &self.quote_re, usize::MAX, usize::MAX);
+        // The blank lines a dropped quote or signature leaves at the
+        // end are not the message's.
+        let body = match text.trim_end() {
+            "" => String::new(),
+            kept => format!("{kept}\n"),
+        };
+        Ok((attachments, body))
+    }
+}
+
+/// `f`'s result, with an error or a panic (a bug in reading some odd
+/// message) turned into its message.
+fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T, String> {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(format!("{err:#}")),
+        Err(payload) => {
+            let what = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown".into());
+            Err(format!("rmut bug: {what}"))
         }
     }
 }
@@ -232,6 +264,9 @@ fn json(r: &Record) -> String {
     }
     if let Some(body) = &r.body {
         tail.push_str(&format!(",\"body\":{}", quote(body)));
+    }
+    if let Some(error) = &r.error {
+        tail.push_str(&format!(",\"error\":{}", quote(error)));
     }
     format!(
         "{{\"message_id\":{},\"mailbox\":{},\"file\":{},\"uid\":{},\"date\":{},\
@@ -295,6 +330,7 @@ fn markdown(r: &Record) -> String {
         "Attachments",
         &r.attachments.as_deref().unwrap_or_default().join(", "),
     );
+    field("Error", r.error.as_deref().unwrap_or(""));
     out.push('\n');
     let Some(body) = &r.body else {
         return out;
@@ -370,6 +406,38 @@ mod tests {
             md.contains("````text\n# not a heading\n```\ncode\n```\n````\n"),
             "{md}"
         );
+    }
+
+    #[test]
+    fn a_failed_body_is_named_and_the_record_kept() {
+        let r = Record {
+            attachments: Some(Vec::new()),
+            body: Some(String::new()),
+            error: Some("rmut bug: oops".into()),
+            ..sample()
+        };
+        let line = render(std::slice::from_ref(&r), Format::Jsonl);
+        assert!(
+            line.ends_with(",\"body\":\"\",\"error\":\"rmut bug: oops\"}\n"),
+            "{line}"
+        );
+        let md = render(&[r], Format::Markdown);
+        assert!(md.contains("- Error: rmut bug: oops\n"), "{md}");
+    }
+
+    #[test]
+    fn a_panic_or_an_error_comes_back_as_its_message() {
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let caught = guarded::<()>(|| panic!("byte index 32 is not a char boundary"));
+        std::panic::set_hook(quiet);
+        assert_eq!(
+            caught,
+            Err("rmut bug: byte index 32 is not a char boundary".into())
+        );
+        let caught = guarded::<()>(|| Err(anyhow!("cannot read it")));
+        assert_eq!(caught, Err("cannot read it".into()));
+        assert_eq!(guarded(|| Ok(7)), Ok(7));
     }
 
     #[test]

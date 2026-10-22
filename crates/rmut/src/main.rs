@@ -350,6 +350,15 @@ fn export(mut config: rmut_core::config::Config, cli: &Cli, pattern: &str) -> Re
     session.read_only_session = true;
     let records = session.export(pattern, !cli.no_body)?;
     let text = render(&records, format);
+    // The record went out with an empty body and an error field.
+    for r in records.iter().filter(|r| r.error.is_some()) {
+        eprintln!(
+            "rmut: body left out of {} ({}): {}",
+            r.message_id.as_deref().unwrap_or("a message"),
+            r.subject,
+            r.error.as_deref().unwrap_or_default()
+        );
+    }
     match &cli.output {
         Some(path) => {
             // Written beside the target and renamed over it, so a

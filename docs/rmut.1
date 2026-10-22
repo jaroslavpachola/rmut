@@ -150,7 +150,9 @@ copy), uid (IMAP only), date (the header as written), timestamp (Unix
 seconds), from, to, cc, subject, status (unread, replied, flagged),
 list, label, attachments (names, or types), and body: the decoded
 text, HTML as text, without quoting or the signature. Encrypted mail
-is not decrypted.
+is not decrypted. A message whose body cannot be read or converted
+still gets its record, with an empty body and an error field saying
+why, and a warning on standard error; the export goes on.
 .TP
 .B \-\-no\-body
 With

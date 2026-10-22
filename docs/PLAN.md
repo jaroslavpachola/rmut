@@ -2710,6 +2710,10 @@ outside, as in R103: `rmut --export '~b invoice ~d <30d' | claude -p
       `Remote::fetch_bodies` asks 50 at a time (520 messages: 0.9 s
       against 20+), and the TUI's triage, tagged pipe and print
       fetches go through it too
+- [x] One bad message does not fail the export (2.22.1): reading and
+      converting a body runs guarded (an error or a panic), and the
+      record goes out with an empty body and an `error` key, plus a
+      warning on stderr
 - [x] `--no-body` (2.22.0, asked for by name): records without body
       and attachments, and on IMAP no body fetched for them, so a
       whole folder exports from the cache at once; the pattern's own
