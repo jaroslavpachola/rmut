@@ -561,7 +561,7 @@ order moved.
 ```
 rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
 rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] -- ADDRESS...
-rmut --export PATTERN [-o FILE] [--format jsonl|md] [-e CMD]... [MAILBOX]
+rmut --export PATTERN [--no-body] [-o FILE] [--format jsonl|md] [-e CMD]... [MAILBOX]
 rmut --import-muttrc [-w] [MUTTRC]
 ```
 
@@ -606,13 +606,17 @@ rmut --export '~b invoice ~d <30d' imap:work \
   | claude -p 'list vendor, amount and due date for each invoice'
 rmut --export '~f jane@example.com' -o ~/jane.jsonl ~/Mail/inbox
 rmut --export all -o ~/inbox.jsonl imap:work/INBOX   # the whole folder
+rmut --export all --no-body imap:work                 # headers only, at once
 ```
 
 A record is `message_id`, `mailbox`, `file`, `uid` (IMAP), `date`,
 `timestamp`, `from`, `to`, `cc`, `subject`, `status`, `list`,
 `label`, `attachments`, and `body`: the decoded text, HTML as text,
-without quoting or the signature. The Message-ID finds the message
-again (`l ~i <id>`). Encrypted mail is not decrypted, and what you
+without quoting or the signature. `--no-body` leaves body and
+attachments out, so on IMAP nothing is downloaded: list the subjects
+and IDs first, then export the few you need whole with `~i <id>`.
+The Message-ID finds the message again in the index too
+(`l ~i <id>`). Encrypted mail is not decrypted, and what you
 pipe to a cloud model is your mail: a local one keeps it on the
 machine.
 

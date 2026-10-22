@@ -4773,6 +4773,19 @@ imap_host = "127.0.0.1"
 imap_port = {big.port}
 imap_tls = false
 """)
+    # --no-body first, while no body is cached: the headers alone,
+    # and not one message downloaded.
+    proc = rmut(["--export", "all", "--no-body", "imap:big/INBOX"])
+    assert proc.returncode == 0, proc.stderr
+    recs = [json.loads(l) for l in proc.stdout.decode().splitlines()]
+    assert len(recs) == 520, len(recs)
+    assert all("body" not in r and "attachments" not in r for r in recs), recs[0]
+    assert recs[0]["subject"].startswith("bulk "), recs[0]
+    assert not any("BODY.PEEK[]" in c.upper() for c in big.commands), \
+        [c for c in big.commands if "BODY.PEEK[]" in c.upper()][:3]
+    proc = rmut(["--no-body", md])
+    assert proc.returncode == 1 and b"go with --export" in proc.stderr, proc.stderr
+
     proc = rmut(["--export", "all", "imap:big/INBOX"])
     assert proc.returncode == 0, proc.stderr
     recs = [json.loads(l) for l in proc.stdout.decode().splitlines()]

@@ -40,8 +40,10 @@ pub struct Record {
     pub list: Option<String>,
     pub label: Option<String>,
     /// Each attachment's file name, or its type when it has none.
-    pub attachments: Vec<String>,
-    pub body: String,
+    /// None with the bodies left out: it takes the whole message.
+    pub attachments: Option<Vec<String>>,
+    /// None with the bodies left out (`--no-body`).
+    pub body: Option<String>,
 }
 
 /// How the records are written.
@@ -68,7 +70,10 @@ impl Session {
     /// records. `all` (or an empty pattern) takes every message, as a
     /// limit does. IMAP bodies not yet cached are fetched first; one
     /// that cannot be is an error rather than a record without a body.
-    pub fn export(&mut self, pattern: &str) -> Result<Vec<Record>> {
+    /// Without `bodies` the records stop at the headers, and only what
+    /// the pattern itself has to read is fetched: on IMAP that is the
+    /// difference between the cache and the whole folder's mail.
+    pub fn export(&mut self, pattern: &str, bodies: bool) -> Result<Vec<Record>> {
         let pattern = pattern.trim();
         // Whatever the open left running goes first: one connection,
         // one conversation.
@@ -113,12 +118,14 @@ impl Session {
         }
         self.rebuild_visible(None);
         let targets = self.visible.clone();
-        let paths: Vec<PathBuf> = targets
-            .iter()
-            .map(|&i| self.msgs[i].env.file.path.clone())
-            .collect();
-        self.fetch_missing(&paths)?;
-        Ok(targets.iter().map(|&i| self.record(i)).collect())
+        if bodies {
+            let paths: Vec<PathBuf> = targets
+                .iter()
+                .map(|&i| self.msgs[i].env.file.path.clone())
+                .collect();
+            self.fetch_missing(&paths)?;
+        }
+        Ok(targets.iter().map(|&i| self.record(i, bodies)).collect())
     }
 
     /// The bodies of these messages that the IMAP cache holds as
@@ -142,7 +149,7 @@ impl Session {
         Ok(())
     }
 
-    fn record(&self, i: usize) -> Record {
+    fn record(&self, i: usize, bodies: bool) -> Record {
         let env = &self.msgs[i].env;
         let path = &env.file.path;
         let flags = env.file.flags;
@@ -156,21 +163,25 @@ impl Session {
         if flags.flagged {
             status.push("flagged");
         }
-        let attachments = message::parts(path)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|p| p.filename.is_some() || !p.is_text)
-            .map(|p| p.filename.unwrap_or(p.mimetype))
-            .collect();
+        let attachments = bodies.then(|| {
+            message::parts(path)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.filename.is_some() || !p.is_text)
+                .map(|p| p.filename.unwrap_or(p.mimetype))
+                .collect()
+        });
         // The blank lines a dropped quote or signature leaves at the
         // end are not the message's.
-        let body = message::body_text(path)
-            .map(|text| crate::triage::cleaned(&text, &self.quote_re, usize::MAX, usize::MAX))
-            .map(|text| match text.trim_end() {
-                "" => String::new(),
-                kept => format!("{kept}\n"),
-            })
-            .unwrap_or_default();
+        let body = bodies.then(|| {
+            message::body_text(path)
+                .map(|text| crate::triage::cleaned(&text, &self.quote_re, usize::MAX, usize::MAX))
+                .map(|text| match text.trim_end() {
+                    "" => String::new(),
+                    kept => format!("{kept}\n"),
+                })
+                .unwrap_or_default()
+        });
         Record {
             message_id: env.msg_id.clone(),
             mailbox: self.title.clone(),
@@ -213,10 +224,19 @@ fn json(r: &Record) -> String {
         format!("[{}]", items.join(","))
     };
     let status: Vec<String> = r.status.iter().map(|s| quote(s)).collect();
+    // Left out with the bodies, rather than null: a null body would
+    // read as an empty message.
+    let mut tail = String::new();
+    if let Some(attachments) = &r.attachments {
+        tail.push_str(&format!(",\"attachments\":{}", list(attachments)));
+    }
+    if let Some(body) = &r.body {
+        tail.push_str(&format!(",\"body\":{}", quote(body)));
+    }
     format!(
         "{{\"message_id\":{},\"mailbox\":{},\"file\":{},\"uid\":{},\"date\":{},\
          \"timestamp\":{},\"from\":{},\"to\":{},\"cc\":{},\"subject\":{},\
-         \"status\":[{}],\"list\":{},\"label\":{},\"attachments\":{},\"body\":{}}}",
+         \"status\":[{}],\"list\":{},\"label\":{}{tail}}}",
         opt(&r.message_id),
         quote(&r.mailbox),
         quote(&r.file.to_string_lossy()),
@@ -230,8 +250,6 @@ fn json(r: &Record) -> String {
         status.join(","),
         opt(&r.list),
         opt(&r.label),
-        list(&r.attachments),
-        quote(&r.body),
     )
 }
 
@@ -273,14 +291,20 @@ fn markdown(r: &Record) -> String {
     field("Status", &r.status.join(", "));
     field("List", r.list.as_deref().unwrap_or(""));
     field("Label", r.label.as_deref().unwrap_or(""));
-    field("Attachments", &r.attachments.join(", "));
+    field(
+        "Attachments",
+        &r.attachments.as_deref().unwrap_or_default().join(", "),
+    );
     out.push('\n');
+    let Some(body) = &r.body else {
+        return out;
+    };
     // Fenced, so a body's own `#` lines and list markers stay text;
     // the fence is longer than any backtick run inside.
-    let longest = r.body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let longest = body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let fence = "`".repeat(longest.max(2) + 1);
-    out.push_str(&format!("{fence}text\n{}", r.body));
-    if !r.body.is_empty() && !r.body.ends_with('\n') {
+    out.push_str(&format!("{fence}text\n{body}"));
+    if !body.is_empty() && !body.ends_with('\n') {
         out.push('\n');
     }
     out.push_str(&format!("{fence}\n\n"));
@@ -302,8 +326,8 @@ mod tests {
             to: vec!["alex@example.com".into()],
             subject: "Invoice \"July\"".into(),
             status: vec!["unread"],
-            attachments: vec!["invoice.pdf".into()],
-            body: "Hi,\n\tthe total is 10.\n".into(),
+            attachments: Some(vec!["invoice.pdf".into()]),
+            body: Some("Hi,\n\tthe total is 10.\n".into()),
             ..Record::default()
         }
     }
@@ -334,7 +358,7 @@ mod tests {
     #[test]
     fn markdown_fences_the_body() {
         let mut r = sample();
-        r.body = "# not a heading\n```\ncode\n```\n".into();
+        r.body = Some("# not a heading\n```\ncode\n```\n".into());
         let md = render(&[r], Format::Markdown);
         assert!(
             md.starts_with("## Invoice \"July\"\n\n- From: Jane Doe"),
@@ -346,5 +370,23 @@ mod tests {
             md.contains("````text\n# not a heading\n```\ncode\n```\n````\n"),
             "{md}"
         );
+    }
+
+    #[test]
+    fn without_bodies_a_record_stops_at_the_headers() {
+        let r = Record {
+            attachments: None,
+            body: None,
+            ..sample()
+        };
+        let line = render(std::slice::from_ref(&r), Format::Jsonl);
+        assert!(line.ends_with("\"label\":null}\n"), "{line}");
+        assert!(
+            !line.contains("body") && !line.contains("attachments"),
+            "{line}"
+        );
+        let md = render(&[r], Format::Markdown);
+        assert!(md.ends_with("- Status: unread\n\n"), "{md}");
+        assert!(!md.contains("```"), "{md}");
     }
 }

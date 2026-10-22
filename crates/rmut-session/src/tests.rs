@@ -3714,7 +3714,7 @@ fn export_writes_out_what_the_pattern_finds() {
         .map(|s| f.path_of(s))
         .collect();
 
-    let records = f.session.export("~b total | ~s third").unwrap();
+    let records = f.session.export("~b total | ~s third", true).unwrap();
     let subjects: Vec<&str> = records.iter().map(|r| r.subject.as_str()).collect();
     assert_eq!(subjects, ["second", "third"]);
     let r = &records[0];
@@ -3725,14 +3725,28 @@ fn export_writes_out_what_the_pattern_finds() {
     assert!(r.timestamp > 0);
     assert_eq!(r.status, ["unread"]);
     assert_eq!(r.uid, None);
-    assert_eq!(r.body, "the total is 10\n", "quote and signature dropped");
+    assert_eq!(
+        r.body.as_deref(),
+        Some("the total is 10\n"),
+        "quote and signature dropped"
+    );
     assert_eq!(r.mailbox, f.session.title);
 
     // Everything, and nothing at all: neither is an error.
-    assert_eq!(f.session.export("all").unwrap().len(), 3);
-    assert!(f.session.export("~s nowhere").unwrap().is_empty());
-    let err = f.session.export("~(").unwrap_err().to_string();
+    assert_eq!(f.session.export("all", true).unwrap().len(), 3);
+    assert!(f.session.export("~s nowhere", true).unwrap().is_empty());
+    let err = f.session.export("~(", true).unwrap_err().to_string();
     assert!(err.starts_with("bad pattern"), "{err}");
+
+    // Without bodies: the headers alone, the pattern still matching
+    // on the body.
+    let bare = f.session.export("~b total", false).unwrap();
+    assert_eq!(bare.len(), 1);
+    assert_eq!(bare[0].subject, "second");
+    assert_eq!(
+        (bare[0].body.as_ref(), bare[0].attachments.as_ref()),
+        (None, None)
+    );
 
     // Read-only work: no file was renamed (no flag was written).
     for path in before {

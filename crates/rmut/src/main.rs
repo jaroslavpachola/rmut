@@ -13,7 +13,7 @@ use crate::app::App;
 const USAGE: &str =
     "usage: rmut [-R] [-e CMD]... [-p|-y] [-z|-Z] [-f MAILBOX | MAILBOX | mailto:URL]
        rmut -s SUBJECT [-c CC] [-b BCC] [-a FILE]... [-i FILE] [-e CMD]... -- ADDR...
-       rmut --export PATTERN [-o FILE] [--format jsonl|md] [-e CMD]... [-f MAILBOX]
+       rmut --export PATTERN [--no-body] [-o FILE] [--format jsonl|md] [-e CMD]... [-f MAILBOX]
        rmut --import-muttrc [-w] [MUTTRC]   (-V version, -h help)
 
 Reading:
@@ -48,6 +48,9 @@ Exporting without the TUI (read-only: no flag changes, no sync):
 --format  jsonl (the default: one JSON object per message, with
           message_id, mailbox, file, uid, date, timestamp, from, to,
           cc, subject, status, list, label, attachments, body) or md
+--no-body leave out body and attachments: only the headers, so on
+          IMAP no message is downloaded (beyond what a ~b/~B pattern
+          has to read to match)
 The body is the decoded text, HTML as text, without quoting or the
 signature; encrypted mail is not decrypted. The count goes to stderr.
 
@@ -97,6 +100,8 @@ struct Cli {
     output: Option<PathBuf>,
     /// `--format` with --export.
     format: Option<String>,
+    /// `--no-body` with --export.
+    no_body: bool,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
@@ -139,6 +144,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
             "--import-muttrc" => cli.import = true,
             "--export" => cli.export = Some(value("--export")?),
             "--format" => cli.format = Some(value("--format")?),
+            "--no-body" => cli.no_body = true,
             "-w" | "--write" => cli.write = true,
             _ if arg.starts_with("-e") => cli.commands.push(value("-e")?),
             _ if arg.starts_with("-f") => cli.spec = Some(value("-f")?),
@@ -180,8 +186,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Cli> {
     if cli.export.is_some() && cli.send_mode {
         bail!("--export reads mail; it does not take -s/-c/-b/-a/-i or --\n{USAGE}");
     }
-    if (cli.output.is_some() || cli.format.is_some()) && cli.export.is_none() {
-        bail!("-o and --format go with --export\n{USAGE}");
+    if (cli.output.is_some() || cli.format.is_some() || cli.no_body) && cli.export.is_none() {
+        bail!("-o, --format and --no-body go with --export\n{USAGE}");
     }
     if cli.send_mode {
         cli.recipients = positional;
@@ -342,7 +348,7 @@ fn export(mut config: rmut_core::config::Config, cli: &Cli, pattern: &str) -> Re
     let (mut session, _warnings) = opened.with_context(|| format!("cannot open {spec}"))?;
     session.read_only = true;
     session.read_only_session = true;
-    let records = session.export(pattern)?;
+    let records = session.export(pattern, !cli.no_body)?;
     let text = render(&records, format);
     match &cli.output {
         Some(path) => {

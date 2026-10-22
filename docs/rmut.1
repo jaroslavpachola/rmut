@@ -25,6 +25,7 @@ rmut \- a mutt-like terminal mail client
 .br
 .B rmut \-\-export
 .I PATTERN
+.RB [ \-\-no\-body ]
 .RB [ \-o
 .IR FILE ]
 .RB [ \-\-format
@@ -150,6 +151,17 @@ seconds), from, to, cc, subject, status (unread, replied, flagged),
 list, label, attachments (names, or types), and body: the decoded
 text, HTML as text, without quoting or the signature. Encrypted mail
 is not decrypted.
+.TP
+.B \-\-no\-body
+With
+.BR \-\-export :
+leave body and attachments out of the records, which then stop at
+the headers. On IMAP no message is downloaded for them, so even a
+whole folder exports from the cache at once; a
+.B ~b
+or
+.B ~B
+in the pattern still fetches what it has to read to match.
 .TP
 .BI \-o " FILE"
 With
