@@ -2682,7 +2682,7 @@ set it, so only mail answered from another client ever showed `r`.
       then sent, then on disk after sync); scenario_reply_text syncs
       and looks for the R flag
 
-## R106: headless export (done, 2.21.0; asked for by name, 2026-10-22)
+## R106: headless export (done, 2.21.0, --no-body 2.22.0; asked for by name, 2026-10-22)
 
 Goal: the messages a pattern finds, written out as records another
 program can take further, with no TUI. The digest itself stays
@@ -2710,6 +2710,12 @@ outside, as in R103: `rmut --export '~b invoice ~d <30d' | claude -p
       `Remote::fetch_bodies` asks 50 at a time (520 messages: 0.9 s
       against 20+), and the TUI's triage, tagged pipe and print
       fetches go through it too
+- [x] `--no-body` (2.22.0, asked for by name): records without body
+      and attachments, and on IMAP no body fetched for them, so a
+      whole folder exports from the cache at once; the pattern's own
+      `~b`/`~B` still fetches what it reads. JSON leaves the two keys
+      out rather than null (a null body reads as an empty message);
+      Markdown stops at the header list
 - [x] A record: Message-ID, mailbox, file (the cache file on IMAP)
       and UID, the Date header and its Unix time, From, To, Cc,
       Subject, status (unread/replied/flagged), List, Label, the
@@ -3163,6 +3169,15 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.22.0 (released 2026-10-22)
+
+`rmut --export --no-body` stops each record at the headers (Message-ID,
+date, From, To, Cc, Subject, status, list, label), leaving out body and
+attachments. On IMAP that means nothing is downloaded, so a whole
+INBOX lists at once from the cache; a `~b` or `~B` in the pattern
+still fetches what it needs to match. List first, then export the
+messages you want whole with `~i <id>`.
 
 ## 2.21.0 (released 2026-10-22)
 

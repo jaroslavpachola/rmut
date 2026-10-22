@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "rmut"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-core"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "anyhow",
  "charset",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-egui"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2792,7 +2792,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-front"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "chrono",
  "libc",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "rmut-session"
-version = "2.21.0"
+version = "2.22.0"
 dependencies = [
  "anyhow",
  "mailparse",
