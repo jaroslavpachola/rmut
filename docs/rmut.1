@@ -137,7 +137,8 @@ are fetched (with BODY.PEEK) before they are written; a
 or a
 .B ~b
 the server does not answer, fetches every such body first, so the
-match never misses one. The messages go out in the index's sort
+match never misses one. A huge folder is exported whole: the headers
+a first open leaves to the background are fetched first. The messages go out in the index's sort
 order;
 .B \-e
 applies configuration first, as in send mode. The count goes to

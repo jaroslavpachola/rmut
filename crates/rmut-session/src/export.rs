@@ -73,6 +73,18 @@ impl Session {
         // Whatever the open left running goes first: one connection,
         // one conversation.
         self.settle();
+        // A huge folder's first open mirrors only its newest headers
+        // and leaves the rest to a background backfill, which the TUI
+        // runs and this never does: fetch them here, or the export
+        // would end at the window without a word.
+        if let Some(imap) = &mut self.imap {
+            let uids = imap.take_backfill();
+            if !uids.is_empty() {
+                imap.blocking(Job::FetchHeaders(uids))
+                    .map_err(|err| anyhow!("cannot fetch the message headers: {err:#}"))?;
+                self.rescan();
+            }
+        }
         if pattern.is_empty() || pattern == "all" {
             self.limit = None;
         } else {

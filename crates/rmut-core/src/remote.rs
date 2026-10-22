@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::config::{Account, AuthKind};
 use crate::imap::{self, Changes, Client, Fetched};
@@ -381,6 +381,28 @@ impl Remote {
         Ok(arrived)
     }
 
+    /// The headers `refresh` left to the background backfill (a huge
+    /// folder's tail), fetched now: for a caller that needs the whole
+    /// folder before it carries on, and has to hear when it cannot.
+    pub fn fetch_headers(&mut self, uids: &[u32]) -> Result<()> {
+        let total = uids.len();
+        for (n, chunk) in uids.chunks(100).enumerate() {
+            let set = chunk
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            self.retry(|client, cache, progress| {
+                progress(&format!("fetching message headers... {}/{total}", n * 100));
+                for fetched in client.uid_fetch_headers(&set)? {
+                    write_partial(cache, &fetched)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     /// Server-side `~b`: UIDs of messages whose body contains `term`.
     pub fn search_body(&mut self, term: &str) -> Result<Vec<u32>> {
         self.retry(|client, _, progress| {
@@ -482,6 +504,45 @@ impl Remote {
             client.uid_fetch_full(uid)
         })?;
         fs::write(path, &body).with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// [`fetch_body`](Self::fetch_body) for many messages, a chunk
+    /// per round trip: one at a time, a few thousand cost minutes in
+    /// latency alone.
+    pub fn fetch_bodies(&mut self, paths: &[PathBuf]) -> Result<()> {
+        let total = paths.len();
+        for (n, chunk) in paths.chunks(50).enumerate() {
+            let mut by_uid: HashMap<u32, &PathBuf> = HashMap::new();
+            for path in chunk {
+                let uid = uid_of(path).context("not a cached IMAP message")?;
+                by_uid.insert(uid, path);
+            }
+            let mut uids: Vec<u32> = by_uid.keys().copied().collect();
+            uids.sort_unstable();
+            let set = uids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let fetched = self.retry(|client, _, progress| {
+                if total > 1 {
+                    progress(&format!("fetching messages... {}/{total}", n * 50));
+                } else {
+                    progress("fetching message...");
+                }
+                client.uid_fetch_fulls(&set)
+            })?;
+            for f in fetched {
+                if let (Some(path), Some(body)) = (by_uid.remove(&f.uid), f.body) {
+                    fs::write(path, &body)
+                        .with_context(|| format!("writing {}", path.display()))?;
+                }
+            }
+            if let Some(uid) = by_uid.keys().min() {
+                bail!("server returned no body for UID {uid}");
+            }
+        }
+        Ok(())
     }
 
     /// Push a local flag change (from `$` sync) to the server.
@@ -1025,6 +1086,46 @@ mod tests {
             remote.fetch_body(&file.path).unwrap();
             assert!(!is_partial(&file.path));
             assert_eq!(fs::read_to_string(&file.path).unwrap(), full);
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_bodies_completes_many_in_one_round_trip() {
+        let (one, two) = (
+            "Subject: first\r\n\r\nbody one\r\n",
+            "Subject: second\r\n\r\nbody two\r\n",
+        );
+        let mut script = open_script();
+        script.push(Expect::new(
+            "UID FETCH 10,11 (UID BODY.PEEK[])",
+            format!(
+                "* 2 FETCH (UID 11 BODY[] {{{}}}\r\n{})\r\n* 1 FETCH (UID 10 BODY[] {{{}}}\r\n{})\r\n",
+                two.len(),
+                two,
+                one.len(),
+                one
+            ),
+        ));
+        // A server that leaves one out is an error, not a quiet gap.
+        script.push(Expect::new(
+            "UID FETCH 10,11 (UID BODY.PEEK[])",
+            format!("* 1 FETCH (UID 10 BODY[] {{{}}}\r\n{})\r\n", one.len(), one),
+        ));
+        let (port, handle) = testserver::imap(script);
+        let ((), _tmp) = with_cache_home(|| {
+            let mut remote = Remote::open(&account(port), "INBOX", "pw", Box::new(|_| {})).unwrap();
+            let mut paths: Vec<PathBuf> = maildir::scan(&remote.cache)
+                .unwrap()
+                .into_iter()
+                .map(|f| f.path)
+                .collect();
+            paths.sort_by_key(|p| uid_of(p));
+            remote.fetch_bodies(&paths).unwrap();
+            assert_eq!(fs::read_to_string(&paths[0]).unwrap(), one);
+            assert_eq!(fs::read_to_string(&paths[1]).unwrap(), two);
+            let err = remote.fetch_bodies(&paths).unwrap_err().to_string();
+            assert!(err.contains("no body for UID 11"), "{err}");
         });
         handle.join().unwrap();
     }

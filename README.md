@@ -605,6 +605,7 @@ alone):
 rmut --export '~b invoice ~d <30d' imap:work \
   | claude -p 'list vendor, amount and due date for each invoice'
 rmut --export '~f jane@example.com' -o ~/jane.jsonl ~/Mail/inbox
+rmut --export all -o ~/inbox.jsonl imap:work/INBOX   # the whole folder
 ```
 
 A record is `message_id`, `mailbox`, `file`, `uid` (IMAP), `date`,

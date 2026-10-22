@@ -4752,6 +4752,33 @@ imap_tls = false
     assert [r["subject"] for r in recs] == ["lunch"], recs
     assert not any("STORE" in c.upper() for c in imap.commands), imap.commands
 
+    # A folder past the 500 headers a first open mirrors at once: the
+    # TUI leaves the rest to a background backfill, export fetches it,
+    # so `all` really is all.
+    big = FakeImap()
+    for uid in range(1, 521):
+        big.add(uid, {"\\Seen"}, IMAP_MSG.format(
+            sender=f"s{uid}@remote.example", subject=f"bulk {uid}",
+            date="Mon, 6 Jul 2026 10:00:00 +0200", mid=f"b{uid}",
+            body=f"bulk body {uid}"))
+    big.start()
+    with open(cfg, "a") as f:
+        f.write(f"""
+[[accounts]]
+name = "big"
+user = "jane"
+auth = "xoauth2"
+token_command = "echo test-token"
+imap_host = "127.0.0.1"
+imap_port = {big.port}
+imap_tls = false
+""")
+    proc = rmut(["--export", "all", "imap:big/INBOX"])
+    assert proc.returncode == 0, proc.stderr
+    recs = [json.loads(l) for l in proc.stdout.decode().splitlines()]
+    assert sorted(r["uid"] for r in recs) == list(range(1, 521)), len(recs)
+    assert all(r["body"] == f"bulk body {r['uid']}\n" for r in recs)
+
 
 def scenario_attach_reminder(tmp):
     """Beyond mutt (neomutt's $abort_noattach): a body that mentions

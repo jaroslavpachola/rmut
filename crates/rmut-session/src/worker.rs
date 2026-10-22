@@ -25,6 +25,8 @@ use rmut_core::remote::{Progress, Remote};
 pub enum Job {
     /// Complete the cached messages whose files hold headers only.
     FetchBodies(Vec<PathBuf>),
+    /// Headers the open left to the backfill, wanted now.
+    FetchHeaders(Vec<u32>),
     /// A `$` sync: flag changes first, then the purge.
     Sync {
         flags: Vec<(PathBuf, Flags)>,
@@ -80,6 +82,7 @@ impl Job {
                 1 => "fetching the message",
                 _ => "fetching the messages",
             },
+            Job::FetchHeaders(_) => "fetching message headers",
             Job::Sync { .. } => "syncing",
             Job::CopyToFolder { .. } => "copying to the trash",
             Job::Append { .. } | Job::AppendAll { .. } => "saving to the server",
@@ -306,9 +309,11 @@ fn run(
 fn do_job(remote: &mut Remote, job: Job) -> Result<Done> {
     match job {
         Job::FetchBodies(paths) => {
-            for path in &paths {
-                remote.fetch_body(path)?;
-            }
+            remote.fetch_bodies(&paths)?;
+            Ok(Done::Nothing)
+        }
+        Job::FetchHeaders(uids) => {
+            remote.fetch_headers(&uids)?;
             Ok(Done::Nothing)
         }
         Job::Sync { flags, deletes } => {

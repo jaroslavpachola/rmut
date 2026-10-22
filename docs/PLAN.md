@@ -2700,6 +2700,16 @@ outside, as in R103: `rmut --export '~b invoice ~d <30d' | claude -p
       locally on IMAP (`~B`, a regex `~b`, a search the server would
       not answer) fetches every header-only body first: the
       interactive limit can miss those, an export must not
+- [x] The whole folder: a huge IMAP folder's first open mirrors the
+      newest 500 headers and leaves the rest to the TUI's background
+      backfill, which export never runs, so `all` stopped at 500.
+      Export fetches that tail itself (`Remote::fetch_headers`),
+      reporting a failure rather than a short file
+- [x] Bodies in batches: FetchBodies asked one message per round
+      trip, ~40 ms each even on localhost, minutes for an INBOX.
+      `Remote::fetch_bodies` asks 50 at a time (520 messages: 0.9 s
+      against 20+), and the TUI's triage, tagged pipe and print
+      fetches go through it too
 - [x] A record: Message-ID, mailbox, file (the cache file on IMAP)
       and UID, the Date header and its Unix time, From, To, Cc,
       Subject, status (unread/replied/flagged), List, Label, the

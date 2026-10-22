@@ -205,6 +205,12 @@ impl Client {
             .with_context(|| format!("server returned no body for UID {uid}"))
     }
 
+    /// The complete raw messages in `set`, in one round trip.
+    pub fn uid_fetch_fulls(&mut self, set: &str) -> Result<Vec<Fetched>> {
+        let lines = self.command(&format!("UID FETCH {set} (UID BODY.PEEK[])"))?;
+        Ok(lines.iter().filter_map(parse_fetch).collect())
+    }
+
     /// Overwrite the message's flags (deletion goes via `uid_delete`).
     pub fn uid_store_flags(&mut self, uid: u32, flags: Flags) -> Result<()> {
         self.command(&format!(
