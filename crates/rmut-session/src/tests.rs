@@ -294,6 +294,92 @@ fn a_sync_reports_what_it_did_in_numbers() {
     assert_eq!(f.log.last_text(), "nothing to undo");
 }
 
+/// The subject under the cursor.
+fn selected_subject(f: &Fixture) -> String {
+    let i = f.session.visible[f.session.sel];
+    f.session.msgs[i].env.subject.clone()
+}
+
+#[test]
+fn a_purge_leaves_the_cursor_on_the_message_it_was_on() {
+    let mut f = Fixture::new(&["one", "two", "three", "four"]);
+    f.select("one");
+    f.session.run_function(Function::Delete, false, 10);
+    f.select("three");
+    f.session.sync(true);
+    assert_eq!(f.subjects(), ["two", "three", "four"]);
+    assert_eq!(selected_subject(&f), "three");
+}
+
+#[test]
+fn a_purge_of_the_message_under_the_cursor_moves_to_the_next_one() {
+    let mut f = Fixture::new(&["one", "two", "three", "four"]);
+    f.select("two");
+    f.session.run_function(Function::Delete, false, 10);
+    f.select("two");
+    f.session.sync(true);
+    assert_eq!(f.subjects(), ["one", "three", "four"]);
+    assert_eq!(selected_subject(&f), "three");
+}
+
+#[test]
+fn a_purge_at_the_end_of_the_list_moves_to_the_one_before() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    f.select("three");
+    f.session.run_function(Function::Delete, false, 10);
+    f.select("three");
+    f.session.sync(true);
+    assert_eq!(f.subjects(), ["one", "two"]);
+    assert_eq!(selected_subject(&f), "two");
+}
+
+#[test]
+fn a_sync_that_renames_the_message_under_the_cursor_stays_on_it() {
+    let mut f = Fixture::new(&["one", "two", "three"]);
+    f.select("two");
+    let before = f.path_of("two");
+    let i = f.session.visible[f.session.sel];
+    f.session.msgs[i].env.file.flags.flagged = true;
+    f.session.msgs[i].dirty = true;
+    f.session.sync(false);
+    assert_ne!(f.path_of("two"), before, "the flag is in the file name");
+    assert_eq!(selected_subject(&f), "two");
+}
+
+#[test]
+fn a_sync_keeps_a_folded_thread_folded_when_its_root_is_renamed() {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    write_message(dir.path(), 0, "root", None);
+    write_message(
+        dir.path(),
+        1,
+        "Re: root",
+        Some("In-Reply-To: <m0@example.com>\n"),
+    );
+    write_message(dir.path(), 2, "other", None);
+    let (mut session, _) = Session::open(dir.path(), Config::default()).unwrap();
+    session.sort = SortKey::Threads;
+    session.apply_sort();
+    let root = session
+        .visible
+        .iter()
+        .position(|&i| session.msgs[i].env.subject == "root")
+        .unwrap();
+    session.select(root);
+    session.toggle_collapse(false);
+    assert_eq!(session.visible.len(), 2, "the reply is folded away");
+    let i = session.visible[session.sel];
+    session.msgs[i].env.file.flags.flagged = true;
+    session.msgs[i].dirty = true;
+    session.sync(false);
+    assert_eq!(session.visible.len(), 2, "still folded");
+    let i = session.visible[session.sel];
+    assert_eq!(session.msgs[i].env.subject, "root");
+}
+
 #[test]
 fn the_purge_question_is_asked_once_and_answered_with_a_key() {
     let mut f = Fixture::new(&["one", "two"]);

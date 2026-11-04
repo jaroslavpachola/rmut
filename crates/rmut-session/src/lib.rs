@@ -3019,7 +3019,18 @@ impl Session {
                 return;
             }
         }
-        let keep = self.selected_path();
+        // Where the cursor ends up, best first: its own message, then
+        // the ones after it, then the ones before, as mutt's
+        // OP_MAIN_SYNC_FOLDER has it (curs_main.c, "figure out what
+        // header the cursor should be on").
+        let (before, after) = self.visible.split_at(self.sel.min(self.visible.len()));
+        let cursor: Vec<PathBuf> = after
+            .iter()
+            .chain(before.iter().rev())
+            .map(|&i| self.msgs[i].env.file.path.clone())
+            .collect();
+        // Writing flags renames the file, so the paths above go stale.
+        let mut renamed: HashMap<PathBuf, PathBuf> = HashMap::new();
         let mut removed = 0usize;
         let mut saved = 0usize;
         let mut errors: Vec<String> = Vec::new();
@@ -3058,7 +3069,8 @@ impl Session {
                     if m.dirty {
                         match maildir::store_flags(&m.env.file) {
                             Ok(path) => {
-                                m.env.file.path = path;
+                                let was = mem::replace(&mut m.env.file.path, path);
+                                renamed.insert(was, m.env.file.path.clone());
                                 m.env.file.is_new = false;
                                 m.dirty = false;
                                 saved += 1;
@@ -3082,7 +3094,8 @@ impl Session {
                 if m.dirty {
                     match maildir::store_flags(&m.env.file) {
                         Ok(path) => {
-                            m.env.file.path = path;
+                            let was = mem::replace(&mut m.env.file.path, path);
+                            renamed.insert(was, m.env.file.path.clone());
                             m.env.file.is_new = false;
                             m.dirty = false;
                             saved += 1;
@@ -3097,7 +3110,26 @@ impl Session {
         // The marks are on disk now, and the paths the stack keyed on
         // have been renamed away: there is nothing left to walk back.
         self.undo.clear();
-        self.resort(keep);
+        // A folded thread is keyed on its root's path too.
+        for (was, now) in &renamed {
+            if self.collapsed.remove(was) {
+                self.collapsed.insert(now.clone());
+            }
+        }
+        self.resort(None);
+        let on_screen: HashMap<&Path, usize> = self
+            .visible
+            .iter()
+            .enumerate()
+            .map(|(pos, &i)| (self.msgs[i].env.file.path.as_path(), pos))
+            .collect();
+        let landed = cursor.iter().find_map(|path| {
+            let path = renamed.get(path).unwrap_or(path);
+            on_screen.get(path.as_path()).copied()
+        });
+        if let Some(pos) = landed {
+            self.sel = pos;
+        }
         match errors.is_empty() {
             true => self.notify(Notice::Synced {
                 deleted: removed,
