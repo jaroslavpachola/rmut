@@ -3174,6 +3174,15 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.22.2 (released 2026-11-05)
+
+After a `$` sync the cursor stays put instead of jumping to the end of
+the index. It used to jump whenever its message was purged, or had a
+flag change written, which renames the file. Now it stays on the
+message if that survives, otherwise it takes the next one, then the
+previous one, as mutt does. A folded thread also stays folded when
+its root message is renamed by the sync.
+
 ## 2.22.1 (released 2026-10-22)
 
 Turning an HTML body into text could panic on a multibyte character
