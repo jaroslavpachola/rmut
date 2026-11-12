@@ -405,6 +405,8 @@ fn draw_pager(frame: &mut Frame, area: Rect, app: &App, pager: &Pager) -> Vec<Sc
 fn style_row(row: &Row, app: &App) -> Line<'static> {
     let header_style = Style::new().fg(theme::color(app.theme.header)).bold();
     match row.kind {
+        // A wrapped header's continuation row is all value.
+        RowKind::Header if row.text.starts_with(' ') => Line::raw(row.text.clone()),
         RowKind::Header => match row.text.split_once(": ") {
             Some((name, value)) => Line::from(vec![
                 Span::styled(format!("{name}: "), header_style),

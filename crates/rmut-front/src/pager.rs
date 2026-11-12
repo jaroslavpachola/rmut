@@ -195,18 +195,10 @@ pub fn pager_rows(
 ) -> Vec<Row> {
     let quote_re = style.quote_re;
     let headers = if full_headers { &view.all } else { &view.brief };
-    let mut rows: Vec<Row> = headers
-        .iter()
-        .map(|(name, value)| {
-            let text = format!("{name}: {value}");
-            let links = row_links(&url_ranges(&text), 0, usize::MAX, 0);
-            Row {
-                text,
-                kind: RowKind::Header,
-                links,
-            }
-        })
-        .collect();
+    let mut rows: Vec<Row> = Vec::new();
+    for (name, value) in headers {
+        header_rows(&format!("{name}: {value}"), width, &mut rows);
+    }
     rows.push(Row {
         text: String::new(),
         kind: RowKind::Text,
@@ -249,6 +241,42 @@ pub fn pager_rows(
         }
     }
     rows
+}
+
+/// How far a header's continuation rows sit in, as a folded header.
+const HEADER_INDENT: &str = "    ";
+
+/// One header line as pager rows: a long one (a Cc of forty people)
+/// wraps between words, and its continuation rows are indented, so
+/// they never read as a header of their own.
+fn header_rows(line: &str, width: usize, rows: &mut Vec<Row>) {
+    let line = line.replace('\t', " ");
+    let chars: Vec<char> = line.chars().collect();
+    let urls = url_ranges(&line);
+    let width = width.saturating_sub(1);
+    let indent = HEADER_INDENT.chars().count();
+    let (_, mut start) = wrap_ranges(&chars, width, true)[0];
+    rows.push(Row {
+        text: chars[..start].iter().collect(),
+        kind: RowKind::Header,
+        links: row_links(&urls, 0, start, 0),
+    });
+    while chars.get(start) == Some(&' ') {
+        start += 1;
+    }
+    if start >= chars.len() {
+        return;
+    }
+    let rest = &chars[start..];
+    for (from, to) in wrap_ranges(rest, width.saturating_sub(indent), true) {
+        let (from, to) = (start + from, start + to);
+        let text: String = chars[from..to].iter().collect();
+        rows.push(Row {
+            text: format!("{HEADER_INDENT}{text}"),
+            kind: RowKind::Header,
+            links: row_links(&urls, from, to, indent),
+        });
+    }
 }
 
 /// The pager's display as plain text: what the body search runs over.
@@ -439,20 +467,41 @@ mod tests {
             smart_wrap: false,
         };
         let rows = pager_rows(&view, 21, false, &style, false);
-        let header = &rows[0].links;
-        assert_eq!(header.len(), 1);
-        assert_eq!(
-            &rows[0].text[header[0].start..header[0].end],
-            "https://lists.example/help"
-        );
+        // The header wraps too, its URL linked whole from each row,
+        // the continuation's link past the indent.
+        let header = rows
+            .iter()
+            .take_while(|r| r.kind == RowKind::Header)
+            .count();
+        assert!(header > 1, "{header}");
+        let linked: Vec<&Row> = rows[..header]
+            .iter()
+            .filter(|r| !r.links.is_empty())
+            .collect();
+        assert!(!linked.is_empty());
+        for r in &linked {
+            assert!(
+                r.links
+                    .iter()
+                    .all(|l| l.url == "https://lists.example/help")
+            );
+        }
+        let covered: String = linked
+            .iter()
+            .flat_map(|r| r.links.iter().map(|l| r.text[l.start..l.end].to_string()))
+            .collect();
+        assert_eq!(covered, "https://lists.example/help");
         // Every row the URL touches links to all of it; the text the
         // link covers is what is on the row, after the "+" marker.
-        let body: Vec<&Row> = rows[2..].iter().filter(|r| !r.links.is_empty()).collect();
+        let body: Vec<&Row> = rows[header + 1..]
+            .iter()
+            .filter(|r| !r.links.is_empty())
+            .collect();
         assert!(body.len() >= 4, "{}", body.len());
         assert!(body.iter().all(|r| r.links.iter().all(|l| l.url == url)));
         // The first line's rows run up to the one holding " now".
         let end = rows.iter().position(|r| r.text.contains("now")).unwrap();
-        let covered: String = rows[2..=end]
+        let covered: String = rows[header + 1..=end]
             .iter()
             .flat_map(|r| {
                 r.links.iter().map(|l| {
@@ -466,14 +515,60 @@ mod tests {
             .collect();
         assert_eq!(covered, url);
         assert_eq!(
-            rows[3].links[0].start, 1,
+            rows[header + 2].links[0].start,
+            1,
             "after the marker: {:?}",
-            rows[3].text
+            rows[header + 2].text
         );
         assert_eq!(
             view_urls(&view),
             vec!["https://lists.example/help".to_string(), url.to_string()]
         );
+    }
+
+    #[test]
+    fn a_long_header_wraps_between_addresses_with_indented_rows() {
+        let cc: Vec<String> = (1..=12).map(|i| format!("p{i}@example.com")).collect();
+        let cc = cc.join(", ");
+        let view = MessageView {
+            brief: vec![
+                ("Cc".into(), cc.clone()),
+                ("Subject".into(), "hi https://example.com/x".into()),
+            ],
+            all: Vec::new(),
+            body: "body".into(),
+        };
+        let re = default_quote_re();
+        let style = PagerStyle {
+            quote_re: &re,
+            markers: true,
+            smart_wrap: false,
+        };
+        let rows = pager_rows(&view, 60, false, &style, false);
+        let cc_rows: Vec<&super::Row> = rows
+            .iter()
+            .take_while(|r| !r.text.starts_with("Subject"))
+            .collect();
+        assert!(
+            cc_rows.len() > 1,
+            "{:?}",
+            cc_rows.iter().map(|r| &r.text).collect::<Vec<_>>()
+        );
+        assert!(cc_rows[0].text.starts_with("Cc: p1@example.com,"));
+        for r in &cc_rows {
+            assert_eq!(r.kind, RowKind::Header);
+            assert!(r.text.chars().count() < 60, "{:?}", r.text);
+        }
+        for r in &cc_rows[1..] {
+            assert!(r.text.starts_with("    p"), "{:?}", r.text);
+        }
+        // Nothing lost: the rows put back together are the header.
+        let joined: Vec<&str> = cc_rows.iter().map(|r| r.text.trim()).collect();
+        assert_eq!(joined.join(" "), format!("Cc: {cc}"));
+        // A short header stays one row, its link where it was.
+        let subject = &rows[cc_rows.len()];
+        assert_eq!(subject.text, "Subject: hi https://example.com/x");
+        assert_eq!(subject.links[0].start, 12);
     }
 
     #[test]

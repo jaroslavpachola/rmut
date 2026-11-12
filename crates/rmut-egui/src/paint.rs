@@ -1364,6 +1364,10 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         // as preformatted and keep the grid.
         let mono = !proportional || row.text.starts_with([' ', '\t']);
         match row.kind {
+            // A wrapped header's continuation row is all value.
+            RowKind::Header if row.text.starts_with(' ') => {
+                mono_line(&mut job, &row.text, Style::new(), size)
+            }
             RowKind::Header => match row.text.split_once(": ") {
                 Some((name, value)) => {
                     job.append(&format!("{name}: "), 0.0, format(header_style, size));

@@ -6140,6 +6140,28 @@ imap_tls = false
     r.close()
 
 
+def scenario_long_header_wraps(tmp):
+    """2.22.3: a Cc longer than the screen wraps into indented rows,
+    so its last address is on screen rather than cut off at the edge."""
+    md = make_maildir(tmp, "md")
+    cc = ", ".join(f"Person {i} <person{i}@example.com>" for i in range(1, 15))
+    cc += ", Last One <zz-last@example.com>"
+    with open(os.path.join(md, "cur/1751790000.1.host:2,S"), "w") as f:
+        f.write(
+            "From: Jane Doe <jane@example.com>\r\nTo: alex@example.com\r\n"
+            f"Cc: {cc}\r\nSubject: Many people\r\n"
+            "Date: Mon, 6 Jul 2026 10:00:00 +0200\r\n"
+            "Message-ID: <many@example.com>\r\n\r\nhello all\r\n"
+        )
+    r = Rmut(md, base_env(tmp))
+    r.expect("Many people")
+    r.keys(b"\r")
+    r.expect("person14@example.com", "zz-last@example.com", "hello all")
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 SCENARIOS = [
     scenario_view_and_pager,
     scenario_pager_save_advances,
@@ -6240,6 +6262,7 @@ SCENARIOS = [
     scenario_signals_leave_cleanly,
     scenario_save_part_no_follow,
     scenario_password_command_in_the_open,
+    scenario_long_header_wraps,
 ]
 
 

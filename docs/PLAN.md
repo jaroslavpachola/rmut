@@ -3174,6 +3174,14 @@ setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
 
+## 2.22.3 (released 2026-11-12)
+
+A header longer than the pager is wide, such as a Cc with many
+recipients, now wraps between words onto indented rows in both the
+terminal and the window. Before, it ran off the right edge and the
+addresses past it could not be seen at all. A URL in a wrapped header
+stays a link on every row it spans.
+
 ## 2.22.2 (released 2026-11-05)
 
 After a `$` sync the cursor stays put instead of jumping to the end of
