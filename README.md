@@ -206,7 +206,10 @@ leaving the message, `h` toggle full headers,
 `p` print,
 `s` save, `C`/`|`/`b` copy/pipe/bounce, Alt+s/Alt+C decode-save/copy,
 `e`/Alt+e edit raw/resend,
-`:` run a config command, Ctrl+B the message's links, `q`/`i` back.
+`:` run a config command, Ctrl+B the message's links, `y` copy the
+body to the clipboard (decoded, HTML as text, without the
+`[-- ... --]` notices; `copy-body`, unbound in the index where `y` is
+the mailbox list), `q`/`i` back.
 The URLs in the pager are clickable in a terminal that knows OSC 8
 hyperlinks (kitty, foot, WezTerm, iTerm2, VTE terminals, Windows
 Terminal), a wrapped one opening whole from either row; Ctrl+B lists
@@ -216,8 +219,15 @@ lines carry a leading `+` marker, like mutt. Replies ask mutt's
 ask-yes questions: Reply-To (when the header is set), "No subject,
 abort?", and "Include message in reply?"; Enter takes the yes.
 
-Attachments: `Enter` view a text part, `s` save part to a file, `f`
+Attachments: `Enter` view a text part, `s` save part to a file, `y`
+copy a text part to the clipboard (HTML rendered), `f`
 forward the part (text quoted, anything else attached).
+
+The terminal copies through OSC 52, which works over ssh but which
+some terminals cap (often near 100 KB). In the window, `rmut-egui`,
+the copies go to its own clipboard, a drag over the message text and
+Ctrl+C copy that, and a right click on the text offers Copy body,
+Select page and Copy (the selected page).
 
 Patterns (limit/search): `~f x` from, `~s x` subject, `~b x` body,
 `~t x` to, `~c x` cc, `~C x` to-or-cc, `~e x` sender, `~h x` any

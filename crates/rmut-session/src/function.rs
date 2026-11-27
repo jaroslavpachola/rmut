@@ -131,6 +131,9 @@ pub enum Function {
     /// The message's links in a list, to open or copy one (rmut's
     /// own, urlview built in).
     Urls,
+    /// rmut's own: the message body, as the pager shows it, to the
+    /// clipboard. Unbound in the index (`y` is mutt's mailbox list).
+    CopyBody,
     /// rmut's own: the visible messages to `$triage_command`, its
     /// digest and proposed marks up for review.
     Triage,
@@ -237,6 +240,7 @@ impl Function {
             WhatKey => "what-key",
             ListAction => "list-action",
             Urls => "urls",
+            CopyBody => "copy-body",
             Triage => "triage",
         }
     }
@@ -341,6 +345,7 @@ impl Function {
             WhatKey => "say what a key is (Ctrl+G ends it)",
             ListAction => "act on the message's List-* headers (subscribe, help, ...)",
             Urls => "list the message's links, to open or copy one",
+            CopyBody => "copy the message body to the clipboard",
             Triage => "digest the visible messages and propose marks, by $triage_command",
         }
     }
@@ -447,6 +452,7 @@ impl Function {
             WhatKey,
             ListAction,
             Urls,
+            CopyBody,
             Triage,
         ]
     }
@@ -559,6 +565,9 @@ pub enum FrontOp {
     Redraw,
     /// The selected message's links, in a list of their own.
     Urls,
+    /// The selected message's body to the clipboard, which only the
+    /// front end can reach.
+    CopyBody,
 }
 
 /// What to do with the mailbox pane.
@@ -663,6 +672,7 @@ impl Session {
             WhatKey => return Outcome::Front(FrontOp::WhatKey),
             ListAction => return self.ask_list_action().into(),
             Urls => return Outcome::Front(FrontOp::Urls),
+            CopyBody => return Outcome::Front(FrontOp::CopyBody),
             Triage => self.triage(),
             Flag => self.mark_selected(tagged, "flag", |m| {
                 m.env.file.flags.flagged = !m.env.file.flags.flagged

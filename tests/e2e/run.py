@@ -5629,6 +5629,52 @@ def scenario_send_odds(tmp):
     r.close()
 
 
+def scenario_copy(tmp):
+    """The pager's y (copy-body) puts the decoded body on the clipboard
+    through OSC 52, without the pager's notices; y on the attachment
+    menu copies a text part and refuses an image."""
+    md = make_maildir(tmp, "md-copy")
+    with open(os.path.join(md, "cur", "1751960000.10.host:2,S"), "w") as f:
+        f.write(
+            "From: Ann <ann@example.com>\r\nTo: alex@example.com\r\n"
+            "Subject: the plan\r\nDate: Wed, 8 Jul 2026 11:00:00 +0200\r\n"
+            "Message-ID: <copy@example.com>\r\nMIME-Version: 1.0\r\n"
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n"
+            "--b\r\nContent-Type: text/plain; charset=utf-8\r\n"
+            "Content-Transfer-Encoding: quoted-printable\r\n\r\n"
+            "Hi Alex,\r\n\r\nthe pl=C3=A1n is below.\r\n"
+            "--b\r\nContent-Type: image/png; name=\"pic.png\"\r\n"
+            "Content-Disposition: attachment; filename=\"pic.png\"\r\n"
+            "Content-Transfer-Encoding: base64\r\n\r\nAAEC\r\n--b--\r\n"
+        )
+    r = Rmut(md, base_env(tmp))
+    r.expect("the plan")
+    r.keys(b"\r")
+    r.expect("Hi Alex")
+    r.buf = ""
+    r.keys(b"y")
+    body = "Hi Alex,\n\nthe plán is below.\n".encode()
+    b64 = base64.b64encode(body).decode()
+    wait_for(lambda: (r._drain() or True) and f"\x1b]52;c;{b64}\x07" in r.buf,
+             desc="the body through OSC 52")
+    r.expect("copied 3 lines (OSC 52)")
+    r.keys(b"v")
+    r.expect("pic.png")
+    r.buf = ""
+    r.keys(b"y")
+    part = base64.b64encode("Hi Alex,\n\nthe plán is below.".encode()).decode()
+    wait_for(lambda: (r._drain() or True) and f"\x1b]52;c;{part}\x07" in r.buf,
+             desc="the text part through OSC 52")
+    r.keys(b"j")
+    r.buf = ""
+    r.keys(b"y")
+    r.expect("image/png is not text")
+    assert "\x1b]52;" not in r.buf, "an image is not copied"
+    r.keys(b"q")
+    r.keys(b"q")
+    r.close()
+
+
 def scenario_urls(tmp):
     """R91: the pager's URLs are OSC 8 hyperlinks, a wrapped one linked
     whole from each of its rows; Ctrl+B lists the message's links, y
@@ -6253,6 +6299,7 @@ SCENARIOS = [
     scenario_esc_prefix,
     scenario_send_odds,
     scenario_urls,
+    scenario_copy,
     scenario_markdown,
     scenario_private_files,
     scenario_label_after_reopen,

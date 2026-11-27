@@ -32,6 +32,11 @@ pub struct Pager {
     pub back: Option<Box<Mode>>,
     /// The view's rows, built once per layout rather than per frame.
     pub rows: rmut_front::pager::RowCache,
+    /// Select page (the right-click menu): the scroll the visible
+    /// rows were selected at. Scrolling, a key or a click drops it.
+    pub page_selected: Option<usize>,
+    /// Where the right-click menu is open, if it is.
+    pub menu: Option<eframe::egui::Pos2>,
 }
 
 pub enum Mode {
@@ -332,6 +337,9 @@ pub struct Gui {
     /// The last pager frame drew inline images, so the wheel may
     /// scroll past the text-row arithmetic to reach them.
     pub pager_drew_images: bool,
+    /// This frame brought Ctrl+C (egui's Copy event, not a key): the
+    /// pager's selected page goes to the clipboard.
+    pub copy_event: bool,
     /// The embedded nvim and the flow its exit resumes.
     pub nvim: Option<(crate::nvim::Embedded, PendingEdit)>,
     /// The egui context, for waking the frame loop from threads.
@@ -411,6 +419,7 @@ impl Gui {
             prefs: None,
             pager_images: None,
             pager_drew_images: false,
+            copy_event: false,
             nvim: None,
             ctx: None,
             last_poll: Instant::now(),
@@ -439,6 +448,26 @@ impl Gui {
 
     fn error(&mut self, msg: impl Into<String>) {
         self.session.error(msg);
+    }
+
+    /// Text onto the window's clipboard, the note saying how much.
+    pub(crate) fn copy_text(&mut self, text: String) {
+        match self.ctx.clone() {
+            Some(ctx) => {
+                self.note(rmut_front::copy::note(&text));
+                ctx.copy_text(text);
+            }
+            None => self.error("no clipboard"),
+        }
+    }
+
+    /// A copy action's text onto the clipboard, or what kept it from
+    /// being one.
+    pub(crate) fn copy_or_say(&mut self, copied: Result<String, String>) {
+        match copied {
+            Ok(text) => self.copy_text(text),
+            Err(err) => self.error(err),
+        }
     }
 
     pub fn notice(&self) -> Option<Notice> {
@@ -551,6 +580,8 @@ impl Gui {
                         hide_quoted: false,
                         back: None,
                         rows: Default::default(),
+                        page_selected: None,
+                        menu: None,
                     });
                 }
                 Request::Command(cmd) => {
@@ -814,6 +845,12 @@ impl Gui {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // A key ends the pager's page selection and closes its menu,
+        // as a key ends a selection in a terminal.
+        if let Mode::Pager(pager) = &mut self.mode {
+            pager.page_selected = None;
+            pager.menu = None;
+        }
         if self.about {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
                 self.about = false;
@@ -946,6 +983,19 @@ impl Gui {
                 if let Mode::Attach { sel, .. } = &self.mode {
                     let ask = self.session.start_forward_part(*sel);
                     self.open_ask(ask);
+                }
+            }
+            KeyCode::Char('y') => {
+                if let Mode::Attach {
+                    msg_path,
+                    parts,
+                    sel,
+                    ..
+                } = &self.mode
+                {
+                    let (path, at, part) = (msg_path.clone(), *sel, parts[*sel].clone());
+                    let copied = rmut_front::copy::part(&mut self.session, &path, at, &part);
+                    self.copy_or_say(copied);
                 }
             }
             KeyCode::Char('|') => {
@@ -1087,6 +1137,8 @@ impl Gui {
             hide_quoted: false,
             back: Some(Box::new(menu)),
             rows: Default::default(),
+            page_selected: None,
+            menu: None,
         });
     }
 
@@ -2593,6 +2645,10 @@ impl Gui {
         match op {
             FrontOp::Exit => self.quit = true,
             FrontOp::Urls => self.open_urls(),
+            FrontOp::CopyBody => {
+                let copied = rmut_front::copy::selected_body(&mut self.session);
+                self.copy_or_say(copied);
+            }
             FrontOp::OpenSelected => self.open_selected(),
             FrontOp::Help => {
                 self.mode = Mode::Help {
@@ -3459,6 +3515,10 @@ impl Gui {
                 self.open_ask(ask);
             }
             PagerAction::Urls => self.open_urls(),
+            PagerAction::CopyBody => {
+                let copied = rmut_front::copy::body(&pager.view);
+                self.copy_or_say(copied);
+            }
         }
     }
 
@@ -3516,6 +3576,7 @@ impl Gui {
     /// itself, so a test harness can drive it without one.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
         let keys = ui.ctx().input(|i| crate::input::keys(&i.events));
+        self.copy_event = ui.ctx().input(|i| crate::input::copied(&i.events));
         // Files dropped on the window (winit delivers them on X11,
         // macOS and Windows; not yet under Wayland).
         let dropped: Vec<std::path::PathBuf> = ui.ctx().input(|i| {
@@ -3548,6 +3609,7 @@ impl Gui {
         // image/* parts decode through egui's loaders; installing is a
         // no-op when the host (or an earlier frame) already has
         egui_extras::install_image_loaders(ui.ctx());
+        self.copy_event = crate::input::copied(events);
         self.frame_with(ui, crate::input::keys(events));
     }
 

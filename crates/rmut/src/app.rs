@@ -1547,6 +1547,10 @@ impl App {
             FrontOp::WhatKey => self.start_what_key(),
             FrontOp::Redraw => self.redraw = true,
             FrontOp::Urls => self.open_urls(),
+            FrontOp::CopyBody => {
+                let copied = rmut_front::copy::selected_body(&mut self.session);
+                self.copy_or_say(copied);
+            }
             FrontOp::TagPrefix => self.tag_next = true,
             FrontOp::Query => {
                 self.prompt = Some(Prompt::line("Query: ", String::new(), LineKind::Query));
@@ -1876,6 +1880,13 @@ impl App {
                 self.open_urls();
                 return;
             }
+            PagerAction::CopyBody => {
+                if let Mode::Pager(pager) = &self.mode {
+                    let copied = rmut_front::copy::body(&pager.view);
+                    self.copy_or_say(copied);
+                }
+                return;
+            }
             PagerAction::ErrorHistory => {
                 let outcome = self
                     .session
@@ -2107,6 +2118,19 @@ impl App {
                 if let Mode::Attach { sel, .. } = &self.mode {
                     let ask = self.session.start_forward_part(*sel);
                     self.open_ask(ask);
+                }
+            }
+            KeyCode::Char('y') => {
+                if let Mode::Attach {
+                    msg_path,
+                    parts,
+                    sel,
+                    ..
+                } = &self.mode
+                {
+                    let (path, at, part) = (msg_path.clone(), *sel, parts[*sel].clone());
+                    let copied = rmut_front::copy::part(&mut self.session, &path, at, &part);
+                    self.copy_or_say(copied);
                 }
             }
             KeyCode::Char('|') => {
@@ -2756,10 +2780,27 @@ impl App {
     /// that does not take OSC 52 ignores it, which is why the note
     /// says what was sent rather than promising it landed.
     fn copy_to_clipboard(&mut self, text: &str) {
+        self.osc52(text, format!("copied {text} (OSC 52)"));
+    }
+
+    /// A copy action's text through OSC 52, or what kept it from
+    /// being one. Some terminals cap OSC 52 (often near 100 KB) and
+    /// drop a longer one without a word.
+    fn copy_or_say(&mut self, copied: Result<String, String>) {
+        match copied {
+            Ok(text) => {
+                let note = format!("{} (OSC 52)", rmut_front::copy::note(&text));
+                self.osc52(&text, note);
+            }
+            Err(err) => self.error(err),
+        }
+    }
+
+    fn osc52(&mut self, text: &str, note: String) {
         let osc = format!("\x1b]52;c;{}\x07", rmut_core::smtp::b64(text.as_bytes()));
         let mut out = std::io::stdout();
         match out.write_all(osc.as_bytes()).and_then(|()| out.flush()) {
-            Ok(()) => self.note(format!("copied {text} (OSC 52)")),
+            Ok(()) => self.note(note),
             Err(err) => self.error(format!("cannot copy: {err}")),
         }
     }

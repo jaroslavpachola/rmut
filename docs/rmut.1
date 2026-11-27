@@ -408,6 +408,9 @@ Content\-Type lies (not mutt's; added on request),
 saves,
 .B |
 pipes the decoded part to a shell command,
+.B y
+copies a text part to the clipboard, decoded in its charset and
+text/html rendered (not mutt's; anything else is refused, s saves it),
 .B p
 prints it via print, and
 .B f
@@ -645,6 +648,14 @@ backwards, both wrap around with a note.
 (search\-toggle) hides and restores the hit highlighting without
 forgetting the pattern. Moving to another message ends the search,
 like mutt: the next n re-prompts, prefilled with the last pattern
+.TP
+.B y
+(copy\-body) copies the body to the clipboard as the pager shows it:
+decoded, HTML as text, the lines unwrapped and without the pager's
+[\-\- ... \-\-] notices. It goes through OSC 52, like the link copy;
+some terminals cap OSC 52 (often near 100 KB) and drop a longer one.
+In the index copy\-body has no key (y is the mailbox list there);
+bind it by name, or run it with :exec copy\-body. Not mutt's
 .PP
 .BR v ", " m ", " r ", " g ", " f ", " p ", " s ", " C ", " | ,
 .BR b ", " e " and " a

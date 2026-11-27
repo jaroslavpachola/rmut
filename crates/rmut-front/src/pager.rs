@@ -33,6 +33,20 @@ pub struct Row {
     /// The URLs on this row, in chars of `text`. A URL the wrap broke
     /// across rows is a link on each of them, all to the whole URL.
     pub links: Vec<RowLink>,
+    /// Set on a row the wrap broke off the line above: how to join it
+    /// back, so a copy of the rows gives the lines, not the screen.
+    pub wrap: Option<Wrap>,
+}
+
+/// What a wrap did to a continuation row: the decoration it put in
+/// front (`+`, mutt's $markers, or a header's indent), and whether it
+/// swallowed a space at the break.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wrap {
+    /// Chars of `text` the wrap added at the start.
+    pub skip: usize,
+    /// A space went at the break; the join puts it back.
+    pub space: bool,
 }
 
 /// Where a URL sits on a pager row: chars `start..end` of its text,
@@ -92,6 +106,59 @@ pub fn view_urls(view: &MessageView) -> Vec<String> {
         }
     }
     out
+}
+
+/// The body as text to paste: the lines the pager shows, unwrapped,
+/// without its own `[-- ... --]` notices (attachment announcements,
+/// PGP verdicts) and the blank line each leaves behind.
+pub fn body_text(view: &MessageView) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut dropped = false;
+    for line in view.body.lines() {
+        if is_marker(line) {
+            dropped = true;
+            continue;
+        }
+        if dropped && line.is_empty() && out.last().is_none_or(|l| l.is_empty()) {
+            continue;
+        }
+        dropped = false;
+        out.push(line);
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text.trim_start_matches('\n').to_string()
+}
+
+/// Pager rows back as the lines they show: a wrapped row rejoins the
+/// one above, without the marker or indent the wrap put on it.
+pub fn rows_text(rows: &[Row]) -> String {
+    let mut out = String::new();
+    for (i, row) in rows.iter().enumerate() {
+        match row.wrap {
+            Some(wrap) if i > 0 => {
+                if wrap.space {
+                    out.push(' ');
+                }
+                out.extend(row.text.chars().skip(wrap.skip));
+            }
+            _ => {
+                if i > 0 {
+                    out.push('\n');
+                }
+                out.push_str(&row.text);
+            }
+        }
+    }
+    out.push('\n');
+    out
+}
+
+fn is_marker(line: &str) -> bool {
+    line.starts_with("[-- ") && line.ends_with(" --]")
 }
 
 /// Quote depth of a body line under $quote_regexp: the number of
@@ -203,10 +270,11 @@ pub fn pager_rows(
         text: String::new(),
         kind: RowKind::Text,
         links: Vec::new(),
+        wrap: None,
     });
     for line in view.body.lines() {
         // Marker lines like the PGP verdict get the header treatment.
-        let marker = line.starts_with("[-- ") && line.ends_with(" --]");
+        let marker = is_marker(line);
         let depth = if marker {
             0
         } else {
@@ -225,19 +293,27 @@ pub fn pager_rows(
         let expanded = line.replace('\t', "    ");
         let chars: Vec<char> = expanded.chars().collect();
         let urls = url_ranges(&expanded);
-        for (i, (from, to)) in wrap_ranges(&chars, width.saturating_sub(1), style.smart_wrap)
-            .into_iter()
-            .enumerate()
-        {
+        let mut last_end = None;
+        for (from, to) in wrap_ranges(&chars, width.saturating_sub(1), style.smart_wrap) {
             let wrapped: String = chars[from..to].iter().collect();
             // mutt's $markers: a wrapped line says it is one.
-            let marker = i > 0 && style.markers;
+            let marker = last_end.is_some() && style.markers;
             let text = match marker {
                 true => format!("+{wrapped}"),
                 false => wrapped,
             };
             let links = row_links(&urls, from, to, usize::from(marker));
-            rows.push(Row { text, kind, links });
+            let wrap = last_end.map(|end| Wrap {
+                skip: usize::from(marker),
+                space: from > end,
+            });
+            last_end = Some(to);
+            rows.push(Row {
+                text,
+                kind,
+                links,
+                wrap,
+            });
         }
     }
     rows
@@ -260,7 +336,9 @@ fn header_rows(line: &str, width: usize, rows: &mut Vec<Row>) {
         text: chars[..start].iter().collect(),
         kind: RowKind::Header,
         links: row_links(&urls, 0, start, 0),
+        wrap: None,
     });
+    let mut last_end = start;
     while chars.get(start) == Some(&' ') {
         start += 1;
     }
@@ -275,7 +353,12 @@ fn header_rows(line: &str, width: usize, rows: &mut Vec<Row>) {
             text: format!("{HEADER_INDENT}{text}"),
             kind: RowKind::Header,
             links: row_links(&urls, from, to, indent),
+            wrap: Some(Wrap {
+                skip: indent,
+                space: from > last_end,
+            }),
         });
+        last_end = to;
     }
 }
 
@@ -419,6 +502,71 @@ mod tests {
     };
     use rmut_core::message::MessageView;
     use rmut_session::default_quote_re;
+
+    #[test]
+    fn body_text_drops_the_pagers_notices() {
+        use super::body_text;
+        let view = MessageView {
+            brief: vec![("Subject".into(), "Plan".into())],
+            all: vec![],
+            body: "[-- PGP signature verified --]\n\nHi Jane,\n\nsee below.\n\n\
+                   [-- Attachment #2: notes.txt --]\n\
+                   [-- Type: text/plain, Encoding: 7bit, Size: 0.0K --]\n\n\
+                   one\ntwo\n\n[-- Attachment #3: plan.pdf --]\n"
+                .into(),
+        };
+        assert_eq!(body_text(&view), "Hi Jane,\n\nsee below.\n\none\ntwo\n");
+        let empty = MessageView {
+            brief: vec![],
+            all: vec![],
+            body: "[-- no displayable text part --]".into(),
+        };
+        assert_eq!(body_text(&empty), "");
+    }
+
+    #[test]
+    fn rows_text_rejoins_what_the_wrap_broke() {
+        use super::rows_text;
+        let view = MessageView {
+            brief: vec![(
+                "Cc".into(),
+                "jane@example.com, joe@example.com, ann@example.com".into(),
+            )],
+            all: vec![],
+            body: "a long line that has to wrap twice at this width\n+plus\n\
+                   abcdefghijklmnopqrstuvwxyz"
+                .into(),
+        };
+        let re = default_quote_re();
+        for (markers, smart_wrap) in [(true, true), (false, true), (true, false), (false, false)] {
+            let style = PagerStyle {
+                quote_re: &re,
+                markers,
+                smart_wrap,
+            };
+            let rows = pager_rows(&view, 20, false, &style, false);
+            assert!(rows.len() > 6, "{markers} {smart_wrap}");
+            assert_eq!(
+                rows_text(&rows),
+                "Cc: jane@example.com, joe@example.com, ann@example.com\n\n\
+                 a long line that has to wrap twice at this width\n+plus\n\
+                 abcdefghijklmnopqrstuvwxyz\n",
+                "markers {markers}, smart_wrap {smart_wrap}"
+            );
+        }
+        // A page that starts on a continuation row starts mid-line.
+        let style = PagerStyle {
+            quote_re: &re,
+            markers: true,
+            smart_wrap: true,
+        };
+        let rows = pager_rows(&view, 20, false, &style, false);
+        let cont = rows
+            .iter()
+            .position(|r| r.wrap.is_some() && r.kind == RowKind::Text);
+        let cont = cont.expect("a wrapped body row");
+        assert!(rows_text(&rows[cont..]).starts_with('+'));
+    }
 
     #[test]
     fn quote_depth_counts_prefix_marks() {

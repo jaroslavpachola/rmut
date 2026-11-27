@@ -7,6 +7,12 @@
 use eframe::egui;
 use rmut_front::{KeyCode, KeyEvent, KeyModifiers};
 
+/// The frame brought Ctrl+C: egui-winit sends it as `Event::Copy`
+/// alone, no key, so the key vocabulary never sees it.
+pub fn copied(events: &[egui::Event]) -> bool {
+    events.iter().any(|e| matches!(e, egui::Event::Copy))
+}
+
 /// The presses in this frame, oldest first.
 pub fn keys(events: &[egui::Event]) -> Vec<KeyEvent> {
     let mut out = Vec::new();

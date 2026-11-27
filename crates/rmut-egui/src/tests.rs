@@ -1840,3 +1840,289 @@ fn the_triage_review_ticks_by_click_and_applies() {
         .collect();
     assert_eq!(flagged, [false, true], "only m2's flag applied");
 }
+
+/// One frame through a plain context, as the window runs it: what the
+/// frame put on the clipboard.
+fn frame_copies(
+    ctx: &eframe::egui::Context,
+    gui: &mut Gui,
+    events: Vec<eframe::egui::Event>,
+) -> Vec<String> {
+    use eframe::egui::{OutputCommand, Pos2, RawInput, Rect, Vec2};
+    let mut output = ctx.run_ui(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
+            events,
+            ..Default::default()
+        },
+        |ui| gui.frame(ui),
+    );
+    output.textures_delta.clear();
+    output
+        .platform_output
+        .commands
+        .into_iter()
+        .filter_map(|c| match c {
+            OutputCommand::CopyText(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn copy_fixture() -> (tempfile::TempDir, Gui) {
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["cur", "new", "tmp"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let text = "From: jane@example.com\nTo: sam@example.com\nSubject: plan\n\
+         Date: Mon, 10 Mar 2024 10:00:00 +0000\nMessage-ID: <c1@example.com>\n\
+         MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=\"b\"\n\n\
+         --b\nContent-Type: text/plain; charset=utf-8\n\
+         Content-Transfer-Encoding: quoted-printable\n\n\
+         Hi Sam,\n\nthe pl=C3=A1n is below.\n\
+         --b\nContent-Type: text/html; name=\"agenda.html\"\n\
+         Content-Disposition: attachment; filename=\"agenda.html\"\n\n\
+         <p>Agenda <b>today</b></p>\n\
+         --b\nContent-Type: image/png; name=\"pic.png\"\n\
+         Content-Disposition: attachment; filename=\"pic.png\"\n\
+         Content-Transfer-Encoding: base64\n\nAAEC\n--b--\n";
+    fs::write(dir.path().join("cur").join("0001.x:2,S"), text).unwrap();
+    let config: Config = toml::from_str("[keys.index]\ncopy-body = \"Y\"\n").unwrap();
+    let (session, _) = Session::open(dir.path(), config).unwrap();
+    (dir, Gui::new(session, Vec::new(), false))
+}
+
+/// copy-body from the index (bound by name) and from the pager (`y`)
+/// copies the decoded body without the pager's notices; `y` on the
+/// attachment menu copies a text part, an HTML one rendered, and
+/// refuses an image.
+#[test]
+fn y_copies_the_body_or_the_part() {
+    use eframe::egui::Event;
+    let (_dir, mut gui) = copy_fixture();
+    let ctx = eframe::egui::Context::default();
+    frame_copies(&ctx, &mut gui, Vec::new());
+    let from_index = frame_copies(&ctx, &mut gui, vec![Event::Text("Y".into())]);
+    assert_eq!(from_index.len(), 1, "{from_index:?}");
+    assert!(
+        from_index[0].starts_with("Hi Sam,\n\nthe plán is below.\n"),
+        "{:?}",
+        from_index[0]
+    );
+    assert!(!from_index[0].contains("[--"), "{:?}", from_index[0]);
+    assert!(matches!(gui.mode, Mode::Index), "the index stays");
+    key(&mut gui, KeyCode::Enter);
+    assert!(matches!(gui.mode, Mode::Pager(_)));
+    let from_pager = frame_copies(&ctx, &mut gui, vec![Event::Text("y".into())]);
+    assert_eq!(from_pager, from_index);
+    let note = gui.notice().expect("the copy is said").text();
+    assert!(note.starts_with("copied "), "{note}");
+    press(&mut gui, "v");
+    let Mode::Attach { parts, .. } = &gui.mode else {
+        panic!("v opens the attachment menu");
+    };
+    assert_eq!(parts.len(), 3);
+    let part = frame_copies(&ctx, &mut gui, vec![Event::Text("y".into())]);
+    assert_eq!(part, ["Hi Sam,\n\nthe plán is below."], "CRLF made LF");
+    press(&mut gui, "j");
+    let html = frame_copies(&ctx, &mut gui, vec![Event::Text("y".into())]);
+    assert_eq!(html.len(), 1);
+    assert!(
+        html[0].contains("Agenda") && !html[0].contains("<p>"),
+        "{html:?}"
+    );
+    press(&mut gui, "j");
+    let image = frame_copies(&ctx, &mut gui, vec![Event::Text("y".into())]);
+    assert!(image.is_empty(), "{image:?}");
+    let note = gui.notice().expect("the refusal is said").text();
+    assert!(note.contains("image/png is not text"), "{note}");
+}
+
+/// The pager's right-click menu: Select page selects the visible rows,
+/// Ctrl+C (egui's Copy event) copies them, Copy body copies the body,
+/// and a key ends the selection.
+#[test]
+fn the_pager_menu_selects_and_copies_a_page() {
+    use eframe::egui::{Event, OutputCommand, PointerButton, Pos2};
+    use egui_kittest::kittest::Queryable as _;
+    let (_dir, gui) = copy_fixture();
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.run();
+    harness
+        .state_mut()
+        .handle_keys(vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)]);
+    harness.run();
+    let copied = |harness: &egui_kittest::Harness<'_, Gui>| -> Vec<String> {
+        harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let menu = |harness: &egui_kittest::Harness<'_, Gui>| match &harness.state().mode {
+        Mode::Pager(pager) => (pager.menu.is_some(), pager.page_selected),
+        _ => panic!("still the pager"),
+    };
+    // A right-click on the message text opens the menu.
+    let at = Pos2::new(300.0, 200.0);
+    for pressed in [true, false] {
+        harness.event(Event::PointerMoved(at));
+        harness.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        harness.step();
+    }
+    harness.run();
+    assert_eq!(menu(&harness), (true, None), "the menu is open");
+    harness.get_by_label("Select page").click();
+    harness.run();
+    let (open, selected) = menu(&harness);
+    assert!(!open, "choosing closes the menu");
+    assert!(selected.is_some(), "the page is selected");
+    harness.event(Event::Copy);
+    harness.step();
+    let page = copied(&harness);
+    assert_eq!(page.len(), 1, "{page:?}");
+    // The page as shown: headers and the pager's notices too.
+    assert!(page[0].starts_with("Date: "), "{:?}", page[0]);
+    assert!(
+        page[0].contains("\nFrom: jane@example.com\n"),
+        "{:?}",
+        page[0]
+    );
+    assert!(
+        page[0].contains("[-- Attachment #2: agenda.html --]"),
+        "{:?}",
+        page[0]
+    );
+    assert!(
+        page[0].contains("Hi Sam,\n\nthe plán is below.\n"),
+        "{:?}",
+        page[0]
+    );
+    // Copy body from the menu, the selection kept until a key.
+    for pressed in [true, false] {
+        harness.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Default::default(),
+        });
+        harness.step();
+    }
+    harness.run();
+    harness.get_by_label("Copy body").click();
+    let mut bodies = Vec::new();
+    for _ in 0..4 {
+        harness.step();
+        bodies.extend(copied(&harness));
+    }
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert!(bodies[0].starts_with("Hi Sam,"), "{:?}", bodies[0]);
+    assert!(!bodies[0].contains("From:"), "{:?}", bodies[0]);
+    harness
+        .state_mut()
+        .handle_keys(vec![KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)]);
+    harness.run();
+    assert_eq!(menu(&harness), (false, None), "a key ends the selection");
+    harness.event(Event::Copy);
+    harness.step();
+    assert!(
+        copied(&harness).is_empty(),
+        "nothing selected, nothing copied"
+    );
+}
+
+/// A mouse selection in the pager is egui's own: a drag over the text
+/// and Ctrl+C copy what was dragged over, with no page selected.
+#[test]
+fn a_drag_over_pager_text_copies_with_ctrl_c() {
+    use eframe::egui::{Event, OutputCommand, PointerButton};
+    use egui_kittest::kittest::Queryable as _;
+    let (_dir, gui) = copy_fixture();
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.run();
+    harness
+        .state_mut()
+        .handle_keys(vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)]);
+    harness.run();
+    let rect = harness.get_by_label_contains("Hi Sam,").rect();
+    let (from, to) = (
+        rect.left_top() + eframe::egui::vec2(1.0, 4.0),
+        rect.right_bottom(),
+    );
+    harness.event(Event::PointerMoved(from));
+    harness.event(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Default::default(),
+    });
+    harness.step();
+    for step in 1..=4 {
+        harness.event(Event::PointerMoved(
+            from + (to - from) * (step as f32 / 4.0),
+        ));
+        harness.step();
+    }
+    harness.event(Event::PointerButton {
+        pos: to,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Default::default(),
+    });
+    harness.step();
+    harness.event(Event::Copy);
+    harness.step();
+    let copied: Vec<String> = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copied.len(), 1, "{copied:?}");
+    assert!(copied[0].contains("Sam,"), "{copied:?}");
+}
+
+/// The index's right-click menu offers Copy body: the message under
+/// the pointer, selected and copied, without opening it.
+#[test]
+fn the_row_menu_copies_the_body() {
+    use eframe::egui::OutputCommand;
+    use egui_kittest::kittest::Queryable as _;
+    let (_dir, gui) = fixture(&["one", "two"]);
+    let mut harness = egui_kittest::Harness::new_ui_state(|ui, gui: &mut Gui| gui.frame(ui), gui);
+    harness.run();
+    harness.get_by_label_contains("two").click_secondary();
+    harness.run();
+    harness.get_by_label("Copy body").click();
+    let mut copied = Vec::new();
+    for _ in 0..4 {
+        harness.step();
+        copied.extend(
+            harness
+                .output()
+                .platform_output
+                .commands
+                .iter()
+                .filter_map(|c| match c {
+                    OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                }),
+        );
+    }
+    assert_eq!(copied, ["body of two\n"]);
+    assert!(matches!(harness.state().mode, Mode::Index), "not opened");
+}

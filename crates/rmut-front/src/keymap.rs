@@ -174,6 +174,8 @@ pub enum PagerAction {
     ErrorHistory,
     WhatKey,
     Urls,
+    /// The body, as shown, to the clipboard.
+    CopyBody,
 }
 
 impl PagerAction {
@@ -232,6 +234,7 @@ impl PagerAction {
             ErrorHistory => "error-history",
             WhatKey => "what-key",
             Urls => "urls",
+            CopyBody => "copy-body",
         }
     }
 
@@ -290,6 +293,7 @@ impl PagerAction {
             ErrorHistory => "show the recent errors",
             WhatKey => "say what a key is (Ctrl+G ends it)",
             Urls => "list the message's links, to open or copy one",
+            CopyBody => "copy the message body to the clipboard",
         }
     }
 
@@ -348,6 +352,7 @@ impl PagerAction {
             ErrorHistory,
             WhatKey,
             Urls,
+            CopyBody,
         ]
     }
 
@@ -591,6 +596,8 @@ fn pager_defaults() -> Vec<(KeyPattern, PagerAction)> {
         // urlview's customary key in a mutt setup; the index has
         // Ctrl+B for page-up, so `urls` has no key there.
         (KeyPattern::ctrl('b'), Urls),
+        // Free in mutt's pager; the URL list's copy key too.
+        (KeyPattern::ch('y'), CopyBody),
     ]
 }
 

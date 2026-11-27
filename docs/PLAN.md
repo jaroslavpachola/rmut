@@ -2748,6 +2748,32 @@ outside, as in R103: `rmut --export '~b invoice ~d <30d' | claude -p
       from a timer; a semantic limit, where the command answers
       with Message-IDs and the index narrows to them
 
+## R107: copying to the clipboard (done; asked for by name, 2026-11-27)
+
+Goal: a message's text onto the clipboard without a pipe to `xsel`,
+in both fronts, which differ only in the clipboard: OSC 52 in the
+terminal, the window's own in egui. What is copied is shared
+(`rmut_front::copy`).
+
+- [x] `copy-body` (pager `y`, index unbound since `y` is mutt's
+      mailbox list): the body as the pager shows it, decoded and
+      HTML as text, without the `[-- ... --]` notices and the blank
+      line each leaves; CRLF made LF
+- [x] `y` on the attachment menu: a text part decoded in its charset,
+      text/html rendered; anything else refused (s saves it)
+- [x] The window: a drag over the pager text and Ctrl+C copy that
+      (egui's own label selection); a right click on the text opens
+      Copy body, Select page and Copy (Ctrl+C) for the selected page,
+      the rows on screen rejoined into the lines they show (each row
+      remembers what its wrap added and dropped); the index's row
+      menu gains Copy body
+- [x] Not done: Copy in the menu for a dragged selection. egui 0.36
+      resets that selection to a caret on any button press over the
+      text, the right one too, and keeps it private; Ctrl+C covers it
+- [x] Tests: rows_text over markers and smart wrap, body_text, the
+      egui y paths, the pager menu, the drag and Ctrl+C, the row
+      menu; e2e scenario_copy for the OSC 52 path
+
 ## The 2.0 cut (decided 2026-08-27)
 
 2.0 means: mutt parity is finished for the transports and folders this

@@ -888,6 +888,7 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut clicked: Option<(usize, bool)> = None;
     let mut ctx_fire: Option<(usize, &str)> = None;
+    let mut ctx_copy: Option<usize> = None;
     for (vi, &mi) in gui
         .session
         .visible
@@ -943,6 +944,11 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
                     ctx_fire = Some((vi, keys));
                 }
             }
+            // copy-body has no index key to fire (y is the mailbox
+            // list there), so this item runs it directly.
+            if menu_item(ui, "Copy body", "") {
+                ctx_copy = Some(vi);
+            }
         });
     }
     if let Some((vi, open)) = clicked {
@@ -983,6 +989,11 @@ fn draw_index(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
     if let Some((vi, keys)) = ctx_fire {
         gui.click_row(vi);
         gui.click(keys);
+    }
+    if let Some(vi) = ctx_copy {
+        gui.click_row(vi);
+        let copied = rmut_front::copy::selected_body(&mut gui.session);
+        gui.copy_or_say(copied);
     }
 }
 
@@ -1125,7 +1136,10 @@ fn menu_item_in(ui: &mut egui::Ui, label: &str, keys: &str, state: ItemState) ->
             .unwrap_or_default(),
         None => keys.to_string(),
     };
-    let mut button = egui::Button::new(label).shortcut_text(shortcut);
+    let mut button = egui::Button::new(label);
+    if !shortcut.is_empty() {
+        button = button.shortcut_text(shortcut);
+    }
     if let Some(ticked) = state.ticked {
         button = button.selected(ticked);
     }
@@ -1326,6 +1340,7 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         pager.hide_quoted,
     );
     let (scroll, is_part) = (pager.scroll, pager.back.is_some());
+    let (selected, menu) = (pager.page_selected == Some(scroll), pager.menu);
     // The k-th image Type marker pairs with the k-th image/* leaf;
     // only the message pager carries markers (a part pager's body is
     // the part itself), and only visible rows decode.
@@ -1404,6 +1419,9 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
         }
     }
     flush(ui, &mut job);
+    let text_bottom = ui.min_rect().bottom().min(area.bottom());
+    let page = &all[scroll.min(all.len())..(scroll + rows).min(all.len())];
+    pager_selection(gui, ui, area, text_bottom, page, scroll, selected, menu);
     // The scrollbar, an overlay on the right edge: the thumb is the
     // visible share of the message, a click or drag puts the view
     // there. Keyboard paging stays mutt's; this is the pointer's way.
@@ -1450,6 +1468,84 @@ fn draw_pager(gui: &mut Gui, ui: &mut egui::Ui, rows: usize, width: usize, size:
             0.35
         };
         painter.rect_filled(thumb, 2.0, canvas_fg.gamma_multiply(strength));
+    }
+}
+
+/// The pager's own selection, a page at a time, and the right-click
+/// menu that makes it. A mouse selection is egui's (drag, Ctrl+C);
+/// a right-click resets that one to a caret, which is why the menu
+/// copies a page or the body rather than whatever was dragged over.
+#[allow(clippy::too_many_arguments)]
+fn pager_selection(
+    gui: &mut Gui,
+    ui: &egui::Ui,
+    area: egui::Rect,
+    text_bottom: f32,
+    page: &[rmut_front::pager::Row],
+    scroll: usize,
+    selected: bool,
+    menu: Option<egui::Pos2>,
+) {
+    if selected {
+        let rect = egui::Rect::from_min_max(area.min, egui::pos2(area.right(), text_bottom));
+        let wash = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
+        ui.painter().rect_filled(rect, 0.0, wash);
+        if gui.copy_event {
+            gui.copy_text(rmut_front::pager::rows_text(page));
+        }
+    }
+    let (primary, secondary, pointer) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.secondary_pressed(),
+            i.pointer.interact_pos(),
+        )
+    });
+    let (mut copy, mut body, mut select, mut close) = (false, false, false, false);
+    let mut on_menu = false;
+    if let Some(at) = menu {
+        let shown = egui::Area::new(ui.id().with("pager-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::menu(ui.style())
+                    .show(ui, |ui| {
+                        let copy_item = egui::Button::new("Copy").shortcut_text("Ctrl+C");
+                        (
+                            ui.add_enabled(selected, copy_item).clicked(),
+                            ui.button("Copy body").clicked(),
+                            ui.button("Select page").clicked(),
+                        )
+                    })
+                    .inner
+            });
+        (copy, body, select) = shown.inner;
+        on_menu = pointer.is_some_and(|p| shown.response.rect.contains(p));
+        close = copy || body || select || ((primary || secondary) && !on_menu);
+    }
+    // A press on the page (not in the menu) ends the selection, as a
+    // click does in any text; a right-click there opens the menu.
+    let on_page = pointer.is_some_and(|p| area.contains(p)) && !on_menu;
+    let Mode::Pager(pager) = &mut gui.mode else {
+        return;
+    };
+    if pager.page_selected.is_some_and(|at| at != scroll) || (primary && !on_menu) {
+        pager.page_selected = None;
+    }
+    if close {
+        pager.menu = None;
+    }
+    if secondary && on_page && gui.prompt.is_none() {
+        pager.menu = pointer;
+    }
+    if select {
+        pager.page_selected = Some(scroll);
+    }
+    if copy {
+        gui.copy_text(rmut_front::pager::rows_text(page));
+    } else if body {
+        let copied = rmut_front::copy::body(&pager.view);
+        gui.copy_or_say(copied);
     }
 }
 
@@ -1562,7 +1658,7 @@ pub const INDEX_HELP: &str = "q:Quit Enter:View m:New r:Reply f:Fwd t:Tag s:Save
 const PAGER_HELP: &str = "q:Back Enter/Bksp:Scroll Space:Page j/k:Next/Prev r:Reply f:Fwd d:Del s:Save h:Headers v:Parts";
 const HELP_HELP: &str = "q:Back j/k:Scroll Space/-:Page";
 const FOLDERS_HELP: &str = "q:Back j/k:Move Enter:Open";
-const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View m:Mailcap T:Text R:Render s:Save |:Pipe p:Print f:Fwd d/u:Del/Undel";
+const ATTACH_HELP: &str = "q:Back j/k:Move Enter:View m:Mailcap T:Text R:Render s:Save y:Copy |:Pipe p:Print f:Fwd d/u:Del/Undel";
 const COMPOSE_HELP: &str = "y:Send e:Edit Enter:View t:To c:Cc b:Bcc s:Subj a:Attach n:New D:Detach d:Desc f:Fcc p:PGP M:Markdown P:Postpone q:Quit";
 const POSTPONED_HELP: &str = "q:Back j/k:Move Enter:Recall";
 const EDIT_HELP: &str = "Ctrl+Enter:Done Esc:Abandon (the draft is kept)";

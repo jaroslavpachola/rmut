@@ -80,14 +80,23 @@ A click selects a message, a double click opens it; in a message,
 the mini-index above it switches messages the same way. A URL in a
 message opens with a click
 .RB ( "[ui] url_command" ).
-The scroll wheel scrolls, and the pager's scrollbar drags. In the
+The scroll wheel scrolls, and the pager's scrollbar drags. A drag
+over the message text selects it, and Ctrl+C copies the selection.
+In the
 file browser a click selects and a double click enters a directory or
 picks a file.
 .TP
 .B Menus
 A menu bar (Mailbox, Message, Tagged, Thread, Sort, Help) offers
 the common functions by name, with their keys, and a right click on a
-message offers what applies to it. An item for a key that toggles
+message offers what applies to it, Copy body among it. A right click
+on the message text in the pager offers Copy body (y there), Select
+page, which highlights the rows on screen until a key, a click or a
+scroll, and Copy (Ctrl+C), which copies the selected page as the
+lines it shows. The right click resets a mouse selection, so a
+dragged selection is copied with Ctrl+C rather than from the menu.
+In the attachment menu y copies a text part. The window copies to
+its own clipboard, not through OSC 52. An item for a key that toggles
 says which way it goes (Tag or Untag, Flag or Unflag, Collapse or
 Expand thread, Collapse or Expand all threads); an item that cannot
 apply is greyed out, its reason on hover (Undelete on a message not
