@@ -2748,7 +2748,7 @@ outside, as in R103: `rmut --export '~b invoice ~d <30d' | claude -p
       from a timer; a semantic limit, where the command answers
       with Message-IDs and the index narrows to them
 
-## R107: copying to the clipboard (done; asked for by name, 2026-11-27)
+## R107: copying to the clipboard (done, 2.23.0; asked for by name, 2026-11-27)
 
 Goal: a message's text onto the clipboard without a pipe to `xsel`,
 in both fronts, which differ only in the clipboard: OSC 52 in the
@@ -3199,6 +3199,18 @@ too (`rmut-egui`, its desktop entry and a man page of its own), and
 setting, which nothing did before. For work on rmut itself, the e2e
 runner takes scenario names, and a failed scenario no longer leaves
 its rmut running.
+
+## 2.23.0 (released 2026-11-27)
+
+R107, copying to the clipboard. In the pager `y` (copy-body) copies
+the message body as the pager shows it: decoded, HTML as text, wrapped
+lines whole, without the `[-- ... --]` notices. In the attachment menu
+`y` copies a text part, an HTML one rendered. The terminal copies
+through OSC 52, so it works over ssh; in the index copy-body has no
+key, since `y` there is the mailbox list. In the window a drag over
+the message text and Ctrl+C copy that, a right click on the text
+offers Copy body, Select page and Copy (the selected page), and the
+index's right-click menu gains Copy body.
 
 ## 2.22.3 (released 2026-11-12)
 
